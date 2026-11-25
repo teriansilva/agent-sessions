@@ -1,0 +1,195 @@
+import { Bot } from "lucide-react";
+import { relTime } from "../../lib/format";
+import type { MissionListRow } from "../../types/api";
+import { Loader } from "../hud/Loader";
+import { Led } from "../hud/Meters";
+import action from "../ui/actionButton.module.css";
+import styles from "./mission.module.css";
+
+/** How many needs-you missions the landing previews. The rail lists the rest. */
+const PREVIEW = 3;
+
+/** The Missions section's front door (#948 P3): what the workspace shows when no mission is
+ *  selected — which is what entering the section now means.
+ *
+ *  **There is no New-mission form here any more (#2152).** HQ plans every mission, so **New
+ *  mission** opens HQ's page on a fresh conversation, where HQ asks for the goal and the project and
+ *  proposes the draft. Nothing is created until the operator confirms HQ's card.
+ *
+ *  **NEEDS YOU is a PREVIEW of the rail, not a global attention surface.** Its rows are the rail's
+ *  own loaded rows — the same retained filters, Active | Archived scope and page — so it shows
+ *  exactly what the rail's dots show and costs no second fetch. Two consequences are said on
+ *  screen rather than hidden:
+ *
+ *  - under any filter or the Archived scope the heading says "in current filters" and offers Clear
+ *    filters, and an empty preview there reads "Nothing needs you in these filters";
+ *  - when the rail holds only a page of a longer list the heading says "in the loaded missions".
+ *
+ *  It never says a bare "Nothing needs you": this list cannot know that. With no filter, a complete
+ *  list and nothing needing the operator, the section is simply absent.
+ *
+ *  **An empty preview is a claim only after a SUCCESSFUL read** (#959 review 4805, finding 3). A
+ *  filter or scope change clears the rail's rows before the new read answers, so `missions` is `[]`
+ *  both for "nothing matched" and for "not answered yet" — and for "could not be read". Until the
+ *  read succeeds the heading carries no count and the body says it is reading; when it failed, it
+ *  says the missions could not be read. Clear filters stays offered in every filtered state.
+ */
+export function MissionLanding({
+  onNewMission,
+  missions,
+  filtered,
+  partial,
+  loaded,
+  unavailable,
+  onSelect,
+  onClearFilters,
+  projectNames,
+}: {
+  /** Opens HQ on a fresh conversation (#2152). */
+  onNewMission: () => void;
+  /** The rail's loaded rows. Only those whose ledger says `needs_you` are previewed. */
+  missions: MissionListRow[];
+  /** A search / project / state filter, or the Archived scope, is narrowing the rail. */
+  filtered: boolean;
+  /** The rail holds a page of a longer list, or could not prove it is complete. */
+  partial: boolean;
+  /** A list read for the scope and filters on screen has answered (the console's `listLoaded`). */
+  loaded: boolean;
+  /** The list read failed, or answered with a store error. */
+  unavailable: boolean;
+  onSelect: (id: string) => void;
+  /** Back to the Active scope with no filters. */
+  onClearFilters: () => void;
+  projectNames: Record<string, string>;
+}) {
+  const needy = missions.filter((m) => m.needs_you);
+  // The two qualifications COMPOSE (#959 review 4814). A filter narrows what was asked for; a partial
+  // page narrows what was read. The listing is newest-first, not attention-first, so a filtered first
+  // page with no needy row says nothing about the filter's later pages.
+  const scope =
+    filtered && partial
+      ? "in the loaded missions within current filters"
+      : filtered
+        ? "in current filters"
+        : partial
+          ? "in the loaded missions"
+          : null;
+  const emptyText = partial
+    ? filtered
+      ? "Nothing needs you in the loaded missions within these filters."
+      : "Nothing needs you in the loaded missions."
+    : "Nothing needs you in these filters.";
+  const showNeeds = needy.length > 0 || filtered;
+  /** Only a successful read may count, or say that nothing matched. */
+  const answered = loaded && !unavailable;
+
+  return (
+    <div className={styles.landing} data-testid="mission-landing">
+      <div className={styles.landingInner}>
+        {/* tabIndex -1: where focus goes when an action moves the console to this landing and
+            unmounts the control that had it (an unarchive switching scope, #1531). */}
+        <h2
+          className={styles.landingHeading}
+          tabIndex={-1}
+          data-testid="mission-landing-heading"
+        >
+          Missions
+        </h2>
+        <p className={styles.landingSub}>
+          HQ plans every mission with you: it asks for the goal and the project, then proposes the
+          draft. Pick a mission from the list to open it.
+        </p>
+        <div>
+          <button
+            type="button"
+            className={action.primary}
+            onClick={onNewMission}
+            data-testid="landing-new-mission"
+          >
+            <Bot size={16} aria-hidden="true" />
+            New mission
+          </button>
+        </div>
+        <p className={styles.landingNote}>
+          Already have an API session running? Use <b>Adopt to mission</b> in its header or its
+          ⋯ menu.
+        </p>
+        {showNeeds ? (
+          <section
+            className={styles.landingNeeds}
+            aria-label="Missions that need you"
+            data-testid="landing-needs-you"
+          >
+            <div className={styles.landingNeedsHead}>
+              <span className="nj-notch" aria-hidden="true" />
+              <span className={styles.landingNeedsTitle}>
+                Needs you
+                {answered ? (
+                  <>
+                    {" · "}
+                    <b className={styles.landingNeedsCount}>{needy.length}</b>
+                  </>
+                ) : null}
+                {scope ? (
+                  <span className={styles.landingNeedsScope} data-testid="landing-needs-scope">
+                    {" · "}
+                    {scope}
+                  </span>
+                ) : null}
+              </span>
+              {filtered ? (
+                <button
+                  type="button"
+                  className={`${action.ghost} ${action.compact} ${styles.landingClear}`}
+                  onClick={onClearFilters}
+                  data-testid="landing-clear-filters"
+                >
+                  Clear filters
+                </button>
+              ) : null}
+            </div>
+            {needy.length === 0 && unavailable ? (
+              // No `role="status"`: the console already announces the store outage once.
+              <div className={styles.landingError} data-testid="landing-needs-error">
+                Missions could not be read, so nothing is known about what needs you here.
+              </div>
+            ) : needy.length === 0 && !loaded ? (
+              <Loader
+                kind="acquire"
+                label="Reading missions…"
+                className={styles.landingLoading}
+                testId="landing-needs-loading"
+              />
+            ) : needy.length === 0 ? (
+              <div className={styles.landingEmpty} data-testid="landing-needs-empty">
+                {emptyText}
+              </div>
+            ) : (
+              needy.slice(0, PREVIEW).map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  className={styles.landingRow}
+                  onClick={() => onSelect(m.id)}
+                  data-testid="landing-needs-row"
+                >
+                  <Led tone="att" label="Needs you" className={styles.landingLed} />
+                  <span className={styles.landingRowBody}>
+                    <span className={styles.landingRowTitle}>{m.title}</span>
+                    <span className={styles.landingRowMeta}>
+                      {m.project_id ? projectNames[m.project_id] || "Unavailable project" : "No project"}
+                      {" · "}
+                      {m.session_keys.length} {m.session_keys.length === 1 ? "session" : "sessions"}
+                      {" · "}
+                      {relTime(m.updated_at)}
+                    </span>
+                  </span>
+                </button>
+              ))
+            )}
+          </section>
+        ) : null}
+      </div>
+    </div>
+  );
+}

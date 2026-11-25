@@ -1,0 +1,139 @@
+/* Subagent sessions in the sidebar (#2325). NIGHTJAR rules (docs/design.md): no radius on boxes,
+ * no gradients, status colour only for state (the rolled-up LED and the attention strip's edge),
+ * and every control a finger can reach is at least 44px. */
+
+/* The disclosure chip: a labelled button, 44px at every width (it carries the count AND the
+ * rolled-up state, so it is never hover-revealed like the ⋯ menu). */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 44px;
+  min-width: 52px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  font-weight: 600;
+  cursor: pointer;
+}
+span.chip {
+  cursor: default;
+}
+.chip:focus-visible {
+  outline: 2px solid var(--hud);
+  outline-offset: -2px;
+}
+.chipOpen {
+  border-color: var(--hud-dim);
+  color: var(--hud-text);
+}
+.caret {
+  color: var(--hud-text);
+}
+.chipLed {
+  flex: none;
+}
+
+/* One group of subagent rows under its main session: indented, with a guide line, on a ground a
+ * shade off the panel so the tree reads without a single extra glyph. */
+.group {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  position: relative;
+  background: color-mix(in srgb, var(--bg) 55%, var(--panel));
+}
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  position: relative;
+}
+.group[data-depth="1"] > .list {
+  padding-left: 20px;
+}
+.group[data-depth="2"] > .list {
+  padding-left: 40px;
+}
+.group > .list::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-left: 1px solid var(--line-strong);
+}
+.group[data-depth="1"] > .list::before {
+  left: 10px;
+}
+.group[data-depth="2"] > .list::before {
+  left: 30px;
+}
+
+.note {
+  padding: 8px var(--sp-3);
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  letter-spacing: 0.04em;
+}
+.moreBtn {
+  composes: ghost from "../ui/actionButton.module.css";
+  width: 100%;
+  min-height: 44px;
+}
+.retryBtn {
+  composes: ghost from "../ui/actionButton.module.css";
+  min-height: 44px;
+}
+
+/* Attention strip (guarantee 3): the degraded edge is the state — something waits on you. */
+.outside {
+  margin: 0 var(--sp-2) var(--sp-2);
+  border: 1px solid var(--status-degraded);
+  background: var(--bg);
+}
+.outsideBtn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 6px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  text-align: left;
+  cursor: pointer;
+}
+.outsideBtn:focus-visible {
+  outline: 2px solid var(--hud);
+  outline-offset: -2px;
+}
+.outsideText {
+  flex: 1;
+  min-width: 0;
+}
+.outsideAction {
+  color: var(--hud-text);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+}
+
+.modeRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 var(--sp-2) var(--sp-2);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+}
+.modeLabel {
+  flex: none;
+}

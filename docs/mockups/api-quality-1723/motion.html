@@ -1,0 +1,180 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>#1727 API pane motion — mockup</title>
+<link rel="stylesheet" href="base.css">
+<script src="icons.js"></script>
+<style>
+.pw { position: relative; }
+.num.abs { position: absolute; z-index: 6; }
+.w-fade { opacity: var(--o); }
+.caret { display: inline-block; width: .55em; height: 1em; margin-left: 2px; vertical-align: -.12em; background: var(--accent); }
+.caret.ghost { background: transparent; outline: 1px dashed var(--accent); outline-offset: -1px; }
+.ann { display: grid; gap: 10px; }
+.frames { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0; border: 1px solid var(--line-strong); background: var(--bg-1); }
+.fr { padding: 10px 12px; border-right: 1px solid var(--line); }
+.fr:last-child { border-right: 0; }
+.fr .t { font: 600 10px var(--font-mono); letter-spacing: .14em; color: var(--text-3); margin-bottom: 6px; }
+.fr .w { font-size: 15px; }
+.modes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; border: 1px solid var(--line-strong); }
+.modes > div { padding: 10px 12px; border-right: 1px solid var(--line); font: 12px/1.5 var(--font-mono); color: var(--text-2); }
+.modes > div:last-child { border-right: 0; }
+.modes b { display: block; font: 600 10px var(--font-mono); letter-spacing: .16em; color: var(--hud-text); margin-bottom: 4px; }
+.jump { display: inline-flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 16px 0 14px; font: 600 11px/1 var(--font-mono); letter-spacing: .14em; text-transform: uppercase; color: var(--text-1);
+  --face: var(--bg-2); --edge: var(--hud-dim); --rail: var(--hud); box-shadow: var(--shadow-menu); }
+.jump svg { width: 15px; height: 15px; color: var(--hud-text); }
+.jump .n { color: var(--hud-text); }
+.jumpbar { position: absolute; left: 0; right: 0; bottom: 12px; display: flex; justify-content: center; pointer-events: none; z-index: 4; }
+.logwrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.sb { position: absolute; right: 3px; width: 4px; background: var(--line-strong); z-index: 3; }
+.arr-row { position: relative; border: 1px solid var(--line-strong); background: var(--bg-0); padding: 10px 12px; }
+.arr-row .tint { position: absolute; inset: 0; background: var(--hud-tint); pointer-events: none; }
+.arr-row .ghostpos { position: absolute; top: -1px; bottom: -1px; left: -1px; width: 1px; border-left: 1px dashed var(--text-3); }
+.arr-frames { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.phone .activity ul { display: none; }
+.tag6 { font: 10px var(--font-mono); color: var(--text-3); letter-spacing: .08em; margin-top: 6px; }
+</style></head>
+<body><div id="root"></div>
+<script>
+const head = (phone) => `
+<div class="phead"><span class="facts"><span class="led up"></span><span class="word w-ok">Working</span></span><span class="badge">CLAUDE</span>
+<span class="ptitle">Fix paging drops rows under a filter</span>
+<span class="pmeta">${phone ? '' : '<span class="chip">CTX 51.0K</span>'}<span class="ibtn plate ${phone ? 'lg' : ''}">${I('folder')}</span><span class="ibtn plate ${phone ? 'lg' : ''}">${I('more')}</span></span></div>`;
+const comp = (phone) => `<div class="comp"><div class="ta">Message Claude…</div>${phone ? `<span class="ibtn plate lg">${I('mic')}</span>` : ''}<span class="btn plate primary">Send</span></div>`;
+
+// streaming reply: the newest words at falling opacity (age 0 = newest)
+const fading = ['by', 'keeping', 'the', 'snapshot', 'pinned', 'per', 'walk'];
+const ops = [1, 1, .92, .78, .6, .38, .16];
+const stream = (pins) => `
+<div class="user"><div class="who">You <span class="ts">14:20</span></div><div class="txt">Why did the cursor skip rows on page 2?</div></div>
+<div class="reply pw">${pins ? '<span class="num abs" style="top:-9px;left:-9px">3</span>' : ''}<div class="who">Claude <span class="ts">14:20 · streaming</span></div>
+  <div class="txt"><p>The cursor was an offset into the <b>filtered</b> page, but the next request re-ran the filter over a fresh walk. When a session changed between the two reads, the offset pointed past rows the operator had never seen.</p>
+  <p class="pw">The fix pins the walk, not the scope: page 2 continues the same ordered set ${fading.map((w, i) => `<span class="w-fade" style="--o:${ops[i]}">${w}</span>`).join(' ')}<span class="caret"></span>${pins ? '<span class="num abs" style="right:-4px;bottom:-24px">1</span><span class="num abs" style="right:-30px;bottom:-24px">2</span>' : ''}</p></div>
+</div>`;
+
+const paneStream = (theme, pins) => `
+<div class="col ${theme}" style="width:610px">
+  <p class="lbl">${theme === 't-dark' ? 'Dark' : 'Light'} · Full motion · mid-reveal</p>
+  <div class="nj-panel is-hero" style="height:470px"><div class="nj-face"><span class="nj-rail is-short"></span>
+    <div class="pane">${head(false)}<div class="log">${stream(pins)}</div>${comp(false)}</div></div></div>
+</div>`;
+
+const frames = `
+<div class="frames">${[[0, '0 ms'], [.45, '65 ms'], [.75, '130 ms'], [.93, '195 ms'], [1, '260 ms']].map(([o, t]) => `
+  <div class="fr"><div class="t">t = ${t}</div><div class="w">continues <span style="opacity:${o}">walk</span><span class="caret"></span></div><div class="tag6">opacity ${o}</div></div>`).join('')}
+</div>`;
+
+const b1 = `
+<section class="board t-dark board-grid" id="m1">
+  <p class="cap"><b>#1727 · board 1</b> streaming reply · desktop · dark + light <span>text reaches the pane at the worker's flush (≤ 250 ms) via the long-poll delta, not the 1 s snapshot</span></p>
+  <div class="row">${paneStream('t-dark', true)}${paneStream('t-light', false)}</div>
+  <div class="row" style="margin-top:16px">
+    <div class="col" style="width:610px"><p class="lbl">One word's fade · --t-stream 260 ms · --ease-out · opacity only</p>${frames}</div>
+    <div class="ann" style="width:610px">
+      <div class="note" style="max-width:none"><span class="num">1</span><b>260 ms word fade, nothing above moves.</b> Each new word is in the DOM the moment it arrives, and only its opacity animates (RevealText, Markdown-safe). Streamed text is never held back (rule 2).</div>
+      <div class="note" style="max-width:none"><span class="num">2</span><b>Riding caret</b> at the end of the active part, in the accent fill. It exists only while the turn streams; at turn end it goes and nothing loops (idle budget).</div>
+      <div class="note" style="max-width:none"><span class="num">3</span><b>No layout shift</b>: paragraphs above the active part keep their position; history and the first paint render <i>instant</i>.</div>
+    </div>
+  </div>
+  <div class="modes" style="margin-top:16px;width:1236px">
+    <div><b>FULL</b>newest words fade 0 → 1 over 260 ms; the caret blinks on a 1 s step</div>
+    <div><b>REDUCED</b>--t-stream 0 ms: words appear at once; the caret is steady (no blink)</div>
+    <div><b>OFF</b>words appear at once; the caret is steady; no animation or transition at all</div>
+  </div>
+</section>`;
+
+// board 2: scrolled up + jump to latest
+const older = `
+<div class="reply"><div class="who">Claude <span class="ts">14:12 · 1 m 04 s</span></div>
+  <div class="txt"><p>The facet counts come from the unfiltered set, so they stay right while the operator narrows the list. I kept that order and added a guard so a later refactor can't swap it.</p>
+  <p>Next I'll pin the walk for the cursor and add a regression test that changes a session between page reads.</p></div>
+  <div class="activity"><div class="sum">${I('cd', 'style="width:12px;height:12px"')} 3 calls · latest <b style="color:var(--text-1)">BASH</b> pytest -x</div>
+  <ul><li class="tool"><span class="tverb">Read</span><span class="tpath">docs/invariants/session-list-filtering.md</span></li>
+  <li class="tool"><span class="tverb">Edit</span><span class="tpath">src/agent_sessions/routes/sessions.py</span><span class="tdet">+9 −2</span></li>
+  <li class="tool"><span class="tverb">Bash</span><span class="tpath">pytest -x tests/test_session_filters.py</span><span class="tdet">41 passed</span></li></ul></div>
+</div>
+<div class="user"><div class="who">You <span class="ts">14:20</span></div><div class="txt">Why did the cursor skip rows on page 2?</div></div>
+<div class="reply"><div class="who">Claude <span class="ts">14:20 · streaming</span></div>
+  <div class="txt"><p>The cursor was an offset into the <b>filtered</b> page, but the next request re-ran the filter over a fresh walk. When a session changed between the two reads, the offset pointed past rows the operator had never seen.</p>
+  <p>The fix pins the walk, not the scope: page 2 continues the same ordered set by keeping the snapshot pinned per walk, and a changed session shows up on the next fresh list instead.</p></div></div>`;
+
+const jump = (phone) => `<div class="jumpbar" ${phone ? 'style="left:10px;right:10px"' : ''}><span class="jump plate" ${phone ? 'style="width:100%;justify-content:center"' : ''}>${I('down')} Jump to latest <span class="sep" style="color:var(--text-3)">·</span> <span class="n">3 new</span></span></div>`;
+
+const deskJump = `
+<div class="col" style="width:800px">
+  <p class="lbl">Desktop · reader scrolled up while the reply streams below</p>
+  <div class="nj-panel is-hero" style="height:560px"><div class="nj-face"><span class="nj-rail is-short"></span>
+    <div class="pane">${head(false)}
+      <div class="logwrap pw"><div class="log">${older}</div><span class="sb" style="top:60px;height:120px"></span>${jump(false)}
+        <span class="num abs" style="bottom:52px;left:calc(50% - 134px)">1</span></div>
+      ${comp(false)}</div></div></div>
+</div>`;
+
+const phoneJump = `
+<div class="col"><p class="lbl">Phone 390 px · same state</p>
+<div class="phone t-dark">
+  <div class="ptop"><span class="ibtn lg">${I('menu')}</span><span class="mark">BATTLELAB</span></div>
+  <div class="pane">${head(true)}<div class="logwrap"><div class="log">${older}</div><span class="sb" style="top:40px;height:90px"></span>${jump(true)}</div>${comp(true)}</div>
+</div></div>`;
+
+const arrFrame = (label, o, x, tint) => `
+<div style="min-width:0"><div style="font:600 10px var(--font-mono);letter-spacing:.14em;color:var(--text-3);margin-bottom:6px">${label}</div>
+<div style="position:relative"><div class="arr-row" style="position:absolute;inset:0;background:transparent;border:1px dashed var(--text-3)"></div>
+<div class="arr-row" style="opacity:${o};transform:translateX(${x}px)"><span class="tint" style="opacity:${tint}"></span>
+  <div class="tool"><span class="tverb">Bash</span><span class="tpath">pytest -x</span><span class="tdet">running</span></div></div></div>
+<div class="tag6">opacity ${o} · x ${x} px · tint ${tint}</div></div>`;
+
+const arrival = `
+<div class="col" style="width:800px;margin-top:4px">
+  <p class="lbl"><span class="num">2</span>Arrival of a new row · nj-arrive · --t-arrive 500 ms · --ease-out · dashed = final position</p>
+  <div class="arr-frames">${arrFrame('t = 0', .08, -6, .55)}${arrFrame('t = 160 ms', .8, -1.5, .25)}${arrFrame('t = 500 ms · settled', 1, 0, 0)}</div>
+  <div class="modes"><div><b>FULL</b>6 px slide + HUD tint flash, 500 ms</div><div><b>REDUCED</b>120 ms fade, no slide, no flash</div><div><b>OFF</b>instant: the row is simply there</div></div>
+</div>`;
+
+const b2 = `
+<section class="board t-dark board-grid" id="m2">
+  <p class="cap"><b>#1727 · board 2</b> jump to latest + arrival · desktop + phone · dark <span>reading position is never moved while not following</span></p>
+  <div class="row">
+    <div class="col">${deskJump}${arrival}</div>
+    ${phoneJump}
+    <div class="ann" style="width:250px;margin-top:22px">
+      <div class="note"><span class="num">1</span><b>JUMP TO LATEST · 3 NEW</b> appears when the reader is above the bottom while new content arrives. It's a 44 px target that counts new rows/turns and sits above the composer. A tap eases to the bottom on the shared rAF scheduler (<i>instant under Off</i>) and resumes following.</div>
+      <div class="note"><b>Never moves the reader</b>: while not following, arrivals below don't scroll the log. The control fades in (180 ms; 120 ms Reduced; instant Off) and leaves when the bottom is reached.</div>
+      <div class="note"><span class="num">2</span><b>Arrival</b>: new turns, your own turn, tool rows and requests each arrive once per newly mounted row key. History pages and the first paint never animate.</div>
+      <div class="note"><b>Reduced</b>: 120 ms fade · <b>Off</b>: instant.</div>
+    </div>
+  </div>
+</section>`;
+
+
+const b3 = `
+<section class="board t-light board-grid" id="m3">
+  <p class="cap"><b>#1727 · board 3</b> streaming reply · phone 390 px · light <span>same reveal as board 1: newest words fade 260 ms, caret rides the end</span></p>
+  <div class="row">
+    <div class="col"><p class="lbl">Phone · light · Full motion · mid-reveal</p>
+      <div class="phone t-light"><div class="ptop"><span class="ibtn lg">${I('menu')}</span><span class="mark">BATTLELAB</span></div>
+        <div class="pane">${head(true)}<div class="log" style="justify-content:flex-end"><div class="reply"><div class="who">Claude <span class="ts">14:12 · 1 m 04 s</span></div><div class="txt"><p>The facet counts come from the unfiltered set, so they stay right while the operator narrows the list.</p></div><div class="activity"><div class="sum">${I('cr', 'style="width:12px;height:12px"')} 3 calls · latest <b style="color:var(--text-1)">BASH</b> pytest -x</div></div></div>${stream(true)}</div>${comp(true)}</div></div></div>
+    <div class="ann" style="width:300px;margin-top:22px">
+      <div class="note"><span class="num">1</span><b>260 ms word fade</b> on the newest words only (opacity, --ease-out). Each word is in the DOM the moment it arrives.</div>
+      <div class="note"><span class="num">2</span><b>Riding caret</b> in the accent fill. It exists only while the turn streams.</div>
+      <div class="note"><span class="num">3</span><b>Nothing above moves</b>: no layout shift; the log follows the bottom only while the reader is at the bottom.</div>
+      <div class="note"><b>Reduced / Off</b>: words appear at once; the caret is steady.</div>
+    </div>
+  </div>
+</section>`;
+
+const b4 = `
+<section class="board t-light board-grid" id="m4">
+  <p class="cap"><b>#1727 · board 4</b> jump to latest · desktop + phone · light <span>"3 new" counts new ROWS (turns, tool rows, requests), never text flushes</span></p>
+  <div class="row">
+    ${deskJump.replace('<span class="num abs" style="bottom:52px;left:calc(50% - 134px)">1</span>', '')}
+    ${phoneJump.replace('phone t-dark', 'phone t-light')}
+    <div class="ann" style="width:250px;margin-top:22px">
+      <div class="note"><b>JUMP TO LATEST · 3 NEW</b> is a 44 px plate above the composer. It appears when the reader is above the bottom while new content arrives.</div>
+      <div class="note"><b>What "3 new" counts</b>: rows that mounted below the reader (new turns, tool rows, requests). A streaming reply growing by text flushes is still one row; its flushes never raise the count.</div>
+      <div class="note"><b>Tap</b>: it eases to the bottom on the shared rAF scheduler and resumes following. Under Off it's instant.</div>
+      <div class="note">On light, the plate's rail and the "3 new" text use the light <i>--hud</i> / <i>--hud-text</i> values (AA on the light grounds).</div>
+    </div>
+  </div>
+</section>`;
+document.getElementById('root').innerHTML = b1 + b2 + b3 + b4;
+</script></body></html>

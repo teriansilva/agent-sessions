@@ -1,0 +1,338 @@
+/* The plan & tools rail (#1726). Docked: a column on the pane's right edge, the width the pane
+ * can spare (`filePanelLayout`, `--rail-w`). Sheet: the one sheet chrome over the pane, sliding up
+ * in 180 ms (Reduced: a 120 ms fade; Off: instant). Its tab body scrolls on its own; the tabs and
+ * the foot stay put. Chamfered panel chrome, a rail along the top, no radius, no gradient; status
+ * colour on LEDs only, always beside a word. */
+.rail {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg-1);
+  color: var(--text);
+  font-size: var(--fs-row);
+}
+.dock {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: var(--rail-w, 340px);
+  z-index: var(--z-raised);
+  border-left: 1px solid var(--line-strong);
+}
+.scrimWrap {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-pane-overlay);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+.scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--scrim);
+  animation: global(nj-fade-in) var(--t-base) var(--ease-out) both;
+}
+.sheet {
+  position: relative;
+  max-height: min(85%, 720px);
+  height: 85%;
+  border-top: 2px solid var(--hud);
+  clip-path: polygon(var(--cut) 0, 100% 0, 100% 100%, 0 100%, 0 var(--cut));
+  animation: global(nj-sheet-up) var(--t-base) var(--ease-out) both;
+}
+:root[data-motion="reduced"] .sheet {
+  animation: global(nj-fade-in) var(--t-fast) var(--ease-out) both !important;
+}
+.grip {
+  display: block;
+  width: 44px;
+  height: 3px;
+  margin: var(--sp-2) auto 0;
+  background: var(--hud-dim);
+}
+.head {
+  display: flex;
+  align-items: stretch;
+  flex: none;
+  min-width: 0;
+  border-bottom: 1px solid var(--line-strong);
+}
+.tabs {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.tabs [role="tab"] {
+  min-height: 44px;
+}
+.close {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  min-height: 44px;
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.close:hover {
+  color: var(--text);
+}
+.close:focus-visible,
+.body:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+/* The one scroll region: a long plan, 256 skills or 256 commands stay reachable here. */
+.body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--sp-3);
+}
+.foot {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  flex: none;
+  padding: var(--sp-2) var(--sp-3);
+  border-top: 1px solid var(--line-strong);
+  color: var(--text-2);
+  font: 400 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.sectionHead {
+  margin: var(--sp-3) 0 var(--sp-2);
+}
+.sectionHead:first-child {
+  margin-top: 0;
+}
+.explanation {
+  margin: 0 0 var(--sp-2);
+  color: var(--text-2);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.quiet {
+  margin: 0 0 var(--sp-2);
+  color: var(--text-2);
+  font-size: var(--fs-meta);
+}
+.empty {
+  padding: var(--sp-3) 0;
+  color: var(--text-2);
+  line-height: 1.5;
+}
+.empty p {
+  margin: 0;
+}
+.emptyTitle {
+  margin-bottom: var(--sp-1) !important;
+  color: var(--text);
+  font: 600 var(--fs-label) / 1.2 var(--font-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+.entries,
+.rows,
+.commands {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.entry {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 2px var(--sp-2);
+  padding: var(--sp-2) var(--sp-2) var(--sp-2) 6px;
+  border-top: 1px solid var(--line-strong);
+  border-left: 2px solid transparent;
+}
+.entry[data-status="in_progress"] {
+  border-left-color: var(--status-up);
+  background: var(--hud-tint);
+}
+.entry[data-status="in_progress"] .entryText {
+  font-weight: 600;
+}
+.entry[data-status="completed"] .entryText {
+  color: var(--text-2);
+}
+.mark {
+  grid-row: span 2;
+  display: grid;
+  place-items: start center;
+  padding-top: 3px;
+  color: var(--ok-text);
+}
+.entryText {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+}
+.entryState {
+  grid-column: 2;
+  color: var(--text-2);
+  font: 600 var(--fs-micro) / 1.2 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.entry[data-status="in_progress"] .entryState,
+.entry[data-status="completed"] .entryState {
+  color: var(--ok-text);
+}
+.led {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%; /* LEDs are the one round thing (design §3) */
+  flex: none;
+}
+.ledUp {
+  background: var(--status-up);
+}
+.ledDown {
+  background: var(--status-down);
+}
+.ledAtt {
+  background: var(--status-degraded);
+}
+.ledIdle {
+  background: var(--status-unknown);
+}
+.hollow,
+.square {
+  display: inline-block;
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border: 1px solid var(--text-2);
+}
+.document {
+  margin-top: var(--sp-3);
+  border-top: 1px solid var(--line-strong);
+  border-bottom: 1px solid var(--line-strong);
+}
+.docSummary {
+  display: flex;
+  gap: var(--sp-2);
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.docMeta {
+  margin-left: auto;
+  color: var(--text-2);
+  letter-spacing: 0.04em;
+  text-transform: none;
+}
+.docBody {
+  padding: 0 var(--sp-2) var(--sp-3);
+  overflow-wrap: anywhere;
+}
+.rows > li + li {
+  border-top: 1px solid var(--line-strong);
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 32px;
+  padding: var(--sp-1) 0;
+  min-width: 0;
+}
+.name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+}
+.word {
+  flex: none;
+  color: var(--text-2);
+  font: 600 var(--fs-micro) / 1.2 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.word[data-tone="connected"] {
+  color: var(--ok-text);
+}
+.word[data-tone="failed"] {
+  color: var(--danger-text);
+}
+.word[data-tone="needs_auth"] {
+  color: var(--warn-text);
+}
+.num {
+  flex: none;
+  min-width: 3ch;
+  text-align: right;
+  font: 500 var(--fs-meta) / 1 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.stamp {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 2px 6px;
+  border: 1px solid var(--line-strong);
+  color: var(--text);
+  font: 600 var(--fs-micro) / 1.2 var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.commands {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+}
+.command {
+  padding: 2px 6px;
+  border: 1px solid var(--line-strong);
+  font: 400 var(--fs-meta) / 1.4 var(--font-mono);
+  overflow-wrap: anywhere;
+}
+.meterRow {
+  display: grid;
+  grid-template-columns: minmax(0, 7fr) minmax(40px, 10fr) auto;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 28px;
+}
+.meter {
+  display: block;
+  height: 6px;
+  background: var(--line-strong);
+}
+/* A neutral fill: a count, never a status. */
+.meter > i {
+  display: block;
+  height: 100%;
+  background: var(--text-2);
+}
+.tools > section + section,
+.tools > ul + section {
+  margin-top: var(--sp-4);
+}
+.plan {
+  min-width: 0;
+}
+/* A plan document older than the newest checklist (review on #1811): dimmed and labelled,
+ * never read as the current plan. */
+.older {
+  border-top-style: dashed;
+  border-bottom-style: dashed;
+}
+.older .docBody {
+  color: var(--text-2);
+}
+.earlier {
+  color: var(--text-2);
+  letter-spacing: 0.04em;
+  text-transform: none;
+}

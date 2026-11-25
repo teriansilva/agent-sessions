@@ -1,0 +1,619 @@
+"""The closed value space a plugin manifest selects from (#853 §2).
+
+Every set here is **reviewed code**. A manifest may only *choose* a member; it can never add one.
+That is the whole security argument of the manifest format: a literal argv list stops shell
+parsing, but it does not make attacker-chosen arguments safe — what bounds the argument space is
+that every flag, subcommand, layout, parser and probe token a manifest can name is listed here.
+
+A genuinely new *shape* of engine (a store nothing can read, a flag nobody has used) is therefore a
+PR that adds a member — rarer by design than the version bumps, model changes, store moves and
+entrypoint renames a manifest absorbs without one.
+
+Adding a member here is the ONLY way to widen what a plugin can do. Keep each set tight, and name
+the engine that needed a member in a comment beside it, so a later removal knows what it breaks.
+"""
+
+from __future__ import annotations
+
+#: Manifest contract versions this build can read. A manifest declaring a HIGHER contract is
+#: refused with "needs a newer BattleLab" rather than half-read: an unknown field in a newer
+#: contract may be a restriction, and ignoring a restriction widens what the plugin can do. That is
+#: also the rollback behaviour — downgrading the app disables such a plugin, it never misreads it.
+#:
+#: **An ADDITIVE field does not bump it** (the precedent of `runtime` #1212, `terminal.permission`
+#: #1213, `usage.access` #1167, and `launch.model` / `instructions` #1189). A build that predates a
+#: new optional key meets it as an UNKNOWN field and refuses the whole manifest — the same
+#: fail-closed, fail-soft-per-manifest outcome a bump would buy, because unknown fields are
+#: rejected at every level. The contract moves only when an EXISTING field changes meaning, the
+#: one change unknown-field rejection cannot catch (an old reader would parse it and misread it).
+CONTRACT_CURRENT = 1
+
+#: `identity.kind`. A `terminal` plugin has no agent behind it (the `shell` engine, #636): the
+#: validator refuses every capability that would let the app author input for it or rewrite its
+#: termios, because typed "continue" into a bare shell is executed as a command.
+IDENTITY_KINDS = frozenset({"agent", "terminal"})
+
+#: `runtime.kind` (#853 §7). `pty`: a binary under `dtach`, shown through xterm. `chat` (#853 P9a,
+#: #1209): no binary and no terminal — BattleLab sends the conversation to an operator-configured
+#: HTTP endpoint and keeps the transcript itself. A chat plugin executes nothing; its only tools are
+#: the operator-granted file tools of #1222/#1230 (`chat_tools`, `chat_edits`), never the
+#: manifest's to name. Every proposed edit still needs its own operator decision.
+#: `api` (#1275) declares a native structured protocol and an admitted console source. The
+#: vocabulary is preparatory: a declared kind does NOT imply that a runtime adapter is available.
+RUNTIME_KINDS = frozenset({"pty", "chat", "api"})
+#: Native protocols and the source store/transcript shapes they understand. Identity is not the
+#: protocol: another source id with the same reviewed shape is validated by the same rule.
+API_SOURCE_KINDS = {
+    "codex-app-server": ("codex-rollouts", "codex-rollout"),
+    "claude-stream-json": ("claude-projects", "claude-jsonl"),
+    # opencode's Agent Client Protocol over stdio (`opencode acp`, #1312). Its histories live in
+    # the operator's shared SQLite store, which stays read-only to BattleLab itself.
+    "opencode-acp": ("opencode-sqlite", "opencode-sqlite"),
+    # OpenCode 2.x over the same protocol (`opencode acp`, #2084): its histories live in its OWN
+    # database under the forced XDG tree (`docs/invariants/opencode2-isolation.md`), read-only.
+    "opencode2-acp": ("opencode2-sqlite", "opencode2-sqlite"),
+    # GitHub Copilot CLI's ACP server (`copilot --acp --no-auto-update`, #1565). Its histories
+    # are per-session directories under `~/.copilot/session-state/`, shared with the console CLI.
+    "copilot-acp": ("copilot-sessions", "copilot-events"),
+}
+API_KINDS = frozenset(API_SOURCE_KINDS)
+#: API kinds whose adapter maps "Skip permission prompts" onto its own protocol (#1339). Any
+#: other kind refuses the field at create rather than launching under a mode it cannot honour.
+#: copilot-acp: the session's `allow_all` config option (#1565).
+#: opencode2-acp is NOT here (#2108): its bypass would be a new allow-all grant, which waits for
+#: the operator's own approval; until then `opencode2-api` is guarded only and a bypass is refused.
+API_BYPASS_KINDS = frozenset(
+    {"codex-app-server", "claude-stream-json", "opencode-acp", "copilot-acp"}
+)
+#: Whether a native protocol takes pictures in a turn (#1332 Phase 3). Every kind decides —
+#: a test pins the keys to `API_KINDS`, so a new adapter cannot ship without saying.
+API_IMAGE_INPUT = {
+    "codex-app-server": True,  # turn/start input: {"type": "image", "url": "data:…"}
+    "claude-stream-json": True,  # user message content: base64 image blocks
+    # Not yet: ACP image blocks must be gated by the agent's `promptCapabilities.image` (#1332).
+    "opencode-acp": False,
+    "copilot-acp": False,  # same ACP image gate as opencode-acp (#1565)
+    "opencode2-acp": False,  # same ACP image gate (2.2.7 advertises images; not wired, #1332)
+}
+#: Which API kinds may hold a MISSION role (#1273 P3, #1898): a fact about how BattleLab supervises
+#: each protocol, never a value a manifest chooses. A capability bit only, never readiness: callers
+#: combine it with `registry.can_start`. A kind turns true only once it is proved end to end:
+#: Claude's stream-json by #1900 (`tests/test_mission_api_e2e.py`), opencode's ACP by #1903
+#: (`tests/test_mission_tool_routes.py`, `tests/test_mission_api_adapters_e2e.py`). Setting it
+#: false again is the rollback: no plan offers the client, no dispatch starts one and no automatic
+#: send reaches one, while observation and the operator's own words keep working.
+API_MISSION_READY = {
+    "codex-app-server": False,
+    "claude-stream-json": True,
+    "opencode-acp": True,
+    "copilot-acp": False,
+    "opencode2-acp": False,
+}
+#: Why each kind whose bit is false stays false, naming the issue that lifts it (#1903). A kind
+#: absent from here is true; a test pins both directions, so flipping a bit means touching this
+#: map and that test. The operator-facing refusal text is `mission_structured.NOT_MISSION_READY`.
+API_MISSION_REFUSAL = {
+    # Edits are decline-only, and no step-level "needs file edits" admission check exists yet.
+    "copilot-acp": "needs a server-side edit-refusal boundary at admission (#2004, after #1581)",
+    # Operator, #1903 comment 125177: no mission role until the applied patch is bound to the
+    # shown patch.
+    "codex-app-server": "applied patch is not yet bound to the shown patch (#2005)",
+    # #2084: guarded/isolation parity is proved by its gated e2e; a mission role needs its own
+    # end-to-end proof, as #1903 gave 1.x.
+    "opencode2-acp": "not yet proved end to end for missions (follow-up of #2084, as #1903)",
+}
+#: Which API kinds may be a HANDOFF target (#2141): a fact about BattleLab's structured delivery,
+#: never a value a manifest chooses. A handoff into an API client sends its brief as the new
+#: session's first structured turn, not a terminal paste, so the PTY-only `seed_start` /
+#: `handoff_target` bits never apply to runtime `api`. Every kind takes a plain first turn, so all
+#: are true; setting one false is the rollback (its tile disables, the route refuses). A test pins
+#: the keys to `API_KINDS`, so a new adapter cannot ship without saying.
+API_HANDOFF_READY = {
+    "codex-app-server": True,
+    "claude-stream-json": True,
+    "opencode-acp": True,
+    "opencode2-acp": True,
+    "copilot-acp": True,
+}
+#: The BattleLab conversation store owns UUIDs independently of a native agent's session id.
+API_SESSION_PATTERN = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+#: `endpoint.kind` — the wire format a `chat` plugin speaks. The endpoint's URL, key and model are
+#: the OPERATOR's configuration, never the manifest's: a manifest can name no authority at all.
+ENDPOINT_KINDS = frozenset({"openai-chat"})
+#: Blocks that only make sense for a process in a terminal. A `chat` manifest declaring any of them
+#: is refused rather than silently ignoring them.
+PTY_ONLY_BLOCKS = (
+    "binary",
+    "launch",
+    "terminal",
+    "unattended",
+    "install",
+    "signin",
+    "verify",
+    "probe",
+    # A chat agent reads no workspace file on its own (#1189): the only files it sees are the
+    # operator-granted read tools of #1222, so an instruction-file claim would be false.
+    "instructions",
+)
+#: Capabilities a `chat` plugin may never assert: each presumes a terminal to type into, a TTY to
+#: repair, a session to hand off into, or a process that owns its transcript.
+PTY_ONLY_CAPABILITIES = frozenset(
+    {"seed_start", "orchestrator_input", "raw_tty", "handoff_target", "owns_transcript"}
+)
+
+#: `session_id.mint`. `pinned`: BattleLab mints the id before launch (claude, gemini, shell).
+#: `adopt`: the engine mints its own and the new-session path reconciles a `new-<uuid>`
+#: placeholder to it afterwards (opencode, codex, antigravity, kimi — `RECONCILE_ENGINES`).
+MINT_KINDS = frozenset({"pinned", "adopt"})
+
+# --- launch -------------------------------------------------------------------------------------
+
+#: Flags that take the session id as their value on RESUME.
+#: claude/gemini/copilot `--resume`, antigravity `--conversation`, kimi `-S`, opencode `--session`.
+RESUME_FLAGS = frozenset({"--resume", "--conversation", "-S", "--session"})
+#: Subcommands that take the session id as their positional argument on resume. codex `resume`.
+RESUME_SUBCOMMANDS = frozenset({"resume"})
+#: Flags that pin a caller-minted id on a NEW session. claude/gemini/copilot `--session-id`.
+NEW_PIN_FLAGS = frozenset({"--session-id"})
+#: Flags that take the working directory as their value on a new session. codex `--cd`.
+CWD_FLAGS = frozenset({"--cd"})
+#: Permission-bypass flags. claude/antigravity `--dangerously-skip-permissions`, gemini/copilot
+#: `--yolo` (+ gemini `--skip-trust`), kimi `-y`, codex
+#: `--dangerously-bypass-approvals-and-sandbox`.
+BYPASS_FLAGS = frozenset(
+    {
+        "--dangerously-skip-permissions",
+        "--yolo",
+        "--skip-trust",
+        "-y",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--auto",  # opencode 2.x (#1986): auto-approve what is not explicitly denied
+    }
+)
+#: Arguments placed straight after argv[0] on every launch. shell `-l` (a login shell).
+#: copilot `--no-auto-update` (#1565): the CLI otherwise self-downloads into `~/.cache/copilot`
+#: and re-execs from there, outside the provenance-bound entrypoint — it rides on EVERY console
+#: launch so no spawn seam can forget it. opencode 2.x `--standalone` (#1986): a private server
+#: owned by this process instead of the shared background service, so the dtach master IS the
+#: agent and nothing outlives it.
+BASE_ARGS = frozenset({"-l", "--no-auto-update", "--standalone"})
+#: Where bypass flags apply. codex has no per-launch bypass on resume, only on new.
+BYPASS_ON = frozenset({"both", "new"})
+
+#: `launch.resume.kind` → the argv it assembles after argv[0] + base args:
+#:   flag            [flag, <id>]
+#:   subcommand      [subcommand, <id>]
+#:   positional-dir  [<cwd>, flag, <id>]        (opencode)
+#:   fresh           []   — a relaunch is a fresh process; nothing to resume (shell)
+RESUME_KINDS = frozenset({"flag", "subcommand", "positional-dir", "fresh"})
+#: `launch.new.kind` → the argv it assembles after argv[0] + base args:
+#:   pin-flag        [flag, <id>]
+#:   cwd-flag        [flag, <cwd>]
+#:   positional-dir  [<cwd>]
+#:   bare            []
+NEW_KINDS = frozenset({"pin-flag", "cwd-flag", "positional-dir", "bare"})
+
+#: Flags that take a model id as their value (`launch.model`, #1189). claude/codex/gemini `--model`
+#: (codex and gemini also spell it `-m`). The VALUE is never the manifest's: it is a model id the
+#: launch path resolved against the manifest's `models.list` and the operator's added ids, and the
+#: kind appends the pair `[flag, id]` as two argv elements.
+MODEL_FLAGS = frozenset({"--model", "-m"})
+#: `launch.model.kind`. `flag`: `[flag, <model id>]` after the new/resume step, before bypass.
+MODEL_KINDS = frozenset({"flag"})
+
+#: `launch.admission`. `sqlite-store-shared`: the engine's store has maintenance that must fence
+#: launches (opencode, #993 — `opencode_admission`).
+ADMISSION_KINDS = frozenset({"none", "sqlite-store-shared"})
+
+#: `binary.version_flag`.
+VERSION_FLAGS = frozenset({"--version", "-V", "-v", "version"})
+
+# --- store / transcript / usage ------------------------------------------------------------------
+
+#: `store.layout` — each names a built-in reader. One per store shape that exists today.
+STORE_LAYOUTS = frozenset(
+    {
+        "claude-projects",
+        "opencode-sqlite",
+        "codex-rollouts",
+        "gemini-tmp",
+        "antigravity-cli",
+        "kimi-code",
+        "copilot-sessions",  # copilot: `~/.copilot/session-state/<uuid>/` per session (#1565)
+        # opencode 2.x (#1986): `session_v2` + `session_message` in its own XDG tree under the
+        # store root — never the 1.x database, which 2.x would otherwise share by default.
+        "opencode2-sqlite",
+        "shell-records",
+        "battlelab-chat",  # chat runtime: BattleLab's own per-session JSONL (#1209)
+    }
+)
+#: Store layouts BattleLab itself writes, so `store.read_only = true` is refused (#1182). The flag
+#: declares BattleLab's access to the store — never the launched CLI's, and never an OS boundary.
+#: Keyed by layout, never by engine id, so a third-party plugin inheriting the layout inherits the
+#: rule. Claude's archive moves JSONL between `projects/` and `projects-archive/`; Copilot's archive
+#: moves `session-state/<id>/` to `session-state-archive/<id>/`; shell creates and removes its
+#: per-session record; the chat/API runtime writes its own conversations. Every other layout is
+#: read-only to BattleLab: archive there is a sidecar flag outside the engine's store.
+WRITABLE_STORE_LAYOUTS = frozenset(
+    {"battlelab-chat", "claude-projects", "copilot-sessions", "shell-records"}
+)
+
+#: A MANAGED agent runs no self-updater BattleLab can switch off (2026-11-19): BattleLab's catalog
+#: pins and digest-verifies the install and owns its upgrades. Per `store.layout`, the vendor's
+#: environment switch that stops the CLI's own updater, laid on every process started from a
+#: managed entrypoint (`plugins.provider.self_update_off`) — never on an adopted binary, the
+#: operator's own. Keyed here rather than in the manifest because an installed generation runs the
+#: manifest frozen into its install record. No row: copilot turns it off in its manifest
+#: (`--no-auto-update`); codex only prompts (`check_for_update_on_startup`). gemini has NO
+#: environment switch (only `general.enableAutoUpdate` in the operator's settings file, which
+#: BattleLab does not write), so a managed gemini can still update itself.
+SELF_UPDATE_OFF: dict[str, dict[str, str]] = {
+    "claude-projects": {"DISABLE_AUTOUPDATER": "1"},
+    "opencode-sqlite": {"OPENCODE_DISABLE_AUTOUPDATE": "1"},
+    "opencode2-sqlite": {"OPENCODE_DISABLE_AUTOUPDATE": "1"},
+    "antigravity-cli": {"AGY_CLI_DISABLE_AUTO_UPDATE": "true"},
+    # kimi-code 2.6.2 `isAutoUpdateDisabledByEnv`: checks, background installs, prompts and the
+    # startup staged swap all off (legacy alias `KIMI_CLI_NO_AUTO_UPDATE`).
+    "kimi-code": {"KIMI_CODE_NO_AUTO_UPDATE": "1"},
+}
+#: `memory.kind` (#1471) — an agent's OWN memory store that BattleLab may READ to import into a
+#: project's shared memory, mapped to the store layouts it can read (the reader locates it through
+#: that store's manifest paths, never a literal). Read-only by construction: no kind writes.
+MEMORY_SOURCE_KINDS = {
+    # Claude Code's auto-memory: `<store>/<sessions>/<cwd-slug>/memory/*.md` beside the transcripts
+    # whose recorded `cwd` says which folder it belongs to.
+    "claude-auto-memory": ("claude-projects",),
+}
+#: Named auxiliary paths a store may declare under its root (`store.paths`).
+STORE_PATH_NAMES = frozenset({"db", "log", "sessions", "archive", "index"})
+
+#: `transcript.kind` — each names a built-in adapter in `transcript.py`.
+TRANSCRIPT_KINDS = frozenset(
+    {
+        "claude-jsonl",
+        "codex-rollout",
+        "kimi-wire",
+        "opencode-sqlite",
+        "gemini-chat",
+        "antigravity-brain",
+        "copilot-events",  # copilot's `session-state/<uuid>/events.jsonl` (#1565)
+        "opencode2-sqlite",  # opencode 2.x `session_message` rows (#1986)
+        "battlelab-chat",  # chat runtime (#1209)
+        "none",
+    }
+)
+
+#: `usage.source` — the four answers `agent_usage` distinguishes. `none` is not 0 %.
+USAGE_SOURCES = frozenset({"plan", "tokens", "manual", "none"})
+#: `usage.kind` — each names a built-in reporter. Required for `plan`/`tokens`, forbidden otherwise.
+USAGE_KINDS = frozenset(
+    {
+        "claude-cli-probe",
+        "agy-cli-probe",
+        "codex-app-server-probe",
+        "codex-rollout-field",
+        # kimi 2.1+: `kimi web` on loopback, one token-gated GET of `/api/v1/oauth/usage` (#1239)
+        "kimi-web-usage-probe",
+        "opencode-store-query",
+        "opencode2-store-query",  # opencode 2.x: assistant `session_message` tokens (#1986)
+        "chat-response-tokens",  # chat runtime: token counts recorded from each response (#1209)
+    }
+)
+#: `usage.access` — how an engine's ACCOUNT ACCESS is observed (#1167), independent of `source`:
+#: whether the vendor refuses this login at all. Each names a built-in check in `agent_usage`.
+USAGE_ACCESS_KINDS = frozenset({"gemini-acp-auth", "kimi-wire-auth-error", "copilot-acp-auth"})
+#: The only token a `*-cli-probe` may send the vendor CLI (`agent_usage`: "the literal string
+#: `/usage` and nothing else").
+USAGE_PROBE_TOKENS = frozenset({"/usage"})
+_CLI_PROBE_KINDS = frozenset({"claude-cli-probe", "agy-cli-probe"})
+
+# --- terminal / unattended / maintenance ---------------------------------------------------------
+
+#: `terminal.repaint`. `wipe`: the TUI wipes and repaints scrollback (codex, kimi — #969).
+#: `winch`: `dtach -r winch`'s same-size SIGWINCH repaints the viewport in place, while any
+#: geometry change reflows and re-streams the full conversation history (antigravity).
+REPAINT_KINDS = frozenset({"none", "wipe", "winch"})
+#: `terminal.ready` — the first-paint rule the seed path waits on (`headless_seed._PAINTED`).
+READY_KINDS = frozenset({"bytes", "claude-first-paint"})
+#: `terminal.menu` — the numbered-menu parser (`screen_menus._PARSERS`, #1075).
+MENU_KINDS = frozenset({"none", "claude-numbered"})
+#: `terminal.permission` — the tool-permission dialog parser AND its key recipe
+#: (`permission_prompts._KINDS`, #1213). Operator-only: no autonomous path reads it.
+PERMISSION_KINDS = frozenset({"none", "claude-permission", "opencode-permission"})
+#: `terminal.interrupt` (#1960 Phase 2) — the key that stops the agent's running turn, typed alone.
+#: `esc`: the agent's TUI treats a lone Esc as "interrupt" (vendor-documented for claude, codex,
+#: opencode, gemini and copilot). `none` (the default): no key is known, so HQ never guesses one.
+INTERRUPT_KINDS = frozenset({"none", "esc"})
+#: `unattended.start_evidence` — the artifact that answers "did an agent start" (#989/#1050).
+#: `copilot-sessions`: the pinned `<uuid>` directory + `workspace.yaml` under
+#: `~/.copilot/session-state/` (#1565). `opencode2-log`: opencode 2.x's own structured log, its
+#: `location services booted` line for the launch cwd (#2083).
+START_EVIDENCE_KINDS = frozenset(
+    {"none", "claude-sessions", "opencode-log", "opencode2-log", "copilot-sessions"}
+)
+#: `maintenance` — store maintenance a plugin admits (#993).
+MAINTENANCE_KINDS = frozenset({"sqlite-vacuum"})
+
+# --- instructions -------------------------------------------------------------------------------
+
+#: `instructions.files` (#1189): the workspace-ROOT instruction files an engine reads at start.
+#: Bare file names only — never a path, so nothing a manifest names can point outside the folder a
+#: playbook writes into (#1096 P2 does that write, descriptor-relative). claude `CLAUDE.md`;
+#: codex/opencode/kimi `AGENTS.md`; gemini `GEMINI.md`.
+INSTRUCTION_FILES = frozenset({"CLAUDE.md", "AGENTS.md", "GEMINI.md"})
+
+# --- tools --------------------------------------------------------------------------------------
+
+#: `tools.mcp` (#1506): how the agent CLI accepts BattleLab's memory tool (an MCP server,
+#: `agent_sessions.memory_mcp`) for ONE launch — a flag, a config override or a config environment
+#: variable, never a write into the workspace or the vendor's own config. Each names a shape in
+#: `agent_tools`, proven against the CLI versions recorded beside it there. Absent = the agent gets
+#: the memory environment variables only.
+#: claude `--mcp-config <json>`; codex `-c mcp_servers.<name>.*`; opencode
+#: `OPENCODE_CONFIG_CONTENT`; copilot `--additional-mcp-config <json>` (#1565).
+MCP_KINDS = frozenset(
+    {
+        "claude-mcp-config-flag",
+        "codex-config-override",
+        "opencode-config-content",
+        "opencode2-config-content",  # opencode 2.x `mcp.servers.<name>` (#1986)
+        "copilot-additional-mcp-config",
+    }
+)
+#: The `tools.mcp` kind each native API protocol carries in its own slot (claude's argv, codex's
+#: per-thread `config`, ACP `mcpServers`). An `api` manifest may declare only its protocol's.
+#: copilot's ACP rejects stdio `mcpServers`, so its API worker passes the same
+#: `--additional-mcp-config` flag the console takes (#1565).
+API_MCP_KINDS = {
+    "claude-stream-json": ("claude-mcp-config-flag",),
+    "codex-app-server": ("codex-config-override",),
+    "opencode-acp": ("opencode-config-content",),
+    # 2.x: BattleLab's own servers ride in ACP `mcpServers`, exactly as 1.x's; the kind names the
+    # source agent's shape (#2084).
+    "opencode2-acp": ("opencode2-config-content",),
+    "copilot-acp": ("copilot-additional-mcp-config",),
+}
+
+# --- display -------------------------------------------------------------------------------------
+
+#: `display.accent` — a token name, never a hex. The web maps each to its HUD colour; a manifest
+#: cannot introduce a colour the design system does not have (status colours stay off-limits).
+ACCENT_TOKENS = frozenset({"amber", "teal", "green", "blue", "lime", "magenta", "slate"})
+
+# --- install / sign-in / verify (validated in P1, executed only by P5) ----------------------------
+
+#: `install.kind`. `npm-prefix`, not `npm-global`: the artifact is staged into the plugin's OWN
+#: root so §2b can bind the entrypoint to it — a global install leaves nothing to bind.
+INSTALL_KINDS = frozenset({"npm-prefix", "tarball"})
+#: The registry / download authorities an install may name, per kind.
+INSTALL_AUTHORITIES = {
+    "npm-prefix": frozenset({"registry.npmjs.org"}),
+    "tarball": frozenset({"github.com"}),
+}
+#: `signin.kind` → the login invocations it may run (a subcommand token list, chosen, not written).
+SIGNIN_KINDS = {
+    "none": frozenset(),
+    "cli-subcommand": frozenset({"login", "auth"}),
+    "auth-login": frozenset(),  # claude/opencode: exactly auth login
+    "interactive": frozenset(),  # gemini/antigravity: the vendor onboarding terminal
+}
+#: `accounts.kind` (#1820) — how one agent CLI keeps SEVERAL logins apart: a per-account home the
+#: vendor's own CLI writes, laid over the default home so the session store stays one store. Each
+#: member is a whole reviewed recipe; a manifest only selects one, so it can never name an
+#: environment variable, a path or a login argv of its own. `agent_accounts` reads these fields.
+#:
+#: - `home_env`: the vendor's documented variable for its home directory.
+#: - `default_home`: the home the CLI uses when that variable is unset (`~/`-anchored).
+#: - `private`: entries that hold the login. They stay real files in the account home, are
+#:   written only by the vendor CLI, and BattleLab never opens them.
+#: - `shared_dirs` / `shared_files`: entries every account must see as ONE copy. Each is a
+#:   symlink into the default home; a directory is created there (empty, 0700) when absent, since
+#:   a CLI cannot `mkdir` through a dangling link.
+#: - `clear_env`: credentials an inherited environment may carry that would outrank the login and
+#:   bill a different account. Removed from every account launch.
+#: - `login` / `status`: the vendor's own sign-in and identity subcommands, as literal tokens.
+#:
+#: An engine's manifest names its kind only once #1820 P0 has proven the recipe against the real
+#: CLI; until then a recipe here is a candidate that nothing launches with.
+ACCOUNT_RECIPES = {
+    "claude-config-dir": {
+        "home_env": "CLAUDE_CONFIG_DIR",
+        "default_home": "~/.claude",
+        "private": (".credentials.json", ".claude.json"),
+        "shared_dirs": (
+            "projects",
+            "projects-archive",
+            "sessions",  # the registry `unattended.start_evidence` reads
+            "skills",
+            "agents",
+            "commands",
+            "plugins",
+            "file-history",
+            "shell-snapshots",
+            "session-env",
+        ),
+        "shared_files": ("settings.json", "settings.local.json", "CLAUDE.md", "history.jsonl"),
+        "clear_env": ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
+        "login": ("auth", "login"),
+        "status": ("auth", "status"),
+    },
+    "codex-home": {
+        "home_env": "CODEX_HOME",
+        "default_home": "~/.codex",
+        "private": ("auth.json",),
+        "shared_dirs": ("sessions", "archived_sessions", "skills", "rules", "memories", "plugins"),
+        "shared_files": ("config.toml", "AGENTS.md", "history.jsonl", "session_index.jsonl"),
+        "clear_env": ("OPENAI_API_KEY", "CODEX_API_KEY"),
+        # Device sign-in: the default flow answers on a localhost port, which an operator
+        # signing in from a phone or another machine cannot reach.
+        "login": ("login", "--device-auth"),
+        "status": ("login", "status"),
+    },
+}
+#: What a manifest's `accounts.kind` may say: exactly the recipes above.
+ACCOUNT_KINDS = frozenset(ACCOUNT_RECIPES)
+#: First release cut is measured only on Linux x64. Other targets need reviewed recipes.
+INSTALL_PLATFORMS = frozenset({"linux-x64"})
+#: Fixed print/exec forms, verified against vendor CLIs in #1266. Never arbitrary flags.
+PROBE_KINDS = frozenset(
+    {
+        "terminal",  # existing bounded interactive fixture/local probes
+        "print-pinned",  # claude
+        "exec-readonly",  # codex
+        "run-session",  # opencode
+        "prompt-pinned",  # gemini
+        "prompt-session",  # kimi
+        "print-conversation",  # antigravity
+        "copilot-prompt-pinned",  # copilot (#1565): tools disabled, pinned or resumed id
+        "opencode2-run",  # opencode 2.x (#1986): `run --standalone`, tools denied, archived
+    }
+)
+#: `verify` — the fixed check list (#853 §3). A manifest selects a subset; it never writes a check.
+VERIFY_CHECKS = frozenset({"binary", "version", "store", "new", "resume", "transcript", "usage"})
+
+#: Capability booleans, all default-deny.
+CAPABILITIES = (
+    "resume",
+    "new",
+    "archive",
+    "handoff_target",
+    "seed_start",
+    "orchestrator_input",
+    "raw_tty",
+    "owns_transcript",
+)
+#: Capabilities a `terminal` (agentless) plugin may never assert — each one would let the app
+#: author input for, or rewrite the terminal of, a bare shell.
+AGENT_ONLY_CAPABILITIES = frozenset(
+    {"seed_start", "orchestrator_input", "raw_tty", "owns_transcript"}
+)
+
+# --- §2b: the closed entrypoint vocabulary -------------------------------------------------------
+
+#: Basenames a PLUGIN-SUPPLIED manifest's entrypoint may never be or resolve to: shells,
+#: interpreters, and anything that runs another program with different privileges or arguments.
+#: A plugin's entrypoint is a vendor CLI; any of these would turn "launch the agent" into "run
+#: whatever the manifest's arguments say". First-party manifests are exempt BY PROVENANCE (the
+#: in-tree `shell` engine legitimately is `bash`), never by name.
+FORBIDDEN_ENTRYPOINTS = frozenset(
+    {
+        "sh",
+        "bash",
+        "dash",
+        "zsh",
+        "ksh",
+        "mksh",
+        "csh",
+        "tcsh",
+        "fish",
+        "ash",
+        "busybox",
+        "env",
+        "sudo",
+        "doas",
+        "su",
+        "pkexec",
+        "runuser",
+        "setpriv",
+        "chroot",
+        "nsenter",
+        "unshare",
+        "setsid",
+        "nohup",
+        "nice",
+        "ionice",
+        "timeout",
+        "stdbuf",
+        "xargs",
+        "exec",
+        "python",
+        "node",
+        "nodejs",
+        "deno",
+        "bun",
+        "perl",
+        "ruby",
+        "php",
+        "lua",
+        "luajit",
+        "tclsh",
+        "wish",
+        "awk",
+        "gawk",
+        "mawk",
+        "sed",
+        "osascript",
+        "pwsh",
+        "powershell",
+        "ssh",
+        "scp",
+        "rsync",
+        "curl",
+        "wget",
+        "nc",
+        "ncat",
+        "socat",
+        "dtach",
+        "screen",
+        "tmux",
+        "script",
+        "expect",
+        "gdb",
+        "strace",
+        "ltrace",
+        "systemd-run",
+    }
+)
+#: Prefix families for versioned interpreters (`python3.12`, `perl5.36`, `ruby3.2`, `node20`).
+FORBIDDEN_ENTRYPOINT_PREFIXES = ("python", "perl", "ruby", "node", "php", "lua", "pypy")
+
+
+def is_forbidden_entrypoint(basename: str) -> bool:
+    """Is `basename` — or a versioned spelling of it (`tclsh8.6`, `bash5`, `busybox.static`) — a
+    shell, interpreter or privilege tool? The version-suffix rule applies to EVERY listed name."""
+    b = basename.lower()
+    for p in (*FORBIDDEN_ENTRYPOINTS, *FORBIDDEN_ENTRYPOINT_PREFIXES):
+        if b == p:
+            return True
+        rest = b[len(p) :]
+        if b.startswith(p) and rest and (rest[0].isdigit() or rest[0] in ".-_"):
+            return True
+    return False
+
+
+#: Engine ids that belong to the in-tree roster. A local manifest may never take one — checked
+#: against this fixed set, not against whichever in-tree manifests happened to load, so a missing
+#: or broken in-tree manifest cannot let a local plugin claim `claude` (independent review of
+#: PR #1112). The loader also reserves every directory under `plugins/first_party/`.
+RESERVED_IDS = frozenset(
+    {
+        "claude",
+        "opencode",
+        "codex",
+        "gemini",
+        "antigravity",
+        "kimi",
+        "shell",
+        "apichat",
+        "codex-api",
+        "claude-api",
+        "opencode-api",
+        "copilot",
+        "copilot-api",
+        "opencode2",
+        "opencode2-api",
+    }
+)
+
+# Route segments in Settings → Agents, which can never be plugin identities.
+ROUTE_RESERVED_IDS = frozenset({"defaults"})
+
+# Key namespaces that are not engines and can never become one. A session another BattleLab
+# instance shares with this one is addressed `peer:<peer_id>/<engine>:<native_id>` (#1246), and
+# `engines.parse_key` must keep refusing that prefix whatever plugins are installed. Kept apart
+# from `RESERVED_IDS`, which is pinned to equal the in-tree roster.
+NAMESPACE_RESERVED_IDS = frozenset({"peer"})
+
+
+def is_cli_probe(kind: str) -> bool:
+    return kind in _CLI_PROBE_KINDS

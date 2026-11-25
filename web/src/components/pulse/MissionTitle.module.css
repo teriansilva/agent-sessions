@@ -1,0 +1,31 @@
+/* The full mission title (#948) in a native <dialog> on THE dialog chrome (../HudDialog.module.css,
+ * NIGHTJAR #1531). The native element owns Escape, focus containment and focus return; this sheet
+ * gives it the shared frame, the scrim behind it and its body text. Tokens only. */
+.dialog {
+  composes: dialog narrow from "../HudDialog.module.css";
+  max-height: calc(100dvh - 32px);
+  margin: auto;
+}
+.dialog::backdrop {
+  background: var(--scrim);
+}
+.head {
+  composes: head from "../HudDialog.module.css";
+}
+.tag {
+  composes: tag from "../HudDialog.module.css";
+  margin: 0;
+}
+.body {
+  margin: 0;
+  font-size: var(--fs-body);
+  line-height: 1.5;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.actions {
+  composes: actions from "../HudDialog.module.css";
+}
+.close {
+  composes: cancel from "../HudDialog.module.css";
+}

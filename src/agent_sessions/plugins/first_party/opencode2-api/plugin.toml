@@ -1,0 +1,55 @@
+contract = 1
+
+# A native API client (#2084): BattleLab drives the installed OpenCode 2 CLI through its
+# structured protocol (opencode2-acp: the Agent Client Protocol over stdio, `opencode acp`)
+# instead of a terminal. Everything executable comes from the console agent named by
+# `api.source`: binary, login, config, providers, MCP servers, instruction files — and its forced
+# XDG tree, which every process of this client runs in (docs/invariants/opencode2-isolation.md).
+# This manifest names no binary, argv, endpoint, model list or permission flag; the validator
+# refuses them for runtime "api". The session runs only in BattleLab's own guarded or bypass
+# agent (see docs/invariants/native-runtime.md).
+
+[identity]
+id = "opencode2-api"
+label = "OpenCode 2 — API"
+publisher = "battlelab"
+version = "1"
+
+[runtime]
+kind = "api"
+
+[api]
+kind = "opencode2-acp"
+source = "opencode2"
+
+[session_id]
+pattern = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+mint = "pinned"
+
+# BattleLab's journal of each conversation (#1278). The native history stays in OpenCode 2's own
+# database (under its forced tree), which BattleLab only reads; archive is this journal's state,
+# never a native delete. The ownership ledger (#1277) keeps the console and API clients off one
+# `ses_*` session.
+[store]
+root = "~/.local/share/agent-sessions/native/opencode2-api"
+env_override = "AGENT_SESSIONS_OPENCODE2_API_DIR"
+layout = "battlelab-chat"
+read_only = false
+
+[capabilities]
+resume = true
+new = true
+archive = true
+
+[transcript]
+kind = "battlelab-chat"
+
+# BattleLab's own tools (memory, #1506), wired in per generation through ACP `mcpServers`.
+[tools]
+mcp = "opencode2-config-content"
+
+[display]
+order = 23
+name = "opencode2-api"
+badge = "ota"  # letters only; "oca" is 1.x's API client, "ot" the 2.x console
+accent = "teal"

@@ -1,0 +1,50 @@
+# A bundled action manifest (#2248 P3). Data only: every value is a member of a set in
+# actions/manifest.py, an unknown field anywhere refuses it, and `executor` names reviewed code in
+# actions/executors.py (the plugin `actions/run_command.py`). The command itself is the operator's,
+# saved in the automation; a manifest can never carry one.
+contract = 1
+id = "run_command"
+label = "Run a command"
+category = "run_locally"
+description = "Runs a program you name with the arguments you list, in a project folder, contained and never through a shell."
+effect = "run-local"
+executor = "run_command"
+requires = ["project", "containment"]
+triggers = ["once", "schedule", "manual", "webhook"]
+
+[[inputs]]
+name = "project_id"
+type = "project"
+label = "Runs in project"
+required = true
+
+[[inputs]]
+name = "argv"
+type = "arguments"
+label = "Program and arguments"
+required = true
+
+[[inputs]]
+name = "env"
+type = "environment"
+label = "Environment variables"
+
+[[inputs]]
+name = "timeout_minutes"
+type = "duration"
+label = "Time limit"
+
+[[inputs]]
+name = "outputs"
+type = "output_fields"
+label = "Output fields"
+
+[[outputs]]
+name = "exit_code"
+type = "number"
+label = "Exit code"
+
+[[outputs]]
+name = "fields"
+type = "fields"
+label = "Typed fields from its last line"

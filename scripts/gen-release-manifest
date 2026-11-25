@@ -1,0 +1,139 @@
+#!/usr/bin/env python3
+"""Regenerate `scripts/release-manifest.json` — the stable channel's trust root (#612).
+
+The manifest records what each released tag pointed at when it was cut, so a later *re-point*
+of that tag is detectable. See `agent_sessions.update.verify_release_tag` for how it is
+consumed, and that module's docstring for why a missing entry is deliberately NOT fatal.
+
+**Entries are keyed by REMOTE, and that is load-bearing rather than tidy.** A release does not
+have one identity — it has one per remote that publishes it. This project's public mirror is a
+*snapshot* publish, so its `v0.19.2` is a lightweight tag at a completely different commit from
+the annotated tag of the same name on the internal forge. A manifest generated from one remote
+and checked against another therefore reports every legitimate release as *moved*, and since
+the updater refuses on a mismatch, that is a fleet-wide auto-update outage rather than a false
+alarm. (Found in review on #819 — the bug was latent until the manifest gained an entry for the
+*current* release, because only the newest tag is ever an update target.)
+
+So: generate against the remote installs actually update from. `--remote` defaults to the same
+URL `update._DEFAULT_REPO` uses, and a remote with no entries simply verifies nothing.
+
+    python3 scripts/gen-release-manifest && git add scripts/release-manifest.json
+
+Two SHAs are recorded per tag:
+
+* ``object``  — what ``refs/tags/<tag>`` points to; the tag object for an annotated tag, and
+  what ``git ls-remote`` returns. This is the field verification compares, because it needs no
+  fetch.
+* ``commit``  — the peeled commit (``<tag>^{}``), i.e. the code that gets built. A lightweight
+  tag has no peeled line, and there the two are identical.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[1]
+OUT = REPO / "scripts" / "release-manifest.json"
+
+#: Kept in step with ``agent_sessions.update._DEFAULT_REPO`` — the remote an unconfigured
+#: install updates from, and therefore the one whose identities the shipped manifest must carry.
+DEFAULT_REMOTE = "https://github.com/teriansilva/agent-sessions.git"
+
+GIT = shutil.which("git") or "git"
+
+
+def remote_key(url: str) -> str:
+    """A remote's canonical manifest key: host + path, no scheme, no ``.git``, lowercased.
+
+    The same normalisation the verifier applies, so `https://…/x.git`, `https://…/x` and a
+    trailing slash all resolve to one entry instead of three that never match.
+    """
+    s = url.strip()
+    for prefix in ("https://", "http://", "ssh://", "git://"):
+        if s.lower().startswith(prefix):
+            s = s[len(prefix) :]
+            break
+    s = s.split("@", 1)[-1]  # scp-style user@host:path
+    s = s.replace(":", "/", 1) if "/" not in s.split(":", 1)[0] else s
+    s = s.rstrip("/")
+    if s.lower().endswith(".git"):
+        s = s[: -len(".git")]
+    return s.lower()
+
+
+def tags_on(remote: str) -> dict[str, dict[str, str]]:
+    """``{tag: {"object": sha, "commit": sha}}`` as the REMOTE reports them.
+
+    Read with ``ls-remote`` rather than from a local checkout on purpose: the local clone knows
+    only one remote's objects, and using it is exactly how the cross-remote mismatch above got
+    written into the manifest in the first place.
+    """
+    out = subprocess.run(  # noqa: S603 - fixed argv, resolved binary, no shell
+        [GIT, "ls-remote", "--tags", remote, "v*"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if out.returncode != 0:
+        raise SystemExit(f"git ls-remote failed for {remote}:\n{out.stderr.strip()}")
+    releases: dict[str, dict[str, str]] = {}
+    for line in out.stdout.splitlines():
+        sha, _, ref = line.partition("\t")
+        ref, sha = ref.strip(), sha.strip()
+        if not ref.startswith("refs/tags/v"):
+            continue
+        peeled = ref.endswith("^{}")
+        tag = ref[len("refs/tags/") :][: -3 if peeled else None]
+        entry = releases.setdefault(tag, {})
+        entry["commit" if peeled else "object"] = sha
+    # A lightweight tag has no peeled line; there the object IS the commit.
+    for entry in releases.values():
+        if "object" in entry:
+            entry.setdefault("commit", entry["object"])
+    return {t: e for t, e in releases.items() if "object" in e}
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--remote", default=DEFAULT_REMOTE, help="remote to record (default: mirror)")
+    ap.add_argument("--merge", action="store_true", help="keep entries for other remotes")
+    args = ap.parse_args()
+
+    key = remote_key(args.remote)
+    found = tags_on(args.remote)
+    if not found:
+        print(f"no v* tags on {args.remote} — refusing to write an empty manifest", file=sys.stderr)
+        return 1
+
+    releases: dict[str, dict[str, dict[str, str]]] = {}
+    if args.merge and OUT.exists():
+        prior = json.loads(OUT.read_text()).get("releases", {})
+        if isinstance(prior, dict):
+            releases = {t: dict(v) for t, v in prior.items() if isinstance(v, dict)}
+    for tag, entry in found.items():
+        releases.setdefault(tag, {})[key] = entry
+
+    doc = {
+        "_comment": (
+            "Trust root for stable-channel updates (#612). Regenerate with "
+            "scripts/gen-release-manifest after cutting a release. Entries are keyed by "
+            "REMOTE because a release has one identity per remote that publishes it — the "
+            "public mirror is a snapshot publish, so its tag for a given version is a "
+            "different object from the forge's. A tag with no entry for the remote in use "
+            "is simply unverified; it is never treated as moved."
+        ),
+        "version": 2,
+        "releases": {t: dict(sorted(v.items())) for t, v in sorted(releases.items())},
+    }
+    OUT.write_text(json.dumps(doc, indent=2, sort_keys=False) + "\n")
+    print(f"wrote {OUT.relative_to(REPO)} — {len(found)} releases for {key}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

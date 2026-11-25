@@ -1,0 +1,29 @@
+# The bundled Matrix connector (#1832): a bot account on a homeserver the Commander chooses,
+# unencrypted rooms only (#1746 D13). It reads nothing; it lists the rooms the bot has joined, and
+# (#1833) sends what the Commander taps.
+contract = 1
+
+[identity]
+id = "matrix"
+label = "Matrix"
+publisher = "battlelab"
+version = "1"
+category = "messenger"
+
+[adapter]
+kind = "matrix-cs"
+
+[origin]
+mode = "operator"
+
+[auth]
+kind = "token-header"
+scheme = "Bearer"
+scopes = ["access-token"]
+
+[capabilities]
+read = []
+send = ["message"]
+
+[docs]
+setup = "Create a Matrix account for the bot, sign it in once to get an access token (Element: Settings → Help & About → Access token), and paste it. Invite the bot to each room HQ may post in. Encrypted rooms can't be used yet."

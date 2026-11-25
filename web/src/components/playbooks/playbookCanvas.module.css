@@ -1,0 +1,122 @@
+/* The playbook flowchart (NIGHTJAR #1531 Phase 10, #1574). React Flow's own theming (Controls,
+ * MiniMap, handles, edges) is the shared `hud/reactFlow.css` (#1573); this sheet draws the step
+ * nodes (clipped panels with a mono step line), the rework path's label in the degraded edge and
+ * the canvas toolbar. Edges carry no live state here, so nothing flows (#1573: motion only where a
+ * state is live). Tokens only (nightjarLedger.test.ts). */
+.root {
+  min-width: 0;
+}
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  padding: var(--sp-2) 0;
+}
+.toolbar button {
+  min-height: 44px;
+  min-width: 44px;
+}
+.canvas {
+  height: 460px;
+  min-width: 0;
+  border: 1px solid var(--line-strong);
+  background: var(--bg-0);
+}
+/* A step: the small clipped panel, its lit top edge, its edge the accent when selected. */
+.node {
+  composes: nj-frame-sm from global;
+  --nj-edge: var(--line-strong);
+  width: 224px;
+  min-height: 136px;
+  padding: var(--sp-3) var(--sp-4);
+  border-top-color: var(--hud-dim);
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.node[data-selected="true"] {
+  --nj-edge: var(--accent);
+  border-top-color: var(--accent);
+}
+.node strong {
+  display: block;
+  font-family: var(--font-display);
+  font-size: var(--fs-body);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.id,
+.meta {
+  display: block;
+  margin: var(--sp-2) 0;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+/* The rework path's label: on the degraded edge it labels. */
+.edgeLabel {
+  position: absolute;
+  max-width: 260px;
+  padding: var(--sp-1) var(--sp-2);
+  border: 1px dashed var(--status-degraded);
+  background: var(--bg-0);
+  color: var(--warn-text);
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  overflow-wrap: anywhere;
+}
+.hint {
+  font-size: var(--fs-meta);
+  line-height: 1.6;
+  color: var(--text-2);
+}
+.root :global(.react-flow__handle) {
+  width: 18px;
+  height: 28px;
+  border: 1px solid var(--text-2);
+  border-radius: 0;
+  background: var(--bg-2);
+}
+.root :global(.react-flow__handle:hover) {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+.root :global(.react-flow__handle).reworkHandle {
+  opacity: 0;
+  pointer-events: none;
+  width: 1px;
+  height: 1px;
+}
+.root :global(.react-flow__node:focus-visible) {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 4px;
+}
+.root :global(.react-flow__edge.selected .react-flow__edge-path) {
+  stroke: var(--accent) !important;
+  stroke-width: 3;
+}
+@media (pointer: coarse), (max-width: 800px) {
+  .root :global(.react-flow__handle) {
+    width: 60px;
+    height: 60px;
+    border: 0;
+    background: transparent;
+  }
+  .root :global(.react-flow__handle)::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    width: 18px;
+    height: 28px;
+    margin: auto;
+    border: 1px solid var(--text-2);
+    background: var(--bg-2);
+    pointer-events: none;
+  }
+  .root :global(.react-flow__handle:hover)::after {
+    border-color: var(--accent);
+    background: var(--accent);
+  }
+}

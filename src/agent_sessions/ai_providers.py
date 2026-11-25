@@ -1,0 +1,579 @@
+"""Where Settings → AI sends its requests: the provider table, the egress gate, the thinking
+levels and model Auto (#1657, P1a #1660).
+
+The one AI endpoint (prefs ``ai_review``) used to be a bare OpenAI-compatible URL + key + model.
+It is now a **provider** row from :data:`PROVIDERS`: Custom (today's free URL), the self-hosted
+presets, or a hosted vendor whose URL is fixed here. Every row speaks the OpenAI chat-completions
+dialect with a Bearer key today; a native Anthropic Messages adapter is its own follow-up, verified
+against the live API (#1660; Claude is reachable now through OpenRouter). Everything in this module
+is static data and pure functions: no I/O, no HTTP client (``review`` is the one transport, and
+the outbound inventory in ``tests/test_prompts_registry.py`` keeps HTTP out of every other module).
+
+**The egress gate** (:func:`egress_violation`). A hosted provider receives session content —
+transcripts, terminal tails, drafts, mission and HQ context — so nothing is sent to one, not even
+a model-list probe, unless the stored block carries ``egress_ack`` naming exactly that provider and
+origin. The ack is server-owned: a patch can only say ``egress_acknowledged: true`` and the server
+binds it to the lock-current provider + origin; any provider or origin change clears it. The gate
+runs at every boundary — the save lock, ``review._post_chat``, ``review.list_models`` and the
+draft endpoint test. Since P1b (#1671) it covers EVERY non-loopback origin, Custom and self-hosted
+included; an install configured before that is grandfathered once by
+``prefs.migrate_ai_review_egress`` (a ``legacy`` ack, lock-safe, retried lazily at the gate). The
+API chat agent's OWN endpoint (``chat_config``, ``source = "own"``) is the one exemption: its config
+carries :data:`OWN_ENDPOINT_EXEMPT`, which only ``chat_config.snapshot`` sets.
+
+**The trust boundary is this host**: only a literal loopback address or the name ``localhost``
+waives consent (:func:`is_loopback`). Nothing is resolved, and no name suffix ever counts.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import contextvars
+import functools
+import hashlib
+import ipaddress
+from dataclasses import dataclass, replace
+from urllib.parse import urlsplit
+
+#: The provider ids, in picker order.
+CUSTOM = "custom"
+
+THINKING_LEVELS = ("auto", "off", "low", "medium", "high")
+MODEL_MODES = ("auto", "specific")
+
+# Thinking wire styles. Each maps the five levels to the provider's OWN request field.
+_STYLE_CHAT_TEMPLATE = "chat-template"  # self-hosted: today's `enable_thinking: false` opt-out
+_STYLE_REASONING_EFFORT = "reasoning-effort"  # OpenAI-style `reasoning_effort`
+_STYLE_OPENROUTER = "openrouter"  # `reasoning: {effort | enabled}`
+_STYLE_NONE = "none"  # the provider has no thinking setting: nothing is sent
+
+
+@dataclass(frozen=True)
+class Provider:
+    id: str
+    label: str
+    #: `custom` | `self-hosted` | `api` (P2 adds `subscription`).
+    group: str
+    #: The wire dialect. Only `openai-chat` today (the native Anthropic adapter is a follow-up).
+    kind: str
+    #: The fixed base URL for hosted rows; the preset's suggestion for self-hosted rows; "" for
+    #: Custom.
+    base_url: str
+    #: Whether the operator types the URL (Custom, self-hosted) or the table fixes it (hosted).
+    url_editable: bool
+    #: How the key travels. Only `bearer` today (`Authorization: Bearer`).
+    auth: str
+    #: The company the egress warning names ("" for Custom / self-hosted).
+    vendor: str
+    thinking: str
+    #: Auto's model preferences, best first, matched against the provider's own `/models` list
+    #: (exact id, then prefix). The first entry is used when no list is available.
+    auto_models: tuple[str, ...] = ()
+    #: What `off` sends for `reasoning-effort` rows (OpenAI says "minimal", Gemini "none").
+    effort_off: str = ""
+    key_hint: str = ""
+
+    @property
+    def hosted(self) -> bool:
+        return self.group == "api"
+
+
+PROVIDERS: tuple[Provider, ...] = (
+    Provider(
+        CUSTOM,
+        "Custom (OpenAI-compatible)",
+        "custom",
+        "openai-chat",
+        "",
+        True,
+        "bearer",
+        "",
+        _STYLE_CHAT_TEMPLATE,
+    ),
+    Provider(
+        "ollama",
+        "Ollama",
+        "self-hosted",
+        "openai-chat",
+        "http://localhost:11434/v1",
+        True,
+        "bearer",
+        "",
+        _STYLE_CHAT_TEMPLATE,
+    ),
+    Provider(
+        "lmstudio",
+        "LM Studio",
+        "self-hosted",
+        "openai-chat",
+        "http://localhost:1234/v1",
+        True,
+        "bearer",
+        "",
+        _STYLE_CHAT_TEMPLATE,
+    ),
+    Provider(
+        "llamacpp",
+        "llama.cpp",
+        "self-hosted",
+        "openai-chat",
+        "http://localhost:8080/v1",
+        True,
+        "bearer",
+        "",
+        _STYLE_CHAT_TEMPLATE,
+    ),
+    Provider(
+        "vllm",
+        "vLLM",
+        "self-hosted",
+        "openai-chat",
+        "http://localhost:8000/v1",
+        True,
+        "bearer",
+        "",
+        _STYLE_CHAT_TEMPLATE,
+    ),
+    Provider(
+        "openai",
+        "OpenAI",
+        "api",
+        "openai-chat",
+        "https://api.openai.com/v1",
+        False,
+        "bearer",
+        "OpenAI",
+        _STYLE_REASONING_EFFORT,
+        auto_models=("gpt-5-mini", "gpt-5", "gpt-4.1-mini"),
+        effort_off="minimal",
+        key_hint="sk-…",
+    ),
+    Provider(
+        "google",
+        "Google Gemini",
+        "api",
+        "openai-chat",
+        "https://generativelanguage.googleapis.com/v1beta/openai",
+        False,
+        "bearer",
+        "Google",
+        _STYLE_REASONING_EFFORT,
+        auto_models=("gemini-2.5-flash", "models/gemini-2.5-flash", "gemini-flash"),
+        effort_off="none",
+        key_hint="AIza…",
+    ),
+    Provider(
+        "openrouter",
+        "OpenRouter",
+        "api",
+        "openai-chat",
+        "https://openrouter.ai/api/v1",
+        False,
+        "bearer",
+        "OpenRouter",
+        _STYLE_OPENROUTER,
+        auto_models=("openrouter/auto",),
+        key_hint="sk-or-…",
+    ),
+    Provider(
+        "mistral",
+        "Mistral",
+        "api",
+        "openai-chat",
+        "https://api.mistral.ai/v1",
+        False,
+        "bearer",
+        "Mistral AI",
+        _STYLE_NONE,
+        auto_models=("mistral-medium-latest", "mistral-large-latest", "mistral-small-latest"),
+    ),
+    Provider(
+        "deepseek",
+        "DeepSeek",
+        "api",
+        "openai-chat",
+        "https://api.deepseek.com/v1",
+        False,
+        "bearer",
+        "DeepSeek",
+        _STYLE_NONE,
+        auto_models=("deepseek-chat",),
+        key_hint="sk-…",
+    ),
+    Provider(
+        "xai",
+        "xAI",
+        "api",
+        "openai-chat",
+        "https://api.x.ai/v1",
+        False,
+        "bearer",
+        "xAI",
+        _STYLE_NONE,
+        auto_models=("grok-4-fast", "grok-4", "grok-3-mini"),
+        key_hint="xai-…",
+    ),
+)
+
+_BY_ID = {p.id: p for p in PROVIDERS}
+PROVIDER_IDS = tuple(_BY_ID)
+
+
+def get(provider_id: object) -> Provider:
+    """The row for an id; an unknown or missing id is Custom — the pre-#1657 behaviour. Callers
+    that accept operator input validate the id first (`prefs.validate_ai_review_patch`)."""
+    return _BY_ID.get(provider_id if isinstance(provider_id, str) else CUSTOM, _BY_ID[CUSTOM])
+
+
+def row_for(cfg: dict) -> Provider:
+    """The row a resolved endpoint config talks to. A config with no `provider` (the API chat
+    agent's own endpoint, a pre-#1657 block) is Custom."""
+    return get(cfg.get("provider"))
+
+
+def thinking_supported(p: Provider) -> bool:
+    return p.thinking != _STYLE_NONE
+
+
+def public_catalog() -> list[dict]:
+    """The secret-free table the Settings picker renders (`GET /api/ai-review/providers`)."""
+    return [
+        {
+            "id": p.id,
+            "label": p.label,
+            "group": p.group,
+            "kind": p.kind,
+            "base_url": p.base_url,
+            "url_editable": p.url_editable,
+            "vendor": p.vendor,
+            "thinking_supported": thinking_supported(p),
+            "auto_model": p.auto_models[0] if p.auto_models else "",
+            "key_hint": p.key_hint,
+        }
+        for p in PROVIDERS
+    ]
+
+
+# --- the egress gate ---------------------------------------------------------------------
+
+
+def _origin(url: object) -> str | None:
+    # Local copy of `prefs.endpoint_origin` (prefs imports this module, not the reverse).
+    if not isinstance(url, str) or not url.strip():
+        return None
+    try:
+        parts = urlsplit(url.strip())
+        port = parts.port
+    except ValueError:
+        return None
+    scheme = parts.scheme.lower()
+    host = (parts.hostname or "").lower()
+    defaults = {"http": 80, "https": 443}
+    if scheme not in defaults or not host:
+        return None
+    return f"{scheme}://{host}:{port if port is not None else defaults[scheme]}"
+
+
+def is_loopback(url: object) -> bool:
+    """True only for a literal loopback IP (`127.0.0.0/8`, `::1`) or exactly `localhost`.
+
+    The trust boundary is THIS host. A LAN address, a `.local` / `.internal` name or
+    `localhost.example.com` is another machine, and nothing here resolves a name — a suffix or a
+    DNS answer must never be what waives consent (#1657 round 2)."""
+    if not isinstance(url, str):
+        return False
+    try:
+        host = (urlsplit(url.strip()).hostname or "").lower()
+    except ValueError:
+        return False
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def make_ack(provider_id: str, base_url: str, at: str, source: str = "operator") -> dict:
+    """The server-owned acknowledgement record, bound to a provider AND an origin."""
+    return {"provider": provider_id, "origin": _origin(base_url) or "", "at": at, "source": source}
+
+
+def ack_matches(ack: object, provider_id: str, base_url: str) -> bool:
+    if not isinstance(ack, dict):
+        return False
+    origin = _origin(base_url)
+    return bool(origin) and ack.get("provider") == provider_id and ack.get("origin") == origin
+
+
+#: The key `chat_config.snapshot` puts in the API chat agent's OWN-endpoint config (#1671): that
+#: endpoint is configured and consented to separately (out of scope in #1657). Never a stored or
+#: patchable field: every validator rejects unknown keys, and a test pins that no other module
+#: sets it.
+OWN_ENDPOINT_EXEMPT = "egress_exempt_own_endpoint"
+
+
+def needs_consent(provider_id: object, base_url: object) -> bool:
+    """Whether sending to this URL requires a matching ack: every non-loopback origin, whatever
+    the row (#1671). An empty URL sends nothing, so it needs nothing."""
+    base = str(base_url or "").strip()
+    return bool(base) and not is_loopback(base)
+
+
+def recipient(cfg: dict) -> str:
+    """Who the egress warning names: a hosted vendor, or the host of a Custom/self-hosted URL."""
+    p = row_for(cfg)
+    if p.hosted:
+        return p.label
+    try:
+        return urlsplit(str(cfg.get("base_url") or "").strip()).hostname or p.label
+    except ValueError:
+        return p.label
+
+
+def egress_violation(cfg: dict) -> str | None:
+    """Why nothing may be sent to `cfg`'s endpoint, or None. Pure; evaluated on ONE resolved
+    snapshot at every boundary (save lock, transport, model list, draft test)."""
+    if cfg.get(OWN_ENDPOINT_EXEMPT) is True:
+        return None
+    p = row_for(cfg)
+    base = str(cfg.get("base_url") or "")
+    if not needs_consent(p.id, base):
+        return None
+    if ack_matches(cfg.get("egress_ack"), p.id, base):
+        return None
+    return (
+        f"acknowledge first: {recipient(cfg)} receives the session content AI features send — "
+        "nothing is sent to it until you confirm in Settings → AI"
+    )
+
+
+# --- model: Auto -------------------------------------------------------------------------
+
+#: The last model list each hosted endpoint returned, keyed (provider, key fingerprint), so Auto
+#: follows a retired model to the provider's current one. Filled by `review.list_models`.
+_listed: dict[tuple[str, str], list[str]] = {}
+
+
+def fingerprint(api_key: object) -> str:
+    """A log-safe identity for a key (never the key): which listing Auto may reuse."""
+    return hashlib.sha256(str(api_key or "").encode()).hexdigest()[:16]
+
+
+def is_auto(cfg: dict) -> bool:
+    p = row_for(cfg)
+    return p.hosted and bool(p.auto_models) and cfg.get("model_mode") == "auto"
+
+
+def remember_listing(cfg: dict, fingerprint: str, models: list[str]) -> None:
+    """Record what the provider listed — or, with an empty list, that listing failed, so Auto
+    stops asking before every completion and uses its first preference (a later successful list,
+    from Settings or the model dropdown, replaces it)."""
+    p = row_for(cfg)
+    if p.hosted:
+        _listed[(p.id, fingerprint)] = list(models)
+
+
+def auto_model(cfg: dict, fingerprint: str) -> str:
+    """Auto's model: the row's best preference present in the provider's own list (each
+    preference by exact id, then by prefix), else the first listed model, else the row's first
+    preference."""
+    p = row_for(cfg)
+    listed = _listed.get((p.id, fingerprint)) or []
+    # Preferences in order; each tries its exact id, then its newest prefixed id, before the
+    # next preference is considered.
+    for want in p.auto_models:
+        if want in listed:
+            return want
+        hit = sorted(m for m in listed if m.startswith(want))
+        if hit:
+            return hit[-1]
+    if listed:
+        return listed[0]
+    return p.auto_models[0] if p.auto_models else str(cfg.get("model") or "")
+
+
+def has_listing(cfg: dict, fingerprint: str) -> bool:
+    return (row_for(cfg).id, fingerprint) in _listed
+
+
+# --- thinking ----------------------------------------------------------------------------
+
+
+def thinking_fields(cfg: dict, *, interactive: bool) -> dict:
+    """The request fields for the configured thinking level. An empty dict sends nothing.
+
+    `auto` keeps background passes thinking-OFF (#841: a 22 s review took >305 s with thinking
+    on) and gives interactive calls (HQ, API chat) the provider's default. For Custom and the
+    self-hosted rows every level that means "off" sends exactly today's opt-out, so a legacy
+    block's wire is byte-identical."""
+    p = row_for(cfg)
+    level = cfg.get("thinking") if cfg.get("thinking") in THINKING_LEVELS else "auto"
+    state = _MODEL_CONTEXT.get()
+    for override in (state.call, state.row):
+        if override is not None and override[0] is not None:
+            level = override[0]
+    if state.request_thinking is not None:
+        level = state.request_thinking
+    off = level == "off" or (level == "auto" and not interactive)
+    if p.thinking == _STYLE_CHAT_TEMPLATE:
+        # Today: the opt-out rides on EVERY call, interactive or not.
+        return (
+            {"chat_template_kwargs": {"enable_thinking": False}} if level in ("auto", "off") else {}
+        )
+    if p.thinking == _STYLE_REASONING_EFFORT:
+        if off:
+            return {"reasoning_effort": p.effort_off}
+        return {} if level == "auto" else {"reasoning_effort": level}
+    if p.thinking == _STYLE_OPENROUTER:
+        if off:
+            return {"reasoning": {"enabled": False}}
+        return {} if level == "auto" else {"reasoning": {"effort": level}}
+    return {}
+
+
+@dataclass(frozen=True)
+class _ModelContext:
+    # One immutable request context. Call identity survives a nested row override; a
+    # row inherits each empty field from the call, never from a different row.
+    call: tuple[str | None, str | None] | None = None
+    row: tuple[str | None, str | None] | None = None
+    request_thinking: str | None = None
+    pinned: bool = False
+
+
+_EMPTY_MODEL_CONTEXT = _ModelContext()
+_MODEL_CONTEXT: contextvars.ContextVar[_ModelContext] = contextvars.ContextVar(
+    "hq_model_context", default=_EMPTY_MODEL_CONTEXT
+)
+
+
+@contextlib.contextmanager
+def _model_scope(state: _ModelContext):
+    token = _MODEL_CONTEXT.set(state)
+    try:
+        yield
+    finally:
+        _MODEL_CONTEXT.reset(token)
+
+
+def _override(thinking: str | None, model: str | None) -> tuple[str | None, str | None]:
+    return thinking if thinking in THINKING_LEVELS else None, (model or "").strip() or None
+
+
+def clear_model_context():
+    """A new turn/background job has no inherited choices, even if its parent spawned it
+    inside an override. Clearing at the entry point also covers children outliving a parent."""
+    return _model_scope(_ModelContext())
+
+
+def independent_model_work(func):
+    """Fence an async background-work entry point, not its shared transport or helpers."""
+
+    @functools.wraps(func)
+    async def independent(*args, **kwargs):
+        with clear_model_context():
+            return await func(*args, **kwargs)
+
+    return independent
+
+
+def model_override(thinking: str | None = None, model: str | None = None):
+    """An HQ row: its own field → enclosing call's field → endpoint default. Empty fields
+    do not inherit another row (e.g. typed → router). Speech identity stays intact."""
+    return _model_scope(
+        replace(
+            _MODEL_CONTEXT.get(),
+            row=_override(thinking, model),
+            request_thinking=None,
+            pinned=False,
+        )
+    )
+
+
+@contextlib.contextmanager
+def spoken_turn(thinking: str | None = "off", model: str | None = None):
+    """Everything asked of the model inside this block is a SPOKEN turn on a call (#1996): it is
+    sent with the thinking level for calls (`thinking`: a level of THINKING_LEVELS, or ``None``
+    for the level Settings → AI holds) and to the model for calls (`model`, or ``None`` for
+    HQ's own). The defaults are no extended thinking on HQ's own model: the Commander is waiting
+    on the line, and a model that reasons first spends about two seconds before its first word
+    (measured 2026-11-13, a short answer: first content after 2.3 s with thinking, 0.2 s
+    without). The operator sets both in Settings → AI → HQ → HQ models
+    (`hq_calls_settings.spoken`).
+
+    A context, not a changed configuration: it reaches every request the turn makes — each tool
+    round, the call-end judgement, the tools-refused fallback and a session search, which read
+    the configuration themselves — and nothing outside it. The stored AI settings are never
+    touched. Tasks and threads started inside inherit it; independent background entry points
+    clear that inheritance with `independent_model_work`. Nested rows retain speech identity."""
+    with _model_scope(_ModelContext(call=_override(thinking, model))):
+        yield
+
+
+@contextlib.contextmanager
+def request_thinking(level: str | None):
+    """Every request made inside this block is sent with thinking `level` (one of
+    THINKING_LEVELS), or with the turn's own level for ``None`` / anything else (#2028).
+
+    Narrow on purpose: it changes only the thinking fields, never the model and never what counts
+    as a spoken turn. Kept for callers that override only thinking; HQ's row-specific requests
+    use `model_override`. A context, not a changed
+    configuration: it is restored on success, error and cancellation alike, and two concurrent
+    turns (each its own task) never see each other's level."""
+    with _model_scope(
+        replace(_MODEL_CONTEXT.get(), request_thinking=level if level in THINKING_LEVELS else None)
+    ):
+        yield
+
+
+@contextlib.contextmanager
+def pinned_model(pinned: bool = True):
+    """Requests made inside this block send exactly the model they name (#2028).
+
+    `review._post_chat` treats a body asking for the configured model as "the turn's model" and
+    swaps it for a spoken turn's call model (#1996) or the Auto pick. HQ's question router with an
+    operator-CHOSEN model that happens to equal the typed HQ model meant that model, not the
+    call's; string equality can't tell the two apart, so the intent rides here instead. Restored
+    on every exit; per task."""
+    with _model_scope(replace(_MODEL_CONTEXT.get(), pinned=bool(pinned))):
+        yield
+
+
+def model_pinned() -> bool:
+    return _MODEL_CONTEXT.get().pinned
+
+
+def in_spoken_turn() -> bool:
+    return _MODEL_CONTEXT.get().call is not None
+
+
+def spoken_model() -> str | None:
+    """The model for calls, inside a spoken turn that has one; else ``None``."""
+    spoken = _MODEL_CONTEXT.get().call
+    return spoken[1] if spoken is not None else None
+
+
+def override_model() -> str | None:
+    """The row/call's explicit model, including one equal to the endpoint default."""
+    state = _MODEL_CONTEXT.get()
+    if state.row is not None and state.row[1] is not None:
+        return state.row[1]
+    return spoken_model()
+
+
+def with_fields(body: dict, fields: dict) -> dict:
+    """A COPY of `body` with `fields` merged; `chat_template_kwargs` merges into any existing
+    value rather than replacing it (as the pre-#1657 opt-out did)."""
+    out = dict(body)
+    for k, v in fields.items():
+        if k == "chat_template_kwargs" and isinstance(out.get(k), dict):
+            out[k] = {**out[k], **v}
+        else:
+            out[k] = v
+    return out
+
+
+def without_fields(body: dict, fields: dict) -> dict:
+    """A COPY of `body` with the thinking fields removed again (the ordered degrade, #841)."""
+    return {k: v for k, v in body.items() if k not in fields}

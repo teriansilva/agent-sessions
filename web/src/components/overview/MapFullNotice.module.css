@@ -1,0 +1,35 @@
+/* The map-full hand-back notice (#1648): a fixed status strip over the session page, in the
+ * degraded status colour (the map really was at its cap). Tokens only; 44px dismiss target. */
+.notice {
+  position: fixed;
+  top: calc(var(--app-header-height) + var(--sp-2));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: var(--z-dialog);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  max-width: min(560px, calc(100vw - 2 * var(--sp-3)));
+  padding: 0 0 0 var(--sp-3);
+  border-left: 3px solid var(--warn-text);
+  background: var(--bg-1);
+  box-shadow: 0 0 0 1px var(--line);
+  font-size: var(--fs-meta);
+  color: var(--text-1);
+}
+.close {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.close:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}

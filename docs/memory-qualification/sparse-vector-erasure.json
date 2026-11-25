@@ -1,0 +1,14 @@
+{
+  "source_notes_before": 100000,
+  "remaining_vectors": 99999,
+  "sparse_delete_fraction": 1e-05,
+  "physical_cleanup_s": 6.763586085755378,
+  "worker_passes": 1,
+  "remaining_masked_rows": 0,
+  "remaining_versions": 1,
+  "abandoned_file_removed": true,
+  "unique_float32_marker_occurrences_before": 2,
+  "unique_float32_marker_occurrences_after": 0,
+  "affinity_cpus": 2,
+  "limits": "Synthetic 100,000-note/384-dimensional hybrid fixture, one deletion below the default native 10% compaction threshold. Scans app-owned files for the selected random vector float32 byte marker, verifies no masked rows/old versions and removal of a new uncommitted file. No SSD forensic or external-backup erasure claim."
+}

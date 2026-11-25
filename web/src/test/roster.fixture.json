@@ -1,0 +1,999 @@
+{
+  "_comment": "Generated from src/agent_sessions/plugins/first_party/*/plugin.toml (#853 P4). tests/test_web_roster_fixture.py fails if it drifts from the manifests; host-state fields (present, bin) are fixed.",
+  "engines": [
+    {
+      "id": "claude",
+      "present": true,
+      "supports_new": true,
+      "supports_seed_start": true,
+      "seed_reason": null,
+      "bin": "/fixture/bin/claude",
+      "label": "Claude Code",
+      "kind": "agent",
+      "family": "claude",
+      "runtime": "pty",
+      "api": null,
+      "display": {
+        "name": "claude",
+        "badge": "cc",
+        "accent": "amber",
+        "id_prefix": null,
+        "order": 10
+      },
+      "capabilities": {
+        "resume": true,
+        "new": true,
+        "archive": true,
+        "handoff_target": true,
+        "seed_start": true,
+        "orchestrator_input": true,
+        "raw_tty": true,
+        "owns_transcript": true
+      },
+      "session_id": {
+        "mint": "pinned"
+      },
+      "models": [
+        {
+          "id": "claude-opus-5",
+          "context_window": 1000000,
+          "aliases": [
+            "opus"
+          ]
+        },
+        {
+          "id": "claude-sonnet-5",
+          "context_window": 1000000,
+          "aliases": [
+            "sonnet"
+          ]
+        },
+        {
+          "id": "claude-haiku-4-5",
+          "context_window": 200000,
+          "aliases": [
+            "haiku"
+          ]
+        },
+        {
+          "id": "claude-fable-5-1",
+          "context_window": 1000000,
+          "aliases": []
+        },
+        {
+          "id": "claude-opus-4-8",
+          "context_window": 1000000,
+          "aliases": []
+        },
+        {
+          "id": "claude-sonnet-4-6",
+          "context_window": 1000000,
+          "aliases": []
+        }
+      ],
+      "model_select": {
+        "supported": true,
+        "on_resume": true,
+        "configured_elsewhere": false,
+        "offered": [
+          {
+            "id": "claude-opus-5",
+            "aliases": [
+              "opus"
+            ],
+            "context_window": 1000000,
+            "source": "manifest"
+          },
+          {
+            "id": "claude-sonnet-5",
+            "aliases": [
+              "sonnet"
+            ],
+            "context_window": 1000000,
+            "source": "manifest"
+          },
+          {
+            "id": "claude-haiku-4-5",
+            "aliases": [
+              "haiku"
+            ],
+            "context_window": 200000,
+            "source": "manifest"
+          },
+          {
+            "id": "claude-fable-5-1",
+            "aliases": [],
+            "context_window": 1000000,
+            "source": "manifest"
+          },
+          {
+            "id": "claude-opus-4-8",
+            "aliases": [],
+            "context_window": 1000000,
+            "source": "manifest"
+          },
+          {
+            "id": "claude-sonnet-4-6",
+            "aliases": [],
+            "context_window": 1000000,
+            "source": "manifest"
+          }
+        ]
+      },
+      "instructions": {
+        "files": [
+          "CLAUDE.md"
+        ]
+      },
+      "tools": {
+        "mcp": "claude-mcp-config-flag"
+      },
+      "usage": {
+        "source": "plan"
+      },
+      "terminal": {
+        "repaint": "none"
+      },
+      "status": "active",
+      "status_reason": null
+    },
+    {
+      "id": "claude-api",
+      "present": false,
+      "supports_new": false,
+      "supports_seed_start": false,
+      "seed_reason": "no seed-capable start yet",
+      "bin": null,
+      "label": "Claude — API",
+      "kind": "agent",
+      "family": "claude",
+      "runtime": "api",
+      "api": {
+        "kind": "claude-stream-json",
+        "source": "claude",
+        "unavailable_reason": "claude 2.1.287 or later is required for native mode",
+        "can_bypass": true
+      },
+      "display": {
+        "name": "claude-api",
+        "badge": "cca",
+        "accent": "amber",
+        "id_prefix": null,
+        "order": 15
+      },
+      "capabilities": {
+        "resume": true,
+        "new": true,
+        "archive": true,
+        "handoff_target": false,
+        "seed_start": false,
+        "orchestrator_input": false,
+        "raw_tty": false,
+        "owns_transcript": false
+      },
+      "session_id": {
+        "mint": "pinned"
+      },
+      "models": [],
+      "model_select": {
+        "supported": false,
+        "on_resume": false,
+        "configured_elsewhere": false,
+        "offered": []
+      },
+      "instructions": {
+        "files": []
+      },
+      "tools": {
+        "mcp": "claude-mcp-config-flag"
+      },
+      "usage": {
+        "source": "none"
+      },
+      "terminal": {
+        "repaint": "none"
+      },
+      "status": "active",
+      "status_reason": null
+    },
+    {
+      "id": "opencode",
+      "present": true,
+      "supports_new": true,
+      "supports_seed_start": true,
+      "seed_reason": null,
+      "bin": "/fixture/bin/opencode",
+      "label": "opencode",
+      "kind": "agent",
+      "family": "opencode",
+      "runtime": "pty",
+      "api": null,
+      "display": {
+        "name": "opencode",
+        "badge": "oc",
+        "accent": "teal",
+        "id_prefix": "ses_",
+        "order": 20
+      },
+      "capabilities": {
+        "resume": true,
+        "new": true,
+        "archive": true,
+        "handoff_target": true,
+        "seed_start": true,
+        "orchestrator_input": true,
+        "raw_tty": true,
+        "owns_transcript": false
+      },
+      "session_id": {
+        "mint": "adopt"
+      },
+      "models": [],
+      "model_select": {
+        "supported": false,
+        "on_resume": false,
+        "configured_elsewhere": true,
+        "offered": []
+      },
+      "instructions": {
+        "files": [
+          "AGENTS.md"
+        ]
+      },
+      "tools": {
+        "mcp": "opencode-config-content"
+      },
+      "usage": {
+        "source": "tokens"
+      },
+      "terminal": {
+        "repaint": "none"
+      },
+      "status": "active",
+      "status_reason": null
+    },
+    {
+      "id": "opencode2",
+      "present": true,
+      "supports_new": true,
+      "supports_seed_start": true,
+      "seed_reason": null,
+      "bin": "/fixture/bin/opencode2",
+      "label": "OpenCode 2",
+      "kind": "agent",
+      "family": "opencode2",
+      "runtime": "pty",
+      "api": null,
+      "display": {
+        "name": "opencode2",
+        "badge": "ot",
+        "accent": "teal",
+        "id_prefix": "ses_",
+        "order": 22
+      },
+      "capabilities": {
+        "resume": true,
+        "new": true,
+        "archive": true,
+        "handoff_target": true,
+        "seed_start": true,
+        "orchestrator_input": true,
+        "raw_tty": true,
+        "owns_transcript": false
+      },
+      "session_id": {
+        "mint": "adopt"
+      },
+      "models": [],
+      "model_select": {
+        "supported": false,
+        "on_resume": false,
+        "configured_elsewhere": true,
+        "offered": []
+      },
+      "instructions": {
+        "files": [
+          "AGENTS.md"
+        ]
+      },
+      "tools": {
+        "mcp": "opencode2-config-content"
+      },
+      "usage": {
+        "source": "tokens"
+      },
+      "terminal": {
+        "repaint": "none"
+      },
+      "status": "active",
+      "status_reason": null
+    },
+    {
+      "id": "opencode2-api",
+      "present": false,
+      "supports_new": false,
+      "supports_seed_start": false,
+      "seed_reason": "no seed-capable start yet",
+      "bin": null,
+      "label": "OpenCode 2 — API",
+      "kind": "agent",
+      "family": "opencode2",
+      "runtime": "api",
+      "api": {
+        "kind": "opencode2-acp",
+        "source": "opencode2",
+        "can_bypass": false,
+        "unavailable_reason": "opencode2 2.2.7 or later is required for native mode"
+      },
+      "display": {
+        "name": "opencode2-api",
+        "badge": "ota",
+        "accent": "teal",
+        "id_prefix": null,
+        "order": 23
+      },
+      "capabilities": {
+        "resume": true,
+        "new": true,
+        "archive": true,
+        "handoff_target": false,
+        "seed_start": false,
+        "orchestrator_input": false,
+        "raw_tty": false,
+        "owns_transcript": false
+      },
+      "session_id": {
+        "mint": "pinned"
+      },
+      "models": [],
+      "model_select": {
+        "supported": false,
+        "on_resume": false,
+        "configured_elsewhere": false,
+        "offered": []
+      },
+      "instructions": {
+        "files": []
+      },
+      "tools": {
+        "mcp": "opencode2-config-content"
+      },
+      "usage": {
+        "source": "none"
+      },
+      "terminal": {
+        "repaint": "none"
+      },
+      "status": "active",
+      "status_reason": null
+    },
+    {
+      "id": "opencode-api",
+      "present": false,
+      "supports_new": false,
+      "supports_seed_start": false,
+      "seed_reason": "no seed-capable start yet",
+      "bin": null,
+      "label": "opencode — API",
+      "kind": "agent",
+      "family": "opencode",
+      "runtime": "api",
+      "api": {
+        "kind": "opencode-acp",
+        "source": "opencode",
+        "can_bypass": true,
+        "unavailable_reason": "opencode 1.18.35 or later is required for native mode"
+      },
+      "display": {
+        "name": "opencode-api",
+        "badge": "oca",
+        "accent": "teal",
+        "id_prefix": null,
+        "order": 25
+      },
+      "capabilities": {
+        "resume": true,
+        "new": true,
+        "archive": true,
+        "handoff_target": false,
+        "seed_start": false,
+        "orchestrator_input": false,
+        "raw_tty": false,
+        "owns_transcript": false
+      },
+      "session_id": {
+        "mint": "pinned"
+      },
+      "models": [],
+      "model_select": {
+        "supported": false,
+        "on_resume": false,
+        "configured_elsewhere": false,
+        "offered": []
+      },
+      "instructions": {
+        "files": []
+      },
+      "tools": {
+        "mcp": "opencode-config-content"
+      },
+      "usage": {
+        "source": "none"
+      },
+      "terminal": {
+        "repaint": "none"
+      },
+      "status": "active",
+      "status_reason": null
+    },
+    {
+      "id": "codex",
+      "present": true,
+      "supports_new": true,
+      "supports_seed_start": true,
+      "seed_reason": null,
+      "bin": "/fixture/bin/codex",
+      "label": "Codex",
+      "kind": "agent",
+      "family": "codex",
+      "runtime": "pty",
+      "api": null,
+      "display": {
+        "name": "codex",
+        "badge": "cx",
+        "accent": "green",
+        "id_prefix": null,
+        "order": 30
+      },
+      "capabilities": {
+        "resume": true,
+        "new": true,
+        "archive": true,
+        "handoff_target": true,
+        "seed_start": true,
+        "orchestrator_input": true,
+        "raw_tty": true,
+        "owns_transcript": false
+      },
+      "session_id": {
+        "mint": "adopt"
+      },
+      "models": [
+        {
+          "id": "gpt-5-codex",
+          "context_window": null,
+          "aliases": []
+        },
+        {
+          "id": "gpt-5",
+          "context_window": null,
+          "aliases": []
+        }
+      ],
+      "model_select": {
+        "supported": true,
+        "on_resume": false,
+        "configured_elsewhere": false,
+        "offered": [
+          {
+            "id": "gpt-5-codex",
+            "aliases": [],
+            "context_window": null,
+            "source": "manifest"
+          },
+          {
+            "id": "gpt-5",
+            "aliases": [],
+            "context_window": null,
+            "source": "manifest"
+          }
+        ]
+      },
+      "instructions": {
+        "files": [
+          "AGENTS.md"
+        ]
+      },
+      "tools": {
+        "mcp": "codex-config-override"
+      },
+      "usage": {
+        "source": "plan"
+      },
+      "terminal": {
+        "repaint": "wipe"
+      },
+      "status": "active",
+      "status_reason": null
+    },
+    {
+      "id": "codex-api",
+      "present": false,
+      "supports_new": false,
+      "supports_seed_start": false,
+      "seed_reason": "no seed-capable start yet",
+      "bin": null,
+      "label": "Codex — API",
+      "kind": "agent",
+      "family": "codex",
+      "runtime": "api",
+      "api": {
+        "kind": "codex-app-server",
+        "source": "codex",
+        "unavailable_reason": "codex 0.159.3 or later is required for native mode",
+        "can_bypass": true
+      },
+      "display": {
+        "name": "codex-api",
+        "badge": "cxa",
+        "accent": "green",
+        "id_prefix": null,
+        "order": 35
+      },
+      "capabilities": {
+        "resume": true,
+        "new": true,
+        "archive": true,
+        "handoff_target": false,
+        "seed_start": false,
+        "orchestrator_input": false,
+        "raw_tty": false,
+        "owns_transcript": false
+      },
+      "session_id": {
+        "mint": "pinned"
+      },
+      "models": [],
+      "model_select": {
+        "supported": false,
+        "on_resume": false,
+        "configured_elsewhere": false,
+        "offered": []
+      },
+      "instructions": {
+        "files": []
+      },
+      "tools": {
+        "mcp": "codex-config-override"
+      },
+      "usage": {
+        "source": "none"
+      },
+      "terminal": {
+        "repaint": "none"
+      },
+      "status": "active",
+      "status_reason": null
+    },
+    {
+      "id": "gemini",
+      "present": true,
+      "supports_new": true,
+      "supports_seed_start": false,
+      "seed_reason": "no seed-capable start yet",
+      "bin": "/fixture/bin/gemini",
+      "label": "Gemini CLI",
+      "kind": "agent",
+      "family": "gemini",
+      "runtime": "pty",
+      "api": null,
+      "display": {
+        "name": "gemini",
+        "badge": "gm",
+        "accent": "blue",
+        "id_prefix": null,
+        "order": 40
+      },
+      "capabilities": {
+        "resume": true,
+        "new": true,
+        "archive": true,
+        "handoff_target": false,
+        "seed_start": false,
+        "orchestrator_input": true,
+        "raw_tty": true,
+        "owns_transcript": false
+      },
+      "session_id": {
+        "mint": "pinned"
+      },
+      "models": [
+        {
+          "id": "gemini-2.5-pro",
+          "context_window": 1048576,
+          "aliases": []
+        },
+        {
+          "id": "gemini-2.5-flash",
+          "context_window": 1048576,
+          "aliases": []
+        }
+      ],
+      "model_select": {
+        "supported": true,
+        "on_resume": false,
+        "configured_elsewhere": false,
+        "offered": [
+          {
+            "id": "gemini-2.5-pro",
+            "aliases": [],
+            "context_window": 1048576,
+            "source": "manifest"
+          },
+          {
+            "id": "gemini-2.5-flash",
+            "aliases": [],
+            "context_window": 1048576,
+            "source": "manifest"
+          }
+        ]
+      },
+      "instructions": {
+        "files": [
+          "GEMINI.md"
+        ]
+      },
+      "tools": {
+        "mcp": null
+      },
+      "usage": {
+        "source": "manual"
+      },
+      "terminal": {
+        "repaint": "none"
+      },
+      "status": "active",
+      "status_reason": null
+    },
+    {
+      "id": "copilot",
+      "present": true,
+      "supports_new": true,
+      "supports_seed_start": true,
+      "seed_reason": null,
+      "bin": "/fixture/bin/copilot",
+      "label": "GitHub Copilot CLI",
+      "kind": "agent",
+      "family": "copilot",
+      "runtime": "pty",
+      "api": null,
+      "display": {
+        "name": "copilot",
+        "badge": "cp",
+        "accent": "teal",
+        "id_prefix": null,
+        "order": 45
+      },
+      "capabilities": {
+        "resume": true,
+        "new": true,
+        "archive": true,
+        "handoff_target": true,
+        "seed_start": true,
+        "orchestrator_input": true,
+        "raw_tty": true,
+        "owns_transcript": false
+      },
+      "session_id": {
+        "mint": "pinned"
+      },
+      "models": [
+        {
+          "id": "gpt-5.5",
+          "context_window": null,
+          "aliases": []
+        }
+      ],
+      "model_select": {
+        "supported": true,
+        "on_resume": true,
+        "configured_elsewhere": false,
+        "offered": [
+          {
+            "id": "gpt-5.5",
+            "aliases": [],
+            "context_window": null,
+            "source": "manifest"
+          }
+        ]
+      },
+      "instructions": {
+        "files": [
+          "AGENTS.md",
+          "CLAUDE.md"
+        ]
+      },
+      "tools": {
+        "mcp": "copilot-additional-mcp-config"
+      },
+      "usage": {
+        "source": "manual"
+      },
+      "terminal": {
+        "repaint": "none"
+      },
+      "status": "active",
+      "status_reason": null
+    },
+    {
+      "id": "copilot-api",
+      "present": false,
+      "supports_new": false,
+      "supports_seed_start": false,
+      "seed_reason": "no seed-capable start yet",
+      "bin": null,
+      "label": "Copilot — API",
+      "kind": "agent",
+      "family": "copilot",
+      "runtime": "api",
+      "api": {
+        "kind": "copilot-acp",
+        "source": "copilot",
+        "can_bypass": true,
+        "unavailable_reason": "copilot 1.0.68 or later is required for native mode"
+      },
+      "display": {
+        "name": "copilot-api",
+        "badge": "cpa",
+        "accent": "teal",
+        "id_prefix": null,
+        "order": 46
+      },
+      "capabilities": {
+        "resume": true,
+        "new": true,
+        "archive": true,
+        "handoff_target": false,
+        "seed_start": false,
+        "orchestrator_input": false,
+        "raw_tty": false,
+        "owns_transcript": false
+      },
+      "session_id": {
+        "mint": "pinned"
+      },
+      "models": [],
+      "model_select": {
+        "supported": false,
+        "on_resume": false,
+        "configured_elsewhere": false,
+        "offered": []
+      },
+      "instructions": {
+        "files": []
+      },
+      "tools": {
+        "mcp": "copilot-additional-mcp-config"
+      },
+      "usage": {
+        "source": "none"
+      },
+      "terminal": {
+        "repaint": "none"
+      },
+      "status": "active",
+      "status_reason": null
+    },
+    {
+      "id": "antigravity",
+      "present": true,
+      "supports_new": true,
+      "supports_seed_start": false,
+      "seed_reason": "no seed-capable start yet",
+      "bin": "/fixture/bin/agy",
+      "label": "Antigravity",
+      "kind": "agent",
+      "family": "antigravity",
+      "runtime": "pty",
+      "api": null,
+      "display": {
+        "name": "antigravity",
+        "badge": "ag",
+        "accent": "lime",
+        "id_prefix": null,
+        "order": 50
+      },
+      "capabilities": {
+        "resume": true,
+        "new": true,
+        "archive": true,
+        "handoff_target": false,
+        "seed_start": false,
+        "orchestrator_input": true,
+        "raw_tty": true,
+        "owns_transcript": false
+      },
+      "session_id": {
+        "mint": "adopt"
+      },
+      "models": [],
+      "model_select": {
+        "supported": false,
+        "on_resume": false,
+        "configured_elsewhere": true,
+        "offered": []
+      },
+      "instructions": {
+        "files": [
+          "GEMINI.md"
+        ]
+      },
+      "tools": {
+        "mcp": null
+      },
+      "usage": {
+        "source": "plan"
+      },
+      "terminal": {
+        "repaint": "winch"
+      },
+      "status": "active",
+      "status_reason": null
+    },
+    {
+      "id": "kimi",
+      "present": true,
+      "supports_new": true,
+      "supports_seed_start": true,
+      "seed_reason": null,
+      "bin": "/fixture/bin/kimi",
+      "label": "Kimi Code",
+      "kind": "agent",
+      "family": "kimi",
+      "runtime": "pty",
+      "api": null,
+      "display": {
+        "name": "kimi",
+        "badge": "ki",
+        "accent": "magenta",
+        "id_prefix": "session_",
+        "order": 60
+      },
+      "capabilities": {
+        "resume": true,
+        "new": true,
+        "archive": true,
+        "handoff_target": true,
+        "seed_start": true,
+        "orchestrator_input": true,
+        "raw_tty": true,
+        "owns_transcript": false
+      },
+      "session_id": {
+        "mint": "adopt"
+      },
+      "models": [],
+      "model_select": {
+        "supported": false,
+        "on_resume": false,
+        "configured_elsewhere": true,
+        "offered": []
+      },
+      "instructions": {
+        "files": [
+          "AGENTS.md"
+        ]
+      },
+      "tools": {
+        "mcp": null
+      },
+      "usage": {
+        "source": "plan"
+      },
+      "terminal": {
+        "repaint": "wipe"
+      },
+      "status": "active",
+      "status_reason": null
+    },
+    {
+      "id": "apichat",
+      "present": false,
+      "supports_new": false,
+      "supports_seed_start": false,
+      "seed_reason": "no seed-capable start yet",
+      "bin": null,
+      "label": "API agent",
+      "kind": "agent",
+      "family": "apichat",
+      "runtime": "chat",
+      "api": null,
+      "display": {
+        "name": "API agent",
+        "badge": "api",
+        "accent": "blue",
+        "id_prefix": null,
+        "order": 80
+      },
+      "capabilities": {
+        "resume": true,
+        "new": true,
+        "archive": true,
+        "handoff_target": false,
+        "seed_start": false,
+        "orchestrator_input": false,
+        "raw_tty": false,
+        "owns_transcript": false
+      },
+      "session_id": {
+        "mint": "pinned"
+      },
+      "models": [],
+      "model_select": {
+        "supported": false,
+        "on_resume": false,
+        "configured_elsewhere": true,
+        "offered": []
+      },
+      "instructions": {
+        "files": []
+      },
+      "tools": {
+        "mcp": null
+      },
+      "usage": {
+        "source": "tokens"
+      },
+      "terminal": {
+        "repaint": "none"
+      },
+      "status": "active",
+      "status_reason": null
+    },
+    {
+      "id": "shell",
+      "present": true,
+      "supports_new": true,
+      "supports_seed_start": false,
+      "seed_reason": "not an agent engine",
+      "bin": "/fixture/bin/bash",
+      "label": "Shell",
+      "kind": "terminal",
+      "family": "shell",
+      "runtime": "pty",
+      "api": null,
+      "display": {
+        "name": "shell",
+        "badge": "sh",
+        "accent": "slate",
+        "id_prefix": null,
+        "order": 90
+      },
+      "capabilities": {
+        "resume": true,
+        "new": true,
+        "archive": true,
+        "handoff_target": false,
+        "seed_start": false,
+        "orchestrator_input": false,
+        "raw_tty": false,
+        "owns_transcript": false
+      },
+      "session_id": {
+        "mint": "pinned"
+      },
+      "models": [],
+      "model_select": {
+        "supported": false,
+        "on_resume": false,
+        "configured_elsewhere": false,
+        "offered": []
+      },
+      "instructions": {
+        "files": []
+      },
+      "tools": {
+        "mcp": null
+      },
+      "usage": {
+        "source": "none"
+      },
+      "terminal": {
+        "repaint": "none"
+      },
+      "status": "active",
+      "status_reason": null
+    }
+  ],
+  "problems": []
+}

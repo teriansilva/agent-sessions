@@ -1,0 +1,183 @@
+import { RotateCw } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useConfig } from "../app/config";
+import { MissionConsole } from "../components/pulse/MissionConsole";
+import { OrchestratorHealth } from "../components/pulse/OrchestratorHealth";
+import { api } from "../lib/api";
+import { OPERATOR_PENDING } from "../lib/orchestratorAction";
+import type {
+  OrchestratorAction,
+  PulseOverview,
+} from "../types/api";
+import action from "../components/ui/actionButton.module.css";
+import styles from "./Pulse.module.css";
+
+// DEPTHS lived here for the route's FAST/MED/SLOW selector, removed with the scan chrome
+// (#929). The scan itself, and its depth, were retired later (#2179).
+
+/** One curated session card. ALL model-derived text (`synthesis`, `ai_summary`, the page
+ *  banner, an Ask `why`) is rendered as plain text via React's default escaping — never
+ *  markup — so a session title/summary can't inject into the page (#441). `why` (#522) is
+ *  the Ask panel's one-line match reason, an optional extra row on the same card. */
+// `Card` and `AskPanel` lived here. Both are gone with the grid (#878): a card is now a
+// mission row in `MissionRail`, and Ask is `Composer` inside the mission thread. Their
+// assertions did not go with them — see the PR's two-tier spec migration.
+
+export default function Pulse() {
+  const cfg = useConfig()?.pulse;
+  const [overview, setOverview] = useState<PulseOverview | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  /** Bumped by Retry: the overview read runs again (#1573, board M3 — a failed read is a state with
+   *  a fix, not a dead end). */
+  const [attempt, setAttempt] = useState(0);
+
+  // Bumped when an action is resolved from a card, so the orchestrator panel (which owns its
+  // own pending/feed) re-reads rather than showing a count for something already decided.
+  const [orchEpoch, setOrchEpoch] = useState(0);
+  // Monotonic generation for overview writes. `reloadOverview` and `scanNow` race: an older
+  // response arriving last would replace a newer one, and since the older snapshot predates a
+  // rejection it would RESURRECT the settled action and its Approve/Reject buttons. The server
+  // CAS still refuses the delivery, but the UI would be offering something already decided.
+  const overviewGen = useRef(0);
+  const applyOverview = useCallback((gen: number, o: PulseOverview) => {
+    if (gen < overviewGen.current) return; // a newer write already landed
+    overviewGen.current = gen;
+    setOverview(o);
+  }, []);
+  // Re-fetch the overview. Deciding an action on a card removes it from the ledger's
+  // live set, so the card must lose its controls without a reload (#754).
+  const reloadOverview = useCallback(
+    (settled?: OrchestratorAction) => {
+      // Apply the settlement to the cards we already hold, BEFORE the refetch — and fence any
+      // older response with the same generation counter. The GET can fail (offline, 5xx) and
+      // its catch is deliberately silent, which left the settled action sitting on the card
+      // while `ActionRow` cleared `busy` in its `finally` — so the controls came back enabled
+      // for something the server had already decided, and stayed that way until a reload. The
+      // decision is known from the response; it does not need a round trip to be shown.
+      if (settled) {
+        overviewGen.current += 1;
+        setOverview((prev) => {
+          if (!prev) return prev;
+          const stillPending = OPERATOR_PENDING.has(settled.state);
+          return {
+            ...prev,
+            cards: prev.cards.flatMap((c) => {
+              if (c.pending_action?.id !== settled.id) return [c];
+              // Mirror the server overlay: keep the row only while the action is still the
+              // operator's to decide.
+              if (stillPending) return [{ ...c, pending_action: settled }];
+              // A card that exists only because the action did has nothing left to show —
+              // dropping it beats leaving an empty phantom under "Needs you".
+              if (c.synthesized_for_action) return [];
+              // Undo the re-band too. `_attach_pending` overwrote `state` with `needs_you`
+              // *because* of this action; with the action gone the band has to go back, or
+              // the session sits under "Needs you" with nothing pending until some later
+              // fetch succeeds — and the failing fetch is the case this whole branch exists
+              // for.
+              return [
+                {
+                  ...c,
+                  pending_action: undefined,
+                  state: c.state_without_action ?? c.state,
+                },
+              ];
+            }),
+          };
+        });
+      }
+      const gen = ++overviewGen.current;
+      api
+        .pulse()
+        .then((o) => applyOverview(gen, o))
+        .catch(() => undefined);
+      setOrchEpoch((n) => n + 1);
+    },
+    [applyOverview],
+  );
+
+  useEffect(() => {
+    let live = true;
+    const gen = ++overviewGen.current;
+    api
+      .pulse()
+      .then((o) => {
+        if (!live) return;
+        setError(null);
+        applyOverview(gen, o);
+      })
+      .catch(() => live && setError("Couldn’t load the overview."));
+    return () => {
+      live = false;
+    };
+  }, [applyOverview, attempt]);
+
+  // `changeDepth` and `scanNow` were the route's scan controls and went with the header
+  // (#929); the scan itself was retired in #2179, and the cards are built live per GET.
+
+
+  return (
+    <div className={styles.pulse}>
+      {/* ONE HEADER, AND NO SCAN VOCABULARY (#929).
+          The window selector, the FAST/MED/SLOW depth and "Scan now" were Pulse's
+          operator-triggered scan model, left behind when the dashboard was replaced. They are
+          removed from the ROUTE here; #2179 later retired the scan itself (the cards are built
+          live per request), leaving `window_days` as the one setting, in Settings → HQ.
+
+          The live-session count replaces the scan window as orientation. The MISSION count is
+          deliberately not here: the console owns the mission list, and reaching into it from the
+          route would mean a second fetch of the same thing purely to render a number. */}
+      <header className={styles.head}>
+        <div className={styles.headLeft}>
+          {/* HQ's Missions view (#2146: its own header, no in-page view strip — HQ's views are
+              switched from the top bar's HQ sub-menu). The route became `/mission` in #948;
+              `/pulse` still redirects there, so old bookmarks and notification links keep
+              working. */}
+          <span className="nj-kicker">
+            <span className="nj-notch" aria-hidden="true" />
+            HQ // <b>Missions</b>
+          </span>
+          <h1 className={styles.h1}>Missions</h1>
+        </div>
+      </header>
+
+      {error && (
+        <div className={styles.err} role="alert" data-testid="pulse-error">
+          <span className={styles.errText}>{error}</span>
+          <button
+            type="button"
+            className={`${action.ghost} ${action.compact}`}
+            onClick={() => setAttempt((n) => n + 1)}
+            data-testid="pulse-retry"
+          >
+            <RotateCw size={13} aria-hidden="true" /> Retry
+          </button>
+        </div>
+      )}
+
+      {/* Narrow the whole list, not just the queue (#754) — the filters reach all sessions,
+          including the ones the orchestrator has said nothing about, which is most of them. */}
+      {/* THE AUTONOMY STRIP IS GONE (#929), and its own comment is why.
+          It read: "The AUTONOMY strip, below the console (#878) … what you arrive to USE goes
+          above what you arrive to READ" — while rendering ABOVE the console, doing the thing it
+          forbade. It was also a second control surface for settings Settings already owned, and
+          its empty state literally told the operator to go there.
+
+          What did NOT move is the evidence. `OrchestratorHealth` is read-only and renders only
+          when the orchestrator is failing: #772's distinction between "nothing needed you" and
+          "nothing was CHECKED" is invisible on a quiet page, so an outage has to be legible on
+          the page the operator is actually on, not only on the one that can fix it. */}
+      <OrchestratorHealth refreshKey={orchEpoch} />
+
+      {/* MISSION CONTROL (#878). This replaces the card grid, the state-of-your-work banner and
+          the standalone Ask box — a card is now a mission row in the rail, the banner is the
+          mission's own recap stream, and Ask is the composer. Nothing is orphaned by that: a
+          live session is adopted into a mission from the session itself (#948). */}
+      <MissionConsole
+        allCards={overview?.cards ?? []}
+        configured={cfg?.configured ?? false}
+        onActionResolved={reloadOverview}
+        onMembershipChanged={reloadOverview}
+      />
+    </div>
+  );
+}

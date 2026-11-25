@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+"""The multi-user P0 harness (#2370; rules in docs/multi-user/contract.md §7–§9).
+
+    scripts/multiuser-p0/harness preflight          # refuses unless this is the approved VM
+    scripts/multiuser-p0/harness host-facts         # the host facts an evidence file freezes
+    scripts/multiuser-p0/harness check FILE.json    # complete? exit 1 incomplete, 4 unreadable
+    scripts/multiuser-p0/harness summary FILE.json # per attack ID: pass, fail, unsupported, not-run
+
+It runs only inside the disposable VM the operator approved for P0b: `preflight` (which every
+measuring command runs first) refuses without the VM's marker file, as root, as an account that
+is not one of the VM's two test accounts, as a privileged account, or on a host listed in
+$MULTIUSER_P0_REFUSE_HOSTS. It never creates or changes accounts and uses synthetic credentials
+only. Nothing in the app imports it.
+"""
+
+from __future__ import annotations
+
+import grp
+import json
+import os
+import pwd
+import socket
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import mu_p0  # noqa: E402
+
+
+def _preflight() -> list[str]:
+    try:
+        marker = mu_p0.MARKER.read_text()
+    except OSError:
+        marker = None
+    user = pwd.getpwuid(os.getuid()).pw_name
+    groups = {grp.getgrgid(g).gr_name for g in os.getgroups()}
+    return mu_p0.preflight(
+        marker=marker,
+        hostname=socket.gethostname(),
+        refuse_hosts=os.environ.get(mu_p0.REFUSE_HOSTS_ENV, ""),
+        user=user,
+        uid=os.getuid(),
+        groups=groups,
+    )
+
+
+def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(  # noqa: S603 - a literal argv; the sha is already validated as 40 hex
+        ["/usr/bin/git", "-C", str(repo), *args],
+        capture_output=True,
+        timeout=30,
+        env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"},
+    )
+
+
+def _commit_exists(sha: str) -> bool | None:
+    """Whether ``sha`` names a commit in the checkout this script lives in (fetch first); None
+    when the checkout cannot be read at all. "Not a repository" is told apart from "no such
+    commit" structurally (``rev-parse --git-dir``), never by matching an error message."""
+    if not Path("/usr/bin/git").exists():
+        return None
+    repo = Path(__file__).resolve().parents[2]
+    if _git(repo, "rev-parse", "--git-dir").returncode != 0:
+        return None
+    return _git(repo, "cat-file", "-e", f"{sha}^{{commit}}").returncode == 0
+
+
+def main(argv: list[str]) -> int:
+    if not argv or argv[0] not in ("preflight", "host-facts", "check", "summary"):
+        print(__doc__, file=sys.stderr)
+        return 2
+    cmd = argv[0]
+    if cmd in ("preflight", "host-facts"):
+        problems = _preflight()
+        for p in problems:
+            print(f"refused: {p}", file=sys.stderr)
+        if problems:
+            return 3
+        if cmd == "host-facts":
+            print(json.dumps(mu_p0.host_facts(), indent=2, sort_keys=True))
+        return 0
+    if len(argv) != 2:
+        print(__doc__, file=sys.stderr)
+        return 2
+    try:
+        evidence = json.loads(Path(argv[1]).read_text())
+        if not isinstance(evidence, dict):
+            raise ValueError("the top level must be an object")
+    except (OSError, ValueError) as exc:  # JSONDecodeError is a ValueError
+        print(f"unreadable evidence: {exc}", file=sys.stderr)
+        return 4
+    if cmd == "check":
+        problems = mu_p0.evidence_problems(evidence)
+        sha = str((evidence.get("meta") or {}).get("source_sha", ""))
+        if not problems:
+            try:
+                exists = _commit_exists(sha)
+            except (OSError, subprocess.SubprocessError) as exc:
+                exists = None
+                print(f"cannot read the checkout: {exc}", file=sys.stderr)
+            if exists is None:
+                print("cannot read the checkout to verify meta.source_sha", file=sys.stderr)
+                return 4
+            if not exists:
+                problems.append(f"meta.source_sha {sha} is not a commit in this checkout")
+        for p in problems:
+            print(p)
+        return 1 if problems else 0
+    print(json.dumps(mu_p0.summarize(evidence.get("rows") or []), indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

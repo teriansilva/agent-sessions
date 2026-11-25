@@ -1,0 +1,156 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>#1725 inline remedy + background approval — mockup</title>
+<link rel="stylesheet" href="base.css">
+<script src="icons.js"></script>
+<style>
+.notsent { display: inline-flex; margin-top: 6px; font: 600 10px var(--font-mono); letter-spacing: .14em; color: var(--text-3); gap: 6px; align-items: center; }
+.refuse { border: 1px solid var(--line-strong); border-left: 3px solid var(--status-unknown); background: var(--bg-1); padding: 12px 14px; display: grid; gap: 8px; }
+.refuse .rh { display: flex; align-items: center; gap: 8px; }
+.refuse .msg { font-size: 14px; color: var(--text-1); font-weight: 500; }
+.refuse .sub { font-size: 13px; color: var(--text-2); line-height: 1.5; margin: 0; }
+.warnl { display: flex; align-items: center; gap: 8px; font: 12px var(--font-mono); color: var(--warn-text); }
+.warnl code { color: var(--text-1); }
+.ract { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 2px; }
+.btn.danger-o { --face: var(--bg-1); --edge: var(--status-down); color: var(--danger-text); }
+.card { border: 1px solid var(--line-strong); border-left: 3px solid var(--status-degraded); background: var(--bg-1); min-width: 0; }
+.origin { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px dashed var(--line-strong); background: var(--bg-0); font: 600 10px var(--font-mono); letter-spacing: .16em; text-transform: uppercase; color: var(--text-2); }
+.origin b { color: var(--text-1); font-weight: 600; letter-spacing: .06em; text-transform: none; font-size: 12px; }
+.cardHead { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); font: 700 11px var(--font-mono); letter-spacing: .12em; text-transform: uppercase; }
+.cardHead .w { margin-left: auto; }
+.kv { margin: 0; padding: 10px 12px; display: grid; gap: 8px; font-size: 13px; }
+.kvRow { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 4px 14px; }
+.kv dt { font: 11px var(--font-mono); color: var(--text-3); text-transform: uppercase; letter-spacing: .08em; padding-top: 2px; }
+.kv dd { margin: 0; min-width: 0; }
+.cmd { display: block; padding: 8px 10px; background: var(--surface-3); border: 1px solid var(--line); font: 12.5px/1.5 var(--font-mono); }
+.why { margin: 0 12px 10px; font-size: 12.5px; color: var(--text-2); border-left: 2px solid var(--line-strong); padding-left: 8px; }
+.actions { display: flex; gap: 10px; padding: 0 12px 12px; }
+.phone .kvRow { grid-template-columns: minmax(0, 1fr); }
+.phone .actions, .phone .ract { flex-direction: column; }
+.phone .actions .btn, .phone .ract .btn { width: 100%; }
+.turnnow { font: 12px var(--font-mono); color: var(--text-2); display: flex; gap: 8px; align-items: center; }
+.bars i { display: inline-block; width: 10px; height: 3px; background: var(--accent); margin-right: 3px; opacity: .7; }
+
+.t-dark, .t-light { --on-danger: #ffffff; }
+.stage { position: relative; overflow: hidden; }
+.dlg { background: var(--bg-1); border: 1px solid var(--hud-dim); border-top: 2px solid var(--hud); clip-path: polygon(14px 0,100% 0,100% calc(100% - 14px),calc(100% - 14px) 100%,0 100%,0 14px); }
+.dlg.float { position: relative; width: 460px; box-shadow: 0 18px 48px rgba(0,0,0,.55); }
+.dlg .dh { display: flex; align-items: center; gap: 10px; padding: 16px 18px 6px; }
+.dlg h2 { margin: 0; font: 600 15px/1.3 var(--font-display); letter-spacing: .06em; text-transform: uppercase; color: var(--text-1); }
+.dlg .db { padding: 6px 18px 4px; }
+.dlg .db p { margin: 0 0 10px; font-size: 14px; color: var(--text-1); }
+.jl { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+.jl li { display: grid; grid-template-columns: 12px minmax(0, 1fr); column-gap: 10px; row-gap: 3px; padding: 9px 2px; border-bottom: 1px solid var(--line); align-items: center; }
+.jl .nm { font: 13px var(--font-mono); color: var(--text-1); }
+.jl .mt { grid-column: 2; font: 11px var(--font-mono); color: var(--text-2); }
+.jl .mt .src { color: var(--text-3); letter-spacing: .1em; text-transform: uppercase; font-size: 10px; }
+.untr { display: flex; gap: 10px; align-items: center; padding: 10px 2px 0; font-size: 13px; color: var(--warn-text); }
+.dlg .da { display: flex; justify-content: flex-end; gap: 10px; padding: 16px 18px 18px; }
+.btn.danger { --face: var(--status-down); --edge: var(--status-down); color: var(--on-danger); }
+.focus { outline: 2px solid var(--accent-text); outline-offset: -3px; }
+.dlg.sheetd { position: absolute; left: 0; right: 0; bottom: 0; z-index: 10; clip-path: none; border-left: 0; border-right: 0; }
+.sheetd .da { flex-direction: column-reverse; }
+.sheetd .da .btn { width: 100%; }
+.held { border-left-color: var(--status-unknown); }
+</style></head>
+<body><div id="root"></div>
+<script>
+const head = (phone, led = ['up', 'w-ok', 'Working']) => `
+<div class="phead"><span class="facts"><span class="led ${led[0]}"></span><span class="word ${led[1]}">${led[2]}</span></span><span class="badge">CLAUDE</span>
+<span class="ptitle">Fix paging drops rows under a filter</span>
+<span class="pmeta">${phone ? '' : '<span class="chip">CTX 52.4K</span>'}<span class="ibtn plate ${phone ? 'lg' : ''}">${I('more')}</span></span></div>`;
+const comp = (phone) => `<div class="comp"><div class="ta">Message Claude…</div>${phone ? `<span class="ibtn plate lg">${I('mic')}</span>` : ''}<span class="btn plate primary">Send</span></div>`;
+const strip1 = `<div class="strip"><div class="strip-bar"><span class="led up"></span><span class="k">1 background job</span><span class="sep">·</span><span class="job">npm run dev</span><span class="age">22m</span><span class="tog">SHOW ${I('cu')}</span></div></div>`;
+const strip2 = `<div class="strip"><div class="strip-bar"><span class="led up"></span><span class="k">1 background job</span><span class="sep">·</span><span class="job">test-runner</span><span class="age">3m</span><span class="tog">SHOW ${I('cu')}</span></div></div>`;
+
+const logA = `
+<div class="reply"><div class="who">Claude <span class="ts">10:31 · 22 s</span></div><div class="txt"><p>The dev server is running in the background on :5173.</p></div></div>
+<div class="user"><div class="who">You <span class="ts">10:53</span></div><div class="txt">Now add the paging test and run it.</div><span class="notsent"><span class="led idle"></span>NOT SENT</span></div>
+<div class="refuse" role="alert"><div class="rh"><span class="led idle"></span><span class="word w-2">Refused</span></div>
+  <div class="msg">The previous worker's state is unknown.</div>
+  <p class="sub">The message wasn't sent. Stop the old worker and resume this session from its transcript, then send again.</p>
+  <div class="warnl"><span class="led att"></span>Ends 1 background job: <code>npm run dev</code></div>
+  <div class="ract"><span class="btn plate danger-o">Stop and resume</span></div></div>`;
+
+const logB = `
+<div class="user"><div class="who">You <span class="ts">11:02</span></div><div class="txt">Update session-list-filtering.md for the paging fix.</div></div>
+<div class="turnnow"><span class="bars"><i></i><i></i><i></i></span>Your turn is running · Edit docs/invariants/session-list-filtering.md</div>
+<div class="card"><div class="origin"><span class="led up"></span>Background task · <b>test-runner sub-agent</b></div>
+  <div class="cardHead"><span class="led att"></span>Run command<span class="w word" style="color:var(--warn-text)">Waiting for you</span></div>
+  <dl class="kv"><div class="kvRow"><dt>Command</dt><dd><code class="cmd">pytest -x tests/</code></dd></div>
+    <div class="kvRow"><dt>Folder</dt><dd class="mono" style="color:var(--text-2)">~/agentwork/agent-sessions/paging</dd></div></dl>
+  <p class="why">Requested by a background task, not your current turn.</p>
+  <div class="actions"><span class="btn plate primary">Approve once</span><span class="btn plate ghost">Decline</span></div></div>`;
+
+const desk = (theme, log, strip, h) => `
+<div class="col ${theme}"><p class="lbl">Desktop · ${theme === 't-dark' ? 'dark' : 'light'}</p>
+<div class="nj-panel is-hero" style="width:860px;height:${h}px"><div class="nj-face"><span class="nj-rail is-short"></span>
+  <div class="pane">${head(false)}<div class="log">${log}</div>${strip}${comp(false)}</div></div></div></div>`;
+const phone = (theme, log, strip) => `
+<div class="col"><p class="lbl">Phone 390 px · ${theme === 't-dark' ? 'dark' : 'light'}</p>
+<div class="phone ${theme}"><div class="ptop"><span class="ibtn lg">${I('menu')}</span><span class="mark">BATTLELAB</span></div>
+  <div class="pane">${head(true)}<div class="log" style="justify-content:flex-end">${log}</div>${strip}${comp(true)}</div></div></div>`;
+
+const a = `
+<section class="board t-dark board-grid" id="r1">
+  <p class="cap"><b>#1725 · board 1</b> refusal with its inline remedy · desktop dark + phone light <span>a dead end offers the action it names</span></p>
+  <div class="row">${desk('t-dark', logA, strip1, 640)}${phone('t-light', logA, strip1)}
+    <div class="col" style="width:240px;margin-top:22px">
+      <div class="note"><b>Remedy inline</b>: the refusal carries a machine-readable <i>remedy</i> (stop_resume / retry / resume_with_attachments), and the pane renders it as the button it names. It goes through the existing route and its checks.</div>
+      <div class="note"><b>Warns first</b>: because background work is running, the card says what the remedy ends before it's pressed (warn LED + words). With no background work, the line is absent.</div>
+      <div class="note">The refusal is grey (state unknown), not red: nothing failed yet. "Stop and resume" is outlined in <i>--status-down</i> because it ends a job. It's a 44 px target, full width on the phone.</div>
+    </div></div>
+</section>`;
+const b = `
+<section class="board t-dark board-grid" id="r2">
+  <p class="cap"><b>#1725 · board 2</b> background-origin approval · desktop light + phone dark <span>attributed to the background task, one-shot only</span></p>
+  <div class="row">${desk('t-light', logB, strip2, 620)}${phone('t-dark', logB, strip2)}
+    <div class="col" style="width:240px;margin-top:22px">
+      <div class="note"><b>Origin header</b> above the usual request card: <i>BACKGROUND TASK · test-runner sub-agent</i>. It's on a dashed rule, separate from the card's own head. The origin is part of what the operator sees and of the digest.</div>
+      <div class="note"><b>Approve once</b> and <b>Decline</b> only. No "Always": standing grants for background origins are out of scope.</div>
+      <div class="note">The one-line note keeps it apart from the operator's own running turn, shown above it. The request rule and LED are <i>--status-degraded</i>: a request waiting for you is a state.</div>
+    </div></div>
+</section>`;
+
+const strip3 = `<div class="strip"><div class="strip-bar"><span class="led up"></span><span class="k">3 background jobs</span><span class="sep">·</span><span class="job">npm run dev</span><span class="age">22m</span><span class="sep">·</span><span class="job">pytest -x</span><span class="age">3m</span><span class="tog">SHOW ${I('cu')}</span></div></div>`;
+const logC = `
+<div class="reply"><div class="who">Claude <span class="ts">16:40 · 9 s</span></div><div class="txt"><p>All three watchers are running; I'll check back when the suite finishes.</p></div></div>
+<div class="refuse held" role="status"><div class="rh"><span class="led idle"></span><span class="word w-2">Held</span></div>
+  <div class="msg">Conversation full — it continues once its background work finishes: 3 tracked jobs, plus more work that isn't tracked.</div>
+  <p class="sub">Nothing is lost: the next turn starts a fresh connection after the jobs end. Or stop them now and resume from the transcript.</p>
+  <div class="ract"><span class="btn plate danger-o">Stop and resume</span></div></div>`;
+const confirmBody = (sheet) => `
+<div class="dlg ${sheet ? 'sheetd' : 'float'}" role="dialog">${sheet ? '<div class="grab"></div>' : ''}
+  <div class="dh"><span class="notch"></span><h2>Stop and resume?</h2></div>
+  <div class="db"><p>Stopping ends 3 tracked background jobs:</p>
+    <ul class="jl">
+      <li><span class="led up"></span><span class="nm">npm run dev</span><span class="mt"><span class="src">agent task</span> · running 22m</span></li>
+      <li><span class="led up"></span><span class="nm">pytest -x</span><span class="mt"><span class="src">agent task</span> · running 3m</span></li>
+      <li><span class="led up"></span><span class="nm">cargo</span><span class="mt"><span class="src">process</span> · pid 48211 · started 1h ago</span></li>
+    </ul>
+    <div class="untr"><span class="led att"></span>Untracked background work may also end.</div></div>
+  <div class="da"><span class="btn plate ghost focus">Keep running</span><span class="btn plate danger">Stop and end jobs</span></div>
+</div>`;
+const c = `
+<section class="board t-dark board-grid" id="r3">
+  <p class="cap"><b>#1725 · board 3</b> held rollover · desktop dark + phone light <span>the conversation is full, but the generation waits for its background work</span></p>
+  <div class="row">
+    <div class="col t-dark"><p class="lbl">Desktop · dark · held notice</p>
+      <div class="nj-panel is-hero" style="width:760px;height:560px"><div class="nj-face"><span class="nj-rail is-short"></span>
+        <div class="pane">${head(false, ['up','w-ok','Working'])}<div class="log" style="justify-content:flex-end">${logC}</div>${strip3}${comp(false)}</div></div></div>
+      <p class="lbl" style="margin-top:6px">Desktop · dark · "Stop and resume" pressed (dialog)</p>
+      ${confirmBody(false)}
+    </div>
+    <div class="col"><p class="lbl">Phone 390 px · light · confirmation sheet</p>
+      <div class="phone t-light stage"><div class="ptop"><span class="ibtn lg">${I('menu')}</span><span class="mark">BATTLELAB</span></div>
+        <div class="pane">${head(true)}<div class="log" style="justify-content:flex-end">${logC}</div>${strip3}${comp(true)}</div>
+        <div class="scrim"></div>${confirmBody(true)}</div></div>
+    <div class="col" style="width:250px;margin-top:22px">
+      <div class="note"><b>Held, not ended</b>: at the result-ledger cap the generation ends only <i>between turns</i>. With background work running it waits for that work. The notice is grey (a state, not a failure), with an LED + the word HELD.</div>
+      <div class="note"><b>Tracked and untracked</b>: the notice counts the tracked jobs, and the "plus more work that isn't tracked" covers background-overflow work beyond the 128 tracked tasks.</div>
+      <div class="note"><b>Confirmation</b> lists the 3 tracked jobs. It warns "Untracked background work may also end." in <i>--warn-text</i> with a warn LED. Focus starts on Keep running, and "Stop and end jobs" is the filled destructive confirm. 44 px targets.</div>
+    </div>
+  </div>
+</section>`;
+document.getElementById('root').innerHTML = a + b + c;
+</script></body></html>

@@ -1,0 +1,1034 @@
+/* App shell — tactical-HUD framework (#211 redux). Three full-width rows: a command TOPBAR
+ * (brand + SYS/MISSION telemetry + actions), the floating-panel DECK (a session-list sidebar
+ * panel + a routed main/terminal panel, both framed with margins so they float on the
+ * NIGHTJAR atmosphere, #1531), and a CLASSIFICATION footer bar.
+ * Desktop (>800px): 320px sidebar column; the single command-bar toggle collapses it
+ *   (.app.collapsed → pane full-width). Mobile (≤800px): the sidebar is an off-canvas drawer;
+ *   the command bar carries the hamburger. No rounded corners anywhere — the brackets are the
+ *   corner treatment (only LEDs/dots stay circular).
+ * Settings (#1129) is the one route with NO sidebar at any width (.app.noSidebar): the aside
+ * is hidden in place — mounted, never unmounted — and the grid collapses to the pane. */
+.app {
+  --app-header-height: 52px;
+  display: grid;
+  /* Desktop sidebar column width is the resizable `--sidebar-w` (#507), defaulting to 320px.
+   * Collapsed + mobile rules below override this track entirely. */
+  grid-template-columns: var(--sidebar-w, 320px) 1fr;
+  /* HUD framework (#211 redux): three full-width-flanked rows — a fixed 52px command TOPBAR,
+   * a bounded DECK row, and a fixed 28px CLASSIFICATION footer. The topbar and footer are
+   * pinned (fixed track sizes, not `auto`) so the deck row gets all the remaining height. The
+   * deck row is minmax(0, 1fr) so its grid items can't grow past the viewport — the compose bar
+   * shrinks the terminal instead of overflowing it (#7) and window-resize reflow works (#8).
+   * The deck panels take margins (below) so they float on the atmosphere with their frames
+   * fully visible. */
+  /* The `callbar` row (#1397) is `auto`: empty (0 px) unless a minimised call shows its bar. */
+  grid-template-rows: var(--app-header-height) auto minmax(0, 1fr) 28px;
+  grid-template-areas:
+    "topbar   topbar"
+    "callbar  callbar"
+    "sidebar  pane"
+    "classbar classbar";
+  height: 100dvh;
+  overflow: hidden;
+  /* Sit above the fixed atmosphere (Atmosphere.tsx, #1531); transparent so it shows through
+   * the frosted-glass chrome. */
+  position: relative;
+  z-index: var(--z-raised);
+  background: transparent;
+  /* Make .app a backdrop ROOT (#211 4b). The frosted chrome — the floating panels and, on
+   * mobile, the off-canvas sidebar drawer — relies on backdrop-filter sampling the content
+   * behind it. On mobile a scrollable xterm pane is promoted to its own compositing layer,
+   * which a position:fixed drawer can't sample across, so the drawer's blur had nothing to
+   * frost (terminal text showed through sharp). isolation:isolate forces everything inside
+   * .app to flatten into the backdrop image the chrome samples, so the drawer (and panels)
+   * blur the terminal and atmosphere reliably. Same class of fix as keeping the atmosphere inside .app. */
+  isolation: isolate;
+}
+/* Settings (#1129): the utility surface renders WITHOUT the session sidebar at EVERY width —
+ * both of its viewport forms (the docked column and the mobile off-canvas drawer) come from
+ * this one aside. The rule is unconditional and the aside stays MOUNTED: `display: none` is
+ * the identical DOM state a desktop-collapsed sidebar already produces, so #1007's
+ * sidebar-continuity contract holds across a Settings visit — the list's rows, cursor and
+ * poll survive, and returning to a session restores them with no remount fetch. The desktop
+ * grid collapse to the pane shares the collapsed rule below. */
+.app.noSidebar .sidebar {
+  display: none;
+}
+/* Collapsed (desktop only — mobile uses the off-canvas drawer, scoped below): no sidebar
+ * column, pane full-width. */
+@media (min-width: 801px) {
+  .app.collapsed,
+  .app.noSidebar {
+    /* minmax(0, ...), never a bare 1fr: an item in a lone 1fr track sets that track's minimum to
+     * its own min-content, so a full footer grew the whole shell past the viewport and pushed the
+     * right of every bar off screen. With the list open the bars span two tracks, one flexible,
+     * and the same content has no automatic minimum, which is why only this form overflowed. */
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "topbar"
+      "callbar"
+      "pane"
+      "classbar";
+  }
+  .app.collapsed .sidebar {
+    display: none;
+  }
+}
+.sidebar {
+  grid-area: sidebar;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  position: relative;
+  /* A floating NIGHTJAR panel (#211 redux → #1531): margins so it sits off the edges, on the
+   * atmosphere. */
+  margin: var(--sp-3) 6px var(--sp-3) var(--sp-3);
+  --nj-edge: var(--hud-dim);
+  /* NIGHTJAR frame (#1531, the `nj-frame` recipe on one element): a chamfered edge, the two cut
+     lines in the background, the lit rail as the top border, an opaque face. */
+  --c: var(--cut);
+  border: 1px solid var(--nj-edge);
+  border-top: 2px solid var(--hud);
+  background:
+    linear-gradient(
+        to bottom right,
+        transparent calc(50% - 1px),
+        var(--nj-edge) calc(50% - 0.5px) calc(50% + 0.5px),
+        transparent calc(50% + 1px)
+      )
+      top left / var(--c) var(--c) no-repeat border-box,
+    linear-gradient(
+        to bottom right,
+        transparent calc(50% - 1px),
+        var(--nj-edge) calc(50% - 0.5px) calc(50% + 0.5px),
+        transparent calc(50% + 1px)
+      )
+      bottom right / var(--c) var(--c) no-repeat border-box,
+    var(--bg-1);
+  clip-path: polygon(
+    var(--c) 0,
+    100% 0,
+    100% calc(100% - var(--c)),
+    calc(100% - var(--c)) 100%,
+    0 100%,
+    0 var(--c)
+  );
+}
+/* Boot (#1531, components/shell/BootSequence.tsx): the panels power on in sequence — fade + 6 px
+ * rise, never a scale — once per visit, Full only (motion.css stops it in Reduced / Off). */
+.app.booting .hud-topbar {
+  animation: nj-fade-in var(--t-slow) var(--ease-out) both;
+}
+/* Desktop only: at ≤800px the sidebar is the off-canvas drawer, and its transform IS its open /
+ * closed state. The rise ends at `transform: none` and, filled `both`, showed the CLOSED drawer
+ * for the whole boot (Hermes on #1560). A phone's drawer is not part of the power-on. */
+@media (min-width: 801px) {
+  .app.booting .sidebar {
+    animation: nj-rise-in var(--t-slow) var(--ease-out) 150ms both;
+  }
+}
+.app.booting .terminal-pane {
+  animation: nj-rise-in var(--t-slow) var(--ease-out) 300ms both;
+}
+.app.booting .hud-classbar {
+  animation: nj-fade-in var(--t-slow) var(--ease-out) 450ms both;
+}
+
+/* The sector fade on a route change (App.tsx): the pane's content fades in, never moves. */
+.terminal-pane.sector-in > * {
+  animation: nj-fade-in var(--t-route) var(--ease-out) both;
+}
+
+/* Desktop sidebar resize handle (#507): sits in the 12px gutter between the floating sidebar
+ * and pane panels (each has a 6px facing margin), centered on the grid column boundary at
+ * var(--sidebar-w). Spans the deck row (between the 52px topbar and 28px classbar). The
+ * component renders it only on desktop, expanded; CSS just paints + positions it. */
+.sidebar-resize {
+  position: absolute;
+  top: var(--app-header-height);
+  bottom: 28px;
+  left: var(--sidebar-w, 320px);
+  width: 12px;
+  transform: translateX(-50%);
+  z-index: calc(var(--z-raised) + 2);
+  cursor: col-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  touch-action: none; /* the pointer drag owns the gesture */
+}
+.sidebar-resize-grip {
+  width: 2px;
+  height: 40px;
+  background: var(--line-strong);
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+.sidebar-resize:hover .sidebar-resize-grip,
+.sidebar-resize:focus-visible .sidebar-resize-grip,
+.app.resizing .sidebar-resize-grip {
+  background: var(--hud);
+}
+.sidebar-resize:focus-visible {
+  outline: none;
+}
+/* While dragging: col-resize cursor everywhere + no text selection or stray pointer events
+ * from the canvas / terminal stealing the drag. The handle keeps pointer capture, so it stays
+ * live even though its sibling panels are inert. */
+.app.resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+.app.resizing .sidebar,
+.app.resizing .terminal-pane {
+  pointer-events: none;
+}
+/* The sidebar body fills the remaining height so the session list scrolls within its column. */
+.sidebarBody {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* THE PORTAL SLOT MUST CARRY THE HEIGHT CHAIN, NOT JUST THE POSITION (#935, #937 review 1).
+ *
+ * `.sidebarBody` is bounded, but a plain child of it is `flex: 0 1 auto` — it sizes to its
+ * CONTENT. The mission rail owns `overflow-y: auto`, and an overflow owner inside an unbounded
+ * parent never scrolls: it just grows. Measured before this rule, with a normal 50-row first
+ * page at 1600x900: a 717px sidebar body containing a 2502px rail, `scrollHeight == clientHeight`,
+ * and the last row at y=2393 — off screen, with LOAD MORE unreachable by any amount of wheeling.
+ *
+ * The tests missed it because every fixture had 0 or 1 missions, where content height is under
+ * the bound and nothing needs to scroll. `min-height: 0` is the load-bearing half: without it a
+ * flex item refuses to shrink below its content and the bound is advisory. */
+.missionRailSlot {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* Whatever the console portals in becomes the scroll owner, and drops the divider it draws for
+   the console layout — inside the sidebar that is a line down the middle of a panel. */
+.missionRailSlot > * {
+  flex: 1 1 auto;
+  min-height: 0;
+  border-right: 0;
+}
+/* Sidebar panel header (#211 redux → #548): the 38px HUD row now hosts the sort-order
+ * toggle (ORDER  RECENT|CREATED); the "Sessions" heading is sr-only, "SEC // 01" retired. */
+.sidebar-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 38px;
+  box-sizing: border-box;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+/* The mission route's head row (#948 P2): "MISSIONS" plus the rail's counts, portalled into
+ * `.missionHeadSlot`, in the same 38px row the sessions ORDER control uses. It used to collapse to
+ * 0px once that control stood down (#937), which is exactly the misalignment #948 removes. */
+.missionHeadSlot {
+  margin-left: auto;
+}
+.hud-h {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-label);
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+/* Sidebar sort-order toggle (#548): hud-tag label + two-segment radiogroup on the .hud-tag
+ * type metrics. Square corners per the HUD system. */
+.hud-seg {
+  display: inline-flex;
+  border: 1px solid var(--line-strong);
+}
+.hud-seg button {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  line-height: 1;
+  white-space: nowrap;
+  color: var(--text-3);
+  padding: 6px var(--sp-3);
+  transition:
+    color var(--t-fast) var(--ease-out),
+    background-color var(--t-fast) var(--ease-out);
+}
+.hud-seg button + button {
+  border-left: 1px solid var(--line-strong);
+}
+/* The NIGHTJAR segment: the HUD tint and a lit underline (docs/design.md v2 §6). */
+.hud-seg button[aria-checked="true"] {
+  background: color-mix(in srgb, var(--hud) 18%, transparent);
+  box-shadow: inset 0 -2px 0 var(--hud);
+  color: var(--hud-text);
+}
+.hud-seg button:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+/* Screen-reader-only (#548): keeps the <aside> landmark's "Sessions" name now that the
+ * visible heading became the sort control. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+/* Sidebar panel footer: "60 ENGAGED · 4 LIVE" telemetry tag. */
+.sidebar-foot {
+  flex: none;
+  padding: 9px var(--sp-3);
+  border-top: 1px solid var(--line);
+}
+/* THE BRAND KIT'S LOGO in the command bar (#1589): `BrandMark` and `BrandWordmark` from
+ * components/brand (the one source, web/src/brand, #1590), only ever SCALED here, at the files' own
+ * aspect ratios. The gap is the kit's clear space: three cursor bars (7/64 of the mark) ≈ 9px at
+ * 28px. Amber on dark; the dark plate and the black wordmark on light — the kit's pairs. */
+.hud-brand {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  gap: 9px;
+}
+/* The images and their theme pairs are `components/brand` (#1590); the bar only sizes them. */
+.hud-brand .brand-mark {
+  width: 28px;
+  height: 28px;
+}
+.hud-brand .wm {
+  display: flex;
+}
+.terminal-pane {
+  grid-area: pane;
+  position: relative;
+  /* The floating hero panel (#211 redux → NIGHTJAR #1531): an opaque armour panel with a lit
+   * rail; routed content (landing/settings/overview) sits directly on it — no box-in-a-box. */
+  margin: var(--sp-3) var(--sp-3) var(--sp-3) 6px;
+  /* The one hero panel (docs/design.md v2 §6, §7): a brighter edge. */
+  --nj-edge: color-mix(in srgb, var(--hud) 70%, transparent);
+  /* NIGHTJAR frame (#1531, the `nj-frame` recipe on one element): a chamfered edge, the two cut
+     lines in the background, the lit rail as the top border, an opaque face. */
+  --c: var(--cut);
+  border: 1px solid var(--nj-edge);
+  border-top: 2px solid var(--hud);
+  background:
+    linear-gradient(
+        to bottom right,
+        transparent calc(50% - 1px),
+        var(--nj-edge) calc(50% - 0.5px) calc(50% + 0.5px),
+        transparent calc(50% + 1px)
+      )
+      top left / var(--c) var(--c) no-repeat border-box,
+    linear-gradient(
+        to bottom right,
+        transparent calc(50% - 1px),
+        var(--nj-edge) calc(50% - 0.5px) calc(50% + 0.5px),
+        transparent calc(50% + 1px)
+      )
+      bottom right / var(--c) var(--c) no-repeat border-box,
+    var(--bg-1);
+  clip-path: polygon(
+    var(--c) 0,
+    100% 0,
+    100% calc(100% - var(--c)),
+    calc(100% - var(--c)) 100%,
+    0 100%,
+    0 var(--c)
+  );
+  min-width: 0;
+  min-height: 0; /* allow the flex child (.wrap / .landing, height:100%) to shrink */
+  display: flex;
+  flex-direction: column;
+  /* Stretch the routed child to fill the bounded pane (don't center it vertically — the
+   * landing centers its own card internally, and the terminal must fill the height so the
+   * compose bar shrinks the terminal instead of overflowing). */
+  overflow: hidden;
+}
+.terminal-pane > * {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* Full-width command topbar (#211 redux): spans both columns — toggle, the prominent
+ * BATTLELAB wordmark, SYS/MISSION telemetry, and the actions (the session title lives in
+ * the terminal panel header now, #243).
+ * This replaces both the old sidebar header and the mobile bar (one bar for all widths). */
+.hud-topbar {
+  grid-area: topbar;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: var(--app-header-height);
+  padding: 0 var(--sp-4);
+  background: var(--bg-1);
+  /* The command bar's lit line (#1531). */
+  border-bottom: 1px solid var(--hud);
+  box-shadow: var(--glow-rail);
+}
+/* Topbar corner: the notification bell and the operator tile, against the right edge. (The SYS
+   clock and MISSION timer that sat before it were removed in #1085.) */
+.hud-topbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  /* THE CORNER IS THE CORNER AT EVERY WIDTH (#1058). It used to inherit its right alignment from
+     `.hud-telemetry { margin-left: auto }` sitting immediately before it — which is `display: none`
+     below 1100px, so between 641px and 1100px the cluster sat stranded in the middle of the bar
+     with empty space to its right. That was #750's bug, fixed then for ≤640px only. The operator
+     tile is the last thing in the row and is supposed to be against the edge, so it owns its own
+     alignment rather than borrowing a neighbour's. Above 1100px both carry `auto`, which puts the
+     telemetry right of the sections and the cluster right of the telemetry — unchanged to the eye. */
+  margin-left: auto;
+}
+@media (max-width: 640px) {
+  /* The topbar keeps hamburger, wordmark and sections; the Overview/Settings actions move into the
+   * drawer (the session title lives in the terminal panel header now, #243).
+   *
+   * The notification bell is the one exception (#726): it stays in the topbar at every
+   * width. Burying an alert affordance behind the hamburger defeats the point of push —
+   * tapping a notification has to land you somewhere the bell is glanceable. It keeps its
+   * DOM slot next to Pulse (so desktop order is unchanged) and the nav icons around it
+   * collapse into the drawer as before, which is why .sidebar-actions is still the four
+   * equal icons #494 pinned. */
+  .hud-topbar-actions {
+    display: flex;
+    gap: 4px;
+    /* Anchor the cluster to the right edge with its OWN rule. On desktop it is carried there
+     * by `.hud-telemetry { margin-left: auto }` sitting immediately before it — but the
+     * telemetry is `display: none` at this width, and the auto margin goes with it, which
+     * left the bell stranded mid-bar (#750). Depending on a neighbour's margin for your own
+     * alignment only works while that neighbour exists. */
+    margin-left: auto;
+  }
+}
+/* Full-width classification footer (#211 redux): the bottom HUD bar. */
+.hud-classbar {
+  grid-area: classbar;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  height: 28px;
+  padding: 0 var(--sp-4);
+  background: var(--bg-1);
+  border-top: 1px solid var(--hud-dim);
+}
+/* The session / mission list toggle, after the logo: the corner tiles' plate (NotificationBell
+ * `.btn`, which HQ shares) at their size, lit while the list it drives is open (`aria-expanded`),
+ * as HQ is while its sidebar is. The plate's ::before/::after are its edge and face, so the hit
+ * area is the box itself: 34px with a mouse; on a touch tablet above 800px a 44px square whose
+ * plate is painted 5px in, so it still reads as HQ's 34px tile (below); the row's 44px tile at
+ * ≤800px. Two classes, so the plate's own defaults (nightjar.css) never win on load order. */
+.navToggle.nj-plate {
+  --nj-face: color-mix(in srgb, var(--text-1) 6%, var(--bg-1));
+  --nj-edge: var(--line-strong);
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 0;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.navToggle.nj-plate:hover {
+  --nj-edge: var(--hud-dim);
+  color: var(--text-1);
+}
+.navToggle.nj-plate[aria-expanded="true"] {
+  --nj-edge: var(--hud);
+  --nj-face: color-mix(in srgb, var(--hud) 12%, var(--bg-1));
+  color: var(--hud-text);
+}
+@media (pointer: coarse) and (min-width: 801px) {
+  .navToggle.nj-plate {
+    width: 44px;
+    height: 44px;
+  }
+  .navToggle.nj-plate::before {
+    inset: 5px;
+  }
+  .navToggle.nj-plate::after {
+    inset: 6px;
+  }
+}
+.navToggle:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.backdrop {
+  display: none;
+  border: none;
+  padding: 0;
+}
+
+@media (max-width: 800px) {
+  /* Mobile: stack topbar / pane / classbar; the sidebar becomes an off-canvas drawer. */
+  .app {
+    display: flex;
+    flex-direction: column;
+  }
+  /* The bars and panels are opaque at every width (#1531); nothing to degrade here. */
+  .hud-topbar {
+    flex: none;
+    position: relative;
+    z-index: calc(var(--z-map) + 10); /* above the drawer so the toggle is always reachable */
+  }
+  .sidebar {
+    position: fixed;
+    z-index: var(--z-map);
+    top: 0;
+    left: 0;
+    width: min(85vw, 320px);
+    height: 100dvh;
+    margin: 0;
+    padding-top: var(--app-header-height); /* clear the fixed command bar */
+    transform: translateX(-100%);
+    transition: transform var(--t-slow) var(--ease-out);
+    box-shadow: var(--shadow-drawer);
+    /* Opaque drawer (#228): it floats over the live terminal, and mobile Chrome won't blur it,
+     * so a translucent drawer would show the terminal text straight through. NIGHTJAR (#1531):
+     * its open edge is the lit rail. */
+    background: var(--bg-1);
+    border-right: 2px solid var(--hud);
+  }
+  .app.navOpen .sidebar {
+    transform: translateX(0);
+  }
+  .backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: var(--z-pane-overlay);
+    background: var(--scrim);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--t-slow) var(--ease-out);
+  }
+  .app.navOpen .backdrop {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .terminal-pane {
+    flex: 1;
+    min-height: 0;
+    margin: 8px;
+  }
+}
+
+/* ============================================================================
+ * BattleLab tactical-HUD chassis (#211 Phase 4a, NIGHTJAR #1531). The atmosphere backdrop +
+ * reusable primitives (corner-bracket frames, mono tags, status LEDs) + the
+ * button glitch that replaces the old gold shine sweep. Mirrors the mockups
+ * (docs/mockups) + the family design language. All motion honors reduced-motion.
+ * ============================================================================ */
+
+/* The backdrop is NIGHTJAR's one atmosphere (components/hud/Atmosphere.tsx, nightjar.css
+ * `.nj-atmo`): the #211 canvas and its 48px square grid are gone, on dark and light (#1531). */
+
+/* Light chrome (#473, #1531): the bars are opaque NIGHTJAR surfaces now, so they need no firming;
+ * the mono telemetry tags lift one step (--text-3 → --text-2) on the paper-grey ground. */
+/* The bars' mono tags are read, not just scanned: --text-2 in both modes (--text-3 is under AA at
+ * this size on --bg-1). */
+.hud-topbar .hud-tag,
+.hud-classbar .hud-tag {
+  color: var(--text-2);
+}
+
+/* `.hud-tag` and `.hud-led` moved to components/hud/nightjar.css, their one home (#1531). */
+/* Footer version surface (#661): the host + version cluster on the classbar's left, and the
+ * update chip. The chip is a flat accent-bordered button in the same HUD voice as .hud-tag —
+ * amber ACCENT (interactive affordance), deliberately not the green/red status colours. */
+.hud-footer-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  /* Clips when the bar is full, so the host and version never run under the update chip. */
+  overflow: hidden;
+  /* Host and version sit at the right end; the live telemetry (#1531) leads the bar. */
+  margin-left: auto;
+}
+@media (max-width: 800px) {
+  /* A phone keeps CPU · RAM · HQ CTX on ONE line; the host name and the version go (the version is
+     in Settings → About and the operator menu's What's new). */
+  .hud-footer-left {
+    display: none;
+  }
+}
+.hud-version {
+  color: var(--text-2);
+  font-weight: 600;
+}
+.hud-update-chip {
+  appearance: none;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: var(--accent-text);
+  background: transparent;
+  border: 1px solid var(--accent);
+  border-radius: 0;
+  padding: 2px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.hud-update-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+@media (max-width: 800px) {
+  /* The 28px bar can't host a 44px touch target inline: let the bar wrap and give the chip its
+   * own full-width row with a real hit-area. Idle (no chip) the bar stays a single 28px row. */
+  .hud-classbar {
+    flex-wrap: wrap;
+    height: auto;
+    min-height: 28px;
+    /* The top bar's inset, so both bars' edges line up and the telemetry has room at 320px. */
+    padding-inline: 10px;
+  }
+  .hud-update-chip {
+    flex: 1 0 100%;
+    order: 10;
+    min-height: 44px;
+  }
+}
+
+/* Button feedback is shared with the connect shell in hud/buttonGlitch.css (#946). */
+/* Retire the gold reflection sweep that .shine used to paint (#211). */
+.shine::after {
+  content: none !important;
+}
+
+/* Reduced motion is the motion mode's job now (#1531, theme/motion.css): the atmosphere holds a
+ * still frame and LEDs are steady. */
+
+/* The mobile drawer takes focus itself on open (#940) — the panel, not a control inside it, so a
+ * screen reader announces the dialog's name. It shows no close button: the scrim, Escape and a
+ * visually hidden in-dialog Close dismiss it. The panel is not a control, so it draws no focus ring
+ * around the whole drawer. */
+.sidebar[role="dialog"]:focus {
+  outline: none;
+}
+/* The hidden Close (#962) stays `.sr-only` for touch and screen-reader users; a keyboard that tabs
+ * onto it must SEE what it is on, so it surfaces as a 44px control over the panel's top-right corner.
+ * Class + pseudo-class outranks `.sr-only`, which is what lifts the 1px clip. */
+.sidebar-drawer-dismiss:focus-visible {
+  top: 0;
+  right: 0;
+  z-index: calc(var(--z-raised) + 1);
+  width: auto;
+  height: 44px;
+  margin: 0;
+  padding: 0 14px;
+  overflow: visible;
+  clip: auto;
+  background: var(--panel);
+  color: var(--text-1);
+  border: 1px solid var(--accent);
+  outline: none;
+  font: 600 var(--fs-label) var(--font-mono, ui-monospace, monospace);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+/* The work sections share the wordmark row at every width (#944 / #946); the active section carries
+ * its fill. Their typography is their OWN (#967): mono 0.68rem at weight 400, 0.1em tracking,
+ * uppercase, a 44px hit area. It was pinned to the mission Send's mono type while that button had
+ * one; the mission Send is now the session pane's Send, so these values stand alone and
+ * e2e/mission-sections.spec.ts asserts them as numbers. */
+.section-nav {
+  display: flex;
+  align-self: center;
+  gap: 6px;
+  margin-left: 4px;
+  /* FIVE sections since #1058; four plus a sub-menu chevron since #1069. The row must never wrap
+     the command bar into two lines, so the nav is allowed to shrink (its entries drop their
+     labels, then their padding) before anything else in the bar does. */
+  min-width: 0;
+}
+.section-nav a {
+  /* The BETA tag (#1085) anchors to the entry. */
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex: none;
+  min-height: 44px;
+  min-width: 76px;
+  padding: 0 14px;
+  color: var(--text-2);
+  text-decoration: none;
+  font: 400 var(--fs-micro) var(--font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  transition: color var(--t-fast) var(--ease-out);
+}
+/* NIGHTJAR v5 (#1589): each entry is a PLATE — the chamfer is painted behind it (`nj-plate`), so
+ * its corners stay part of the hit area (#946's check clicks them). A section with a sub-menu is
+ * one plate holding its link and its chevron. */
+.section-nav a.nj-plate,
+.section-nav-split {
+  --nj-face: color-mix(in srgb, var(--text-1) 6%, var(--bg-1));
+  --nj-edge: var(--line-strong);
+}
+.section-nav a.nj-plate:hover:not([aria-current]),
+.section-nav-split:not(.is-active):hover {
+  --nj-edge: var(--hud-dim);
+}
+.section-nav a:hover:not([aria-current]) {
+  color: var(--text-1);
+}
+/* You are here: the accent fill on the plate's chamfer. */
+.section-nav a.nj-plate[aria-current],
+.section-nav-split.is-active {
+  --nj-face: var(--accent);
+  --nj-edge: var(--accent);
+}
+.section-nav a[aria-current],
+.section-nav-split.is-active .section-nav-chevron {
+  color: var(--on-accent);
+}
+/* The place in the row, v5's dim numeral before the label; decoration (`aria-hidden`). */
+.section-nav-ix {
+  opacity: 0.6;
+}
+/* No icons on a labelled bar (v5): the label is the name. They return as the tile at ≤800px. */
+.section-nav a svg {
+  display: none;
+}
+.section-nav a:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+/* On the accent fill the ring is the fill's own ink, or it would vanish into it. */
+.section-nav a[aria-current]:focus-visible,
+.section-nav-split.is-active .section-nav-chevron:focus-visible {
+  outline-color: var(--on-accent);
+}
+
+/* BETA (#1085): v5's small outlined tag beside the label. Accent ink on the bar's ground — the brand
+   colour, never a status colour (docs/design.md §3). On the active (filled) entry it takes the
+   fill's ink instead. At ≤800px it sits under the tile's icon. */
+.section-nav-beta {
+  padding: 1px 3px;
+  border: 1px solid var(--accent);
+  color: var(--accent-text);
+  font: 600 var(--fs-micro)/1 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.section-nav a[aria-current] .section-nav-beta {
+  border-color: var(--on-accent);
+  color: var(--on-accent);
+}
+.section-nav-beta-short {
+  display: none;
+}
+
+/* A SECTION WITH A SUB-MENU (#1069): its link and its chevron inside ONE plate; a hairline seam
+   between them. Both halves keep the 44px height — the chevron is a target of its own. */
+.section-nav-split {
+  display: flex;
+  flex: none;
+}
+.section-nav .section-nav-split > a {
+  /* THE SEAM GOES TO THE LINK. The row sits at a fractional x (the brand's width), and at the
+     shared edge hit-testing gave the link's last half-pixel to the chevron — the #946 hit-area
+     check caught it. Lifting the link settles the tie in its favour. */
+  position: relative;
+  z-index: var(--z-raised);
+  padding-right: 10px;
+}
+.section-nav-chevron {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  height: 100%;
+  width: 28px;
+  padding: 0;
+  border: 0;
+  border-left: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.section-nav-chevron:hover {
+  color: var(--text-1);
+}
+.section-nav-chevron[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+.section-nav-chevron:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.section-nav-split.is-active .section-nav-chevron {
+  border-left-color: color-mix(in srgb, var(--on-accent) 35%, transparent);
+}
+
+/* The numerals are the first thing the row gives back (#1589): measured, the numbered row runs
+   Library ~36px under the corner at 801px and fits at 834px; 960px keeps a margin. */
+@media (max-width: 960px) {
+  .section-nav-ix {
+    display: none;
+  }
+}
+@media (max-width: 1100px) {
+  /* The bar carries four sections (two with a chevron) and three corner controls since #1294. Below
+     a full desktop the decorations give way first: the operator tile's username (the panel repeats
+     it in full the moment it opens) and some of each tab's padding. */
+  .section-nav a {
+    min-width: 64px;
+    padding-inline: 10px;
+    gap: 6px;
+  }
+}
+@media (max-width: 800px) {
+  .app {
+    grid-template-rows: var(--app-header-height) auto minmax(0, 1fr) 28px;
+  }
+  /* ONE TILE on a phone: every control in the row — the list toggle, the four sections, HQ, the bell
+     and the operator — is the same plate, --tb-tile wide and 44px tall; a sub-menu's chevron adds
+     --tb-chev; one gap between them all. Sized here, read by SectionNav, NotificationBell and
+     OperatorMenu, so no control drifts to its own width again. */
+  .hud-topbar {
+    --tb-tile: 38px;
+    --tb-chev: 24px;
+    --tb-gap: 4px;
+    flex-wrap: nowrap;
+    gap: 6px;
+    padding-inline: 10px;
+  }
+  .navToggle.nj-plate {
+    width: var(--tb-tile);
+    height: 44px;
+  }
+  .hud-brand,
+  .hud-topbar-actions {
+    height: auto;
+  }
+  /* A phone keeps the MARK alone (#1589): the sections, HQ, the bell and the operator tile need the
+     width. Scaled, never below the kit's 16px minimum. */
+  .hud-brand .wm {
+    display: none;
+  }
+  .hud-brand .brand-mark {
+    width: 24px;
+    height: 24px;
+  }
+  .section-nav {
+    margin: 0 0 0 auto;
+    gap: var(--tb-gap);
+  }
+  .section-nav a {
+    padding: 0 8px;
+  }
+  .hud-topbar-actions {
+    margin-left: 0;
+    flex: none;
+    gap: var(--tb-gap);
+  }
+  .sidebar,
+  .backdrop {
+    top: var(--app-header-height);
+  }
+  .sidebar {
+    height: calc(100dvh - var(--app-header-height));
+    padding-top: 0;
+  }
+}
+
+/* ICON-ONLY SECTIONS below the desktop line (#1058) — `≤800px`, the SAME breakpoint `useIsMobile`
+   and the off-canvas drawer already use, measured rather than chosen: five labelled entries need
+   ~364px and the row has ~257px to give them at 641px, so the labels have to go before the drawer
+   does. Burying a one-tap destination behind the hamburger to make room for a new one is the wrong
+   trade, so the entries keep their place and lose their text instead.
+
+   The label is CLIPPED, never `display: none`: a link whose text is removed has no accessible
+   name, and five unnamed icons is precisely the row a screen-reader operator cannot use. Each entry
+   also carries its name as a `title`. */
+@media (max-width: 800px) {
+  .section-nav a {
+    min-width: 0;
+    width: var(--tb-tile);
+    /* The 44px coarse-pointer floor is NOT negotiable at the width where fingers are the input
+       device — the entries lose their labels and their padding, never their height. */
+    min-height: 44px;
+    padding: 0;
+    gap: 0;
+  }
+  /* The compact tile (#1589): the same plates at a smaller cut, the icon back as the face, no
+     numeral (the label carries the name, clipped below). */
+  .section-nav a.nj-plate,
+  .section-nav-split {
+    --c: 6px;
+  }
+  .section-nav a svg {
+    display: block;
+  }
+  .section-nav-ix {
+    display: none;
+  }
+  /* BETA stays v5's outlined tag — under the icon, inside the tile, never a superscript over the
+     glyph. The letter, because a 10px "BETA" cannot fit a 28px tile (#1531: 10px is the floor). */
+  .section-nav-beta {
+    position: absolute;
+    left: 50%;
+    bottom: 3px;
+    transform: translateX(-50%);
+    padding: 0 2px;
+    font-size: var(--fs-micro);
+    line-height: 1;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+  .section-nav-beta-long {
+    display: none;
+  }
+  .section-nav-beta-short {
+    display: inline;
+  }
+  /* The tag sits UNDER the glyph, so a tile that carries one lifts its icon clear of it. */
+  .section-nav a:has(.section-nav-beta) svg {
+    margin-bottom: 12px;
+  }
+  .section-nav-chevron {
+    width: var(--tb-chev);
+  }
+  /* Scoped to the bar's own labels. */
+  .section-nav .section-nav-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+  }
+}
+
+
+/* Keep the command row on one line on the narrowest supported screens. */
+@media (max-width: 380px) {
+  .hud-topbar {
+    padding-inline: 6px;
+    /* 3px, not 4 (#1294): with Ask in the corner the 320px row is 1.2px short at 4. */
+    gap: 3px;
+  }
+  /* The mark STAYS at every width, at the kit's 16px minimum or more: a bar with no brand at
+     all is worse than a smaller one. (Three classes, so it outranks the ≤440px size below.) */
+  .hud-topbar .hud-brand .brand-mark {
+    width: 16px;
+    height: 16px;
+  }
+  /* #1589: the kit's mark (16px, its minimum) is wider than the old glyph mark; at 320px the
+     row ran Library's chevron 6px under the HQ toggle — measured, these 10px close it: the bar's
+     padding and the two chevrons (still full-height targets) give back the rest. */
+  .hud-topbar.hud-topbar {
+    padding-inline: 4px;
+  }
+  /* #2037: HQ adds a third chevron; seven 27px tiles leave Library clear at 320px.
+     Three classes keep this narrower band above the ≤440px rule. */
+  .hud-topbar.hud-topbar.hud-topbar {
+    --tb-tile: 27px;
+    --tb-chev: 16px;
+    --tb-gap: 2px;
+  }
+  /* 320px is the narrowest supported screen and the one width where five entries do NOT fit at
+     40px: 5×40 + gaps needs 172px against the 170px between the wordmark and the corner, and the
+     overflow slid TEMPLATES under the notification bell — visible, clickable-looking and dead.
+     32px + 2px gaps is 168. The 44px hit-target floor is on the HEIGHT and is untouched.
+     #1171 gave Dashboard a chevron too (its Ask sub-page): two 20px chevrons ran 0.2px under the
+     bell at 320, so the chevrons are 18px here — 4px back, still a full-height target.
+     Missions → Checklists made it THREE chevrons, 14px over at 320; the icons give 4px each
+     (28px, a 16px glyph with room either side) rather than any entry leaving the row.
+     The compact sizes themselves live in the ≤440px block below (#1294). */
+}
+
+/* THE COMPACT ROW, up to 440px (#1294). Ask's icon joined the bell in the corner, which grew it
+   by ~36px; at 390–430px (most phones) the 40px tiles then ran Library's chevron under the Ask
+   icon by up to 38px. Measured: these sizes leave room at 320, 375 and 440, and the full sizes
+   leave ~13px at 441. Width is given back, never the 44px height. */
+@media (max-width: 440px) {
+  .hud-brand .brand-mark {
+    width: 20px;
+    height: 20px;
+  }
+  /* Two classes: outranks the ≤800px sizes above, and the ≤380px block outranks this. */
+  .hud-topbar.hud-topbar {
+    --tb-tile: 31px;
+    --tb-chev: 18px;
+  }
+  .section-nav a {
+    padding-inline: 0;
+  }
+}
+
+/* THE RELAYED ROW (#1658). Streamed through the Home Free relay, the connection's plate joins the
+   corner. #2037 adds HQ’s chevron; the eight shared tiles each give another 3px back.
+   Previously, on a sidebar route (the hamburger present) that one tile ran the row 20px over at
+   320, 2px at 344 and 10px at 390 (measured). Only while that plate is in the bar, the shared tiles
+   give width back — 3px each up to 440 (eight tiles, 24px), 4px each at ≤380 where the row was
+   already tightest (3px left it 1.5px short at 320) — and the plain bar keeps the sizes above. Width
+   only: the 44px height is untouched, and nothing leaves the row. The selectors out-weigh the
+   three-class ≤380px rule, so each band's value wins in its own band. */
+@media (max-width: 440px) {
+  .hud-topbar.hud-topbar.hud-topbar:has([data-relay-plate]) {
+    --tb-tile: 26px;
+  }
+}
+@media (max-width: 380px) {
+  .hud-topbar.hud-topbar.hud-topbar.hud-topbar:has([data-relay-plate]) {
+    --tb-tile: 23px;
+  }
+}
+/* The same plate also ran Library's chevron under it just past two band edges (measured on a sidebar
+   route, #1662): at 441–464px, where the phone tiles are back to 38px (23px at 441), and at
+   801–826px, the first desktop widths (24px at 801). The phone band gets 34px tiles; the desktop
+   band takes 4px off each section tab's side padding (four tabs, 32px). */
+@media (min-width: 441px) and (max-width: 480px) {
+  /* HQ’s third chevron needs 14px back at the band’s first pixel (#2037). */
+  .hud-topbar {
+    --tb-tile: 36px;
+  }
+  .hud-topbar.hud-topbar.hud-topbar:has([data-relay-plate]) {
+    --tb-tile: 31px;
+  }
+}
+@media (min-width: 801px) and (max-width: 880px) {
+  .hud-topbar:has([data-relay-plate]) .section-nav a {
+    padding-inline: 6px;
+  }
+}

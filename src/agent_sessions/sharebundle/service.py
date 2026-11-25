@@ -1,0 +1,1885 @@
+"""Export, preview and confirm share bundles (#1714 P1). See `docs/invariants/share-bundles.md`.
+
+* **Export** reads each chosen item and its dependency closure (a playbook's role skills that the
+  skills library holds) and writes one format-1 bundle. Nothing secret is read.
+* **Preview** verifies the whole file (`format.read`), validates every item as its kind,
+  plans a destination id per item (the same id when free, else `<id>-2`, `-3`, …) and the
+  rewritten content each will hold, and records that plan under a random token with a short
+  TTL, bound to the bundle digest and to every id + revision the stores held.
+* **Confirm** applies the selected items in dependency order, each as one NOREPLACE new copy.
+  A durable journal keyed by the token records each item's intent (destination + content digest)
+  before publication and its outcome after. A retry with the same token returns the journaled
+  outcomes and never creates another copy; freshness and expiry gate only items not yet applied,
+  against the bound revisions minus this journal's own writes. An intent without an outcome is
+  reconciled by its destination: the journaled digest there means created, absent means
+  pending, anything else fails that item without touching it.
+
+Imported content is inert: no default, deployment, launch or activation happens here.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import errno
+import hashlib
+import logging
+import math
+import re
+import secrets
+import time
+
+from ..gallery import contract as gallery_contract
+from ..playbooks import store
+from . import format as fmt
+from . import kinds, memory_kinds, state
+
+log = logging.getLogger(__name__)
+
+TTL_S = 15 * 60
+JOURNAL_RETENTION_S = 30 * 86400
+PREVIEW_TEXT_BYTES = 1024 * 1024
+MAX_PROVENANCE = 2000
+#: Staged bundle bytes are bounded across every preview (#1738 review): identical uploads share one
+#: staged copy (named by digest), a copy lives one TTL after its latest preview, and a new bundle
+#: that doesn't fit evicts the oldest copies no confirmed import still needs, or is refused.
+MAX_STAGED_BYTES = 128 * 1024 * 1024
+MAX_STAGED_BUNDLES = 16
+#: Preview records (each with at most one journal) are bounded too (#1738 review 7218).
+MAX_RECORDS = 64
+#: A settled import that gives up its record keeps a compact receipt (its final per-item result)
+#: for 30 days after it is written, so a lost response can still be replayed (#1738 review
+#: 7240). Receipts are bounded too; when they are full, a settled record is not given up.
+MAX_RECEIPTS = 1024
+TOKEN_RE = re.compile(r"[0-9a-f]{32}")
+MAX_RENAME = 999
+#: The per-kind views a plan entry may carry beside its files.
+_VIEW_KEYS = ("specialist", "template", "variable", "memory", "notebook", "mission-plan")
+
+
+class ShareError(store.StoreError):
+    """A request the share routes refuse; `status` and `reason` reach the client."""
+
+
+def _now() -> float:
+    return time.time()
+
+
+def _iso(ts: float) -> str:
+    return dt.datetime.fromtimestamp(ts, dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _token(value: object) -> str:
+    if not isinstance(value, str) or not TOKEN_RE.fullmatch(value):
+        raise ShareError("expected a preview token", status=422)
+    return value
+
+
+def _label(kind: str) -> str:
+    return kinds.LABELS.get(kind, kind).lower()
+
+
+# ---- export ---------------------------------------------------------------------------------
+
+
+def catalog() -> dict:
+    try:
+        known = imports_view()
+    except state.StateError:
+        known = {}  # the export picker never decides anything from the marks
+    return {"items": kinds.catalog(), "imports": known}
+
+
+def imports_view() -> dict:
+    """`imports()` as a response may show it: a template or variable ID the export scan can't
+    judge clean is replaced by a placeholder key, its bundle digest kept (#1714 P3)."""
+    from . import template_kinds
+
+    return template_kinds.withhold_marks(imports())
+
+
+def export(items: object, source: object = None, report: dict | None = None) -> tuple[str, bytes]:
+    """The bundle's file name and bytes. `report`, when given, is filled with what the export left
+    out of the memory it carries: `{"withheld": notes, "quarantined": tray items}` (counts only,
+    never a title)."""
+    if not isinstance(items, list) or not 1 <= len(items) <= fmt.MAX_ITEMS:
+        raise ShareError(f"choose 1 to {fmt.MAX_ITEMS} items to export", status=422)
+    if source is not None and (
+        not isinstance(source, str)
+        or len(source) > fmt.SOURCE_MAX
+        or fmt._CONTROL.search(source)
+        or not fmt._utf8(source)
+    ):
+        raise ShareError(f"a source label is at most {fmt.SOURCE_MAX} characters", status=422)
+    wanted: list[tuple[str, str]] = []
+    for raw in items:
+        if (
+            not isinstance(raw, dict)
+            or set(raw) != {"kind", "id"}
+            or raw["kind"] not in kinds.KINDS
+            or not isinstance(raw["id"], str)
+            or not kinds.id_ok(raw["kind"], raw["id"])
+        ):
+            raise ShareError(
+                "each item is {kind, id} of a skill, playbook, specialist, template, variable, "
+                "project memory, specialist notes or mission plan",
+                status=422,
+            )
+        if (raw["kind"], raw["id"]) not in wanted:
+            wanted.append((raw["kind"], raw["id"]))
+    # The importing install puts every note into ONE project it chooses: a file carries the
+    # memory of one project (its own notes and its specialists' notebooks there), never two.
+    projects = {
+        memory_kinds.scope_of(k, i).partition("~")[0] for k, i in wanted if k in kinds.CONTAINERS
+    }
+    if len(projects) > 1:
+        raise ShareError(
+            "a file carries the memory of one project; export the others apart", status=422
+        )
+    # A skill the library can't read travels as a reference, never as a broken item.
+    held = {sid for sid, rev in kinds.ids("skill").items() if rev is not None}
+    read: dict[tuple[str, str], dict] = {}
+    needed_by: dict[tuple[str, str], tuple[str, str]] = {}
+    queue = list(wanted)
+    while queue:
+        kind, item_id = queue.pop(0)
+        if (kind, item_id) in read:
+            continue
+        try:
+            data = kinds.export(kind, item_id)
+        except kinds.ItemRefused as exc:
+            via = needed_by.get((kind, item_id))
+            # An ID or name that itself holds a secret is never echoed back (#1814 review).
+            shown_id = "(its ID withheld)" if getattr(exc, "withhold_id", False) else item_id
+            what = f"{kinds.LABELS[kind]} {shown_id}"
+            if via is not None:
+                what += f" (needed by {_label(via[0])} {via[1]})"
+            raise ShareError(f"{what}: {exc}", status=422) from None
+        if kind == "specialist":
+            # A specialist's pins are requirements, never references: one the library can't
+            # read refuses its export (and its bytes are proved below).
+            gone = next((s for s in data["pins"] if s not in held), None)
+            if gone is not None:
+                why = "unreadable" if gone in kinds.ids("skill") else "missing"
+                reason = kinds._pin_reason(gone, data["version"], why)
+                raise ShareError(f"Specialist {item_id}: {reason}", status=422)
+            deps = list(data["depends_on"])
+        elif kind in kinds.CARRIES_ALL:
+            deps = list(data["depends_on"])  # a template's variables: each must be exportable
+        else:
+            deps = [d for d in data["depends_on"] if d.split(":", 1)[1] in held]
+        data["depends_on"] = deps
+        read[(kind, item_id)] = data
+        for dep in deps:
+            dep_kind, dep_id = dep.split(":", 1)
+            needed_by.setdefault((dep_kind, dep_id), (kind, item_id))
+            queue.append((dep_kind, dep_id))
+        if len(read) > fmt.MAX_ITEMS:
+            raise ShareError(f"a bundle holds at most {fmt.MAX_ITEMS} items", status=422)
+    for (_kind, item_id), data in read.items():
+        # The pinned revision is proved against the very bytes going into the file: the library
+        # keeps only each skill's current tree, so anything else is not the pinned version.
+        for sid, pinned in (data.get("pins") or {}).items():
+            if fmt.tree_digest(read[("skill", sid)]["files"]) != pinned:
+                raise ShareError(
+                    f"Specialist {item_id}: {kinds._pin_reason(sid, data['version'], 'changed')}",
+                    status=422,
+                )
+    carried = [d for (k, _i), d in read.items() if k in kinds.CONTAINERS]
+    if report is not None and carried:
+        report.update(
+            withheld=sum(d["withheld"] for d in carried),
+            quarantined=sum(d["quarantined"] for d in carried),
+        )
+    order = sorted(read, key=lambda k: (kinds.LEVEL[k[0]], list(read).index(k)))
+    # The ID each item travels under: its own, unless its kind names another (a template goes
+    # under a slug of its current name, never its local ID). Nothing depends on a template, so
+    # no reference changes; two of one name get `-2`, `-3`, … as an import would.
+    shipped: dict[tuple[str, str], str] = {}
+    used: dict[str, set[str]] = {}
+    for k, i in order:
+        wanted = read[(k, i)].get("bundle_id")
+        taken = used.setdefault(k, set())
+        if wanted is None:
+            shipped[(k, i)] = i
+        else:
+            # Within this file only: the importing install plans its own renames.
+            shipped[(k, i)] = next(
+                c
+                for c in [wanted] + [f"{wanted[:60].rstrip('-')}-{n}" for n in range(2, 1000)]
+                if c not in taken
+            )
+        taken.add(shipped[(k, i)])
+    now = _now()
+    try:
+        data = fmt.write(
+            [
+                {
+                    "kind": k,
+                    "id": shipped[(k, i)],
+                    **{f: read[(k, i)][f] for f in ("title", "files", "depends_on")},
+                }
+                for k, i in order
+            ],
+            created_at=_iso(now),
+            app_version=_app_version(),
+            source=source,
+        )
+    except fmt.Refused as exc:
+        raise ShareError(exc.detail, status=422) from None
+    stamp = dt.datetime.fromtimestamp(now, dt.UTC).strftime("%Y%m%d-%H%M%S")
+    return f"battlelab-{stamp}{fmt.SUFFIX}", data
+
+
+def _app_version() -> str:
+    from ..version import get_version
+
+    return get_version()[:64]
+
+
+# ---- preview --------------------------------------------------------------------------------
+
+
+def _order(bundle: fmt.Bundle) -> list[fmt.Item]:
+    """Topological order: dependencies first; ties by kind level, then manifest position."""
+    placed: list[fmt.Item] = []
+    done: set[str] = set()
+    pending = list(bundle.items)
+    while pending:
+        ready = [i for i in pending if all(d in done for d in i.depends_on)]
+        ready.sort(key=lambda i: (kinds.LEVEL.get(i.kind, 9), i.index))
+        nxt = ready[0]  # format.read refused cycles, so something is always ready
+        placed.append(nxt)
+        done.add(nxt.key)
+        pending.remove(nxt)
+    return placed
+
+
+def _fresh_id(
+    kind: str, item_id: str, taken: set[str], avoid: frozenset[str] | set[str] = frozenset()
+) -> str | None:
+    """The item's own ID when it is free here, else `<id>-2`, `-3`, … (`_2` for a variable),
+    within the store's ID length. A renamed copy also stays clear of `avoid`."""
+    if item_id not in taken and not kinds.reserved(kind, item_id):
+        return item_id
+    sep, limit = kinds.RENAME.get(kind, ("-", 64))  # the stores' own ID shapes
+    for n in range(2, MAX_RENAME + 1):
+        suffix = f"{sep}{n}"
+        candidate = item_id[: limit - len(suffix)].rstrip("-_") + suffix
+        if (
+            candidate not in taken
+            and candidate not in avoid
+            and kinds.id_ok(kind, candidate)
+            and not kinds.reserved(kind, candidate)
+        ):
+            return candidate
+    return None
+
+
+def _bindings(bundle: fmt.Bundle | None = None) -> dict:
+    """Every id and revision the stores hold now. The specialist pool, the template library and
+    the variables library are bound only for a file that carries their kind: a
+    skills-and-playbooks import never depends on those stores."""
+    carried = {item.kind for item in bundle.items} if bundle is not None else set(kinds.KINDS)
+    return {
+        kind: kinds.ids(kind)
+        for kind in kinds.KINDS
+        if kind not in kinds.OPTIONAL or kind in carried
+    }
+
+
+def _reusable_skills() -> dict[str, list[str]]:
+    """`{content digest: [local skill ids]}` of skills this install imported from a file and that
+    still hold exactly that content: provenance (the import record), never a name match. An import
+    record that can't be read reuses nothing (each skill is then copied, as in P1)."""
+    try:
+        known = imports()
+        current = kinds.ids("skill")
+    except (state.StateError, OSError, store.StoreError, gallery_contract.GalleryError, ValueError):
+        return {}
+    out: dict[str, list[str]] = {}
+    for key, mark in known.items():
+        kind, _, sid = key.partition(":")
+        revision = mark.get("revision")
+        if kind == "skill" and revision is not None and current.get(sid) == revision:
+            out.setdefault(revision, []).append(sid)
+    return {digest: sorted(found) for digest, found in out.items()}
+
+
+def _settle_view(files: dict[str, bytes], checked: dict | None = None) -> dict:
+    """What the preview shows of an incoming specialist: the job, the file's suggestion, and that
+    suggestion checked against this install exactly as a save is checked (`settled`, canonical,
+    or the reason it doesn't hold here). The grade is derived here, never read from the file. A
+    specialist no agent here could ever run is `ItemRefused`."""
+    from .. import model_grades, specialists
+
+    doc = kinds.specialist_doc(files)
+    has_skills = bool(doc["skills"])
+    hint = doc["suggests"]
+    settled, reason = None, None
+    checked = {} if checked is None else checked
+    if hint["engine"] is None:
+        reason = "The file suggests no agent. Choose the agent it runs on."
+    else:
+        model = hint["model"] if hint["model"] is not None else specialists.DEFAULT_MODEL
+        # One check per distinct suggestion per preview: a file can't make a preview ask an
+        # agent's CLI for its models once per specialist.
+        key = (hint["engine"], model, hint["effort"], has_skills)
+        if key not in checked:
+            try:
+                checked[key] = specialists.runs_on(
+                    hint["engine"], model, hint["effort"], has_skills=has_skills
+                )
+            except specialists.DraftRefused as exc:
+                checked[key] = exc
+        if isinstance(checked[key], specialists.DraftRefused):
+            said = " · ".join(v for v in (hint["engine"], hint["model"], hint["effort"]) if v)
+            reason = f"Suggested {said}, but {checked[key].detail}. Choose what it runs on here."
+        else:
+            settled = dict(checked[key])
+    if settled is None and not specialists.runnable_here(has_skills=has_skills):
+        raise kinds.ItemRefused(
+            "none of the agents on this install can load skills, and it pins skills"
+            if has_skills
+            else "no agent on this install can start a session"
+        )
+    grade = (
+        model_grades.grade_of(settled["engine"], settled["model"]) if settled is not None else None
+    )
+    return {
+        "title": doc["title"],
+        "summary": doc["summary"],
+        "capacity": doc["capacity"],
+        "skills": doc["skills"],
+        "suggests": hint,
+        "settled": settled,
+        "settle_reason": reason,
+        "grade": grade,
+    }
+
+
+def _plan(bundle: fmt.Bundle, local: dict, reusable: dict | None = None) -> list[dict]:
+    reusable = reusable or {}
+    reused: set[str] = set()
+    checked: dict = {}
+    by_key = {item.key: item for item in bundle.items}
+    plan: dict[str, dict] = {}
+    taken = {kind: set(local.get(kind, {})) for kind in kinds.KINDS}
+    avoid: dict[str, set[str]] = {kind: set() for kind in kinds.KINDS}
+    # A playbook's role skill that the bundle does not carry keeps its own name here, so no
+    # renamed copy may take it: a bundled `tdd` renamed to `tdd-2` must never become the skill
+    # another playbook in this file already names as `tdd-2`.
+    for item in bundle.items:
+        try:
+            requires = kinds.validate(item.kind, item.id, item.files)
+        except kinds.ItemRefused:
+            continue
+        dep_kind = kinds.DEP_KIND.get(item.kind, "skill")
+        taken[dep_kind].update(s for s in requires if f"{dep_kind}:{s}" not in by_key)
+        for kind, names in kinds.avoid(item.kind, item.id, item.files).items():
+            avoid[kind] |= names
+    for item in _order(bundle):
+        entry = {
+            "key": item.key,
+            "kind": item.kind,
+            "id": item.id,
+            "title": item.title,
+            "depends_on": list(item.depends_on),
+            "dest": None,
+            "status": "new",
+            "reason": None,
+            "digest": None,
+            "uses": [],
+        }
+        plan[item.key] = entry
+        try:
+            requires = kinds.validate(item.kind, item.id, item.files)
+            dep_kind = kinds.DEP_KIND.get(item.kind, "skill")
+            if item.kind in kinds.CARRIES_ALL:
+                absent = next((s for s in requires if f"{dep_kind}:{s}" not in by_key), None)
+                if absent is not None:
+                    raise kinds.ItemRefused(kinds.absent(item.kind, absent))
+            expected = sorted(f"{dep_kind}:{s}" for s in requires if f"{dep_kind}:{s}" in by_key)
+            if sorted(item.depends_on) != expected:
+                raise kinds.ItemRefused("its declared dependencies don't match its content")
+            for dep in item.depends_on:
+                if plan[dep]["status"] == "refused":
+                    raise kinds.ItemRefused(
+                        f"needs {_label(by_key[dep].kind)} {by_key[dep].id}, "
+                        "which can't be imported"
+                    )
+            kinds.check_uses(
+                item.kind,
+                item.id,
+                item.files,
+                {by_key[d].id: by_key[d].files for d in item.depends_on},
+            )
+            found = reusable.get(fmt.tree_digest(item.files)) if item.kind == "skill" else None
+            # Each local copy is reused by ONE bundled skill: two distinct skills in the file with
+            # the same bytes keep two identities (the second becomes a copy of its own).
+            found = [sid for sid in found or [] if sid not in reused]
+            if found:
+                # A copy this install imported from a file with exactly this content, unchanged
+                # since: reused, never copied again (and never a name match).
+                dest = item.id if item.id in found else found[0]
+                reused.add(dest)
+                entry.update(status="reused", dest=dest, digest=fmt.tree_digest(item.files))
+                continue
+            if item.kind in kinds.CONTAINERS:
+                # A container plans nothing in a store: each note is named under its scope's lock
+                # at confirm, in the project the confirm names (`_apply_notes`).
+                entry[item.kind] = kinds.view(item.kind, item.id, item.files)
+                entry.update(digest=fmt.tree_digest(item.files))
+                continue
+            dest = _fresh_id(item.kind, item.id, taken[item.kind], avoid[item.kind])
+            if dest is None:
+                raise kinds.ItemRefused("no free ID is left for a renamed copy")
+            renames = {by_key[d].id: plan[d]["dest"] for d in item.depends_on}
+            final = kinds.rewrite(item.kind, item.id, dest, item.files, renames)
+            if item.kind == "specialist":
+                entry["specialist"] = _settle_view(item.files, checked)
+            shown_view = kinds.view(item.kind, dest, final)
+            if shown_view is not None:
+                entry[item.kind] = shown_view
+        except kinds.ItemRefused as exc:
+            entry.update(status="refused", reason=str(exc))
+            for view_key in _VIEW_KEYS:
+                entry.pop(view_key, None)
+            continue
+        taken[item.kind].add(dest)
+        entry.update(
+            dest=dest,
+            status="new" if dest == item.id else "renamed",
+            digest=fmt.tree_digest(final),
+            uses=[{"from": a, "to": b} for a, b in sorted(renames.items()) if a != b],
+        )
+    return [plan[item.key] for item in bundle.items]
+
+
+def _files_view(
+    item: fmt.Item, budget: list[int], refused: bool = False, withhold: set[str] | None = None
+) -> list[dict]:
+    """Each file's text for review, within the preview's budget. A refused item's text is
+    withheld: it is never imported, and it may carry what made it refused (a secret's value). So
+    is each note a memory item would hold back or refuse (`withhold`)."""
+    out = []
+    for path in sorted(item.files):
+        data = item.files[path]
+        row: dict = {"path": path, "size": len(data)}
+        if refused or path in (withhold or ()):
+            row["withheld"] = True
+        elif len(data) <= budget[0]:
+            try:
+                row["text"] = data.decode("utf-8")
+                budget[0] -= len(data)
+            except UnicodeDecodeError:
+                row["binary"] = True
+        else:
+            row["omitted"] = True
+        out.append(row)
+    return out
+
+
+def _bundle_name(digest: str) -> str:
+    return f"bundle-{digest}{fmt.SUFFIX}"
+
+
+def _prune() -> None:
+    """Remove expired state. Best effort, per file: one unreadable journal never blocks previews."""
+    now = _now()
+    entries = state.entries()
+    names = {name for name, _m, _s in entries}
+    for name, mtime, _size in entries:
+        try:
+            if name.startswith("journal-") and "preview-" + name[len("journal-") :] not in names:
+                # A journal without its preview record can't be replayed; it goes once it holds
+                # no copy's only provenance.
+                if not _holds_unmarked(name):
+                    state.remove_any(name)
+                continue
+            _prune_one(name, now - mtime)
+        except (state.StateError, OSError):
+            log.warning("share state: could not prune %s", name)
+
+
+def _prune_one(name: str, age: float) -> None:
+    if name.startswith("bundle-"):
+        # Staged bytes are only ever read for an unexpired preview, and every preview of these
+        # bytes refreshed the file: one TTL after the latest, nothing can need them.
+        if age > TTL_S + 60:
+            state.remove_any(name)
+    elif name.startswith("preview-") and age > 2 * TTL_S:
+        token = name.split("-", 1)[1].split(".", 1)[0]
+        journal = state.read_json(f"journal-{token}.json") if TOKEN_RE.fullmatch(token) else None
+        # A confirmed preview keeps its record while its journal lives (retries, P1 replay).
+        if journal is None or age > JOURNAL_RETENTION_S:
+            state.remove_any(name)
+    elif name.startswith(("journal-", "receipt-")) and age > JOURNAL_RETENTION_S:
+        if not _holds_unmarked(name):  # the only provenance of a copy is never pruned
+            state.remove_any(name)
+    elif name.startswith(".tmp-") and age > 2 * TTL_S:
+        state.remove_any(name)
+
+
+def _inventory(now: float) -> list[dict]:
+    """Every preview record with what it still holds: its journal, whether it has expired, and
+    whether a confirm left items that a retry may still apply (only those pin staged bytes)."""
+    rows = []
+    for name, mtime, _size in state.entries():
+        if not (name.startswith("preview-") and name.endswith(".json")):
+            continue
+        token = name[len("preview-") : -len(".json")]
+        if not TOKEN_RE.fullmatch(token):
+            continue
+        try:
+            record = state.read_json(name)
+            journal = state.read_json(f"journal-{token}.json")
+            if record is not None:
+                _check_shapes(record, journal, token)  # damaged state goes to the pinned fallback
+            live = bool(record) and record["expires_at"] >= now
+            pending = bool(record and journal and live) and any(
+                s["status"] == "pending" for s in _status(record, journal).values()
+            )
+            # An intent without an outcome is a copy that may exist: the record stays until a
+            # confirm settles it (a live one by digest; an expired one, with nothing written, as
+            # failed), or its copy never gets its outcome or mark.
+            open_intent = bool(journal) and (
+                any("outcome" not in e for e in journal["entries"].values())
+                or any("outcome" not in n for n in _note_records(journal))
+            )
+            row = {
+                "record": record,
+                "confirmed": journal is not None,
+                "live": live,
+                "pending": pending or open_intent,
+                "pins_bytes": pending,
+                # Built here, inside the guard: a record that can't produce its receipt is
+                # pinned (below), never dropped on a crash.
+                "receipt": _receipt(token, record, journal) if journal is not None else None,
+            }
+        except Exception:  # noqa: BLE001 — unreadable or odd-shaped state is kept, never evicted
+            # A record or journal that can't be read now (a mode or link count a backup changed,
+            # a damaged shape) may hold a pending retry: pin it; the 30-day prune removes it.
+            row = {
+                "record": None,
+                "confirmed": True,
+                "live": True,
+                "pending": True,
+                "receipt": None,
+            }
+            row["pins_bytes"] = True
+        rows.append({"token": token, "mtime": mtime, **row})
+    return rows
+
+
+def _retriable(journal: dict, key: str, status: dict) -> bool:
+    """Whether confirming this same preview again may still create a failed item: false once its
+    failure is recorded for good (a destination taken, a pin that moved), which only a new
+    preview can get past. The dialog offers *Retry failed items* only for retriable failures."""
+    if status.get("status") != "failed":
+        return False
+    recorded = journal["entries"].get(key, {})
+    return not (recorded.get("outcome") == "failed" and not recorded.get("retry"))
+
+
+def _result(token: str, record: dict, journal: dict, statuses: dict, stale: str | None) -> dict:
+    plan = {e["key"]: e for e in record["items"]}
+    return {
+        "token": token,
+        "bundle": record["bundle"],
+        "repreview": stale,
+        "items": [
+            {
+                "key": key,
+                "kind": plan[key]["kind"],
+                "id": plan[key]["id"],
+                "title": plan[key]["title"],
+                **statuses[key],
+                "retry": _retriable(journal, key, statuses[key]),
+                **(
+                    {"memory": _note_tally(plan[key], journal)}
+                    if plan[key]["kind"] in kinds.CONTAINERS
+                    else {}
+                ),
+            }
+            for key in (e["key"] for e in record["items"])
+        ],
+    }
+
+
+def _receipt(token: str, record: dict, journal: dict) -> dict:
+    """What a replay of this token answers once its record is gone: exactly what a confirm of
+    the record answers now. A dropped record is never live with pending items (those pin it), so
+    any pending item is one an expired preview can't apply: stale."""
+    statuses = _status(record, journal)
+    pending = [k for k, v in statuses.items() if v["status"] == "pending"]
+    stale = "expired" if pending else None
+    _mark_stale(statuses, pending, stale)
+    receipt = {
+        "format": 1,
+        "selection": journal["selection"],
+        "keys": sorted(e["key"] for e in record["items"]),
+        "result": _result(token, record, journal, statuses, stale),
+    }
+    if journal.get("settle"):
+        receipt["settle"] = journal["settle"]
+    if journal.get("memory_project"):
+        receipt["memory_project"] = journal["memory_project"]
+    return receipt
+
+
+def _strings(value: object) -> bool:
+    return isinstance(value, list) and all(isinstance(v, str) for v in value)
+
+
+def _number(value: object) -> bool:
+    if not isinstance(value, int | float) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:  # an int beyond float range
+        return False
+
+
+def _choice_ok(value: object) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("engine"), str)
+        and isinstance(value.get("model"), str)
+        and (value.get("effort") is None or isinstance(value.get("effort"), str))
+    )
+
+
+def _specialist_view_ok(view: object) -> bool:
+    """A recorded specialist view has what confirm reads: its skills and a settled choice."""
+    return (
+        isinstance(view, dict)
+        and _strings(view.get("skills"))
+        and (view.get("settled") is None or _choice_ok(view.get("settled")))
+    )
+
+
+def _container_view_ok(view: object) -> bool:
+    """A recorded memory view has what confirm reads: each note's file."""
+    return (
+        isinstance(view, dict)
+        and isinstance(view.get("notes"), list)
+        and all(isinstance(n, dict) and isinstance(n.get("file"), str) for n in view["notes"])
+    )
+
+
+def _notes_ok(value: object) -> bool:
+    """The per-note journal of the containers: `{key: {scope, files: {path: record}}}`."""
+    return isinstance(value, dict) and all(
+        isinstance(box, dict)
+        and isinstance(box.get("scope"), str)
+        and isinstance(box.get("files"), dict)
+        and all(
+            isinstance(rec, dict)
+            and ("intent_at" not in rec or isinstance(rec.get("slug"), str))
+            and ("intent_at" not in rec or isinstance(rec.get("digest"), str))
+            for rec in box["files"].values()
+        )
+        for box in value.values()
+    )
+
+
+def _note_records(journal: dict) -> list[dict]:
+    return [rec for box in journal.get("notes", {}).values() for rec in box["files"].values()]
+
+
+def _check_shapes(record: object, journal: object, token: str) -> None:
+    """Raise `state.StateError` unless a preview record (and its journal, if any) has every field
+    confirm and the inventory read, with the right types. Damaged state is a 503 and is kept."""
+    item_fields = ("key", "kind", "id", "title", "status")
+    ok = (
+        isinstance(record, dict)
+        and isinstance(record.get("bundle"), str)
+        and record.get("token") == token
+        and _number(record.get("expires_at"))
+        and _number(record.get("created_at"))
+        # A preview lives one TTL: anything else is damage (and keeps datetime/math calls sane).
+        and 0 < record["created_at"] < record["expires_at"] <= record["created_at"] + TTL_S + 60
+        # ... and was never created in the future (no far-future record lives or pins forever).
+        # (one TTL of slack, so a clock stepped back by NTP never makes a live record damaged)
+        and record["created_at"] <= _now() + TTL_S
+        and isinstance(record.get("bindings"), dict)
+        and isinstance(record.get("items"), list)
+        and all(
+            isinstance(i, dict)
+            and all(isinstance(i.get(f), str) for f in item_fields)
+            and _strings(i.get("depends_on"))
+            and ("specialist" not in i or _specialist_view_ok(i["specialist"]))
+            and all(_container_view_ok(i[k]) for k in kinds.CONTAINERS if k in i)
+            for i in record["items"]
+        )
+    )
+    if ok and journal is not None:
+        ok = (
+            isinstance(journal, dict)
+            and journal.get("token") == token
+            and journal.get("bundle") == record["bundle"]
+            and _strings(journal.get("selection"))
+            and journal["selection"] == sorted(journal["selection"])
+            and isinstance(journal.get("entries"), dict)
+            and all(
+                isinstance(e, dict) and isinstance(e.get("dest"), str)
+                for e in journal["entries"].values()
+            )
+            and isinstance(journal.get("settle", {}), dict)
+            and all(_choice_ok(c) for c in journal.get("settle", {}).values())
+            and isinstance(journal.get("memory_project", ""), str)
+            and _notes_ok(journal.get("notes", {}))
+        )
+    if not ok:
+        raise state.StateError("share state is damaged; it was kept untouched")
+
+
+def _drop_record(row: dict) -> None:
+    """Give up a record. A settled import first leaves its receipt (built and checked when the
+    row was read), the final result a replay of its token answers."""
+    token = row["token"]
+    if row["confirmed"]:
+        state.write_json(f"receipt-{token}.json", row["receipt"])
+    state.remove_any(f"preview-{token}.json")
+    state.remove_any(f"journal-{token}.json")
+
+
+def _record_room(rows: list[dict]) -> list[dict]:
+    """The records to drop so one more fits within `MAX_RECORDS`: oldest unconfirmed first, then
+    settled imports while receipts have room; a record a retry still needs is never dropped.
+    Refuses (dropping nothing) when it can't fit."""
+    if len(rows) < MAX_RECORDS:
+        return []
+    need = len(rows) - MAX_RECORDS + 1
+    spare = [r for r in rows if not r["pending"]]
+    unconfirmed = sorted((r for r in spare if not r["confirmed"]), key=lambda r: r["mtime"])
+    settled = sorted((r for r in spare if r["confirmed"]), key=lambda r: r["mtime"])
+    receipts = sum(1 for n, _m, _s in state.entries() if n.startswith("receipt-"))
+    candidates = unconfirmed + settled[: max(0, MAX_RECEIPTS - receipts)]
+    if len(candidates) < need:
+        if receipts >= MAX_RECEIPTS and settled:
+            raise ShareError(
+                "BattleLab keeps a receipt of each finished import for "
+                f"{JOURNAL_RETENTION_S // 86400} days so a lost answer can be replayed, and it "
+                f"holds {MAX_RECEIPTS} now. New "
+                "previews resume as the oldest receipts expire.",
+                status=503,
+                reason="staging_full",
+            )
+        raise _full()
+    return candidates[:need]
+
+
+def _full() -> ShareError:
+    return ShareError(
+        "Too many imports are waiting to finish. Confirm or close them, or try again in "
+        f"{TTL_S // 60} minutes.",
+        status=503,
+        reason="staging_full",
+    )
+
+
+def _stage(data: bytes, digest: str, rows: list[dict]) -> None:
+    """Stage the verified bytes once per digest, within the aggregate bound (under the lock).
+
+    Only a confirmed import with pending items pins its bytes. Copies are evicted oldest first,
+    and only once it is certain the new bundle then fits: a refusal evicts nothing."""
+    name = _bundle_name(digest)
+    staged = {n: (m, size) for n, m, size in state.entries() if n.startswith("bundle-")}
+    if name in staged:
+        state.touch(name)
+        return
+    needed = {_bundle_name((r["record"] or {}).get("bundle", "")) for r in rows if r["pins_bytes"]}
+    if any(r["pins_bytes"] and not r["record"] for r in rows):
+        # An unreadable record may pin any staged copy: evict none while one exists.
+        needed |= set(staged)
+    spare = sorted((n for n in staged if n not in needed), key=lambda n: staged[n][0])
+    total = sum(size for _m, size in staged.values())
+    pinned = total - sum(staged[n][1] for n in spare)
+    if pinned + len(data) > MAX_STAGED_BYTES or len(staged) - len(spare) + 1 > MAX_STAGED_BUNDLES:
+        raise _full()
+    for old in spare:
+        if total + len(data) <= MAX_STAGED_BYTES and len(staged) < MAX_STAGED_BUNDLES:
+            break
+        state.remove_any(old)
+        total -= staged.pop(old)[1]
+    state.write_bytes(name, data)
+
+
+def _same_plan(row: dict, digest: str, bindings: dict, items: list[dict]) -> bool:
+    record = row["record"] or {}
+    if not row["record"]:
+        return False
+    return (
+        row["live"]
+        and not row["confirmed"]
+        and record.get("bundle") == digest
+        and record.get("bindings") == bindings
+        and record.get("items") == items
+    )
+
+
+def preview(data: bytes) -> dict:
+    bundle = fmt.read(data)
+    local = _bindings(bundle)
+    items = _plan(bundle, local, _reusable_skills())
+    bindings = {kind: sorted([k, v] for k, v in ids.items()) for kind, ids in local.items()}
+    try:
+        head = _preview_locked(data, bundle, items, bindings)
+    except fmt.Refused:
+        raise
+    except (KeyError, IndexError, TypeError, ValueError, ArithmeticError, AttributeError) as exc:
+        # Damaged share state met while recording or reusing a preview: a 503, never a 500.
+        log.warning("share preview: damaged state (%s)", type(exc).__name__, exc_info=True)
+        raise state.StateError("share state is damaged; preview the file again later") from None
+    # Built from the verified bundle, outside the damaged-state boundary: a real bug here stays
+    # a visible 500 rather than reading as damaged state.
+    budget = [PREVIEW_TEXT_BYTES]
+    return {
+        "token": head["token"],
+        "expires_at": head["expires_at"],
+        "bundle": {
+            "digest": bundle.digest,
+            "size": bundle.size,
+            "format": fmt.FORMAT,
+            "created_at": bundle.created_at,
+            "app_version": bundle.app_version,
+            "source": bundle.source,
+            "items": len(bundle.items),
+            "files": sum(len(i.files) for i in bundle.items),
+        },
+        "items": [
+            {
+                **entry,
+                "files": _files_view(
+                    bundle.item(entry["key"]),
+                    budget,
+                    refused=entry["status"] == "refused",
+                    withhold=(
+                        memory_kinds.withheld_files(entry.get(entry["kind"]))
+                        if entry["kind"] in kinds.CONTAINERS
+                        else None
+                    ),
+                ),
+            }
+            for entry in head["items"]
+        ],
+    }
+
+
+def _preview_locked(data: bytes, bundle: fmt.Bundle, items: list, bindings: dict) -> dict:
+    now = _now()
+    with state.lock():
+        _sync_marks()
+        _prune()
+        rows = _inventory(now)
+        # The same file previewed again against the same library is the same plan: answer the
+        # existing token instead of recording another (a repeated upload costs no state).
+        reuse = _reusable(rows, bundle.digest, bindings, items)
+        if reuse is not None:
+            record = reuse["record"]
+        else:
+            drop = _record_room(rows)  # both checks refuse before anything is removed
+            _stage(data, bundle.digest, rows)
+            for old in drop:
+                _drop_record(old)
+            token = secrets.token_hex(16)
+            record = {
+                "format": 1,
+                "token": token,
+                "bundle": bundle.digest,
+                "created_at": now,
+                "expires_at": now + TTL_S,
+                "bindings": bindings,
+                "items": items,
+            }
+            state.write_json(f"preview-{token}.json", record)
+        # Everything read from the stored record is taken here, inside the boundary.
+        return {
+            "token": record["token"],
+            "expires_at": _iso(record["expires_at"]),
+            "items": [_public(entry) for entry in record["items"]],
+        }
+
+
+def _reusable(rows: list[dict], digest: str, bindings: dict, items: list[dict]) -> dict | None:
+    staged = {n for n, _m, _s in state.entries() if n.startswith("bundle-")}
+    for row in rows:
+        if _same_plan(row, digest, bindings, items) and _bundle_name(digest) in staged:
+            return row
+    return None
+
+
+def _public(entry: dict) -> dict:
+    out = {
+        k: entry[k]
+        for k in ("key", "kind", "id", "title", "dest", "status", "reason", "depends_on", "uses")
+    }
+    for view_key in _VIEW_KEYS:
+        if view_key in entry:
+            out[view_key] = entry[view_key]
+    return out
+
+
+# ---- confirm --------------------------------------------------------------------------------
+
+
+def _fresh(record: dict, journal: dict) -> str | None:
+    """Why pending items can't be applied now, or None. Own journaled writes are excluded."""
+    if _now() > record["expires_at"]:
+        return "expired"
+    own: dict[str, set[str]] = {}
+    for key, entry in journal["entries"].items():
+        own.setdefault(key.split(":", 1)[0], set()).add(entry["dest"])
+    for kind in kinds.KINDS:
+        if kind in kinds.OPTIONAL and kind not in record["bindings"]:
+            continue  # this preview carried no item of that kind, so its store shaped no plan
+        bound = {k: v for k, v in record["bindings"].get(kind, [])}
+        current = {k: v for k, v in kinds.ids(kind).items() if k not in own.get(kind, set())}
+        if current != bound:
+            return "changed"
+    return None
+
+
+_STALE = {
+    "expired": "This preview expired. Preview the file again to import this item.",
+    "changed": (
+        "Your library changed since this preview. Preview the file again to import this item."
+    ),
+    "evicted": (
+        "This preview's file was cleared to make room for other imports. Preview the file again "
+        "to import this item."
+    ),
+}
+
+
+def _staged_bytes(record: dict) -> bytes | None:
+    data = state.read_bytes(_bundle_name(record["bundle"]), fmt.MAX_BUNDLE_BYTES)
+    if data is None or hashlib.sha256(data).hexdigest() != record["bundle"]:
+        return None
+    return data
+
+
+def _record_outcome(journal: dict, key: str, **outcome) -> None:
+    journal["entries"][key].update(outcome, at=_now())
+    state.write_json(f"journal-{journal['token']}.json", journal)
+
+
+def _reconcile(journal: dict, plan: dict, *, expired: bool = False) -> None:
+    """Settle intents whose outcome was never recorded (a crash between publish and record).
+
+    Absent while the preview is live: still pending (the item is applied again). Absent once it
+    has expired: nothing was written and nothing can be any more, so it settles as failed. A
+    container's notes are settled the same way, each by the note its intent names."""
+    _reconcile_notes(journal, plan, expired=expired)
+    for key, entry in journal["entries"].items():
+        if "outcome" in entry:
+            continue
+        try:
+            current = kinds.at(plan[key]["kind"], entry["dest"])
+        except (OSError, store.StoreError, gallery_contract.GalleryError, ValueError):
+            continue  # unreadable now: stays pending, decided on a later attempt
+        if current == entry["digest"]:
+            _record_outcome(journal, key, outcome="created", revision=current, recovered=True)
+            _remember(plan[key], entry["dest"], current, journal["bundle"])
+        elif current is not None:
+            _record_outcome(
+                journal,
+                key,
+                outcome="failed",
+                retry=False,
+                reason=f"A different copy now holds {entry['dest']}; nothing was overwritten.",
+            )
+        elif expired:
+            _record_outcome(
+                journal,
+                key,
+                outcome="failed",
+                retry=False,
+                reason="The preview expired before this item was written; nothing was written. "
+                "Preview the file again to import it.",
+            )
+
+
+def _reconcile_notes(journal: dict, plan: dict, *, expired: bool) -> None:
+    """Settle each note whose intent has no outcome by what its slug holds now: the journaled
+    digest there means created (never taken in again), another note means failed (it is left as
+    it is), nothing means still pending, or failed once the preview has expired. A container whose
+    every note is settled for good is then settled itself."""
+    changed = False
+    for key, box in journal.get("notes", {}).items():
+        for rec in box["files"].values():
+            if "intent_at" not in rec or "outcome" in rec:
+                continue
+            try:
+                current = memory_kinds.note_at(box["scope"], rec["slug"])
+            except memory_kinds.IMPORT_ERRORS:
+                continue  # unreadable now: decided on a later attempt
+            if current == rec["digest"]:
+                rec.update(outcome="created", recovered=True, at=_now())
+            elif current is None and _removed(box["scope"], rec["digest"]):
+                rec.update(outcome="failed", retry=False, reason=_REMOVED, at=_now())
+            elif current is not None:
+                rec.update(
+                    outcome="failed",
+                    retry=False,
+                    reason=f"A different note now holds {rec['slug']}; nothing was overwritten.",
+                    at=_now(),
+                )
+            elif expired:
+                rec.update(
+                    outcome="failed",
+                    retry=False,
+                    reason="The preview expired before this note was written; nothing was "
+                    "written. Preview the file again to import it.",
+                    at=_now(),
+                )
+            else:
+                continue
+            changed = True
+        entry = journal["entries"].get(key)
+        if key in plan and (entry is None or entry.get("retry")):
+            settled = _container_outcome(plan[key], box)
+            if settled is not None:
+                journal["entries"][key] = {"dest": box["scope"], **settled, "at": _now()}
+                changed = True
+    if changed:
+        state.write_json(f"journal-{journal['token']}.json", journal)
+
+
+_REMOVED = (
+    "It was taken in, then removed here (deleted or cleared); it isn't brought back. Preview the "
+    "file again to import it once more."
+)
+
+
+def _removed(scope: str, digest: str) -> bool:
+    try:
+        return memory_kinds.note_removed(scope, digest)
+    except memory_kinds.IMPORT_ERRORS:
+        return True  # can't tell: never bring back what may have been removed
+
+
+def _note_settled(rec: dict | None) -> bool:
+    return bool(rec) and "outcome" in rec and not (rec["outcome"] == "failed" and rec.get("retry"))
+
+
+def _container_outcome(entry: dict, box: dict) -> dict | None:
+    """A container's outcome once every note has one: `created` when none can still be retried,
+    a retriable failure while one can; `None` while a note has no outcome yet."""
+    files = [n["file"] for n in (entry.get(entry["kind"]) or {}).get("notes", [])]
+    recs = [box["files"].get(f) for f in files]
+    if any(not r or "outcome" not in r for r in recs):
+        return None
+    retriable = sum(1 for r in recs if not _note_settled(r))
+    if retriable:
+        return {
+            "outcome": "failed",
+            "retry": True,
+            "reason": f"{retriable} of its notes couldn't be taken in now; nothing else was "
+            "written for them. Confirm again to retry them.",
+        }
+    return {"outcome": "created"}
+
+
+def _note_tally(entry: dict, journal: dict) -> dict:
+    """What happened to each note of a container: ids and fixed reasons only, never its text."""
+    box = journal.get("notes", {}).get(entry["key"], {"scope": None, "files": {}})
+    notes = []
+    for n in (entry.get(entry["kind"]) or {}).get("notes", []):
+        rec = box["files"].get(n["file"]) or {}
+        outcome = rec.get("outcome") or "pending"
+        if outcome == "failed" and rec.get("retry"):
+            outcome = "retry"
+        notes.append(
+            {
+                "file": n["file"],
+                "outcome": outcome,
+                "slug": rec.get("slug") if outcome in ("created", "already") else None,
+                "reason": rec.get("reason"),
+            }
+        )
+    counts = {
+        k: sum(1 for n in notes if n["outcome"] == k)
+        for k in ("created", "already", "held", "refused", "failed", "retry", "pending")
+    }
+    return {"scope": box["scope"], "notes": notes, "counts": counts}
+
+
+def _needs(entry: dict, tail: str) -> str:
+    return f"needs {_label(entry['kind'])} {entry['id']}, {tail}"
+
+
+def _status(record: dict, journal: dict) -> dict[str, dict]:
+    """Each item's settled status before applying: selection, refusals, recorded outcomes."""
+    plan = {e["key"]: e for e in record["items"]}
+    chosen = set(journal["selection"])
+    out: dict[str, dict] = {}
+    for key in _topo(record):
+        entry = plan[key]
+        recorded = journal["entries"].get(key, {})
+        if entry["status"] == "reused":
+            # Nothing to import: the local copy it names is used as it is, selected or not.
+            out[key] = {"status": "reused", "dest": entry["dest"], "reason": None}
+        elif recorded.get("outcome") == "created":
+            out[key] = {"status": "created", "dest": recorded["dest"], "reason": None}
+        elif recorded.get("outcome") == "failed" and not recorded.get("retry"):
+            out[key] = {"status": "failed", "dest": recorded["dest"], "reason": recorded["reason"]}
+        elif key not in chosen:
+            out[key] = {"status": "not_selected", "dest": None, "reason": None}
+        elif entry["status"] == "refused":
+            out[key] = {"status": "refused", "dest": None, "reason": entry["reason"]}
+        else:
+            reason = None
+            status = "refused"
+            for dep in entry["depends_on"]:
+                dep_entry = plan[dep]
+                if out[dep]["status"] == "not_selected":
+                    reason = _needs(dep_entry, "which isn't being imported")
+                elif out[dep]["status"] == "refused":
+                    reason = _needs(dep_entry, "which can't be imported")
+                elif out[dep]["status"] in ("failed", "skipped"):
+                    # A dependency that failed for good: this item can never be applied under
+                    # this preview, so it is settled (and pins nothing), not pending.
+                    status = "skipped"
+                    reason = f"Not attempted: it {_needs(dep_entry, 'which failed')}."
+                if reason:
+                    break
+            out[key] = (
+                {"status": status, "dest": None, "reason": reason}
+                if reason
+                else {"status": "pending", "dest": entry["dest"], "reason": None}
+            )
+    return out
+
+
+def _topo(record: dict) -> list[str]:
+    items = {e["key"]: e for e in record["items"]}
+    index = {e["key"]: n for n, e in enumerate(record["items"])}
+    done: list[str] = []
+    pending = list(items)
+    while pending:
+        ready = [k for k in pending if all(d in done for d in items[k]["depends_on"])]
+        if not ready:
+            raise state.StateError("share state is damaged: its dependencies can't be ordered")
+        ready.sort(key=lambda k: (kinds.LEVEL.get(items[k]["kind"], 9), index[k]))
+        done.append(ready[0])
+        pending.remove(ready[0])
+    return done
+
+
+def _remember(entry: dict, dest: str, revision: str, bundle: str) -> None:
+    """Mark the new copy *imported from a file* with the bundle digest. Best effort: the copy and
+    its journaled outcome already exist, so an unreadable or unwritable mark never fails (or
+    misreports) the import; the mark is simply missing."""
+    try:
+        _write_mark(entry, dest, revision, bundle)
+    except (state.StateError, OSError, ValueError, TypeError, AttributeError, ArithmeticError):
+        log.warning("share import: could not record the imported-from-a-file mark for %s", dest)
+
+
+def _marks() -> dict:
+    """The stored marks (`imported.json`): `{}` when absent; `StateError` when it can't be read
+    or has an odd shape (never treated as empty, and never overwritten)."""
+    try:
+        record = state.read_json("imported.json")
+    except OSError:
+        raise state.StateError("the import record can't be read") from None
+    if record is None:
+        return {}
+    items = record.get("items")
+    if not isinstance(items, dict) or not all(isinstance(v, dict) for v in items.values()):
+        raise state.StateError("the import record is damaged")
+    return items
+
+
+def _evidence() -> dict:
+    """Copies this install's journals and receipts say an import created, as marks. They are the
+    durable record behind `imported.json`: a mark write that failed (it is best effort) never
+    loses a copy's provenance, because the journal or receipt that recorded the outcome stays
+    until its marks are stored (`_holds_unmarked`)."""
+    out: dict = {}
+    for name, _mtime, _size in state.entries():
+        try:
+            if name.startswith("journal-"):
+                doc = state.read_json(name)
+                if doc is None:
+                    # Dropped since the listing: its receipt is written before it goes.
+                    name = "receipt-" + name[len("journal-") :]
+                else:
+                    for key, entry in (doc.get("entries") or {}).items():
+                        if key.split(":", 1)[0] in kinds.CONTAINERS:
+                            continue  # notes carry their provenance in memory (their writer)
+                        if isinstance(entry, dict) and entry.get("outcome") == "created":
+                            out[f"{key.split(':', 1)[0]}:{entry['dest']}"] = {
+                                "bundle": doc["bundle"],
+                                "revision": entry.get("revision"),
+                            }
+                    continue
+            if name.startswith("receipt-"):
+                result = (state.read_json(name) or {}).get("result") or {}
+                for item in result.get("items") or []:
+                    if isinstance(item, dict) and item.get("kind") in kinds.CONTAINERS:
+                        continue
+                    if isinstance(item, dict) and item.get("status") == "created":
+                        out[f"{item['kind']}:{item['dest']}"] = {
+                            "bundle": result["bundle"],
+                            "revision": None,
+                        }
+        except (state.StateError, KeyError, TypeError, AttributeError):
+            # A journal or receipt that can't be read may hold a copy's only provenance: the
+            # whole record is unknown (a 503), never "no imports".
+            raise state.StateError("an import record can't be read") from None
+    return out
+
+
+def _holds_unmarked(name: str) -> bool:
+    """Whether a journal or receipt records a created copy whose mark isn't stored yet (or the
+    marks can't be read): it is then the only provenance, and is kept."""
+    try:
+        marks = _marks()
+        doc = state.read_json(name) or {}
+        if name.startswith("journal-"):
+            created = [
+                f"{k.split(':', 1)[0]}:{e.get('dest')}"
+                for k, e in (doc.get("entries") or {}).items()
+                if isinstance(e, dict)
+                and e.get("outcome") == "created"
+                and k.split(":", 1)[0] not in kinds.CONTAINERS
+            ]
+        else:
+            created = [
+                f"{i.get('kind')}:{i.get('dest')}"
+                for i in ((doc.get("result") or {}).get("items") or [])
+                if isinstance(i, dict)
+                and i.get("status") == "created"
+                and i.get("kind") not in kinds.CONTAINERS
+            ]
+        return any(key not in marks for key in created)
+    except (state.StateError, KeyError, TypeError, AttributeError):
+        return True  # can't tell: keep it (fail closed), never a 500 out of pruning
+
+
+def _sync_marks() -> None:
+    """Store the marks that only journals or receipts hold yet (a mark write that failed earlier).
+    Best effort, under the share lock; a damaged record is never overwritten."""
+    try:
+        marks = _marks()
+        missing = {k: v for k, v in _evidence().items() if k not in marks}
+        if missing:
+            now = _now()
+            merged = {**{k: {**v, "at": now} for k, v in missing.items()}, **marks}
+            state.write_json("imported.json", {"items": _bounded(merged)})
+    except (state.StateError, OSError, ValueError, TypeError, AttributeError, ArithmeticError):
+        log.warning("share state: could not store pending imported-from-a-file marks")
+
+
+def _bounded(items: dict) -> dict:
+    """Over `MAX_PROVENANCE`, only marks of copies that no longer exist are dropped, oldest first.
+    The mark of a copy that still exists is its provenance and is never evicted (the libraries
+    themselves are bounded, so the marks of present copies are too); when the library can't be
+    read, nothing is dropped."""
+    if len(items) <= MAX_PROVENANCE:
+        return items
+    try:
+        present = {f"{k}:{i}" for k in kinds.KINDS for i in kinds.ids(k)}
+    except (OSError, store.StoreError, gallery_contract.GalleryError, ValueError):
+        return items
+
+    def when(key: str) -> int | float:
+        # No conversion: an int too large for a float is still comparable as it is.
+        at = items[key].get("at")
+        if isinstance(at, bool) or not isinstance(at, int | float):
+            return 0
+        return 0 if isinstance(at, float) and math.isnan(at) else at
+
+    gone = sorted((k for k in items if k not in present), key=when)
+    for old in gone[: max(0, len(items) - MAX_PROVENANCE)]:
+        del items[old]
+    return items
+
+
+def _write_mark(entry: dict, dest: str, revision: str, bundle: str) -> None:
+    items = dict(_marks())  # a damaged record raises: it is never replaced by a partial one
+    items[f"{entry['kind']}:{dest}"] = {"bundle": bundle, "revision": revision, "at": _now()}
+    state.write_json("imported.json", {"items": _bounded(items)})
+
+
+def imports() -> dict:
+    """`{"<kind>:<id>": {bundle, revision}}` of copies created from a file: the stored marks plus
+    any the journals and receipts hold that a failed mark write didn't store. An absent record
+    with no such evidence is authoritatively empty; a record that can't be read or has an odd
+    shape raises `StateError` (a 503), never `{}`: the import dialog treats "unknown" as
+    "copies may exist" and pre-selects nothing."""
+    # Evidence first: a concurrent preview may store a mark and then prune its journal, so the
+    # mark read afterwards still sees it.
+    evidence = _evidence()
+    marks = _marks()
+    found = {**evidence, **marks}
+
+    def text(value: object) -> str | None:  # only strings reach the response
+        return value if isinstance(value, str) else None
+
+    return {
+        k: {"bundle": text(v.get("bundle")), "revision": text(v.get("revision"))}
+        for k, v in found.items()
+    }
+
+
+def _apply(record: dict, journal: dict, statuses: dict, bundle: fmt.Bundle) -> None:
+    plan = {e["key"]: e for e in record["items"]}
+    reuse: dict = {}
+    for key in _topo(record):
+        if statuses[key]["status"] != "pending":
+            continue
+        entry = plan[key]
+        blocked = next(
+            (d for d in entry["depends_on"] if statuses[d]["status"] not in ("created", "reused")),
+            None,
+        )
+        if blocked is not None:
+            dep = plan[blocked]
+            word = "failed" if statuses[blocked]["status"] == "failed" else "was not imported"
+            statuses[key] = {
+                "status": "skipped",
+                "dest": entry["dest"],
+                "reason": f"Not attempted: it {_needs(dep, 'which ' + word)}.",
+            }
+            continue
+        moved = _moved_dependency(journal, plan, entry, reuse)
+        if moved is not None:
+            statuses[key] = {
+                "status": "stale",
+                "dest": None,
+                "reason": (
+                    f"Not attempted: the imported copy {moved} it needs was changed or removed "
+                    "since. Preview the file again to import this item."
+                ),
+            }
+            continue
+        item = bundle.item(key)
+        if item.kind in kinds.CONTAINERS:
+            statuses[key] = _apply_notes(journal, statuses, entry, item)
+            continue
+        renames = {plan[d]["id"]: statuses[d]["dest"] for d in entry["depends_on"]}
+        try:
+            final = kinds.rewrite(item.kind, item.id, entry["dest"], item.files, renames)
+        except kinds.ItemRefused as exc:
+            statuses[key] = {"status": "failed", "dest": entry["dest"], "reason": str(exc)}
+            continue
+        if fmt.tree_digest(final) != entry["digest"]:
+            statuses[key] = {
+                "status": "failed",
+                "dest": entry["dest"],
+                "reason": "The planned content changed; preview the file again.",
+            }
+            continue
+        try:
+            payload, digest = kinds.prepare(
+                item.kind,
+                final,
+                dest=entry["dest"],
+                choice=_choice(journal, entry),
+                pins=_pins(journal, plan, statuses, entry),
+            )
+        except kinds.ItemRefused as exc:
+            # Refused by its own validator now (an agent or model gone since the preview):
+            # nothing was written, and nothing is journaled, so a later confirm tries again.
+            statuses[key] = {
+                "status": "failed",
+                "dest": entry["dest"],
+                "reason": (
+                    f"Nothing was written: {exc}. Preview the file again to choose what it "
+                    "runs on."
+                    if item.kind == "specialist"
+                    else f"Nothing was written: {exc}. Preview the file again to import it."
+                ),
+            }
+            continue
+        try:
+            occupant = kinds.at(item.kind, entry["dest"])
+        except (OSError, store.StoreError, gallery_contract.GalleryError, ValueError) as exc:
+            statuses[key] = {
+                "status": "failed",
+                "dest": entry["dest"],
+                "reason": f"Nothing was written: {_failure_text(exc)}. Confirm again to retry.",
+            }
+            continue
+        recorded = journal["entries"].get(key, {})
+        if occupant == digest and "intent_at" in recorded and "outcome" not in recorded:
+            # Our own earlier attempt published it but its outcome was never recorded (the
+            # reconcile rule, applied now that the destination could be read).
+            _record_outcome(journal, key, outcome="created", revision=occupant, recovered=True)
+            _remember(entry, entry["dest"], occupant, journal["bundle"])
+            statuses[key] = {"status": "created", "dest": entry["dest"], "reason": None}
+            continue
+        if occupant is not None:
+            # Something else (another import, a manual copy) holds the planned ID: never adopt it.
+            reason = (
+                f"{entry['dest']} was taken since the preview; nothing was overwritten. "
+                "Preview the file again to import this item."
+            )
+            journal["entries"][key] = {"dest": entry["dest"], "digest": digest}
+            _record_outcome(journal, key, outcome="failed", retry=False, reason=reason)
+            statuses[key] = {"status": "failed", "dest": entry["dest"], "reason": reason}
+            continue
+        journal["entries"][key] = {"dest": entry["dest"], "digest": digest, "intent_at": _now()}
+        state.write_json(f"journal-{journal['token']}.json", journal)
+        try:
+            revision = kinds.publish(item.kind, entry["dest"], payload)
+        except (OSError, store.StoreError, gallery_contract.GalleryError, ValueError) as exc:
+            statuses[key] = _after_failure(journal, entry, key, digest, exc)
+            continue
+        _record_outcome(journal, key, outcome="created", revision=revision)
+        _remember(entry, entry["dest"], revision, journal["bundle"])
+        statuses[key] = {"status": "created", "dest": entry["dest"], "reason": None}
+
+
+def _apply_notes(journal: dict, statuses: dict, entry: dict, item: fmt.Item) -> dict:
+    """Take a container's notes in, each its own unit: judged and written by memory itself
+    (`memory.share_import_note`, under the secret-inventory fence and the project-then-specialist
+    locks), into the project this confirm names, or into the notebook there of the specialist
+    this import created. Each note's intent (scope, slug, digest) is journaled before its commit;
+    a note settled before (created, already here, held back, refused, or failed for good) is never
+    taken in again. One note failing never stops the others."""
+    key = entry["key"]
+    boxes = journal.setdefault("notes", {})
+    box = boxes.get(key)
+    if box is None:
+        notebook = entry["kind"] == "notebook"
+        specialist = statuses[entry["depends_on"][0]]["dest"] if notebook else None
+        try:
+            scope = memory_kinds.scope_for(entry["kind"], journal["memory_project"], specialist)
+        except (KeyError, memory_kinds.IMPORT_ERRORS):
+            return {
+                "status": "failed",
+                "dest": None,
+                "reason": "Nothing was written: no project was chosen for these notes. Preview "
+                "the file again to import them.",
+            }
+        box = boxes[key] = {"scope": scope, "files": {}}
+    scope = box["scope"]
+    try:
+        rows = memory_kinds.notes_of(item.files)
+    except kinds.ItemRefused as exc:
+        return {"status": "failed", "dest": scope, "reason": f"Nothing was written: {exc}."}
+    author = memory_kinds.writer(journal["bundle"])
+    name = f"journal-{journal['token']}.json"
+    wrote = False
+    # The project is checked again on every confirm (archived, deleted or switched off since?);
+    # memory re-checks the switch under its lock for each note too.
+    gone = memory_kinds.project_problem(memory_kinds.memory.project_of(scope))
+    for path, note, problem in rows:
+        if _note_settled(box["files"].get(path)):
+            continue
+        if gone and note is not None:
+            box["files"][path] = {
+                "outcome": "failed",
+                "retry": True,
+                "reason": f"Nothing was written: {gone}. Confirm again to retry it.",
+                "at": _now(),
+            }
+            continue
+        if note is None:
+            box["files"][path] = {"outcome": "refused", "reason": problem, "at": _now()}
+            continue
+        digest = memory_kinds.digest(note)
+
+        def intent(slug: str, path: str = path, digest: str = digest) -> None:
+            # Durable before the commit; it also carries the outcomes recorded since the last
+            # write (an outcome without an intent is settled by nothing but this record).
+            box["files"][path] = {"slug": slug, "digest": digest, "intent_at": _now()}
+            state.write_json(name, journal)
+
+        try:
+            res = memory_kinds.import_note(scope, note, writer=author, intent=intent)
+        except state.StateError:
+            raise  # the journal can't be written: nothing more is taken in (a 503)
+        except memory_kinds.IMPORT_ERRORS as exc:
+            box["files"][path] = _note_failure(scope, box["files"].get(path), digest, exc)
+            continue
+        wrote = wrote or res["outcome"] == "created"
+        rec = box["files"].get(path, {}) if res["outcome"] == "created" else {}
+        if res["outcome"] == memory_kinds.RETRY:
+            rec = {
+                "outcome": "failed",
+                "retry": True,
+                "reason": f"Nothing was written: {res['reason']}. Confirm again to retry it.",
+            }
+        else:
+            rec.update(
+                outcome=res["outcome"], slug=res["slug"] or None, reason=res["reason"] or None
+            )
+        box["files"][path] = {**rec, "at": _now()}
+    if wrote:
+        try:
+            memory_kinds.publish(scope)  # the agents' view, under the fence like every render
+        except Exception:  # noqa: BLE001 — the notes are stored; the next pass renders them
+            log.warning("share import: could not re-publish the memory view of %s", scope)
+    settled = _container_outcome(entry, box) or {
+        "outcome": "failed",
+        "retry": True,
+        "reason": "Some of its notes weren't reached. Confirm again to retry them.",
+    }
+    journal["entries"][key] = {"dest": scope, **settled, "at": _now()}
+    state.write_json(name, journal)
+    if settled["outcome"] == "created":
+        return {"status": "created", "dest": scope, "reason": None}
+    return {"status": "failed", "dest": scope, "reason": settled["reason"]}
+
+
+def _note_failure(scope: str, rec: dict | None, digest: str, exc: Exception) -> dict:
+    """A note's import raised: settle it by what its journaled slug holds, if it got that far."""
+    detail = _failure_text(exc)
+    if rec and "intent_at" in rec and "outcome" not in rec:
+        try:
+            current = memory_kinds.note_at(scope, rec["slug"])
+        except memory_kinds.IMPORT_ERRORS:
+            return rec  # can't tell: the intent stays open for the next confirm to reconcile
+        if current == digest:
+            return {**rec, "outcome": "created", "recovered": True, "at": _now()}
+        if current is None and _removed(scope, digest):
+            return {**rec, "outcome": "failed", "retry": False, "reason": _REMOVED, "at": _now()}
+        if current is not None:
+            return {
+                **rec,
+                "outcome": "failed",
+                "retry": False,
+                "reason": f"A different note now holds {rec['slug']}; nothing was overwritten.",
+                "at": _now(),
+            }
+    return {
+        "outcome": "failed",
+        "retry": True,
+        "reason": f"Nothing was written: {detail}. Confirm again to retry it.",
+        "at": _now(),
+    }
+
+
+def _choice(journal: dict, entry: dict) -> dict | None:
+    """The agent, model and effort a specialist is created with: the operator's choice recorded
+    with this confirm, else the file's suggestion as the preview settled it."""
+    chosen = (journal.get("settle") or {}).get(entry["key"])
+    if chosen is not None:
+        return chosen
+    return (entry.get("specialist") or {}).get("settled")
+
+
+def _pins(journal: dict, plan: dict, statuses: dict, entry: dict) -> dict[str, str]:
+    """`{local skill id: revision}` of the copies a dependent uses: the ones this import created
+    (their journaled revision) or reused (the content the preview matched)."""
+    out: dict[str, str] = {}
+    for dep in entry["depends_on"]:
+        if plan[dep]["kind"] != "skill":
+            continue
+        if statuses[dep]["status"] == "reused":
+            out[plan[dep]["dest"]] = plan[dep]["digest"]
+        else:
+            recorded = journal["entries"].get(dep, {})
+            out[recorded.get("dest", "")] = recorded.get("revision") or ""
+    return out
+
+
+def _failure_text(exc: Exception) -> str:
+    """Words for a failed publication. An OSError's text can name host paths: only its code."""
+    if isinstance(exc, OSError):
+        code = errno.errorcode.get(exc.errno or 0, "unknown")
+        return f"a storage error ({code})"
+    return getattr(exc, "detail", None) or str(exc) or type(exc).__name__
+
+
+def _moved_dependency(journal: dict, plan: dict, entry: dict, reuse: dict) -> str | None:
+    """The destination of a created dependency that no longer holds its journaled revision.
+
+    A retry applies a dependent only against the exact copies this import made: a copy deleted,
+    edited or replaced since then (even by another skill now at that ID) blocks the dependent."""
+    for dep in entry["depends_on"]:
+        if plan[dep]["status"] == "reused":
+            # A reused copy must still be the one the preview matched: the import record still
+            # names it as imported with this content, and it still holds exactly that content.
+            if "skills" not in reuse:
+                reuse["skills"] = _reusable_skills()  # read once per confirm
+            if plan[dep]["dest"] not in reuse["skills"].get(plan[dep]["digest"], []):
+                return plan[dep]["dest"]
+            recorded = {"dest": plan[dep]["dest"], "revision": plan[dep]["digest"]}
+        else:
+            recorded = journal["entries"].get(dep, {})
+            if recorded.get("outcome") != "created":
+                continue
+        try:
+            current = kinds.at(plan[dep]["kind"], recorded["dest"])
+        except (OSError, store.StoreError, gallery_contract.GalleryError, ValueError):
+            current = None
+        if current != recorded.get("revision"):
+            return recorded["dest"]
+    return None
+
+
+def _after_failure(journal: dict, entry: dict, key: str, digest: str, exc: Exception) -> dict:
+    """A publication refused or failed: decide by what the destination holds now."""
+    try:
+        current = kinds.at(entry["kind"], entry["dest"])
+    except (OSError, store.StoreError, gallery_contract.GalleryError, ValueError):
+        # Can't tell whether it was published: the intent stays without an outcome, and the next
+        # confirm reconciles it by destination and digest. Never a permanent "taken".
+        return {
+            "status": "failed",
+            "dest": entry["dest"],
+            "reason": f"Nothing was written: {_failure_text(exc)}. Confirm again to retry.",
+        }
+    if current == digest:
+        _record_outcome(journal, key, outcome="created", revision=current, recovered=True)
+        _remember(entry, entry["dest"], current, journal["bundle"])
+        return {"status": "created", "dest": entry["dest"], "reason": None}
+    if current is None:
+        detail = _failure_text(exc)
+        if isinstance(exc, kinds.Terminal):
+            # A pinned skill moved under the import, or the store refuses the planned name now:
+            # the same plan can never succeed, so it is settled for good and the remedy is a new
+            # preview (never "confirm again").
+            reason = f"Nothing was written: {detail}. Preview the file again to import it."
+            _record_outcome(journal, key, outcome="failed", retry=False, reason=reason)
+            return {"status": "failed", "dest": entry["dest"], "reason": reason}
+        reason = f"Nothing was written: {detail}. Confirm again to retry this item."
+        _record_outcome(journal, key, outcome="failed", retry=True, reason=reason)
+        return {"status": "failed", "dest": entry["dest"], "reason": reason}
+    reason = (
+        f"{entry['dest']} was taken since the preview; nothing was overwritten. "
+        "Preview the file again to import this item."
+    )
+    _record_outcome(journal, key, outcome="failed", retry=False, reason=reason)
+    return {"status": "failed", "dest": entry["dest"], "reason": reason}
+
+
+def _settle_request(value: object) -> dict:
+    """The operator's choices, by item key: `{"specialist:<id>": {engine, model, effort}}`."""
+    if value is None:
+        return {}
+    ok = isinstance(value, dict) and len(value) <= fmt.MAX_ITEMS
+    for key, choice in (value or {}).items() if ok else ():
+        ok = (
+            isinstance(key, str)
+            and key.startswith("specialist:")
+            and isinstance(choice, dict)
+            and set(choice) == {"engine", "model", "effort"}
+            and all(
+                isinstance(choice[f], str) and 0 < len(choice[f]) <= kinds.SUGGEST_MAX
+                for f in ("engine", "model")
+            )
+            and (
+                choice["effort"] is None
+                or (isinstance(choice["effort"], str) and 0 < len(choice["effort"]) <= 64)
+            )
+        )
+        if not ok:
+            break
+    if not ok:
+        raise ShareError(
+            'settle is {"specialist:<id>": {engine, model, effort}} for this preview\'s '
+            "specialists",
+            status=422,
+        )
+    return {k: dict(v) for k, v in value.items()}
+
+
+def _check_settle(record: dict, selection: list[str], settle: dict) -> None:
+    """Before anything is written: every selected specialist this confirm may create has a choice
+    (the operator's, or the suggestion the preview settled) that holds here now, checked the way a
+    save is. Otherwise 422 `settle`, naming each item's reason; nothing is journaled or created."""
+    from .. import specialists
+
+    plan = {e["key"]: e for e in record["items"]}
+    unknown = sorted(k for k in settle if plan.get(k, {}).get("kind") != "specialist")
+    if unknown:
+        raise ShareError(f"{fmt.shown(unknown[0])} is not a specialist in this preview", status=422)
+    problems: dict[str, str] = {}
+    statuses = _status(record, {"selection": sorted(selection), "entries": {}})
+    for key in selection:
+        entry = plan[key]
+        if entry["kind"] != "specialist" or statuses[key]["status"] != "pending":
+            continue  # refused here or for a dependency: it creates nothing, so needs no choice
+        view = entry.get("specialist") or {}
+        choice = settle.get(key) or view.get("settled")
+        if choice is None:
+            problems[key] = "Choose the agent it runs on."
+            continue
+        try:
+            specialists.runs_on(
+                choice.get("engine"),
+                choice.get("model"),
+                choice.get("effort"),
+                has_skills=bool(view.get("skills")),
+            )
+        except specialists.DraftRefused as exc:
+            problems[key] = f"{exc.detail[:1].upper()}{exc.detail[1:]}."
+    if problems:
+        raise ShareError(
+            "Nothing was imported: what a specialist runs on doesn't work here. Change it, then "
+            "import again.",
+            status=422,
+            reason="settle",
+            items=problems,
+        )
+
+
+def _check_memory(record: dict, selection: list[str], project: str | None) -> None:
+    """Before anything is written: notes go only into a project the operator named, that is here,
+    and whose memory is on (an import never turns it on, and never picks a project itself).
+    Otherwise 422 `memory_project`; nothing is journaled or created."""
+    carried = [e for e in record["items"] if e["kind"] in kinds.CONTAINERS]
+    if project is not None and not carried:
+        raise ShareError("memory_project is only for a file that carries notes", status=422)
+    statuses = _status(record, {"selection": sorted(selection), "entries": {}})
+    if not any(statuses[e["key"]]["status"] == "pending" for e in carried):
+        return
+    why = memory_kinds.project_problem(project)
+    if why:
+        raise ShareError(
+            f"Nothing was imported: {why[:1].upper()}{why[1:]}.",
+            status=422,
+            reason="memory_project",
+        )
+
+
+def confirm(
+    token: object, selection: object, settle: object = None, memory_project: object = None
+) -> dict:
+    token = _token(token)
+    settle = _settle_request(settle)
+    if memory_project is not None and (
+        not isinstance(memory_project, str) or not 0 < len(memory_project) <= 128
+    ):
+        raise ShareError("memory_project is a project ID", status=422)
+    if (
+        not isinstance(selection, list)
+        or not all(isinstance(k, str) for k in selection)
+        or len(set(selection)) != len(selection)
+        or len(selection) > fmt.MAX_ITEMS
+    ):
+        raise ShareError("selection is a list of distinct item keys", status=422)
+    if not selection:
+        raise ShareError("choose at least one item to import", status=422)
+    with state.lock():
+        try:
+            return _confirm_locked(token, selection, settle, memory_project)
+        except (
+            KeyError,
+            IndexError,
+            TypeError,
+            ValueError,
+            ArithmeticError,
+            AttributeError,
+        ) as exc:
+            # Damaged share state (the app's own private files): a 503, kept untouched. Nothing
+            # can be duplicated by trying again (NOREPLACE + the digest checks), so the storage
+            # answer's "confirming again never makes a second copy" stays true.
+            log.warning("share import %s: damaged state (%s)", token, type(exc).__name__)
+            raise state.StateError("share state is damaged; it was kept untouched") from None
+
+
+def _confirm_locked(
+    token: str, selection: list[str], settle: dict | None = None, project: str | None = None
+) -> dict:
+    settle = settle or {}
+    record = state.read_json(f"preview-{token}.json")
+    if record is None:
+        # Unreadable (mode, link count) is a 503 like an unreadable record: it may be read
+        # again, and "preview again" would import the created items a second time. Only a
+        # receipt whose shape is damaged, which never heals, answers "gone".
+        receipt = state.read_json(f"receipt-{token}.json")
+        if receipt is not None and not (
+            _strings(receipt.get("selection"))
+            and _strings(receipt.get("keys"))
+            and isinstance(receipt.get("settle", {}), dict)
+            and isinstance(receipt.get("result"), dict)
+            and isinstance(receipt["result"].get("items"), list)
+        ):
+            receipt = None  # a damaged receipt replays nothing: the preview is gone
+        if receipt is not None:
+            # A settled import whose record gave way: its replay answers the recorded result.
+            unknown = sorted(set(selection) - set(receipt["keys"]))
+            if unknown:
+                raise ShareError(f"{fmt.shown(unknown[0])} is not in this preview", status=422)
+            if (
+                receipt.get("selection") != sorted(selection)
+                or receipt.get("settle", {}) != settle
+                or receipt.get("memory_project") != project
+            ):
+                raise ShareError(
+                    "This preview was already confirmed with a different selection. "
+                    "Preview the file again to import other items.",
+                    status=409,
+                    reason="selection",
+                )
+            return receipt["result"]
+        raise ShareError(
+            "This preview is gone. Preview the file again.", status=404, reason="missing"
+        )
+    journal = state.read_json(f"journal-{token}.json")
+    _check_shapes(record, journal, token)  # damaged state is a 503 (kept), never a 500
+    keys = {e["key"] for e in record["items"]}
+    unknown = sorted(set(selection) - keys)
+    if unknown:
+        raise ShareError(f"{fmt.shown(unknown[0])} is not in this preview", status=422)
+    if journal is not None and (
+        journal["selection"] != sorted(selection)
+        or journal.get("settle", {}) != settle
+        or journal.get("memory_project") != project
+    ):
+        raise ShareError(
+            "This preview was already confirmed with a different selection. "
+            "Preview the file again to import other items.",
+            status=409,
+            reason="selection",
+        )
+    if journal is None:
+        why = _fresh(record, {"entries": {}})
+        if why is None and _staged_bytes(record) is None:
+            why = "evicted"  # checked before any journal exists: nothing pins this preview
+        if why:
+            raise ShareError(_STALE[why], status=409, reason=why)
+        _check_settle(record, selection, settle)
+        _check_memory(record, selection, project)
+        journal = {
+            "format": 1,
+            "token": token,
+            "bundle": record["bundle"],
+            "selection": sorted(selection),
+            "created_at": _now(),
+            "entries": {},
+        }
+        if settle:
+            journal["settle"] = settle
+        if project is not None:
+            journal["memory_project"] = project
+        state.write_json(f"journal-{token}.json", journal)
+    plan = {e["key"]: e for e in record["items"]}
+    _reconcile(journal, plan, expired=_now() > record["expires_at"])
+    statuses = _status(record, journal)
+    pending = [k for k, s in statuses.items() if s["status"] == "pending"]
+    stale = None
+    if pending:
+        stale = _fresh(record, journal)
+        bundle = None
+        if stale is None:
+            data = _staged_bytes(record)
+            if data is None:
+                stale = "evicted"
+            else:
+                bundle = fmt.read(data)
+        if stale is None and bundle is not None:
+            _apply(record, journal, statuses, bundle)
+            if any(statuses[k]["status"] == "stale" for k in pending):
+                stale = "changed"
+        else:
+            _mark_stale(statuses, pending, stale)
+    return _result(token, record, journal, statuses, stale)
+
+
+def _mark_stale(statuses: dict, pending: list[str], stale: str | None) -> None:
+    """Pending items a confirm can't apply now are reported stale, with the reason (shared by
+    `confirm` and the receipt a dropped record leaves, so a replay answers exactly the same)."""
+    if stale is None:
+        return
+    for key in pending:
+        statuses[key] = {"status": "stale", "dest": None, "reason": _STALE[stale]}

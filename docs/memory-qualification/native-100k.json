@@ -1,0 +1,18 @@
+{
+  "rows": 100000,
+  "dimensions": 384,
+  "lexical_build_s": 2.85253639286384,
+  "ann_build_s": 48.7217451101169,
+  "global_ann_p95_ms": 95.95692623406649,
+  "scoped_ann_p95_ms": 21.099473349750042,
+  "global_recall_at_10": 1.0,
+  "scoped_recall_at_10": 1.0,
+  "delete_and_version_cleanup": "passed",
+  "ann_plan_verified": true,
+  "limits": "Synthetic random vectors; exact cosine ground truth; no source hydration, authorization or embedding/model latency. Not a semantic-quality measure.",
+  "mode": "native",
+  "affinity_cpus": 2,
+  "peak_rss_kib": 1763240,
+  "bytes_on_disk": 498907806,
+  "python": "3.13.13"
+}

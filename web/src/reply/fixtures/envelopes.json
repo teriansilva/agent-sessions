@@ -1,0 +1,48 @@
+{
+  "_comment": "Sealed by src/agent_sessions/reply_share.py, opened by web/src/reply/seal.ts (#1956). Regenerate both sides together.",
+  "cases": [
+    {
+      "name": "no password, never expires",
+      "envelope": {
+        "v": 1,
+        "id": "Q3J9AAAAAAAAAAAAAAAAAA",
+        "expires_at": null,
+        "password": false,
+        "salt": null,
+        "nonce": "NXlyOB_jMi6dllhr",
+        "ct": "wWo8nl9aGvr8qcK_48Hf4amTx8WAy-iMFiuDJBfmVA7wP0dIJMNdJWBnR479YL9mqgDUxzSsusd3XeyP0wvcMQuXJD_i2WcCZwneXKecgR6xPFAQXUUbCBWCgcKXSU8_rED6jzTWBqbbw7stYvgdY9Fv_6gT8sl-l5sCNqyrwxG_ap8Ktb_BwKU-BbO9JYuMMGGpaeTs5ij0HzZqorIEpbg6S2zmUnGzCBrKNzew0MI"
+      },
+      "key": "tG5mUmIXNxb4z7VO2HEQvFHpU6aGDEASMzPB6uc5dOk",
+      "content": {
+        "v": 1,
+        "agent": "Claude",
+        "reply": "Split the pools:\n\n- **indexing**: 128k\n- chat: 32k\n\nÜmlaut ✓ 🤖",
+        "ts": 1800000000,
+        "tools_hidden": 4,
+        "tools_more": false
+      }
+    },
+    {
+      "name": "password, expires",
+      "envelope": {
+        "v": 1,
+        "id": "Q3J9AAAAAAAAAAAAAAAAAA",
+        "expires_at": 1900000000,
+        "password": true,
+        "salt": "siMO-gqbKezssFf_51z5ZA",
+        "nonce": "Nza9dIHave-rXrLx",
+        "ct": "i8VVdSL7Pkhw4wBr75S-5gpBqcjGw3JsrusK76gMloi7glwpD7l0OMvlcwbBPd37xpXLQ5nTwV8imgUDW7eFuHpDcMyDVtaT2Ic9GfYxCkKq1mh3ZEMq1NyvjRtLO1uCBRWX6dxc7-SezfdABkU8nsNlnWpsCr2jXFtTQPWnCkIrahQNspdmHxSF2tWUjnbJByfzZhbXYz-wtfXAVaOr5MGPB78CnCVWw-rd1QrE1fo"
+      },
+      "key": "9zf74A-Nr9gDg3WHtK7vLFj_sJtGwnrWFbjF849gVUs",
+      "content": {
+        "v": 1,
+        "agent": "Claude",
+        "reply": "Split the pools:\n\n- **indexing**: 128k\n- chat: 32k\n\nÜmlaut ✓ 🤖",
+        "ts": 1800000000,
+        "tools_hidden": 4,
+        "tools_more": false
+      },
+      "password": "pässwörd 🔑"
+    }
+  ]
+}

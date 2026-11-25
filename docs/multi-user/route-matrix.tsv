@@ -1,0 +1,546 @@
+method	path	module	resource	action	principal_source	effect	frequency	status	note
+GET	/	spa	none	public	none	read	warm	unscoped	the SPA shell; static, no data
+POST	/api/2fa/confirm	auth	self	write	login	mutate	cold	unscoped	the caller's own credentials; per-user in P1
+POST	/api/2fa/disable	auth	self	write	login	mutate	cold	unscoped	the caller's own credentials; per-user in P1
+POST	/api/2fa/enroll	auth	self	write	login	mutate	cold	unscoped	the caller's own credentials; per-user in P1
+POST	/api/2fa/recovery-codes	auth	self	write	login	mutate	cold	unscoped	the caller's own credentials; per-user in P1
+GET	/api/actions	actions	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
+GET	/api/actions/scripts	actions	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
+GET	/api/agent-accounts	agent_accounts	credentials	use	login	read	cold	unscoped	agent accounts (#1820) are vendor logins of one runtime account; never shared between people
+POST	/api/agent-accounts/{engine}	agent_accounts	credentials	manage	login	mutate	cold	unscoped	agent accounts (#1820) are vendor logins of one runtime account; never shared between people
+PUT	/api/agent-accounts/{engine}/new-sessions	agent_accounts	credentials	manage	login	mutate	cold	unscoped	agent accounts (#1820) are vendor logins of one runtime account; never shared between people
+PUT	/api/agent-accounts/{engine}/order	agent_accounts	credentials	manage	login	mutate	cold	unscoped	agent accounts (#1820) are vendor logins of one runtime account; never shared between people
+DELETE	/api/agent-accounts/{engine}/{account}	agent_accounts	credentials	manage	login	mutate	cold	unscoped	agent accounts (#1820) are vendor logins of one runtime account; never shared between people
+PATCH	/api/agent-accounts/{engine}/{account}	agent_accounts	credentials	manage	login	mutate	cold	unscoped	agent accounts (#1820) are vendor logins of one runtime account; never shared between people
+POST	/api/agent-accounts/{engine}/{account}/signin/callback	agent_accounts	credentials	manage	login	mutate	cold	unscoped	agent accounts (#1820) are vendor logins of one runtime account; never shared between people
+POST	/api/agent-accounts/{engine}/{account}/signin/cancel	agent_accounts	credentials	manage	login	mutate	cold	unscoped	agent accounts (#1820) are vendor logins of one runtime account; never shared between people
+POST	/api/agent-accounts/{engine}/{account}/status	agent_accounts	credentials	manage	login	mutate	cold	unscoped	agent accounts (#1820) are vendor logins of one runtime account; never shared between people
+PATCH	/api/agents/budgets	usage	instance	system.configure	login	mutate	warm	unscoped	agent usage asked of the agent (REPORTERS); budgets are instance-wide
+GET	/api/agents/catalog	plugins	instance	system.read	login	read	cold	unscoped	plugins are operator-installed and admin-managed (no per-user install)
+PATCH	/api/agents/catalog/preferences	plugins	instance	system.configure	login	mutate	cold	unscoped	plugins are operator-installed and admin-managed (no per-user install)
+POST	/api/agents/catalog/refresh	plugins	instance	system.configure	login	mutate	cold	unscoped	plugins are operator-installed and admin-managed (no per-user install)
+GET	/api/agents/usage	usage	instance	system.read	login	read	warm	unscoped	agent usage asked of the agent (REPORTERS); budgets are instance-wide
+POST	/api/agents/usage/refresh	usage	instance	system.configure	login	mutate	warm	unscoped	agent usage asked of the agent (REPORTERS); budgets are instance-wide
+GET	/api/agents/{engine_id}/endpoint	chat	credentials	use	login	read	cold	unscoped	a chat agent's endpoint and key
+PATCH	/api/agents/{engine_id}/endpoint	chat	credentials	manage	login	mutate	cold	unscoped	a chat agent's endpoint and key
+POST	/api/agents/{engine_id}/endpoint/test	chat	credentials	manage	login	mutate	cold	unscoped	a chat agent's endpoint and key
+POST	/api/ai-review/endpoint/test	ai_review	credentials	manage	login	mutate	cold	unscoped	the AI endpoint; the key only goes to its saved origin
+GET	/api/ai-review/models	ai_review	credentials	use	login	read	cold	unscoped	the AI endpoint; the key only goes to its saved origin
+GET	/api/ai-review/providers	ai_review	credentials	use	login	read	cold	unscoped	the AI endpoint; the key only goes to its saved origin
+GET	/api/ai/activity	system	instance	system.read	login	read	cold	unscoped	instance status and administration
+GET	/api/artifacts	artifacts	artifact	view	login	read	warm	unscoped	artifacts table has no owner today; private to their owner in P2
+GET	/api/artifacts/activation	artifacts	instance	system.read	login	read	cold	unscoped	artifact hosting settings
+PUT	/api/artifacts/activation	artifacts	instance	system.configure	login	mutate	cold	unscoped	artifact hosting settings
+GET	/api/artifacts/settings	artifacts	instance	system.read	login	read	cold	unscoped	artifact hosting settings
+PUT	/api/artifacts/settings	artifacts	instance	system.configure	login	mutate	cold	unscoped	artifact hosting settings
+DELETE	/api/artifacts/{aid}	artifacts	artifact	manage	login	mutate	warm	unscoped	artifacts table has no owner today; private to their owner in P2
+GET	/api/artifacts/{aid}	artifacts	artifact	view	login	read	warm	unscoped	artifacts table has no owner today; private to their owner in P2
+DELETE	/api/artifacts/{aid}/share	artifacts	artifact	share	login	mutate	cold	unscoped	public link for an artifact; belongs to its creator
+POST	/api/artifacts/{aid}/share	artifacts	artifact	share	login	mutate	cold	unscoped	public link for an artifact; belongs to its creator
+GET	/api/ask/conversations	ask	self	read	login	read	warm	unscoped	HQ conversations (ask/ store, global today); per-user in P1; HQ operations act as the asking user
+POST	/api/ask/conversations	ask	self	write	login	mutate	warm	unscoped	HQ conversations (ask/ store, global today); per-user in P1; HQ operations act as the asking user
+DELETE	/api/ask/conversations/{cid}	ask	self	write	login	mutate	warm	unscoped	HQ conversations (ask/ store, global today); per-user in P1; HQ operations act as the asking user
+GET	/api/ask/conversations/{cid}	ask	self	read	login	read	warm	unscoped	HQ conversations (ask/ store, global today); per-user in P1; HQ operations act as the asking user
+POST	/api/ask/conversations/{cid}/attachments	ask	self	write	login	mutate	warm	unscoped	HQ conversations (ask/ store, global today); per-user in P1; HQ operations act as the asking user
+DELETE	/api/ask/conversations/{cid}/attachments/{aid}	ask	self	write	login	mutate	warm	unscoped	HQ conversations (ask/ store, global today); per-user in P1; HQ operations act as the asking user
+GET	/api/ask/conversations/{cid}/attachments/{aid}	ask	self	read	login	read	warm	unscoped	HQ conversations (ask/ store, global today); per-user in P1; HQ operations act as the asking user
+DELETE	/api/ask/conversations/{cid}/follow/{key:path}	ask	self	write	login	mutate	warm	unscoped	HQ conversations (ask/ store, global today); per-user in P1; HQ operations act as the asking user
+POST	/api/ask/conversations/{cid}/message	ask	self	write	login	mutate	warm	unscoped	HQ conversations (ask/ store, global today); per-user in P1; HQ operations act as the asking user
+POST	/api/ask/conversations/{cid}/message/stream	ask	self	write	login	stream	hot	unscoped	HQ streamed reply
+POST	/api/ask/conversations/{cid}/seen	ask	self	write	login	mutate	warm	unscoped	HQ conversations (ask/ store, global today); per-user in P1; HQ operations act as the asking user
+POST	/api/ask/conversations/{cid}/steps/end	ask	self	write	login	mutate	warm	unscoped	HQ conversations (ask/ store, global today); per-user in P1; HQ operations act as the asking user
+POST	/api/ask/conversations/{cid}/turns/{turn_id}/stop	ask	self	write	login	mutate	warm	unscoped	HQ conversations (ask/ store, global today); per-user in P1; HQ operations act as the asking user
+POST	/api/ask/conversations/{cid}/turns/{turn_id}/withdraw	ask	self	write	login	mutate	warm	unscoped	HQ conversations (ask/ store, global today); per-user in P1; HQ operations act as the asking user
+GET	/api/ask/proposals/{pid}/content	ask	self	read	login	read	warm	unscoped	HQ conversations (ask/ store, global today); per-user in P1; HQ operations act as the asking user
+POST	/api/ask/proposals/{pid}/decide	ask	self	write	login	mutate	warm	unscoped	HQ conversations (ask/ store, global today); per-user in P1; HQ operations act as the asking user
+GET	/api/ask/unread	ask	self	read	login	read	warm	unscoped	HQ conversations (ask/ store, global today); per-user in P1; HQ operations act as the asking user
+GET	/api/auth-check	system	self	read	login	read	hot	unscoped	handler checks the session; nginx auth_request probe
+PATCH	/api/automation/{scope}	system	instance	system.configure	login	mutate	cold	unscoped	global automation scope switch
+GET	/api/automations	automations	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/automations	automations	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+GET	/api/automations/origins	automations	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
+GET	/api/automations/runs/{run_id}	automations	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
+DELETE	/api/automations/{aid}	automations	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+GET	/api/automations/{aid}	automations	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
+PATCH	/api/automations/{aid}	automations	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/automations/{aid}/destination-secret	automations	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/automations/{aid}/disable	automations	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/automations/{aid}/enable	automations	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/automations/{aid}/pause	automations	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/automations/{aid}/resume	automations	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/automations/{aid}/run	automations	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+GET	/api/automations/{aid}/runs	automations	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/chat/new	chat	session	create	login	mutate	cold	unscoped	create a chat-endpoint session
+GET	/api/chat/{sid}	chat	session	view	login	read	warm	unscoped	chat-endpoint read
+POST	/api/chat/{sid}/messages	chat	session	send	login	mutate	hot	unscoped	chat-endpoint turn
+POST	/api/chat/{sid}/turns/{turn_id}/proposals/{proposal_id}/decide	chat	session	send	login	mutate	hot	unscoped	chat-endpoint turn
+POST	/api/chat/{sid}/turns/{turn_id}/retry	chat	session	send	login	mutate	hot	unscoped	chat-endpoint turn
+GET	/api/clusters	clusters	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/clusters	clusters	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/clusters/recluster	clusters	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+DELETE	/api/clusters/{cid}	clusters	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+PATCH	/api/clusters/{cid}	clusters	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/clusters/{cid}/merge	clusters	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+GET	/api/config	system	self	read	login	read	warm	unscoped	app config for the SPA; per-user theme is one global pref today
+GET	/api/connectors	connectors	self	read	login	read	cold	unscoped	connectors are a person's own accounts (#1746); per-user, never shared
+POST	/api/connectors/instances	connectors	self	write	login	mutate	cold	unscoped	connectors are a person's own accounts (#1746); per-user, never shared
+DELETE	/api/connectors/instances/{iid}	connectors	self	write	login	mutate	cold	unscoped	connectors are a person's own accounts (#1746); per-user, never shared
+PATCH	/api/connectors/instances/{iid}	connectors	self	write	login	mutate	cold	unscoped	connectors are a person's own accounts (#1746); per-user, never shared
+POST	/api/connectors/instances/{iid}/capabilities	connectors	self	write	login	mutate	cold	unscoped	connectors are a person's own accounts (#1746); per-user, never shared
+GET	/api/connectors/instances/{iid}/deliveries	connectors	self	read	login	read	cold	unscoped	connectors are a person's own accounts (#1746); per-user, never shared
+POST	/api/connectors/instances/{iid}/notify	connectors	self	write	login	mutate	cold	unscoped	connectors are a person's own accounts (#1746); per-user, never shared
+PUT	/api/connectors/instances/{iid}/recipients	connectors	self	write	login	mutate	cold	unscoped	connectors are a person's own accounts (#1746); per-user, never shared
+GET	/api/connectors/instances/{iid}/recipients/candidates	connectors	self	read	login	read	cold	unscoped	connectors are a person's own accounts (#1746); per-user, never shared
+POST	/api/connectors/instances/{iid}/test	connectors	self	write	login	mutate	cold	unscoped	connectors are a person's own accounts (#1746); per-user, never shared
+GET	/api/dashboard/sessions	sessions	session	view	login	read	hot	unscoped	dashboard session strip
+GET	/api/engines	system	instance	system.read	login	read	cold	unscoped	instance status and administration
+GET	/api/engines/{engine_id}	system	instance	system.read	login	read	cold	unscoped	instance status and administration
+GET	/api/federation	federation	instance	peers.manage	login	read	cold	unscoped	this instance's federation identity
+GET	/api/federation/access-requests	federation	session	view	login	read	warm	unscoped	owner side of a share to a peer
+POST	/api/federation/access-requests/{request_id}/decline	federation	session	share	login	mutate	warm	unscoped	owner side of a share to a peer
+GET	/api/federation/grants	federation	session	view	login	read	warm	unscoped	owner side of a share to a peer
+POST	/api/federation/grants	federation	session	share	login	mutate	warm	unscoped	owner side of a share to a peer
+PATCH	/api/federation/grants/{grant_id}	federation	session	share	login	mutate	warm	unscoped	owner side of a share to a peer
+GET	/api/federation/grants/{grant_id}/notes	federation	session	view	login	read	warm	unscoped	owner side of a share to a peer
+POST	/api/federation/grants/{grant_id}/notes	federation	session	comment	login	mutate	warm	unscoped	owner writes a note on a peer grant's thread; notes never reach an agent
+POST	/api/federation/grants/{grant_id}/notes/read	federation	session	comment	login	mutate	warm	unscoped	moves the owner's read mark on a grant's notes
+DELETE	/api/federation/grants/{grant_id}/notes/{note_id}	federation	session	comment	login	mutate	warm	unscoped	owner deletes own note (tombstone)
+PATCH	/api/federation/grants/{grant_id}/notes/{note_id}	federation	session	comment	login	mutate	warm	unscoped	owner edits own note
+POST	/api/federation/grants/{grant_id}/notes/{note_id}/hide	federation	session	share	login	mutate	warm	unscoped	owner side of a share to a peer
+POST	/api/federation/grants/{grant_id}/revoke	federation	session	share	login	mutate	warm	unscoped	owner side of a share to a peer
+POST	/api/federation/invites	federation	instance	peers.manage	login	mutate	cold	unscoped	pairing and peers; P4 intersects user and peer authority
+DELETE	/api/federation/invites/{invite_id}	federation	instance	peers.manage	login	mutate	cold	unscoped	pairing and peers; P4 intersects user and peer authority
+POST	/api/federation/pairings	federation	instance	peers.manage	login	mutate	cold	unscoped	pairing and peers; P4 intersects user and peer authority
+POST	/api/federation/pairings/{pairing_id}/confirm	federation	instance	peers.manage	login	mutate	cold	unscoped	pairing and peers; P4 intersects user and peer authority
+POST	/api/federation/pairings/{pairing_id}/deny	federation	instance	peers.manage	login	mutate	cold	unscoped	pairing and peers; P4 intersects user and peer authority
+PATCH	/api/federation/peers/{peer_id}	federation	instance	peers.manage	login	mutate	cold	unscoped	pairing and peers; P4 intersects user and peer authority
+POST	/api/federation/peers/{peer_id}/revoke	federation	instance	peers.manage	login	mutate	cold	unscoped	pairing and peers; P4 intersects user and peer authority
+GET	/api/federation/remote	federation	session	view	login	read	warm	unscoped	a peer's shared session: notes, access, decisions, continue (receiving side)
+GET	/api/federation/remote/{peer_id}/{grant_id}/access	federation	session	view	login	read	warm	unscoped	a peer's shared session: notes, access, decisions, continue (receiving side)
+POST	/api/federation/remote/{peer_id}/{grant_id}/access	federation	session	comment	login	mutate	warm	unscoped	a peer's shared session: notes, access, decisions, continue (receiving side)
+POST	/api/federation/remote/{peer_id}/{grant_id}/access/withdraw	federation	session	comment	login	mutate	warm	unscoped	a peer's shared session: notes, access, decisions, continue (receiving side)
+POST	/api/federation/remote/{peer_id}/{grant_id}/continue	federation	session	comment	login	mutate	warm	unscoped	a peer's shared session: notes, access, decisions, continue (receiving side)
+GET	/api/federation/remote/{peer_id}/{grant_id}/continue/{handle}	federation	session	view	login	read	warm	unscoped	a peer's shared session: notes, access, decisions, continue (receiving side)
+POST	/api/federation/remote/{peer_id}/{grant_id}/continue/{handle}/create	federation	session	create	login	mutate	warm	unscoped	Continue here: a new local session seeded from what the peer shared
+POST	/api/federation/remote/{peer_id}/{grant_id}/decisions	federation	session	send	login	mutate	warm	unscoped	answer a decision on a peer's shared session; P4 intersects the local user and the peer grant
+GET	/api/federation/remote/{peer_id}/{grant_id}/events	federation	session	view	login	stream	hot	unscoped	reading a peer's shared session (receiving side)
+GET	/api/federation/remote/{peer_id}/{grant_id}/frame	federation	session	view	login	stream	hot	unscoped	reading a peer's shared session (receiving side)
+GET	/api/federation/remote/{peer_id}/{grant_id}/history	federation	session	view	login	read	warm	unscoped	a peer's shared session: notes, access, decisions, continue (receiving side)
+POST	/api/federation/remote/{peer_id}/{grant_id}/leave	federation	session	comment	login	mutate	warm	unscoped	a peer's shared session: notes, access, decisions, continue (receiving side)
+GET	/api/federation/remote/{peer_id}/{grant_id}/notes	federation	session	view	login	read	warm	unscoped	a peer's shared session: notes, access, decisions, continue (receiving side)
+POST	/api/federation/remote/{peer_id}/{grant_id}/notes	federation	session	comment	login	mutate	warm	unscoped	a peer's shared session: notes, access, decisions, continue (receiving side)
+POST	/api/federation/remote/{peer_id}/{grant_id}/notes/read	federation	session	comment	login	mutate	warm	unscoped	a peer's shared session: notes, access, decisions, continue (receiving side)
+DELETE	/api/federation/remote/{peer_id}/{grant_id}/notes/{note_id}	federation	session	comment	login	mutate	warm	unscoped	a peer's shared session: notes, access, decisions, continue (receiving side)
+PATCH	/api/federation/remote/{peer_id}/{grant_id}/notes/{note_id}	federation	session	comment	login	mutate	warm	unscoped	a peer's shared session: notes, access, decisions, continue (receiving side)
+GET	/api/federation/remote/{peer_id}/{grant_id}/operations/{client_key}	federation	session	view	login	read	warm	unscoped	a peer's shared session: notes, access, decisions, continue (receiving side)
+GET	/api/federation/remote/{peer_id}/{grant_id}/snapshot	federation	session	view	login	stream	hot	unscoped	reading a peer's shared session (receiving side)
+POST	/api/federation/remote/{peer_id}/{grant_id}/suggest	federation	session	send	login	mutate	warm	unscoped	sending to a peer's shared session (receiving side)
+GET	/api/federation/remote/{peer_id}/{grant_id}/suggestions	federation	session	view	login	read	warm	unscoped	a peer's shared session: notes, access, decisions, continue (receiving side)
+POST	/api/federation/remote/{peer_id}/{grant_id}/suggestions/{suggestion_id}/withdraw	federation	session	comment	login	mutate	warm	unscoped	a peer's shared session: notes, access, decisions, continue (receiving side)
+POST	/api/federation/remote/{peer_id}/{grant_id}/turns	federation	session	send	login	mutate	warm	unscoped	sending to a peer's shared session (receiving side)
+GET	/api/federation/suggestions	federation	session	view	login	read	warm	unscoped	owner side of a share to a peer
+POST	/api/federation/suggestions/{suggestion_id}/approve	federation	session	send	login	mutate	warm	unscoped	owner approves a peer suggestion, which is then admitted as the owner's turn
+POST	/api/federation/suggestions/{suggestion_id}/reject	federation	session	send	login	mutate	warm	unscoped	owner rejects a peer suggestion
+GET	/api/files/capabilities	files	files	read	login	read	warm	unscoped	file read under the session/project roots
+GET	/api/files/list	files	files	read	login	read	warm	unscoped	file read under the session/project roots
+GET	/api/files/raw	files	files	read	login	read	warm	unscoped	file read under the session/project roots
+GET	/api/files/read	files	files	read	login	read	warm	unscoped	file read under the session/project roots
+POST	/api/files/upload	files	files	write	login	mutate	warm	unscoped	file write, sha256-bound under a kernel lease
+POST	/api/files/upload/batch	files	files	write	login	mutate	warm	unscoped	file write, sha256-bound under a kernel lease
+POST	/api/files/upload/skip	files	files	write	login	mutate	warm	unscoped	file write, sha256-bound under a kernel lease
+POST	/api/files/write	files	files	write	login	mutate	warm	unscoped	file write, sha256-bound under a kernel lease
+GET	/api/folders	sessions	files	read	login	read	cold	unscoped	folder picker and mkdir under the roots boundary
+POST	/api/folders/mkdir	sessions	files	write	login	mutate	cold	unscoped	folder picker and mkdir under the roots boundary
+GET	/api/fs/dirs	sessions	files	read	login	read	cold	unscoped	folder picker and mkdir under the roots boundary
+POST	/api/fs/mkdir	sessions	files	write	login	mutate	cold	unscoped	folder picker and mkdir under the roots boundary
+GET	/api/gallery	gallery	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/gallery/compare	gallery	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+GET	/api/gallery/content/{digest}	gallery	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/gallery/import	gallery	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+GET	/api/gallery/operations/{operation}	gallery	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/gallery/refresh	gallery	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/gallery/update	gallery	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/git/branch/delete	files	files	write	login	mutate	cold	unscoped	git working-tree change
+GET	/api/git/branches	files	files	read	login	read	warm	unscoped	git read
+POST	/api/git/commit	files	files	commit	login	mutate	cold	unscoped	git commit
+POST	/api/git/commit-paths	files	files	commit	login	mutate	cold	unscoped	git commit
+GET	/api/git/diff	files	files	read	login	read	warm	unscoped	git read
+POST	/api/git/discard	files	files	write	login	mutate	cold	unscoped	git working-tree change
+POST	/api/git/fetch	files	files	fetch	login	mutate	cold	unscoped	git fetch or pull
+GET	/api/git/log	files	files	read	login	read	warm	unscoped	git read
+POST	/api/git/pull	files	files	fetch	login	mutate	cold	unscoped	git fetch or pull
+POST	/api/git/push	files	files	push	login	mutate	cold	unscoped	git push
+GET	/api/git/push-target	files	files	read	login	read	warm	unscoped	git read
+POST	/api/git/revert	files	files	write	login	mutate	cold	unscoped	git working-tree change
+POST	/api/git/settle	files	files	write	login	mutate	cold	unscoped	git working-tree change
+POST	/api/git/stage	files	files	write	login	mutate	cold	unscoped	git working-tree change
+GET	/api/git/status	files	files	read	login	read	warm	unscoped	git read
+POST	/api/git/switch	files	files	write	login	mutate	cold	unscoped	git working-tree change
+POST	/api/handoff	handoff	session	create	login	mutate	cold	unscoped	handoff seeds a new session
+POST	/api/handoff/prepare	handoff	session	create	login	mutate	cold	unscoped	handoff seeds a new session
+GET	/api/hq/dispatches	hq_dispatches	self	read	login	read	warm	unscoped	HQ tasks and dispatches; per-user in P1
+POST	/api/hq/dispatches/seen	hq_dispatches	self	write	login	mutate	warm	unscoped	HQ tasks and dispatches; per-user in P1
+GET	/api/hq/dispatches/{bid}	hq_dispatches	self	read	login	read	warm	unscoped	HQ tasks and dispatches; per-user in P1
+GET	/api/hq/tasks	ask	self	read	login	read	warm	unscoped	HQ tasks and dispatches; per-user in P1
+POST	/api/hq/tasks/stop-all	ask	self	write	login	mutate	warm	unscoped	HQ tasks and dispatches; per-user in P1
+GET	/api/library/skills	gallery	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/library/skills	gallery	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+GET	/api/library/skills/{id}	gallery	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/library/skills/{id}/copies	gallery	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+GET	/api/maintenance/compact	maintenance	instance	system.read	login	read	cold	unscoped	store maintenance (compact, prune)
+POST	/api/maintenance/compact	maintenance	instance	system.configure	login	mutate	cold	unscoped	store maintenance (compact, prune)
+GET	/api/maintenance/prune	maintenance	instance	system.read	login	read	cold	unscoped	store maintenance (compact, prune)
+POST	/api/maintenance/prune	maintenance	instance	system.configure	login	mutate	cold	unscoped	store maintenance (compact, prune)
+GET	/api/mcp/operations/{op_id}	mcp	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/mcp/operations/{op_id}/stop	mcp	library	manage	login	mutate	cold	unscoped	stops a running MCP server setup operation (#2353); an instance Library item administrators manage
+GET	/api/mcp/servers	mcp	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/mcp/servers	mcp	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/mcp/servers/resolve-link	mcp	library	manage	login	mutate	cold	unscoped	resolves a repository link to a published release at a pinned commit before adding an MCP server (#2353); makes an outbound fetch, so P2 should start it as admin-only
+DELETE	/api/mcp/servers/{sid}	mcp	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+GET	/api/mcp/servers/{sid}	mcp	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
+PATCH	/api/mcp/servers/{sid}	mcp	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/mcp/servers/{sid}/check	mcp	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/mcp/servers/{sid}/install	mcp	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+PUT	/api/mcp/servers/{sid}/projects	mcp	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+PUT	/api/mcp/servers/{sid}/projects/{pid}/credentials	mcp	credentials	manage	login	mutate	cold	unscoped	per-project MCP credentials
+POST	/api/mcp/servers/{sid}/review	mcp	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+GET	/api/memory	memory	project	view	login	read	warm	unscoped	memory overview across projects
+POST	/api/memory-search	memory	instance	system.configure	login	mutate	cold	unscoped	memory search backend settings
+GET	/api/memory-search/settings	memory	instance	system.read	login	read	cold	unscoped	memory search backend settings
+PATCH	/api/memory-search/settings	memory	instance	system.configure	login	mutate	cold	unscoped	memory search backend settings
+GET	/api/memory-search/status	memory	instance	system.read	login	read	cold	unscoped	memory search backend settings
+POST	/api/memory-search/test	memory	instance	system.configure	login	mutate	cold	unscoped	memory search backend settings
+PUT	/api/memory/_hq/capture	memory	project	edit	login	mutate	warm	unscoped	project memory notebook; the _hq scope becomes per-user
+GET	/api/memory/{pid}	memory	project	view	login	read	warm	unscoped	project memory notebook; the _hq scope becomes per-user
+POST	/api/memory/{pid}/clear	memory	project	edit	login	mutate	warm	unscoped	project memory notebook; the _hq scope becomes per-user
+PUT	/api/memory/{pid}/enabled	memory	project	edit	login	mutate	warm	unscoped	project memory notebook; the _hq scope becomes per-user
+GET	/api/memory/{pid}/export	memory	project	view	login	read	warm	unscoped	project memory notebook; the _hq scope becomes per-user
+GET	/api/memory/{pid}/import	memory	project	view	login	read	warm	unscoped	project memory notebook; the _hq scope becomes per-user
+POST	/api/memory/{pid}/import	memory	project	edit	login	mutate	warm	unscoped	project memory notebook; the _hq scope becomes per-user
+POST	/api/memory/{pid}/ingest	memory	project	edit	login	mutate	warm	unscoped	project memory notebook; the _hq scope becomes per-user
+DELETE	/api/memory/{pid}/notes/{slug}	memory	project	edit	login	mutate	warm	unscoped	project memory notebook; the _hq scope becomes per-user
+GET	/api/memory/{pid}/notes/{slug}	memory	project	view	login	read	warm	unscoped	project memory notebook; the _hq scope becomes per-user
+PATCH	/api/memory/{pid}/notes/{slug}	memory	project	edit	login	mutate	warm	unscoped	project memory notebook; the _hq scope becomes per-user
+DELETE	/api/memory/{pid}/quarantine/{qid}	memory	project	edit	login	mutate	warm	unscoped	project memory notebook; the _hq scope becomes per-user
+PATCH	/api/memory/{pid}/quarantine/{qid}	memory	project	edit	login	mutate	warm	unscoped	project memory notebook; the _hq scope becomes per-user
+POST	/api/mission-directions/preview	missions	mission	create	login	mutate	cold	unscoped	preview a mission direction
+GET	/api/mission-plans	mission_plans	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
+GET	/api/mission-plans/{pid}	mission_plans	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/mission-plans/{pid}/archive	mission_plans	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+GET	/api/missions	missions	mission	view	login	read	warm	unscoped	list or create missions
+POST	/api/missions	missions	mission	create	login	mutate	warm	unscoped	list or create missions
+GET	/api/missions/archive-older	maintenance	mission	archive	login	read	cold	unscoped	bulk archive of old missions
+POST	/api/missions/archive-older	maintenance	mission	archive	login	mutate	cold	unscoped	bulk archive of old missions
+GET	/api/missions/{mission_id}	missions	mission	view	login	read	warm	unscoped	mission record, plan and shelf
+POST	/api/missions/{mission_id}/adopt	missions	mission	intervene	login	mutate	warm	unscoped	drives a running mission; needs intervene plus authority for its launches
+POST	/api/missions/{mission_id}/answer	missions	mission	answer	login	mutate	warm	unscoped	answer a mission question; settle-once
+POST	/api/missions/{mission_id}/archive	missions	mission	archive	login	mutate	cold	unscoped	archive a mission
+PATCH	/api/missions/{mission_id}/autonomy	missions	mission	intervene	login	mutate	warm	unscoped	drives a running mission; needs intervene plus authority for its launches
+POST	/api/missions/{mission_id}/budget	mission_steps	mission	intervene	login	mutate	warm	unscoped	drives a running mission; needs intervene plus authority for its launches
+GET	/api/missions/{mission_id}/context	missions	mission	view	login	read	warm	unscoped	mission record, plan and shelf
+GET	/api/missions/{mission_id}/debrief	mission_shelf	mission	view	login	read	warm	unscoped	mission record, plan and shelf
+POST	/api/missions/{mission_id}/debrief	mission_shelf	mission	edit	login	mutate	warm	unscoped	mission record, plan and shelf
+POST	/api/missions/{mission_id}/detach	missions	mission	intervene	login	mutate	warm	unscoped	drives a running mission; needs intervene plus authority for its launches
+POST	/api/missions/{mission_id}/dispatch	missions	mission	intervene	login	mutate	warm	unscoped	drives a running mission; needs intervene plus authority for its launches
+POST	/api/missions/{mission_id}/message	missions	mission	intervene	login	mutate	warm	unscoped	drives a running mission; needs intervene plus authority for its launches
+POST	/api/missions/{mission_id}/message/stream	missions	mission	intervene	login	stream	hot	unscoped	streamed mission message
+GET	/api/missions/{mission_id}/now	missions	mission	view	login	read	hot	unscoped	polled mission status
+GET	/api/missions/{mission_id}/objectives	missions	mission	view	login	read	warm	unscoped	mission record, plan and shelf
+PATCH	/api/missions/{mission_id}/objectives	missions	mission	edit	login	mutate	warm	unscoped	mission record, plan and shelf
+POST	/api/missions/{mission_id}/objectives/{objective_key}/stand-down	missions	mission	edit	login	mutate	warm	unscoped	mission record, plan and shelf
+PATCH	/api/missions/{mission_id}/plan	missions	mission	edit	login	mutate	warm	unscoped	mission record, plan and shelf
+POST	/api/missions/{mission_id}/plan	missions	mission	edit	login	mutate	warm	unscoped	mission record, plan and shelf
+GET	/api/missions/{mission_id}/plan/approval	missions	mission	view	login	read	warm	unscoped	mission record, plan and shelf
+POST	/api/missions/{mission_id}/plan/approval/revoke	missions	mission	intervene	login	mutate	cold	unscoped	plan approval and consent
+POST	/api/missions/{mission_id}/plan/approve	missions	mission	intervene	login	mutate	cold	unscoped	plan approval and consent
+POST	/api/missions/{mission_id}/plan/consent	missions	mission	intervene	login	mutate	cold	unscoped	plan approval and consent
+POST	/api/missions/{mission_id}/plan/consent/revoke	missions	mission	intervene	login	mutate	cold	unscoped	plan approval and consent
+POST	/api/missions/{mission_id}/plan/ops	missions	mission	edit	login	mutate	warm	unscoped	mission record, plan and shelf
+GET	/api/missions/{mission_id}/plan/revisions/{revision}	missions	mission	view	login	read	warm	unscoped	mission record, plan and shelf
+POST	/api/missions/{mission_id}/plan/save-as-plan	mission_plans	mission	edit	login	mutate	warm	unscoped	mission record, plan and shelf
+GET	/api/missions/{mission_id}/plan/team	missions	mission	view	login	read	warm	unscoped	mission record, plan and shelf
+GET	/api/missions/{mission_id}/plan/team/choices	missions	mission	view	login	read	warm	unscoped	mission record, plan and shelf
+POST	/api/missions/{mission_id}/procedure	missions	mission	intervene	login	mutate	warm	unscoped	drives a running mission; needs intervene plus authority for its launches
+GET	/api/missions/{mission_id}/procedures	missions	mission	view	login	read	warm	unscoped	mission record, plan and shelf
+GET	/api/missions/{mission_id}/procedures/projects	missions	mission	view	login	read	warm	unscoped	mission record, plan and shelf
+GET	/api/missions/{mission_id}/procedures/{index}/inputs	missions	mission	view	login	read	warm	unscoped	mission record, plan and shelf
+POST	/api/missions/{mission_id}/relay	missions	mission	intervene	login	mutate	warm	unscoped	drives a running mission; needs intervene plus authority for its launches
+GET	/api/missions/{mission_id}/screen/{session_key:path}	missions	session	view	login	read	hot	unscoped	a linked session's screen inside a mission; needs session view, not only mission view
+GET	/api/missions/{mission_id}/shelf	mission_shelf	mission	view	login	read	warm	unscoped	mission record, plan and shelf
+PATCH	/api/missions/{mission_id}/shelf/{item_id}	mission_shelf	mission	edit	login	mutate	warm	unscoped	mission record, plan and shelf
+GET	/api/missions/{mission_id}/shelf/{item_id}/diff	mission_shelf	mission	view	login	read	warm	unscoped	mission record, plan and shelf
+GET	/api/missions/{mission_id}/shelf/{item_id}/raw	mission_shelf	mission	view	login	read	warm	unscoped	mission record, plan and shelf
+POST	/api/missions/{mission_id}/spawn	missions	mission	intervene	login	mutate	warm	unscoped	drives a running mission; needs intervene plus authority for its launches
+POST	/api/missions/{mission_id}/state	missions	mission	approve_completion	login	mutate	cold	unscoped	mission state change; closing needs approve_completion
+GET	/api/missions/{mission_id}/steps	mission_steps	mission	view	login	read	hot	unscoped	polled mission status
+POST	/api/missions/{mission_id}/steps/continue	mission_steps	mission	intervene	login	mutate	warm	unscoped	drives a running mission; needs intervene plus authority for its launches
+POST	/api/missions/{mission_id}/steps/pause	mission_steps	mission	intervene	login	mutate	warm	unscoped	drives a running mission; needs intervene plus authority for its launches
+POST	/api/missions/{mission_id}/steps/stop-all	mission_steps	mission	intervene	login	mutate	warm	unscoped	drives a running mission; needs intervene plus authority for its launches
+POST	/api/missions/{mission_id}/steps/{step_id}/hold	mission_steps	mission	intervene	login	mutate	warm	unscoped	drives a running mission; needs intervene plus authority for its launches
+POST	/api/missions/{mission_id}/steps/{step_id}/start	mission_steps	mission	intervene	login	mutate	warm	unscoped	drives a running mission; needs intervene plus authority for its launches
+POST	/api/missions/{mission_id}/steps/{step_id}/stop	mission_steps	mission	intervene	login	mutate	warm	unscoped	drives a running mission; needs intervene plus authority for its launches
+POST	/api/missions/{mission_id}/turns/{turn_id}/ack	missions	mission	intervene	login	mutate	warm	unscoped	drives a running mission; needs intervene plus authority for its launches
+POST	/api/missions/{mission_id}/unarchive	missions	mission	archive	login	mutate	cold	unscoped	archive a mission
+POST	/api/needs-you/{session_id:path}/report/answer	pulse	session	send	login	mutate	warm	unscoped	answer a needs-you report; the answer can reach the session
+POST	/api/needs-you/{session_id:path}/report/dismiss	pulse	self	write	login	mutate	warm	unscoped	dismiss a needs-you report from the caller's own inbox
+POST	/api/password	auth	self	write	login	mutate	cold	unscoped	the caller's own credentials; per-user in P1
+GET	/api/perf	system	instance	system.read	login	read	cold	unscoped	instance status and administration
+GET	/api/playbooks	playbooks	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/playbooks	playbooks	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/playbooks/authoring/copy	playbooks	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/playbooks/authoring/prompts/compare	playbooks	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/playbooks/authoring/prompts/import	playbooks	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+GET	/api/playbooks/authoring/schema	playbooks	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/playbooks/clone	playbooks	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+DELETE	/api/playbooks/{pid}	playbooks	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+GET	/api/playbooks/{pid}	playbooks	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
+PUT	/api/playbooks/{pid}	playbooks	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+DELETE	/api/playbooks/{pid}/default	playbooks	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+PUT	/api/playbooks/{pid}/default	playbooks	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/playbooks/{pid}/duplicate	playbooks	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/playbooks/{pid}/fleet/review	playbooks	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/playbooks/{pid}/fleet/update	playbooks	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+GET	/api/playbooks/{pid}/fleet/{operation}	playbooks	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
+GET	/api/playbooks/{pid}/projects	playbooks	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/playbooks/{pid}/revert-format	playbooks	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/playbooks/{pid}/review	playbooks	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/playbooks/{pid}/review/confirm	playbooks	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/playbooks/{pid}/review/create-target	playbooks	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+GET	/api/plugins	plugins	instance	system.read	login	read	cold	unscoped	plugins are operator-installed and admin-managed (no per-user install)
+POST	/api/plugins/activate	plugins	instance	system.configure	login	mutate	cold	unscoped	plugins are operator-installed and admin-managed (no per-user install)
+POST	/api/plugins/disable	plugins	instance	system.configure	login	mutate	cold	unscoped	plugins are operator-installed and admin-managed (no per-user install)
+POST	/api/plugins/feed/refresh	plugins	instance	system.configure	login	mutate	cold	unscoped	plugins are operator-installed and admin-managed (no per-user install)
+POST	/api/plugins/install	plugins	instance	system.configure	login	mutate	cold	unscoped	plugins are operator-installed and admin-managed (no per-user install)
+GET	/api/plugins/operations/{operation_id}	plugins	instance	system.read	login	read	cold	unscoped	plugins are operator-installed and admin-managed (no per-user install)
+POST	/api/plugins/operations/{operation_id}/cancel	plugins	instance	system.configure	login	mutate	cold	unscoped	plugins are operator-installed and admin-managed (no per-user install)
+POST	/api/plugins/operations/{operation_id}/signin/callback	plugins	instance	system.configure	login	mutate	cold	unscoped	plugins are operator-installed and admin-managed (no per-user install)
+POST	/api/plugins/recover	plugins	instance	system.configure	login	mutate	cold	unscoped	plugins are operator-installed and admin-managed (no per-user install)
+POST	/api/plugins/reload	plugins	instance	system.configure	login	mutate	cold	unscoped	plugins are operator-installed and admin-managed (no per-user install)
+POST	/api/plugins/remove	plugins	instance	system.configure	login	mutate	cold	unscoped	plugins are operator-installed and admin-managed (no per-user install)
+POST	/api/plugins/review	plugins	instance	system.configure	login	mutate	cold	unscoped	plugins are operator-installed and admin-managed (no per-user install)
+POST	/api/plugins/signin	plugins	instance	system.configure	login	mutate	cold	unscoped	plugins are operator-installed and admin-managed (no per-user install)
+POST	/api/plugins/verify	plugins	instance	system.configure	login	mutate	cold	unscoped	plugins are operator-installed and admin-managed (no per-user install)
+GET	/api/plugins/{plugin_id}/generations/{generation_id}/activation	plugins	instance	system.read	login	read	cold	unscoped	plugins are operator-installed and admin-managed (no per-user install)
+GET	/api/plugins/{plugin_id}/generations/{generation_id}/endpoint	plugins	instance	system.read	login	read	cold	unscoped	plugins are operator-installed and admin-managed (no per-user install)
+PATCH	/api/plugins/{plugin_id}/generations/{generation_id}/endpoint	plugins	instance	system.configure	login	mutate	cold	unscoped	plugins are operator-installed and admin-managed (no per-user install)
+POST	/api/plugins/{plugin_id}/generations/{generation_id}/endpoint/test	plugins	instance	system.configure	login	mutate	cold	unscoped	plugins are operator-installed and admin-managed (no per-user install)
+POST	/api/prefs	system	self	write	login	mutate	warm	unscoped	prefs.json is one global root today; per-user root in P1 (instance-level fields stay admin)
+DELETE	/api/profile/avatar	profile	self	write	login	mutate	cold	unscoped	the caller's own avatar; one global avatar today
+GET	/api/profile/avatar	profile	self	read	login	read	cold	unscoped	the caller's own avatar; one global avatar today
+POST	/api/profile/avatar	profile	self	write	login	mutate	cold	unscoped	the caller's own avatar; one global avatar today
+GET	/api/projects	sessions	project	view	login	read	warm	unscoped	list projects
+POST	/api/projects	sessions	instance	projects.create	login	mutate	cold	unscoped	creates a new project; an instance permission that grants no access to existing projects
+POST	/api/projects/auto-sort	sessions	project	edit	login	mutate	cold	unscoped	project settings
+DELETE	/api/projects/{pid}	sessions	project	delete	login	mutate	cold	unscoped	project settings
+PATCH	/api/projects/{pid}	sessions	project	edit	login	mutate	cold	unscoped	project settings
+POST	/api/projects/{pid}/archive	sessions	project	archive	login	mutate	cold	unscoped	archive a project
+POST	/api/projects/{pid}/unarchive	sessions	project	archive	login	mutate	cold	unscoped	archive a project
+GET	/api/projects/{project}/playbook	playbooks	project	view	login	read	cold	unscoped	a project's playbook binding
+POST	/api/projects/{project}/playbook/apply	playbooks	project	edit	login	mutate	cold	unscoped	a project's playbook binding
+POST	/api/projects/{project}/playbook/bind	playbooks	project	edit	login	mutate	cold	unscoped	a project's playbook binding
+POST	/api/projects/{project}/playbook/git/publish	playbooks	project	edit	login	mutate	cold	unscoped	a project's playbook binding
+POST	/api/projects/{project}/playbook/git/publish/plan	playbooks	project	edit	login	mutate	cold	unscoped	a project's playbook binding
+POST	/api/projects/{project}/playbook/git/remote	playbooks	project	edit	login	mutate	cold	unscoped	a project's playbook binding
+POST	/api/projects/{project}/playbook/git/remote/plan	playbooks	project	edit	login	mutate	cold	unscoped	a project's playbook binding
+POST	/api/projects/{project}/playbook/git/seed	playbooks	project	edit	login	mutate	cold	unscoped	a project's playbook binding
+GET	/api/projects/{project}/playbook/git/{operation}	playbooks	project	view	login	read	cold	unscoped	a project's playbook binding
+POST	/api/projects/{project}/playbook/remove	playbooks	project	edit	login	mutate	cold	unscoped	a project's playbook binding
+POST	/api/projects/{project}/playbook/remove/plan	playbooks	project	edit	login	mutate	cold	unscoped	a project's playbook binding
+GET	/api/projects/{project}/playbook/verify	playbooks	project	view	login	read	cold	unscoped	a project's playbook binding
+GET	/api/prompts	prompts	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
+PATCH	/api/prompts/{pid}	prompts	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+GET	/api/public/avatar	public_api	session	view	public-link	read	warm	unscoped	public share link read (require_share)
+GET	/api/public/events	public_api	session	view	public-link	stream	hot	unscoped	public share link event long-poll (require_share)
+POST	/api/public/interrupt	public_api	session	send	public-link	mutate	warm	unscoped	public share link with send level (require_share)
+POST	/api/public/name	shares	session	view	public-link	mutate	warm	unscoped	public share link; the link token is the authenticator; creation is session.share
+GET	/api/public/reply/{share_id}	reply_shares	session	view	public-link	read	warm	unscoped	public reply-share link; token-authenticated
+POST	/api/public/send-now	public_api	session	send	public-link	mutate	warm	unscoped	public share link with send level (require_share)
+GET	/api/public/session	public_api	session	view	public-link	read	warm	unscoped	public share link read (require_share)
+GET	/api/public/share	shares	session	view	public-link	read	warm	unscoped	public share link; the link token is the authenticator; creation is session.share
+POST	/api/public/turns	public_api	session	send	public-link	mutate	warm	unscoped	public share link with send level (require_share)
+POST	/api/public/unlock	shares	session	view	public-link	mutate	warm	unscoped	public share link; the link token is the authenticator; creation is session.share
+POST	/api/public/upload	public_api	session	send	public-link	mutate	warm	unscoped	public share link with send level (require_share)
+GET	/api/public/uploads/{image}	public_api	session	view	public-link	read	warm	unscoped	public share link read (require_share)
+GET	/api/pulse	pulse	instance	system.read	login	read	warm	unscoped	supervisor status and controls
+POST	/api/pulse/actions/{action_id}/approve	pulse	session	send	login	mutate	warm	unscoped	approve a supervisor action into a session
+POST	/api/pulse/actions/{action_id}/choose	pulse	session	send	login	mutate	warm	unscoped	approve a supervisor action into a session
+POST	/api/pulse/actions/{action_id}/reject	pulse	session	send	login	mutate	warm	unscoped	approve a supervisor action into a session
+POST	/api/pulse/chat	pulse	session	send	login	mutate	warm	unscoped	supervisor chat classifies instructions and, under yolo, delivers keystrokes to a session
+GET	/api/pulse/evidence/{session_id:path}	pulse	session	view	login	read	warm	unscoped	evidence for a needs-you card
+GET	/api/pulse/needs-you	pulse	session	view	login	read	warm	unscoped	needs-you cards and their answers; per-recipient episodes in P3a
+GET	/api/pulse/needs-you/{session_id:path}/details	pulse	session	view	login	read	warm	unscoped	needs-you cards and their answers; per-recipient episodes in P3a
+POST	/api/pulse/needs-you/{session_id:path}/dismiss	pulse	self	write	login	mutate	warm	unscoped	dismiss a needs-you card from the caller's own inbox
+GET	/api/pulse/notifications	pulse	self	read	login	read	warm	unscoped	the bell ledger and push subscriptions; one set today, per-user in P1
+POST	/api/pulse/notifications/clear-settled	pulse	self	write	login	mutate	warm	unscoped	the bell ledger and push subscriptions; one set today, per-user in P1
+POST	/api/pulse/notifications/dismiss	pulse	self	write	login	mutate	warm	unscoped	the bell ledger and push subscriptions; one set today, per-user in P1
+POST	/api/pulse/notifications/read	pulse	self	write	login	mutate	warm	unscoped	the bell ledger and push subscriptions; one set today, per-user in P1
+POST	/api/pulse/orchestrate	pulse	instance	system.configure	login	mutate	warm	unscoped	supervisor status and controls
+GET	/api/pulse/orchestrator	pulse	instance	system.read	login	read	warm	unscoped	supervisor status and controls
+GET	/api/pulse/push/key	pulse	self	read	login	read	warm	unscoped	the bell ledger and push subscriptions; one set today, per-user in P1
+POST	/api/pulse/push/subscribe	pulse	self	write	login	mutate	warm	unscoped	the bell ledger and push subscriptions; one set today, per-user in P1
+POST	/api/pulse/push/unsubscribe	pulse	self	write	login	mutate	warm	unscoped	the bell ledger and push subscriptions; one set today, per-user in P1
+GET	/api/pulse/recap	pulse	instance	system.read	login	read	warm	unscoped	supervisor status and controls
+POST	/api/pulse/recap	pulse	instance	system.configure	login	mutate	warm	unscoped	supervisor status and controls
+GET	/api/reply-shares	reply_shares	session	view	login	read	cold	unscoped	public links: list, create and revoke; creating is session.share on the linked session and the link belongs to its creator
+POST	/api/reply-shares	reply_shares	session	share	login	mutate	cold	unscoped	public links: list, create and revoke; creating is session.share on the linked session and the link belongs to its creator
+POST	/api/reply-shares/revoke-all	reply_shares	session	share	login	mutate	cold	unscoped	bulk revoke of public links; in multi-user it ends only the caller's own links unless the caller is an administrator
+DELETE	/api/reply-shares/{share_id}	reply_shares	session	share	login	mutate	cold	unscoped	public links: list, create and revoke; creating is session.share on the linked session and the link belongs to its creator
+GET	/api/repos	repos	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/repos	repos	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+DELETE	/api/repos/{rid}	repos	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+GET	/api/repos/{rid}	repos	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
+PATCH	/api/repos/{rid}	repos	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+GET	/api/repos/{rid}/items	repos	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/repos/{rid}/items	repos	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+DELETE	/api/repos/{rid}/items/{iid}	repos	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+GET	/api/scrollback	scrollback	session	view	login	read	warm	unscoped	terminal scrollback mirror
+POST	/api/scrollback/clear	scrollback	session	edit_metadata	login	mutate	warm	unscoped	terminal scrollback mirror
+GET	/api/sessions	sessions	session	view	login	read	hot	unscoped	the session list; filter the full set before facets and paging
+POST	/api/sessions/archive-older	sessions	session	archive	login	mutate	cold	unscoped	bulk archive of old sessions
+GET	/api/sessions/capacity	sessions	instance	system.read	login	read	warm	unscoped	host session limit
+GET	/api/sessions/{sid}	sessions	session	view	login	read	warm	unscoped	session read
+POST	/api/sessions/{sid}/archive	sessions	session	archive	login	mutate	cold	unscoped	archive reaps the runtime footprint
+POST	/api/sessions/{sid}/archive-with-subagents	sessions	session	archive	login	mutate	cold	unscoped	archive reaps the runtime footprint
+GET	/api/sessions/{sid}/attention	sessions	session	view	login	read	warm	unscoped	session read
+GET	/api/sessions/{sid}/children	sessions	session	view	login	read	warm	unscoped	session read
+PUT	/api/sessions/{sid}/cluster	clusters	session	edit_metadata	login	mutate	warm	unscoped	session metadata and per-session settings
+POST	/api/sessions/{sid}/color	sessions	session	edit_metadata	login	mutate	warm	unscoped	session metadata and per-session settings
+GET	/api/sessions/{sid}/draft	sessions	session	view	login	read	warm	unscoped	session metadata and per-session settings
+PUT	/api/sessions/{sid}/draft	sessions	session	edit_metadata	login	mutate	warm	unscoped	session metadata and per-session settings
+POST	/api/sessions/{sid}/favorite	sessions	session	edit_metadata	login	mutate	warm	unscoped	session metadata and per-session settings
+GET	/api/sessions/{sid}/history	history	session	view	login	read	warm	unscoped	session read
+PATCH	/api/sessions/{sid}/metadata	sessions	session	edit_metadata	login	mutate	warm	unscoped	session metadata and per-session settings
+POST	/api/sessions/{sid}/orchestrator-exclude	pulse	session	edit_metadata	login	mutate	warm	unscoped	session metadata and per-session settings
+POST	/api/sessions/{sid}/rename	sessions	session	edit_metadata	login	mutate	warm	unscoped	session metadata and per-session settings
+POST	/api/sessions/{sid}/review	ai_review	session	edit_metadata	login	mutate	warm	unscoped	session metadata and per-session settings
+POST	/api/sessions/{sid}/review-exclude	ai_review	session	edit_metadata	login	mutate	warm	unscoped	session metadata and per-session settings
+POST	/api/sessions/{sid}/tag	sessions	session	edit_metadata	login	mutate	warm	unscoped	session metadata and per-session settings
+POST	/api/sessions/{sid}/unarchive	sessions	session	archive	login	mutate	cold	unscoped	archive reaps the runtime footprint
+POST	/api/sessions/{sid}/unfavorite	sessions	session	edit_metadata	login	mutate	warm	unscoped	session metadata and per-session settings
+GET	/api/share/catalog	share_bundles	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/share/export	share_bundles	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/share/import	share_bundles	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/share/import/preview	share_bundles	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+GET	/api/share/imports	share_bundles	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
+GET	/api/shares	shares	session	view	login	read	cold	unscoped	public links: list, create and revoke; creating is session.share on the linked session and the link belongs to its creator
+POST	/api/shares	shares	session	share	login	mutate	cold	unscoped	public links: list, create and revoke; creating is session.share on the linked session and the link belongs to its creator
+POST	/api/shares/revoke-all	shares	session	share	login	mutate	cold	unscoped	bulk revoke of public links; in multi-user it ends only the caller's own links unless the caller is an administrator
+DELETE	/api/shares/{share_id}	shares	session	share	login	mutate	cold	unscoped	public links: list, create and revoke; creating is session.share on the linked session and the link belongs to its creator
+GET	/api/specialists	specialists	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/specialists	specialists	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/specialists/reservations/{rid}/release	specialists	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+GET	/api/specialists/{sid}	specialists	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
+PATCH	/api/specialists/{sid}	specialists	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/specialists/{sid}/archive	specialists	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/specialists/{sid}/unarchive	specialists	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+GET	/api/specialists/{sid}/versions/{n}	specialists	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
+GET	/api/structured/clients/{engine}	structured	session	view	login	read	warm	unscoped	API session read
+GET	/api/structured/clients/{engine}/models	structured	session	view	login	read	warm	unscoped	API session read
+POST	/api/structured/sessions	structured	session	create	login	mutate	cold	unscoped	create an API session
+GET	/api/structured/sessions/{key}	structured	session	view	login	read	warm	unscoped	API session read
+GET	/api/structured/sessions/{key}/containment	structured	session	view	login	read	warm	unscoped	API session read
+POST	/api/structured/sessions/{key}/decisions	structured	session	send	login	mutate	warm	unscoped	API session decision; standing options owner-only; admitted at _admit_gate
+GET	/api/structured/sessions/{key}/events	structured	session	view	login	stream	hot	unscoped	API session event long-poll
+GET	/api/structured/sessions/{key}/history	structured	session	view	login	read	warm	unscoped	API session read
+POST	/api/structured/sessions/{key}/interrupt	structured	session	send	login	mutate	warm	unscoped	interrupt the running turn
+POST	/api/structured/sessions/{key}/send-now	structured	session	send	login	mutate	hot	unscoped	API session turn; admitted at session_input.admit_native
+POST	/api/structured/sessions/{key}/skip-permissions	structured	session	send	login	mutate	cold	unscoped	bypass mode is a standing widening; execution owner only
+POST	/api/structured/sessions/{key}/start	structured	session	start	login	mutate	cold	unscoped	start an API session generation (session_capacity.admit)
+POST	/api/structured/sessions/{key}/stop	structured	session	stop	login	mutate	cold	unscoped	stop an API session
+POST	/api/structured/sessions/{key}/turns	structured	session	send	login	mutate	hot	unscoped	API session turn; admitted at session_input.admit_native
+POST	/api/structured/sessions/{key}/withdraw	structured	session	send	login	mutate	hot	unscoped	API session turn; admitted at session_input.admit_native
+GET	/api/system	system	instance	system.read	login	read	cold	unscoped	instance status and administration
+GET	/api/system/resources	system	instance	system.read	login	read	cold	unscoped	instance status and administration
+POST	/api/system/resources	system	instance	system.configure	login	mutate	cold	unscoped	instance status and administration
+GET	/api/system/sessions	system	instance	system.read	login	read	warm	unscoped	host session counts
+GET	/api/telemetry	system	instance	system.read	login	read	cold	unscoped	instance status and administration
+GET	/api/template-variables	templates	credentials	use	login	read	cold	unscoped	variables and secrets (AES-GCM at rest); per-project scopes exist, no user scope yet
+POST	/api/template-variables	templates	credentials	manage	login	mutate	cold	unscoped	variables and secrets (AES-GCM at rest); per-project scopes exist, no user scope yet
+DELETE	/api/template-variables/{name}	templates	credentials	manage	login	mutate	cold	unscoped	variables and secrets (AES-GCM at rest); per-project scopes exist, no user scope yet
+PATCH	/api/template-variables/{name}	templates	credentials	manage	login	mutate	cold	unscoped	variables and secrets (AES-GCM at rest); per-project scopes exist, no user scope yet
+GET	/api/templates	templates	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/templates	templates	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/templates/suggest	templates	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+GET	/api/templates/suggestions	templates	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/templates/suggestions/{sid}/dismiss	templates	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/templates/write	templates	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+DELETE	/api/templates/{tid}	templates	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+PATCH	/api/templates/{tid}	templates	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/templates/{tid}/send	templates	library	use	login	mutate	warm	unscoped	using a template in a session
+POST	/api/templates/{tid}/used	templates	library	use	login	mutate	warm	unscoped	using a template in a session
+POST	/api/update/apply	system	instance	system.configure	login	mutate	cold	unscoped	instance status and administration
+GET	/api/update/check	system	instance	system.read	login	read	cold	unscoped	instance status and administration
+GET	/api/update/progress	system	instance	system.read	login	read	cold	unscoped	instance status and administration
+GET	/api/update/settings	system	instance	system.read	login	read	cold	unscoped	instance status and administration
+POST	/api/update/settings	system	instance	system.configure	login	mutate	cold	unscoped	instance status and administration
+POST	/api/upload	upload	files	write	login	mutate	warm	unscoped	attachment upload into a session
+GET	/api/uploads/{stored}	upload	files	read	login	read	warm	unscoped	attachment upload into a session
+POST	/api/variable-collections	variables	credentials	manage	login	mutate	cold	unscoped	variables and secrets (AES-GCM at rest); per-project scopes exist, no user scope yet
+DELETE	/api/variable-collections/{cid}	variables	credentials	manage	login	mutate	cold	unscoped	variables and secrets (AES-GCM at rest); per-project scopes exist, no user scope yet
+PATCH	/api/variable-collections/{cid}	variables	credentials	manage	login	mutate	cold	unscoped	variables and secrets (AES-GCM at rest); per-project scopes exist, no user scope yet
+GET	/api/variables	variables	credentials	use	login	read	cold	unscoped	variables and secrets (AES-GCM at rest); per-project scopes exist, no user scope yet
+POST	/api/variables	variables	credentials	manage	login	mutate	cold	unscoped	variables and secrets (AES-GCM at rest); per-project scopes exist, no user scope yet
+POST	/api/variables/migrate	variables	credentials	manage	login	mutate	cold	unscoped	variables and secrets (AES-GCM at rest); per-project scopes exist, no user scope yet
+DELETE	/api/variables/{vid}	variables	credentials	manage	login	mutate	cold	unscoped	variables and secrets (AES-GCM at rest); per-project scopes exist, no user scope yet
+PATCH	/api/variables/{vid}	variables	credentials	manage	login	mutate	cold	unscoped	variables and secrets (AES-GCM at rest); per-project scopes exist, no user scope yet
+GET	/api/variables/{vid}/access-log	variables	credentials	use	login	read	cold	unscoped	variables and secrets (AES-GCM at rest); per-project scopes exist, no user scope yet
+PUT	/api/variables/{vid}/file	variables	credentials	manage	login	mutate	cold	unscoped	variables and secrets (AES-GCM at rest); per-project scopes exist, no user scope yet
+PUT	/api/variables/{vid}/projects	variables	credentials	manage	login	mutate	cold	unscoped	variables and secrets (AES-GCM at rest); per-project scopes exist, no user scope yet
+GET	/api/version	system	instance	system.read	login	read	cold	unscoped	instance status and administration
+POST	/api/voice/calls	voice	self	write	login	mutate	cold	unscoped	HQ voice settings and calls; one operator account today (#1620)
+DELETE	/api/voice/calls/{call_id}	voice	self	write	login	mutate	cold	unscoped	HQ voice settings and calls; one operator account today (#1620)
+GET	/api/voice/capabilities	voice	self	read	login	read	cold	unscoped	HQ voice settings and calls; one operator account today (#1620)
+GET	/api/voice/local	voice	self	read	login	read	cold	unscoped	HQ voice settings and calls; one operator account today (#1620)
+POST	/api/voice/local/use	voice	self	write	login	mutate	cold	unscoped	HQ voice settings and calls; one operator account today (#1620)
+POST	/api/voice/preview	voice	self	write	login	mutate	cold	unscoped	HQ voice settings and calls; one operator account today (#1620)
+GET	/api/voice/settings	voice	self	read	login	read	cold	unscoped	HQ voice settings and calls; one operator account today (#1620)
+POST	/api/voice/settings	voice	self	write	login	mutate	cold	unscoped	HQ voice settings and calls; one operator account today (#1620)
+POST	/api/voice/test	voice	self	write	login	mutate	cold	unscoped	HQ voice settings and calls; one operator account today (#1620)
+POST	/api/voice/voices	voice	self	write	login	mutate	cold	unscoped	HQ voice settings and calls; one operator account today (#1620)
+GET	/api/webhooks	webhooks	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/webhooks	webhooks	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+DELETE	/api/webhooks/{wid}	webhooks	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+GET	/api/webhooks/{wid}	webhooks	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
+PATCH	/api/webhooks/{wid}	webhooks	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/webhooks/{wid}/rotate	webhooks	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+GET	/artifacts/i/{ref}	artifacts	artifact	view	login	read	warm	unscoped	handler checks the session, then redirects to a view token
+GET	/artifacts/i/{ref}/{rest:path}	artifacts	artifact	view	login	read	warm	unscoped	handler checks the session, then redirects to a view token
+GET	/artifacts/o/{token}	artifacts	artifact	view	view-token	read	warm	unscoped	signed view token minted for a signed-in viewer
+GET	/artifacts/o/{token}/{rest:path}	artifacts	artifact	view	view-token	read	warm	unscoped	signed view token minted for a signed-in viewer
+GET	/artifacts/o/{token}/~meta	artifacts	artifact	view	view-token	read	warm	unscoped	signed view token minted for a signed-in viewer
+GET	/artifacts/p/{public_id}	artifacts	artifact	view	public-link	read	warm	unscoped	public artifact link; the link token is the authenticator; P2 binds it to the owning user
+GET	/artifacts/p/{public_id}/{rest:path}	artifacts	artifact	view	public-link	read	warm	unscoped	public artifact link; the link token is the authenticator; P2 binds it to the owning user
+GET	/artifacts/p/{public_id}/~/{rest:path}	artifacts	artifact	view	public-link	read	warm	unscoped	public artifact link; the link token is the authenticator; P2 binds it to the owning user
+GET	/artifacts/p/{public_id}/~meta	artifacts	artifact	view	public-link	read	warm	unscoped	public artifact link; the link token is the authenticator; P2 binds it to the owning user
+GET	/artifacts/p/{public_id}/~u/{token}	artifacts	artifact	view	public-link	read	warm	unscoped	public artifact link; the link token is the authenticator; P2 binds it to the owning user
+GET	/artifacts/p/{public_id}/~u/{token}/{rest:path}	artifacts	artifact	view	public-link	read	warm	unscoped	public artifact link; the link token is the authenticator; P2 binds it to the owning user
+POST	/artifacts/p/{public_id}/~unlock	artifacts	artifact	view	public-link	mutate	warm	unscoped	public artifact link; the link token is the authenticator; P2 binds it to the owning user
+GET	/artifacts/v/{token}	artifacts	artifact	view	view-token	read	warm	unscoped	signed view token minted for a signed-in viewer
+GET	/artifacts/v/{token}/{rest:path}	artifacts	artifact	view	view-token	read	warm	unscoped	signed view token minted for a signed-in viewer
+GET	/artifacts/{ref}	artifacts	artifact	view	login	read	warm	unscoped	handler checks the session, then redirects to a view token
+GET	/artifacts/{ref}/{rest:path}	artifacts	artifact	view	login	read	warm	unscoped	handler checks the session, then redirects to a view token
+GET	/change-password	auth	self	read	login	read	cold	unscoped	handler checks the session; forced first-login change
+POST	/change-password	auth	self	write	login	mutate	cold	unscoped	handler checks the session; forced first-login change
+GET	/healthz	system	none	public	none	read	hot	unscoped	liveness probe; no data
+POST	/hooks/a/{aid}	hooks	library	use	hmac	background	cold	unscoped	HMAC-signed webhook; P2 binds each webhook to an owning user who mints it
+POST	/hooks/w/{wid}	hooks	library	use	hmac	background	cold	unscoped	HMAC-signed webhook; P2 binds each webhook to an owning user who mints it
+GET	/link/approve	link	self	write	login	read	cold	unscoped	handler checks the session; approving signs in the approving user only (P1)
+POST	/link/approve	link	self	write	login	mutate	cold	unscoped	handler checks the session; approving signs in the approving user only (P1)
+POST	/link/deny	link	self	write	login	mutate	cold	unscoped	handler checks the session; approving signs in the approving user only (P1)
+GET	/link/qr	link	self	read	pre-auth	read	cold	unscoped	device-link challenge from the not-yet-signed-in device; P1 binds it to the approving user_id
+POST	/link/start	link	self	write	pre-auth	mutate	cold	unscoped	device-link challenge from the not-yet-signed-in device; P1 binds it to the approving user_id
+GET	/link/status	link	self	read	pre-auth	read	cold	unscoped	device-link challenge from the not-yet-signed-in device; P1 binds it to the approving user_id
+GET	/login	auth	none	public	pre-auth	read	cold	unscoped	pre-auth login form and submit; per-user credentials land in P1
+POST	/login	auth	none	public	pre-auth	mutate	cold	unscoped	pre-auth login form and submit; per-user credentials land in P1
+POST	/login/totp	auth	none	public	pre-auth	mutate	cold	unscoped	pre-auth login form and submit; per-user credentials land in P1
+POST	/logout	auth	self	write	login	mutate	cold	unscoped	ends the caller's own login session
+GET	/p/	shares	session	view	public-link	read	warm	unscoped	public share link; the link token is the authenticator; creation is session.share
+GET	/p/{token}	shares	session	view	public-link	read	warm	unscoped	public share link; the link token is the authenticator; creation is session.share
+GET	/r/	reply_shares	session	view	public-link	read	warm	unscoped	public reply-share link; token-authenticated
+GET	/r/{share_id}	reply_shares	session	view	public-link	read	warm	unscoped	public reply-share link; token-authenticated
+WS	/ws/agent-accounts/{engine}/{account}/signin	agent_accounts	credentials	manage	login	stream	cold	unscoped	handler checks the session and compares session_uid to cfg.username: a username comparison standing in for authority, replaced in P1; vendor sign-in PTY
+WS	/ws/fed	federation	session	view	peer	stream	hot	unscoped	peer channel; Noise-key authenticated; federation verbs run grants.authorize
+WS	/ws/plugins/signin/{operation_id}	plugins	instance	system.configure	login	stream	cold	unscoped	handler checks the session and compares session_uid to cfg.username: a username comparison standing in for authority, replaced by an admin check in P1
+WS	/ws/term/{sid}	terminal	session	input	login	stream	hot	unscoped	handler checks the session cookie and origin; PTY viewer and owner-lease input
+WS	/ws/voice/{call_id}	voice	self	write	login	stream	hot	unscoped	handler checks the session; the caller's own HQ voice call
+GET	/{spa_path:path}	spa	none	public	none	read	warm	unscoped	the SPA shell; static, no data

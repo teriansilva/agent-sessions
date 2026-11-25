@@ -1,0 +1,385 @@
+<h1 align="center">⚔️ BattleLab</h1>
+
+<p align="center"><strong>Command &amp; Code.</strong> A mobile-first, self-hosted command deck for your AI-coding agents.</p>
+
+<p align="center"><a href="https://battlelabos.com">battlelabos.com</a> · <a href="https://docs.battlelabos.com">docs</a></p>
+
+<p align="center">
+  <img src="docs/banner.webp" alt="General Ileana Lupu of BattleLab HQ greets you: “Welcome, Commander. This is BattleLab — the command center for your AI agents. All of them, alive on one deck. They survive reboots and buzz you when they need you. Talk to me, typed or on a call. Hand me a whole job: your team runs it, a judge checks it, you make the call. Miss me already? One line to deploy.”" width="900">
+</p>
+
+**Welcome, Commander.** BattleLab puts Claude Code, Codex, opencode, Gemini, Antigravity, Kimi Code
+— plus plain shells — under one command. Every agent gets a real terminal that survives reboots and
+deploys. **HQ** briefs you on what needs you, **Missions** (beta) take an objective and run it, and an
+end-to-end-encrypted blind relay lets you give orders from a laptop or your phone.
+
+![license: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue) ![self-hosted](https://img.shields.io/badge/self--hosted-rootless-0e8a16) ![engines](https://img.shields.io/badge/engines-claude%20·%20codex%20·%20opencode%20·%20gemini%20·%20antigravity%20·%20kimi-ffb000)
+
+<p align="center">
+  <img src="docs/screenshots/dashboard.webp" alt="The dashboard: “Welcome, Commander.”, your HQ contact, what needs you, running sessions, missions and quota" width="900">
+</p>
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/hq.webp" alt="HQ: the General answers what needs you"><br><sub><b>HQ</b> — your General on the line</sub></td>
+    <td width="50%"><img src="docs/screenshots/sessions.webp" alt="A terminal session beside the session list"><br><sub><b>Sessions</b> — every agent, persistent</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/missions.webp" alt="A mission console with its plan and objectives"><br><sub><b>Missions</b> (beta) — objective in, plan out</sub></td>
+    <td><img src="docs/screenshots/files.webp" alt="The Files panel with the Git tab and a diff"><br><sub><b>Files &amp; git</b> — edit, diff, commit, push</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/map.webp" alt="The tactical map of sessions grouped into projects"><br><sub><b>Map</b> — the operation at a glance</sub></td>
+    <td><img src="docs/screenshots/library.webp" alt="The Library: playbooks"><br><sub><b>Library</b> — how your work gets done</sub></td>
+  </tr>
+</table>
+
+### What's on the deck
+
+- **HQ — your General on the line.** One front door for the whole operation: ask HQ what needs
+  you, have it start or nudge sessions, and follow up on what it started. Answers come from your
+  **primary contact** — one of thirteen fictional Generals, a new one every day, or none — shown on
+  the dashboard and at the top of HQ. Pick yours in setup or in Settings.
+- **A dashboard that greets you.** The start page is the sitrep: what needs you, what's running,
+  your missions, recent work, and each agent's quota before its reset.
+- **Every agent, one deck.** A live sidebar of every session across every engine, grouped by
+  project, with per-row badges and filters. Claude, Codex and opencode also run as **API sessions**
+  with a structured view, approvals and a message queue.
+- **Persistent terminals.** Each terminal session runs under its own `dtach` PTY — close the tab,
+  reboot, or upgrade the app and reattach to the exact conversation, with clean console-style
+  scroll-up.
+- **Missions (beta).** State the objective: mission control proposes a plan — a project, an agent
+  and the objectives that say what "done" means — runs it on your go, adopts sessions you started
+  yourself, settles the objectives it can check on evidence, nudges a stalled agent, and proposes
+  completion rather than declaring it. Includes the plain-language finder for past sessions ("which
+  session fixed the ws reconnect bug?"). Beta: still settling, so expect changes between releases.
+- **Your AI, local or hosted.** One OpenAI-compatible endpoint powers HQ, session review and
+  recaps, auto-sort and Missions — a local server (Ollama, LM Studio, llama.cpp, vLLM; setup has
+  one-tap presets) or a hosted API. What **these features** send — session excerpts for HQ,
+  review and Missions — goes only to that endpoint: a local model keeps it on your machine, a hosted
+  API receives it. The key only ever goes to the host it was saved for. This endpoint does not
+  change where your coding agents talk: Claude Code, Codex, opencode and the others reach their own
+  providers exactly as they do outside BattleLab.
+- **Files + git, per session.** A file browser rooted at each session's own working directory —
+  upload files or whole folders into it, and edit text files in place — plus a `GIT` tab: branch
+  name, ahead/behind, the working tree's changed paths grouped conflicts/staged/changes/untracked
+  (capped at `GIT_MAX_ENTRIES`, and flagged as truncated past it), and a unified diff one click
+  away. It can also fetch, fast-forward pull, switch branches, stage, discard, commit and push —
+  each one refusing rather than forcing when the tree has moved under you.
+- **The Library.** Prompt Templates (text, reference images and `{{field}}` slots filled at send
+  time), variables, shared HQ/project memory, automations, skills and **playbooks** — browse, duplicate and
+  author flows on a canvas or as a list, and pin projects to a playbook revision. See the
+  [playbooks guide](https://docs.battlelabos.com/guide/playbooks).
+- **Tactical map + auto-sort.** A live flowchart of every session grouped into projects, with
+  several agents open side by side; a one-line AI summary on each session flags what needs you,
+  and new sessions file themselves into the right project.
+- **Every prompt is yours.** Every system prompt — the recap, the handoff brief, HQ, the
+  orchestrator — is editable in Settings, with the JSON shape each one must return and a
+  one-tap reset. The six that shape autonomous action — the orchestrator pass, chat instruct and
+  the four mission prompts — keep a server-appended clause that says session output is
+  untrusted; that part isn't editable, by design.
+- **Home Free.** Your box dials *out* to a blind relay — open the Connect page in any browser and
+  drive the full app from your phone. End-to-end encrypted (X25519 → AES-256-GCM); the relay sees
+  only ciphertext. No VPN, no port-forwarding.
+- **Mobile-first, one-line install.** A touch-ready terminal (compose bar, control keys, dictation,
+  image paste) and push notifications when an agent needs you. A first-run briefing walks you
+  through optional 2FA, your agents, your AI and — once the AI is connected — your HQ contact.
+  Rootless install, atomic releases with one-step rollback.
+
+```sh
+curl -fsSL https://battlelabos.com/install.sh | sh
+```
+
+> Single-admin tool — it launches agents with permission bypass by design. Run it on your own host,
+> **behind a reverse proxy (TLS + auth)**. See [Security / trust model](#security--trust-model).
+
+---
+
+A React + Vite SPA. Sidebar: every session from each installed engine — Claude Code (`~/.claude/projects/**/*.jsonl`), opencode (SQLite at `~/.local/share/opencode/opencode.db`, read-only), codex, gemini, antigravity (`agy`, SQLite + JSONL under `~/.gemini/antigravity-cli/`, read-only), and Kimi Code (nested session dirs under `~/.kimi-code/`, read-only) — grouped by project, sticky-first then by recency, with a per-row engine badge + agent filter. The open session lives in the URL (`/s/:engine/:id`); clicking a row attaches to it. The embedded terminal is **self-owned** — xterm.js over a websocket (`/ws/term/{sid}`) bridged to a per-session `dtach` PTY that resumes the engine in the right cwd (`claude --resume <uuid>` / `opencode <dir> --session <ses_id>` / `agy --conversation <uuid>` / …). No ttyd, no Zellij.
+
+Engines live behind a small provider interface (`engines.py`); identity is engine-qualified `<engine>:<native_id>` (e.g. `claude:<uuid>`, `opencode:<ses_id>`). opencode is **read-only with respect to its own DB** — the sidebar never writes `opencode.db`. Archive works for **any** engine via the engine-agnostic **sidecar** flag (`metadata.json`): Claude additionally moves its JSONL between `projects/` and `projects-archive/`, while opencode/codex/gemini/antigravity/kimi record archive state in the sidecar only (never their own data). Title/sticky use the same sidecar overlay. Adding an engine = one new provider in the registry.
+
+## Per-engine support
+
+The engines handle their own conversation persistence — BattleLab reads each tool's own on-disk
+history (read-only) for the sidebar, and "resume" always means launching **that tool's own
+resume command** under the app's `dtach` PTY. What differs per engine:
+
+<!-- BEGIN generated:engine-table -->
+| Engine | Binary · override | Sessions read from · override | Resume | New session | Permission bypass |
+|---|---|---|---|---|---|
+| **Claude Code** (`claude`) | `claude` · `AGENT_SESSIONS_CLAUDE_BIN` | `~/.claude` | `claude --resume <id>` | `claude --session-id <id>` — pinned id | `--dangerously-skip-permissions` |
+| **Claude — API** (`claude-api`) | Claude Code's | `~/.local/share/agent-sessions/native/claude-api` · `AGENT_SESSIONS_CLAUDE_API_DIR` | contained worker — runtime `api`, protocol `claude-stream-json` | new conversation | — |
+| **opencode** (`opencode`) | `opencode` · `AGENT_SESSIONS_OPENCODE_BIN` | `~/.local/share/opencode` · `AGENT_SESSIONS_OPENCODE_DB`, `AGENT_SESSIONS_OPENCODE_LOG` | `opencode <dir> --session <id>` | `opencode <dir>`, then adopt the id it mints | — |
+| **OpenCode 2** (`opencode2`) | `opencode2` · `AGENT_SESSIONS_OPENCODE2_BIN` | `~/.local/share/agent-sessions/agents/opencode2` · `AGENT_SESSIONS_OPENCODE2_DIR` | `opencode2 --standalone <dir> --session <id>` | `opencode2 --standalone <dir>`, then adopt the id it mints | `--auto` |
+| **OpenCode 2 — API** (`opencode2-api`) | OpenCode 2's | `~/.local/share/agent-sessions/native/opencode2-api` · `AGENT_SESSIONS_OPENCODE2_API_DIR` | contained worker — runtime `api`, protocol `opencode2-acp` | new conversation | — |
+| **opencode — API** (`opencode-api`) | opencode's | `~/.local/share/agent-sessions/native/opencode-api` · `AGENT_SESSIONS_OPENCODE_API_DIR` | contained worker — runtime `api`, protocol `opencode-acp` | new conversation | — |
+| **Codex** (`codex`) | `codex` · `AGENT_SESSIONS_CODEX_BIN` | `~/.codex/sessions` · `AGENT_SESSIONS_CODEX_SESSIONS_DIR` | `codex resume <id>` | `codex --cd <dir>`, then adopt the id it mints | `--dangerously-bypass-approvals-and-sandbox` (new sessions only) |
+| **Codex — API** (`codex-api`) | Codex's | `~/.local/share/agent-sessions/native/codex-api` · `AGENT_SESSIONS_CODEX_API_DIR` | contained worker — runtime `api`, protocol `codex-app-server` | new conversation | — |
+| **Gemini CLI** (`gemini`) | `gemini` · `AGENT_SESSIONS_GEMINI_BIN` | `~/.gemini/tmp` · `AGENT_SESSIONS_GEMINI_TMP_DIR` | `gemini --resume <id>` | `gemini --session-id <id>` — pinned id | `--yolo` `--skip-trust` |
+| **GitHub Copilot CLI** (`copilot`) | `copilot` · `AGENT_SESSIONS_COPILOT_BIN` | `~/.copilot` | `copilot --no-auto-update --resume <id>` | `copilot --no-auto-update --session-id <id>` — pinned id | `--yolo` |
+| **Copilot — API** (`copilot-api`) | GitHub Copilot CLI's | `~/.local/share/agent-sessions/native/copilot-api` · `AGENT_SESSIONS_COPILOT_API_DIR` | contained worker — runtime `api`, protocol `copilot-acp` | new conversation | — |
+| **Antigravity** (`antigravity`) | `agy` · `AGENT_SESSIONS_AGY_BIN` | `~/.gemini/antigravity-cli` · `AGENT_SESSIONS_ANTIGRAVITY_DIR` | `agy --conversation <id>` | `agy`, then adopt the id it mints | `--dangerously-skip-permissions` |
+| **Kimi Code** (`kimi`) | `kimi` · `AGENT_SESSIONS_KIMI_BIN` | `~/.kimi-code` · `AGENT_SESSIONS_KIMI_DIR` | `kimi -S <id>` | `kimi`, then adopt the id it mints | `-y` |
+| **API agent** (`apichat`) | — | `~/.local/share/agent-sessions/chat` · `AGENT_SESSIONS_CHAT_DIR` | no process — runtime `chat`, endpoint `openai-chat` | new conversation | — |
+| **Shell** (`shell`) | `bash` · `AGENT_SESSIONS_BASH_BIN` | `~/.claude/shell-sessions` · `AGENT_SESSIONS_SHELL_DIR` | a fresh process — nothing to resume | `bash -l` — pinned id | — |
+<!-- END generated:engine-table -->
+
+The [public agent catalog](docs/site/guide/agent-catalog.md) ships with BattleLab and checks
+GitHub for signed metadata updates daily. Definitions and contribution history are public.
+Agents you installed from the catalog update themselves to a newer signed version after offline
+checks (never a vendor conversation), keep the previous version for Roll back, and stop while
+automatic updates are paused.
+
+The table is generated from the engines' manifests (`src/agent_sessions/plugins/first_party/`) by
+`scripts/gen-engine-docs`. Archive is a flag in BattleLab's own sidecar for every engine except
+Claude Code, whose archive also moves the JSONL to `projects-archive/`; every other engine's
+store is only ever read (opencode's SQLite database is opened read-only).
+
+Common to every row: the session runs under a `dtach` PTY with a single-writer lock — close the
+tab and the process keeps running; reattach mid-stream. For the agent engines, a reboot is also
+survivable (the engine's own resume restores the conversation) and scroll-up combines the
+scrollback ring with a transcript renderer over the saved conversation. **Plain shells are the
+exception**: with no saved conversation there's nothing to resume after a reboot — they reattach
+only while the PTY lives, and scroll-up is the scrollback ring alone. AI review still works for
+shells (screen-based, from the live terminal).
+
+## Install & operate
+
+Rootless, user-level — no system daemon, no root. The installer drops everything under `~/.local/share/agent-sessions/`, runs the app as a `systemctl --user` service, and binds `127.0.0.1:8765` (put a reverse proxy / TLS in front yourself — it does **not** configure nginx). An interactive install can instead bind a LAN address or all interfaces, behind a security warning — deriving the reachable origin and offering to open the port in the host firewall — see [Bind address](INSTALL.md#bind-address).
+
+> The CLI, service unit, and `AGENT_SESSIONS_*` environment variables keep the project's package name, **`agent-sessions`** — that's the same tool as BattleLab.
+
+```sh
+# Read the script first if you like — it's plain POSIX sh.
+curl -fsSL https://battlelabos.com/install.sh | sh
+```
+
+> A worked reverse-proxy example lives in [`deploy/nginx.example.conf`](deploy/nginx.example.conf);
+> a full self-host walkthrough is in [`INSTALL.md`](INSTALL.md). To install from a fork/mirror,
+> set `AGENT_SESSIONS_REPO=https://github.com/<you>/agent-sessions.git` before running the script.
+
+Prereqs: `git` and `python3 ≥ 3.11`. If the `venv` module is missing the installer offers to `apt-get`/`dnf` install it (one of only two optional, prompted sudo steps — the other is opening the firewall port for a non-localhost bind). On a fresh install it prints the generated admin credentials **once**:
+
+```
+agent-sessions 0.3.1 installed.
+  URL:      http://127.0.0.1:8765
+  username: admin
+  password: <generated>            ← shown once; only the PBKDF2 hash is stored
+```
+
+**First login** forces a password change before anything else is reachable. Lost it? Reset from the host (never pass the password on the command line — it leaks via shell history/`ps`):
+
+```sh
+~/.local/share/agent-sessions/current/venv/bin/agent-sessions reset-password --prompt   # interactive, no echo
+… reset-password --stdin    # scriptable: read one line from stdin
+… reset-password            # generate a random one and print it once
+```
+
+**Optional two-factor auth (TOTP).** Off by default. Enable it from **Settings → System → Security**: scan the QR (or enter the key) into an authenticator app (Google Authenticator, Authy, 1Password, Aegis…), confirm a code, and save the one-time recovery codes shown once. After that, login asks for a 6-digit code after your password. The TOTP secret + recovery-code hashes live in a `0600` file next to the env (`<env-dir>/2fa.json`, override `AGENT_SESSIONS_2FA_FILE`) — never in `prefs.json` or the metadata sidecar. **Locked out** (lost device *and* recovery codes)? Clear 2FA from the host:
+
+```sh
+~/.local/share/agent-sessions/current/venv/bin/agent-sessions clear-2fa    # removes the 2FA secrets file → 2FA off
+```
+
+### What the installer creates
+
+```
+~/.local/share/agent-sessions/
+├── releases/<ts>-<sha>/{src,venv}   one self-contained release per build
+├── current → releases/<ts>-<sha>     atomic symlink (rename(2)); flip = upgrade/rollback
+└── env                               0600; secret + admin hash + host/port/origin
+~/.config/systemd/user/agent-sessions.service
+```
+
+Re-running the installer is **idempotent**: it builds a new release dir, flips `current`, keeps the prior releases (3 by default) for rollback, and **leaves existing credentials untouched**. It also runs `agent-sessions doctor` each time to (re)discover the installed agent CLIs — every engine in the [per-engine table](#per-engine-support) — and record their paths in `env`.
+
+To hold all installed rollback copies during an upgrade, create `retain-releases` inside the
+install root (`~/.local/share/agent-sessions` by default). The installer skips release pruning
+while that marker exists. It stays in effect across updates; remove it only when cleanup is
+approved and the usual three-release retention should resume.
+
+Install-time knobs (env vars): `AGENT_SESSIONS_CHANNEL` (`stable` tags — default — or `main`), `AGENT_SESSIONS_HOST`/`_PORT`/`_ORIGIN`, `AGENT_SESSIONS_HOME`, `AGENT_SESSIONS_REF` (pin an exact tag/branch/sha), `AGENT_SESSIONS_NO_SERVICE=1` (install without touching systemd).
+
+### Updating
+
+Self-update never runs arbitrary input — it only moves to the **channel's latest** release, flips `current`, restarts, health-checks `/healthz`, and **rolls back** to the prior release if the new one fails.
+
+- **In-app:** the dashboard shows the version + a check/apply control (`/api/version`, `/api/update/check`, `/api/update/apply` — authed + CSRF + origin-gated).
+- **CLI:** `agent-sessions autoupdate` (check the channel, apply only if newer).
+- **Automatic updates (Settings → System → Updates):** **on by default** — the same guarded check/apply runs daily, for BattleLab and for the agents installed from the catalog. **Pause** (it asks first) stops both until **Resume**; a channel selector switches between `stable` and `main`. Both persist server-side and apply live, no reinstall or env var needed. Installs that had the old `AGENT_SESSIONS_AUTOUPDATE=1` systemd timer migrate automatically on upgrade and the legacy timer units are removed.
+
+### Rollback & emergency-disable
+
+Releases are immutable directories; `current` is just a symlink, so rollback is a one-step re-point — no rebuild:
+
+```sh
+P=~/.local/share/agent-sessions
+ls -1dt $P/releases/*/                       # newest first; pick the known-good one
+# atomic re-point — same temp-link + rename(2) the installer uses, so a concurrent
+# start/health-check never sees a missing `current` (bare `ln -sfn` unlinks first):
+ln -s $P/releases/<ts>-<sha> $P/.current.rb && mv -Tf $P/.current.rb $P/current
+systemctl --user restart agent-sessions.service
+```
+
+(A failed self-/auto-update already rolls back automatically; this is the manual path.)
+
+**Emergency-disable** — stop serving and/or stop auto-updating:
+
+```sh
+systemctl --user stop    agent-sessions.service          # take the app down now
+systemctl --user disable agent-sessions.service          # …and keep it down across logins
+journalctl --user -u agent-sessions.service -f           # logs
+```
+
+To stop **automatic updates only**, press **Pause** under Settings → Updates,
+or set `AGENT_SESSIONS_AUTOUPDATE=0` in `~/.local/share/agent-sessions/env`.
+
+## Security / trust model
+
+BattleLab is a **single-admin** tool. Understand this before exposing it:
+
+- It launches AI-coding agents with permission bypass **by design** — `--dangerously-skip-permissions` (Claude Code) / `--yolo`-equivalent toggles. A logged-in user can run arbitrary commands in any project on the host. Treat the whole surface as **equivalent to a shell as the user the service runs as** — the same trust boundary as SSH.
+- It is **not multi-tenant**. There is one admin account; there is no per-user isolation. Do not share a login.
+- The app binds `127.0.0.1` and does **not** terminate TLS or do rate-limiting itself. **You must put it behind a reverse proxy that provides TLS + auth.** See [`deploy/nginx.example.conf`](deploy/nginx.example.conf).
+- Defence in depth: the app has its own cookie + CSRF + same-origin (`Origin`/`Referer` must equal `AGENT_SESSIONS_ORIGIN`) checks, and `/api/auth-check` (204/401) so the reverse proxy can additionally gate with `auth_request`. **Rate-limit `/login` at the proxy** to blunt credential stuffing.
+- **What sits on disk, owner-only.** `prefs.json`, the compose draft, the instruction-template library (`~/.config/agent-sessions/templates.json`) and the uploads folder (`~/.agent-sessions/uploads/`) are all mode `0600` / `0700` under the service user. Instruction text you save as a template is as sensitive as anything you type into a session — it is stored in the clear, like the draft.
+- **Optional TOTP 2FA** adds a second factor on top of the password (see Install & operate). A correct password issues only a short-lived *pre-auth* cookie; the full session is minted after a valid authenticator/recovery code. Recommended once the instance is reachable beyond localhost. `clear-2fa` (host-only) is the lockout escape hatch.
+
+## Where things live
+
+- **App code:** here (`src/agent_sessions/`)
+- **Deploy unit (ships with the code):** [`deploy/`](deploy/) — `agent-sessions.service` (the FastAPI app; the installer manages it). The terminal is in-process (the ws bridge), so there's no separate terminal unit.
+- **Reverse-proxy example:** [`deploy/nginx.example.conf`](deploy/nginx.example.conf)
+- **Self-host guide:** [`INSTALL.md`](INSTALL.md)
+
+## Layout
+
+```
+agent-sessions/
+├── pyproject.toml
+├── src/agent_sessions/
+│   ├── main.py        thin FastAPI app factory: create_app() builds shared state +
+│   │                  middlewares + lifespan, then calls each routes/ registrar
+│   ├── routes/        one register(app, *, deps) module per route group —
+│   │   ├── system.py      healthz, auth-check, version, engines, system, update, config, prefs
+│   │   ├── sessions.py    /api/sessions, /api/projects (entities, #361), /api/folders, rename, archive/unarchive
+│   │   ├── scrollback.py  /api/scrollback (+ clear)
+│   │   ├── upload.py      /api/upload, GET /api/uploads/{stored} (image read-back)
+│   │   ├── templates.py   /api/templates — the instruction-template library (#905)
+│   │   ├── auth.py        login, /login/totp, logout, change-password, /api/password, 2FA
+│   │   ├── terminal.py    the /ws/term/{sid} websocket handler
+│   │   └── spa.py         GET / + the /{spa_path} SPA catch-all (registered last)
+│   ├── scanner.py     read ~/.claude/projects/ (live + archive)
+│   ├── metadata.py    sidecar JSON with fcntl.flock; title/sticky/project_alias
+│   ├── engines/       per-engine providers (scan + launch_argv): base.py (contract +
+│   │                  patterns + binaries), claude/opencode/codex/gemini/antigravity/kimi.py, registry.py
+│   │                  (parse_key/scan_all/…); __init__ re-exports the public surface
+│   ├── webterm.py     the ws↔PTY bridge run loop (xterm.js over /ws/term, dtach-backed)
+│   ├── scrollback.py  per-session scrollback ring + on-disk mirror + resume/scroll-up
+│   ├── transcript.py  engine-agnostic scroll-up renderer from the saved conversation
+│   ├── ptybridge.py   dtach create-or-attach argv + session-exists probe
+│   ├── session_stream.py  process-wide SessionRegistry + per-session readers (#183)
+│   ├── auth.py        cookie + CSRF + Origin + /api/auth-check for nginx auth_request
+│   └── templates/     login.html + login_totp.html + change_password.html (server-rendered pages)
+├── web/               React + Vite + TS SPA (built to web/dist, served by main.py)
+├── tests/             pytest; subprocess.run stubbed; covers shell-free, CSRF, lock, lookup
+├── deploy/
+│   ├── agent-sessions.service     systemd-user unit, FastAPI app
+│   └── nginx.example.conf         sample reverse-proxy vhost (TLS + ws upgrade)
+└── .forgejo/workflows/            CI (lint + tests) + deploy
+```
+
+## Running locally
+
+```bash
+python3 -m venv .venv && . .venv/bin/activate
+pip install -e '.[dev]'
+pytest
+```
+
+Bring up the app against a fake home (no real Claude sessions touched):
+
+```bash
+export AGENT_SESSIONS_USERNAME=admin
+export AGENT_SESSIONS_PASSWORD_HASH=$(python -c "from agent_sessions.auth import hash_password; print(hash_password('hunter2'))")
+export AGENT_SESSIONS_SECRET_KEY=$(python -c "import secrets; print(secrets.token_urlsafe(48))")
+export AGENT_SESSIONS_ORIGIN=http://localhost:3402
+uvicorn --app-dir src --host 127.0.0.1 --port 3402 agent_sessions.main:app
+```
+
+`AGENT_SESSIONS_AUTH_MODE` selects the auth model: `single-user` (default — the
+username + password login above) or `none` (no login at all; the admin session is
+auto-established so the SPA, CSRF token and `Origin` checks still work, but you're
+never prompted for credentials, and username/password-hash aren't required). **Use
+`none` only when you trust the network — localhost or behind a VPN** — since anyone
+who can reach the port gets in. CSRF + same-origin enforcement stay on in both modes.
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full dev setup (web build, tests, conventions).
+
+## Permission bypass (`--dangerously-skip-permissions`)
+
+The sidebar's **New session** modal has a "bypass permissions" toggle that is **on by default**, and **resuming** a session also passes `--dangerously-skip-permissions`. This is deliberate: it skips Claude Code's workspace-trust prompt so a session opens straight into its already-used folder, and skips per-tool permission prompts for new sessions.
+
+This is acceptable **only** because BattleLab is a single-admin tool, on the operator's own host, behind a reverse proxy (TLS + auth) and the app's own cookie auth. The toggle lets you turn bypass off per new session. Mission launches — agents nobody is watching — take the **Settings › Agents › Defaults** bypass default as it stands when each agent starts, and record that posture on the mission timeline. Scheduled mission automations always keep bypass off, as their consent specifies. The flag is asserted by the provider `launch_argv` tests (`tests/test_engines.py`) so it can't silently change. The Codex and Claude **API clients** offer the same toggle (#1339): fixed per session at create, shown in the session header, asserted by `tests/test_native_clients.py`. See the **Security / trust model** section above.
+
+## API surface
+
+- `GET /api/sessions?limit=20&offset=0&archived=0` — flat, newest-first, paginated (`{sessions, next_offset, total, facets}`).
+  Optional filters: `q` (case-insensitive title substring; trimmed, empty = no filter), `project` (exact key), `engine` (exact; `claude` / `opencode`). Filters are applied **before** `limit`/`offset` so `total` and "load more" describe the filtered set. `facets: {projects, engines}` are the distinct values over the full archived-scoped set (computed pre-filter) so the sidebar dropdowns list every option, including rows past the first page.
+- `GET /api/folders` — new-session picker: scanned cwds ∪ validated `~/claude/*` (distinct from the session-list facets above)
+- `GET/POST/PATCH/DELETE /api/projects` — project ENTITIES (#361): `{id, name, color, folders, archived, session_count}`; session → project assignment via `PATCH /api/sessions/{sid}/metadata` `{project_id}`
+- `POST /api/sessions/{uuid}/rename` `{title}` — persists to the sidecar
+- `POST /api/sessions/{uuid}/archive` · `/unarchive` — record the archive (Claude moves its JSONL between `projects/` and `projects-archive/`; other engines flip the sidecar flag) and, on archive, reap the session's live runtime footprint — `dtach` master, scrollback, owner lease, socket (#523)
+- `GET /api/config` — SPA bootstrap (CSRF, `new_session_engines`, `terminal_backend`, theme, `two_factor_enabled`); `POST /api/prefs` `{theme}` (the Motion setting is per device in the browser, `localStorage["tr-motion"]`, not a server pref)
+- `GET /api/telemetry` — the footer readout: host CPU % (cached `/proc/stat` sample), RAM, and HQ's token use (`ctx_tokens`, `today_tokens`, each with an `…_estimated` flag); signed-in only, polled every 5 s while the tab is visible
+- `POST /api/2fa/enroll` → `{secret, otpauth_uri, recovery_codes}` (shown once) · `POST /api/2fa/confirm` `{code}` (enable) · `POST /api/2fa/disable` · `POST /api/2fa/recovery-codes` (regenerate) — the last two need a fresh proof (`{code}` or `{password}`). Login second step: `POST /login` → pre-auth → `POST /login/totp` (form field `code`). N/A under `AUTH_MODE=none`.
+- `WS /ws/term/{sid}` — the terminal: attach to (or, with `?new=1&cwd=&bypass=`, launch) a session's dtach PTY
+- `GET /api/auth-check` — 204/401 for nginx `auth_request`; `POST /login` · `/logout`
+
+All state-changing routes require the CSRF token + an Origin/Referer matching `AGENT_SESSIONS_ORIGIN`.
+
+## Conventions
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) and the full reference in [`docs/reference.md`](docs/reference.md). Key points:
+
+- **Shell-free** engine launchers — providers build argv lists; the ws bridge runs them under `dtach`. Pinned by tests + a CI grep.
+- **Session = URL = socket identity:** one `{engine}:{id}` ⇒ one dtach master ⇒ one writer; attach, never relaunch.
+
+## License
+
+**GNU Affero General Public License v3.0 or later (AGPL-3.0-or-later)** — see
+[`LICENSE`](LICENSE). Copyright © 2026 Marcus Braun.
+
+BattleLab is free and open source. You may use, study, modify, self-host, and
+redistribute it. Self-hosting for yourself, your team, or your company — the
+overwhelmingly common case — carries no additional obligation beyond keeping the
+license and copyright notices intact.
+
+**If you modify BattleLab and let other people use it over a network**, AGPL
+section 13 requires you to offer those users the Corresponding Source of *your*
+modified version. Settings → About links the source for exactly this reason; if
+you run a modified build, point that link at your own fork. This is the only
+obligation most operators will ever encounter, and it is what keeps
+improvements flowing back to everyone rather than into a closed fork.
+
+**Trademarks are not licensed with the code.** The AGPL grants no rights in the
+**BattleLab** name, wordmark, or logo — see [`TRADEMARK.md`](TRADEMARK.md). Fork
+the code freely; give your fork its own name.
+
+**Commercial licensing** is available for cases AGPL doesn't fit — embedding
+BattleLab in a proprietary product, or an organisation whose policy bars AGPL
+dependencies. BattleLab Cloud and BattleLab Pro are separate, separately
+licensed products. Enquiries: [battlelabos.com](https://battlelabos.com).
+
+### Relicensed from BSL 1.1
+
+BattleLab was previously distributed under the Business Source License 1.1,
+which is source-available but [not an open-source
+license](https://mariadb.com/bsl11/). It is now AGPL-3.0-or-later.
+
+To be unambiguous about what that does **not** take away: if you received a
+version under BSL 1.1, your rights in **that version** are unchanged, including
+its stated conversion to the Apache License 2.0 on its Change Date
+(`2030-07-15`). Relicensing applies going forward and revokes nothing already
+granted.

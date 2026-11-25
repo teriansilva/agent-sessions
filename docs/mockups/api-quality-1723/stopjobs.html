@@ -1,0 +1,126 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>#1724 Stop confirmation + cut-off rows — mockup</title>
+<link rel="stylesheet" href="base.css">
+<script src="icons.js"></script>
+<style>
+.t-dark, .t-light { --on-danger: #ffffff; }
+.stage { position: relative; overflow: hidden; }
+.dlg { position: absolute; z-index: 10; background: var(--bg-1); border: 1px solid var(--hud-dim); border-top: 2px solid var(--hud);
+  clip-path: polygon(14px 0,100% 0,100% calc(100% - 14px),calc(100% - 14px) 100%,0 100%,0 14px); box-shadow: 0 18px 48px rgba(0,0,0,.55); }
+.dlg .dh { display: flex; align-items: center; gap: 10px; padding: 16px 18px 6px; }
+.dlg h2 { margin: 0; font: 600 15px/1.3 var(--font-display); letter-spacing: .06em; text-transform: uppercase; color: var(--text-1); }
+.dlg .db { padding: 6px 18px 4px; }
+.dlg .db p { margin: 0 0 10px; font-size: 14px; color: var(--text-1); }
+.dlg .db .sub { font-size: 12px; color: var(--text-2); line-height: 1.5; margin: 10px 0 0; }
+.jl { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+.jl li { display: grid; grid-template-columns: 12px minmax(0, 1fr); column-gap: 10px; row-gap: 3px; padding: 10px 2px; border-bottom: 1px solid var(--line); align-items: center; }
+.jl .nm { font: 13px var(--font-mono); color: var(--text-1); }
+.jl .mt { grid-column: 2; font: 11px var(--font-mono); color: var(--text-2); }
+.jl .mt .src { color: var(--text-3); letter-spacing: .1em; text-transform: uppercase; font-size: 10px; }
+.dlg .da { display: flex; justify-content: flex-end; gap: 10px; padding: 16px 18px 18px; }
+.btn.danger { --face: var(--status-down); --edge: var(--status-down); color: var(--on-danger); }
+.focus { outline: 2px solid var(--accent-text); outline-offset: -3px; }
+.sheetd { left: 0; right: 0; bottom: 0; clip-path: none; border-left: 0; border-right: 0; }
+.sheetd .da { flex-direction: column-reverse; }
+.sheetd .da .btn { width: 100%; }
+.t-light .dlg { box-shadow: 0 18px 48px rgba(10,12,16,.22); }
+/* history rows */
+.hrow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 8px 12px; border-left: 2px dashed var(--line-strong); background: var(--bg-1); font: 12px/1.4 var(--font-mono); color: var(--text-2); }
+.hrow .nm { color: var(--text-1); }
+.hrow .sep { color: var(--text-3); }
+.hrow .ts { margin-left: auto; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.hrow.idleexit { border-left-style: solid; }
+.hrow .why { flex-basis: 100%; font-size: 11px; color: var(--text-3); padding-left: 17px; }
+.endline { display: flex; align-items: center; gap: 10px; font: 600 10px var(--font-mono); letter-spacing: .16em; text-transform: uppercase; color: var(--text-3); }
+.endline::before, .endline::after { content: ""; flex: 1; border-top: 1px solid var(--line-strong); }
+.phone .hrow .det { order: 3; flex-basis: 100%; padding-left: 17px; }
+.phone .hrow .det > .sep:first-child { display: none; }
+.phone .log { gap: 12px; }
+.resume { font-size: 12px; color: var(--text-2); }
+</style></head>
+<body><div id="root"></div>
+<script>
+const head = (phone, led = ['up', 'w-ok', 'Working']) => `
+<div class="phead"><span class="facts"><span class="led ${led[0]}"></span><span class="word ${led[1]}">${led[2]}</span></span><span class="badge">CLAUDE</span>
+<span class="ptitle">Fix paging drops rows under a filter</span>
+<span class="pmeta">${phone || led[0] !== 'up' ? '' : '<span class="btn plate ghost" style="min-height:32px;padding:0 12px">Stop</span>'}<span class="ibtn plate ${phone ? 'lg' : ''}">${I('more')}</span></span></div>`;
+const comp = (phone) => `<div class="comp"><div class="ta">Message Claude…</div>${phone ? `<span class="ibtn plate lg">${I('mic')}</span>` : ''}<span class="btn plate primary">Send</span></div>`;
+const strip = `<div class="strip"><div class="strip-bar"><span class="led up"></span><span class="k">2 background jobs</span><span class="sep">·</span><span class="job">npm run dev</span><span class="age">14m</span><span class="sep">·</span><span class="job">pytest -x</span><span class="age">2m</span><span class="tog">SHOW ${I('cu')}</span></div></div>`;
+const log = `
+<div class="user"><div class="who">You <span class="ts">10:20</span></div><div class="txt">Start the dev server and run the paging suite while you fix the cursor.</div></div>
+<div class="reply"><div class="who">Claude <span class="ts">10:21 · 41 s</span></div><div class="txt"><p>The dev server is up on :5173 and the suite is running in the background. I'll report when it finishes.</p></div></div>`;
+
+const dialog = (sheet) => `
+<div class="dlg ${sheet ? 'sheetd' : ''}" ${sheet ? '' : 'style="left:50%;top:150px;width:460px;margin-left:-230px"'} role="dialog">
+  ${sheet ? '<div class="grab"></div>' : ''}
+  <div class="dh"><span class="notch"></span><h2>Stop this session?</h2></div>
+  <div class="db"><p>Stopping ends 2 background jobs:</p>
+    <ul class="jl">
+      <li><span class="led up"></span><span class="nm">npm run dev</span><span class="mt"><span class="src">process</span> · started 14m ago</span></li>
+      <li><span class="led up"></span><span class="nm">pytest -x</span><span class="mt"><span class="src">agent task</span> · running 2m</span></li>
+    </ul>
+    <p class="sub">The transcript is kept. Each job is recorded as <b>ended with worker</b>.</p></div>
+  <div class="da"><span class="btn plate ghost focus">Keep running</span><span class="btn plate danger">Stop and end jobs</span></div>
+</div>`;
+
+const deskStop = `
+<div class="col t-dark"><p class="lbl">Desktop · dark · Stop pressed while 2 jobs run</p>
+<div class="nj-panel is-hero stage" style="width:900px;height:560px"><div class="nj-face"><span class="nj-rail is-short"></span>
+  <div class="pane">${head(false)}<div class="log">${log}</div>${strip}${comp(false)}</div>
+  <div class="scrim" style="z-index:9"></div>${dialog(false)}</div></div></div>`;
+
+const phoneStop = `
+<div class="col"><p class="lbl">Phone 390 px · light · the dialog is a bottom sheet</p>
+<div class="phone t-light stage">
+  <div class="ptop"><span class="ibtn lg">${I('menu')}</span><span class="mark">BATTLELAB</span></div>
+  <div class="pane">${head(true)}<div class="log">${log}</div>${strip}${comp(true)}</div>
+  <div class="scrim"></div>${dialog(true)}</div></div>`;
+
+const b1 = `
+<section class="board t-dark board-grid" id="s1">
+  <p class="cap"><b>#1724 · board 1</b> stop confirmation · desktop dark + phone light <span>Stop asks only when background work is running</span></p>
+  <div class="row">${deskStop}${phoneStop}
+    <div class="col" style="width:240px;margin-top:22px">
+      <div class="note"><b>Lists what Stop ends</b>: every running background job, each with its LED + word source (<i>process</i> from the process floor, <i>agent task</i> from the engine) and age. It's the same pattern as "Stop all and send".</div>
+      <div class="note"><b>Focus starts on Keep running</b> (the safe button, shared ConfirmDialog). "Stop and end jobs" is the destructive confirm, so it's the one filled <i>--status-down</i> button, with <i>--on-danger</i> ink.</div>
+      <div class="note"><b>44 px targets</b>. Deploy-in is a fade + 6 px rise, 180 ms (sheet slides up on the phone). There's no radius, and the chamfer comes from the dialog chrome.</div>
+      <div class="note">No background work → Stop acts at once, as today.</div>
+    </div></div>
+</section>`;
+
+const histA = `
+${log}
+<div class="hrow"><span class="led idle"></span><span class="word w-2">Ended with worker</span><span class="det"><span class="sep">·</span> <span class="nm">npm run dev</span> <span class="sep">·</span> operator stop</span><span class="ts">10:42</span></div>
+<div class="hrow"><span class="led idle"></span><span class="word w-2">Ended with worker</span><span class="det"><span class="sep">·</span> <span class="nm">pytest -x</span> <span class="sep">·</span> operator stop</span><span class="ts">10:42</span></div>
+<div class="endline">session stopped 10:42</div>`;
+const histB = `
+<div class="reply"><div class="who">Claude <span class="ts">11:05 · 12 s</span></div><div class="txt"><p>Done. The suite passes and the branch is pushed.</p></div></div>
+<div class="hrow idleexit"><span class="led idle"></span><span class="word w-2">Idle exit</span><span class="det"><span class="sep">·</span> Stopped after 30 min idle — no background work</span><span class="ts">11:35</span></div>
+<p class="resume">Send a message to resume the session from its history.</p>`;
+
+const deskHist = `
+<div class="col t-light"><p class="lbl">Desktop · light</p>
+  <div class="nj-panel is-hero" style="width:860px;height:390px"><div class="nj-face"><span class="nj-rail is-short"></span>
+    <div class="pane">${head(false, ['idle', 'w-mute', 'Stopped'])}<div class="log">${histA}</div></div></div></div>
+  <div class="nj-panel is-hero" style="width:860px;height:250px"><div class="nj-face"><span class="nj-rail is-short"></span>
+    <div class="pane">${head(false, ['idle', 'w-mute', 'Stopped'])}<div class="log">${histB}</div></div></div></div>
+</div>`;
+const phoneHist = `
+<div class="col"><p class="lbl">Phone 390 px · dark</p>
+<div class="phone t-dark">
+  <div class="ptop"><span class="ibtn lg">${I('menu')}</span><span class="mark">BATTLELAB</span></div>
+  <div class="pane">${head(true, ['idle', 'w-mute', 'Stopped'])}<div class="log">${histA}${histB}</div>${comp(true)}</div></div></div>`;
+
+const b2 = `
+<section class="board t-dark board-grid" id="s2">
+  <p class="cap"><b>#1724 · board 2</b> transcript history rows · desktop light + phone dark <span>cut-off jobs and the idle exit, recorded in the journal</span></p>
+  <div class="row">${deskHist}${phoneHist}
+    <div class="col" style="width:230px;margin-top:22px">
+      <div class="note"><b>Cut-off row</b>, one per task that was still running when the generation ended: <i>ENDED WITH WORKER · name · reason · time</i>. Reasons: operator stop / out of memory / worker ended / protocol end. The dashed rule marks work that didn't finish on its own; the background strip (#1726) shows only live jobs.</div>
+      <div class="note"><b>Idle exit</b>: "Stopped after 30 min idle — no background work", so the operator knows nothing was cut off.</div>
+      <div class="note">The grey idle LED is paired with words, and red is not used: neither row is an active failure. An OOM end keeps the same row with its reason word.</div>
+    </div></div>
+</section>`;
+document.getElementById('root').innerHTML = b1 + b2;
+</script></body></html>

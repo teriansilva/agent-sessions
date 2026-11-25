@@ -1,0 +1,353 @@
+/* The New session form's pickers (#1436; NIGHTJAR #1531 Phase 6, the v5 board 08-deploy).
+ * Tokens only (cssGuard, nightjarLedger). An agent tile is a PLATE: the chamfer is paint, so the
+ * whole rectangle stays the hit area (#782), and its top rail carries the agent's own identity
+ * colour (`--eng`, set from the roster) — identity, never a state. The selection is the chrome:
+ * a `--hud` edge, a tinted face and the 6px mark — never a status colour. The only LED is
+ * `--status-down` on a client that cannot start, which is a state. The project list is a small
+ * chamfered frame. Every target is >= 44px (§8); every focus ring is inset. */
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.groupHead {
+  font: 500 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin-top: 2px;
+}
+
+/* Native radios, visually hidden; the label is the tile. */
+.tile input,
+.mode input,
+.row input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  pointer-events: none;
+}
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: var(--sp-2);
+}
+.tile {
+  composes: nj-plate from global;
+  --nj-face: var(--bg-1);
+  --nj-edge: var(--line-strong);
+  --nj-rail: var(--eng, var(--line-strong));
+  position: relative;
+  min-height: 48px;
+  min-width: 0;
+  padding: var(--sp-2) var(--sp-4) var(--sp-2) var(--sp-3);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  border: 1px solid transparent;
+  color: var(--text-1);
+  cursor: pointer;
+  transition: filter var(--t-fast) var(--ease-out);
+}
+.tile:hover {
+  --nj-edge: var(--hud-dim);
+}
+.tile:has(input:checked) {
+  --nj-edge: var(--hud);
+  --nj-face: color-mix(in srgb, var(--hud) 10%, var(--bg-1));
+  /* Lock-on (§8 Interaction): one brightness step as the choice lands — Full only (motion.css
+   * removes it in Reduced and Off). Geometry never moves. */
+  animation: global(nj-glitch-step) var(--t-base) var(--ease-out) 1;
+}
+/* The 6px selection mark (selection is never colour alone, design §8). */
+.tile:has(input:checked) .tileName::after {
+  content: "";
+  position: absolute;
+  top: var(--sp-2);
+  right: var(--sp-2);
+  width: 6px;
+  height: 6px;
+  background: var(--hud);
+}
+.tile:has(input:focus-visible),
+.row:has(input:focus-visible) {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.tile:has(input:disabled) {
+  --nj-edge: var(--line);
+  --nj-rail: var(--line);
+  cursor: default;
+  opacity: 0.6;
+}
+.tileName {
+  font: 600 var(--fs-row) / 1.25 var(--font-display);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.tileSub {
+  font: 400 var(--fs-micro) / 1.35 var(--font-mono);
+  letter-spacing: 0.08em;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+/* `default` / `project`: a mono stamp, chrome — not a control. */
+.badge {
+  composes: nj-stamp from global;
+  padding: 2px 5px;
+  font-family: var(--font-mono);
+  color: var(--text-2);
+}
+.ledDown {
+  composes: hud-led down from global;
+}
+
+/* The selected agent's mode row: how it runs (API / Terminal). A segmented strip of small plates
+ * under the tiles — the same selection chrome as a tile (a `--hud` edge, a tinted face, the 6px
+ * mark), never a status colour. Always present for the selected agent, so the form does not jump
+ * when another agent is chosen. */
+.modeRow {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+.mode {
+  composes: nj-plate from global;
+  --nj-face: var(--bg-1);
+  --nj-edge: var(--line-strong);
+  --nj-rail: var(--line-strong);
+  position: relative;
+  flex: 1 1 140px;
+  max-width: 220px;
+  min-height: 44px;
+  min-width: 0;
+  padding: var(--sp-2) var(--sp-4) var(--sp-2) var(--sp-3);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  border: 1px solid transparent;
+  color: var(--text-1);
+  cursor: pointer;
+}
+.mode:hover {
+  --nj-edge: var(--hud-dim);
+}
+.mode:has(input:checked) {
+  --nj-edge: var(--hud);
+  --nj-rail: var(--hud);
+  --nj-face: color-mix(in srgb, var(--hud) 10%, var(--bg-1));
+}
+.mode:has(input:checked) .modeName::after {
+  content: "";
+  position: absolute;
+  top: var(--sp-2);
+  right: var(--sp-2);
+  width: 6px;
+  height: 6px;
+  background: var(--hud);
+}
+.mode:has(input:focus-visible) {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.mode:has(input:disabled) {
+  --nj-edge: var(--line);
+  --nj-rail: var(--line);
+  cursor: default;
+  opacity: 0.6;
+}
+.modeName {
+  font: 600 var(--fs-row) / 1.25 var(--font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+/* Project list */
+.rows,
+.newProject,
+.listNote {
+  flex: none;
+}
+.listNote {
+  padding: var(--sp-2) var(--sp-3);
+}
+/* The filter is the list's first row, pinned while the rows scroll under it. */
+.filter {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-raised);
+  flex: none;
+  background: var(--bg-2);
+  color: var(--text-1);
+  border: 0;
+  border-bottom: 1px solid var(--line-strong);
+  border-radius: 0;
+  padding: 0 var(--sp-3);
+  min-height: 44px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-row);
+}
+.filter:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+/* A FIXED height — six 44px rows plus the frame's 2px rail and 1px floor — whatever the list holds
+ * (#1437): the skeleton and every list size take the same room, so nothing below it shifts when
+ * the list arrives. A longer list scrolls inside it. The frame is a static clip (a panel clips,
+ * design §6); its cut lines are background paint that stays put while the rows scroll. */
+.list {
+  composes: nj-frame-sm from global;
+  --nj-edge: var(--line-strong);
+  display: flex;
+  flex-direction: column;
+  height: 267px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.row,
+.skeleton {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-height: 44px;
+  padding: 0 var(--sp-3);
+  border-bottom: 1px solid var(--line);
+}
+.row {
+  position: relative;
+  cursor: pointer;
+  color: var(--text-1);
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+.row:hover {
+  background: var(--hud-tint);
+}
+.row:has(input:checked) {
+  background: color-mix(in srgb, var(--hud) 12%, transparent);
+  box-shadow: inset 3px 0 0 var(--hud);
+}
+.swatch {
+  flex: none;
+  width: 10px;
+  height: 10px;
+}
+.rowName {
+  font-size: var(--fs-row);
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rowNone {
+  font-size: var(--fs-row);
+  color: var(--text-2);
+}
+.rowFolder {
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--text-3);
+}
+.star {
+  flex: none;
+  margin-left: auto;
+  color: var(--hud-text);
+  font-size: var(--fs-meta);
+}
+.rowFolder + .star {
+  margin-left: 0;
+}
+/* The loading rows: the swatch and a bar, each the `nj-skeleton` scan band (Full only). */
+.skeleton span {
+  display: block;
+  --skeleton-h: 9px;
+}
+.skeleton span:first-child {
+  width: 10px;
+  --skeleton-h: 10px;
+}
+.newProject {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  /* Aligned with the project names: the row's inset, the swatch and its gap. */
+  padding: 0 var(--sp-3) 0 calc(var(--sp-3) + 10px + var(--sp-3));
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  letter-spacing: 0.08em;
+  color: var(--accent-text);
+  text-decoration: none;
+}
+.newProject:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.newProject:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+
+/* A quiet note under a picker (the list's failed-refresh note). */
+.note {
+  margin: 0;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0 var(--sp-2);
+}
+@media (max-width: 800px) {
+  .tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .rowFolder {
+    display: none;
+  }
+  .rowFolder + .star {
+    margin-left: auto;
+  }
+}
+
+/* The wide two-column form has the height to spare: eight rows instead of six. */
+@container new-session (min-width: 880px) {
+  .list {
+    height: 355px;
+  }
+}
+
+/* In the map's New session modal (#1648): the wizard is a full page, so the link says it leaves. */
+.leavesMap {
+  margin-left: var(--sp-2);
+  color: var(--text-2);
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}

@@ -1,0 +1,218 @@
+{
+ "recorded": "codex-cli 0.162.0 app-server, guarded thread (approvalPolicy untrusted, sandbox read-only), 2026-10-21, #1506",
+ "accept": {
+  "item_started": {
+   "method": "item/started",
+   "params": {
+    "item": {
+     "type": "mcpToolCall",
+     "id": "exec-9d06a4cf-f964-4b9f-be8e-e31cb00c3ec0",
+     "server": "battlelab_memory",
+     "tool": "memory_write",
+     "status": "inProgress",
+     "arguments": {
+      "title": "Codex elicitation fixture",
+      "body": "recorded from codex-cli 0.162.0"
+     },
+     "appContext": null,
+     "mcpAppUi": null,
+     "pluginId": null,
+     "readOnlyHint": null,
+     "result": null,
+     "error": null,
+     "durationMs": null
+    },
+    "threadId": "01a15df4-84a5-7aa1-b1ef-dc9308217d6b",
+    "turnId": "01a15df4-8517-7b21-b38f-9bc9a67c938e",
+    "startedAtMs": 1792577679054
+   },
+   "emittedAtMs": 1792577679054
+  },
+  "request": {
+   "method": "mcpServer/elicitation/request",
+   "id": 1,
+   "params": {
+    "threadId": "01a15df4-84a5-7aa1-b1ef-dc9308217d6b",
+    "turnId": "01a15df4-8517-7b21-b38f-9bc9a67c938e",
+    "serverName": "battlelab_memory",
+    "mode": "form",
+    "_meta": {
+     "codex_approval_kind": "mcp_tool_call",
+     "persist": [
+      "session",
+      "always"
+     ],
+     "tool_description": "Leave one short note for later sessions in this project: a decision, finding, pitfall or reference. At most 4096 bytes in all. Never put credentials or secrets in a note — BattleLab holds such notes back. The note is saved for review and appears to other sessions after BattleLab takes it in.",
+     "tool_params": {
+      "title": "Codex elicitation fixture",
+      "body": "recorded from codex-cli 0.162.0"
+     },
+     "tool_params_display": [
+      {
+       "name": "body",
+       "value": "recorded from codex-cli 0.162.0",
+       "display_name": "body"
+      },
+      {
+       "name": "title",
+       "value": "Codex elicitation fixture",
+       "display_name": "title"
+      }
+     ]
+    },
+    "message": "Allow the battlelab_memory MCP server to run tool \"memory_write\"?",
+    "requestedSchema": {
+     "type": "object",
+     "properties": {}
+    }
+   }
+  },
+  "answer": {
+   "id": 1,
+   "result": {
+    "action": "accept",
+    "content": {}
+   }
+  },
+  "item_completed": {
+   "method": "item/completed",
+   "params": {
+    "item": {
+     "type": "mcpToolCall",
+     "id": "exec-9d06a4cf-f964-4b9f-be8e-e31cb00c3ec0",
+     "server": "battlelab_memory",
+     "tool": "memory_write",
+     "status": "completed",
+     "arguments": {
+      "title": "Codex elicitation fixture",
+      "body": "recorded from codex-cli 0.162.0"
+     },
+     "appContext": null,
+     "mcpAppUi": null,
+     "pluginId": null,
+     "readOnlyHint": null,
+     "result": {
+      "content": [
+       {
+        "type": "text",
+        "text": "Saved for review; it appears to other sessions after BattleLab takes it in (a credential or a stored secret holds it back)."
+       }
+      ],
+      "structuredContent": null,
+      "_meta": null
+     },
+     "error": null,
+     "durationMs": 11
+    },
+    "threadId": "01a15df4-84a5-7aa1-b1ef-dc9308217d6b",
+    "turnId": "01a15df4-8517-7b21-b38f-9bc9a67c938e",
+    "completedAtMs": 1792577679069
+   },
+   "emittedAtMs": 1792577679082
+  }
+ },
+ "decline": {
+  "item_started": {
+   "method": "item/started",
+   "params": {
+    "item": {
+     "type": "mcpToolCall",
+     "id": "exec-38447059-b514-4c71-a29b-f87fa83d8489",
+     "server": "battlelab_memory",
+     "tool": "memory_write",
+     "status": "inProgress",
+     "arguments": {
+      "title": "Codex elicitation declined",
+      "body": "must not land"
+     },
+     "appContext": null,
+     "mcpAppUi": null,
+     "pluginId": null,
+     "readOnlyHint": null,
+     "result": null,
+     "error": null,
+     "durationMs": null
+    },
+    "threadId": "01a15df6-8d49-72f0-9d20-a57c5be20b78",
+    "turnId": "01a15df6-9089-7852-9f76-69db3dd5fb94",
+    "startedAtMs": 1792577810275
+   },
+   "emittedAtMs": 1792577810276
+  },
+  "request": {
+   "method": "mcpServer/elicitation/request",
+   "id": 0,
+   "params": {
+    "threadId": "01a15df6-8d49-72f0-9d20-a57c5be20b78",
+    "turnId": "01a15df6-9089-7852-9f76-69db3dd5fb94",
+    "serverName": "battlelab_memory",
+    "mode": "form",
+    "_meta": {
+     "codex_approval_kind": "mcp_tool_call",
+     "persist": [
+      "session",
+      "always"
+     ],
+     "tool_description": "Leave one short note for later sessions in this project: a decision, finding, pitfall or reference. At most 4096 bytes in all. Never put credentials or secrets in a note — BattleLab holds such notes back. The note is saved for review and appears to other sessions after BattleLab takes it in.",
+     "tool_params": {
+      "title": "Codex elicitation declined",
+      "body": "must not land"
+     },
+     "tool_params_display": [
+      {
+       "name": "body",
+       "value": "must not land",
+       "display_name": "body"
+      },
+      {
+       "name": "title",
+       "value": "Codex elicitation declined",
+       "display_name": "title"
+      }
+     ]
+    },
+    "message": "Allow the battlelab_memory MCP server to run tool \"memory_write\"?",
+    "requestedSchema": {
+     "type": "object",
+     "properties": {}
+    }
+   }
+  },
+  "answer": {
+   "id": 0,
+   "result": {
+    "action": "decline",
+    "content": {}
+   }
+  },
+  "item_completed": {
+   "method": "item/completed",
+   "params": {
+    "item": {
+     "type": "mcpToolCall",
+     "id": "exec-38447059-b514-4c71-a29b-f87fa83d8489",
+     "server": "battlelab_memory",
+     "tool": "memory_write",
+     "status": "failed",
+     "arguments": {
+      "title": "Codex elicitation declined",
+      "body": "must not land"
+     },
+     "appContext": null,
+     "mcpAppUi": null,
+     "pluginId": null,
+     "readOnlyHint": null,
+     "result": null,
+     "error": {
+      "message": "user rejected MCP tool call"
+     },
+     "durationMs": 0
+    },
+    "threadId": "01a15df6-8d49-72f0-9d20-a57c5be20b78",
+    "turnId": "01a15df6-9089-7852-9f76-69db3dd5fb94",
+    "completedAtMs": 1792577810279
+   },
+   "emittedAtMs": 1792577810281
+  }
+ }
+}

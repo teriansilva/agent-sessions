@@ -1,0 +1,29 @@
+# The bundled email connector (#1836): mail sent through the Commander's own account over SMTP,
+# only when they tap Send. It reads nothing; its recipients are the addresses typed in Settings.
+# Every value is a member of a set in connectors/kinds.py; an unknown field anywhere refuses it.
+contract = 1
+
+[identity]
+id = "smtp"
+label = "Email"
+publisher = "battlelab"
+version = "1"
+category = "messenger"
+
+[adapter]
+kind = "smtp"
+
+[origin]
+mode = "operator"
+
+[auth]
+kind = "basic"
+scheme = "Basic"
+scopes = ["app-password"]
+
+[capabilities]
+read = []
+send = ["message"]
+
+[docs]
+setup = "Enter your provider's SMTP server as smtps://host (port 465) or smtp://host (port 587, STARTTLS), the account you sign in with, and an app password made for BattleLab so you can revoke it on its own. TLS is always required."

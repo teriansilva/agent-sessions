@@ -1,0 +1,130 @@
+/* Folder picker (#448) on THE dialog (components/HudDialog.module.css, NIGHTJAR #1531): the frame,
+ * head, close, error, muted lines, input, actions and buttons come from there. What is its own:
+ * the breadcrumb, the folder list, the create row and the truncating Select label. Tokens only. */
+
+.title {
+  margin: 0;
+}
+
+.crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  margin-bottom: var(--sp-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+}
+.crumbSeg {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.crumb {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-height: 32px;
+  background: transparent;
+  border: 0;
+  color: var(--accent-text);
+  cursor: pointer;
+  padding: 2px var(--sp-1);
+  font: inherit;
+}
+.crumb:hover {
+  text-decoration: underline;
+}
+.crumb:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.sep {
+  color: var(--text-3);
+}
+
+.list {
+  list-style: none;
+  margin: 0 0 var(--sp-3);
+  padding: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  background: var(--surface-3);
+}
+.row {
+  appearance: none;
+  width: 100%;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  background: transparent;
+  color: var(--text-1);
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  font-size: var(--fs-row);
+  font-family: var(--font-mono);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+.row:hover {
+  background: var(--hud-tint);
+}
+.row:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chev {
+  color: var(--text-3);
+  flex: none;
+}
+
+.empty {
+  margin: var(--sp-3) 2px;
+}
+.error {
+  margin: 0 0 var(--sp-3);
+}
+
+.mkrow {
+  display: flex;
+  gap: var(--sp-2);
+}
+.mkInput {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-row);
+}
+.mkBtn {
+  flex: none;
+}
+.select {
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (pointer: coarse), (max-width: 800px) {
+  .crumb,
+  .row {
+    min-height: 44px;
+  }
+  .select {
+    max-width: none;
+  }
+}

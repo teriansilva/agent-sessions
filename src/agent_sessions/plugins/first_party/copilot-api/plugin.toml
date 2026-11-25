@@ -1,0 +1,49 @@
+contract = 1
+
+# A native API client (#1565): BattleLab drives the installed Copilot CLI through its Agent
+# Client Protocol server (copilot-acp: `copilot --acp --no-auto-update`, newline-delimited
+# JSON-RPC over stdio) instead of a terminal. Everything executable comes from the console agent
+# named by `api.source`: binary, login, config, MCP servers, instruction files. This manifest
+# names no binary, argv, endpoint, model list or permission flag; the validator refuses them for
+# runtime "api". Permission requests are payload-bound one-shot decisions; `edit`/`delete`/`move`
+# and `allow_always` stay decline-only (docs/invariants/native-runtime.md).
+
+[identity]
+id = "copilot-api"
+label = "Copilot — API"
+publisher = "battlelab"
+version = "1"
+
+[runtime]
+kind = "api"
+
+[api]
+kind = "copilot-acp"
+source = "copilot"
+
+[session_id]
+pattern = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+mint = "pinned"
+
+[store]
+root = "~/.local/share/agent-sessions/native/copilot-api"
+env_override = "AGENT_SESSIONS_COPILOT_API_DIR"
+layout = "battlelab-chat"
+read_only = false
+
+[capabilities]
+resume = true
+new = true
+archive = true
+
+[transcript]
+kind = "battlelab-chat"
+
+[tools]
+mcp = "copilot-additional-mcp-config"
+
+[display]
+order = 46
+name = "copilot-api"
+badge = "cpa"
+accent = "teal"

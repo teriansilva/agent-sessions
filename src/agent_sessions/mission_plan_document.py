@@ -1,0 +1,512 @@
+"""The mission plan document (#1777, #1613 P4; the store #1578 specified).
+
+A mission's plan is a list of **revisions**. Each revision is one JSON document:
+
+* **objectives** — each names exactly one project and one procedure (#1613 §1 "Objective"): a flow
+  from that project's deployed playbook, or a mission-local procedure. The procedure is SNAPSHOT
+  here — as authored (`document`), with the declarations it may reference (`variables`), its
+  normalized form and its digest — so a later playbook edit changes no mission (#1193 "snapshot
+  on apply"), and every write RE-VALIDATES it with the bundle loader's own flow validator
+  (`playbooks.validate.flow_snapshot`).
+* **steps** — a projection of every objective's flow steps, namespaced by objective
+  (`o1.implement`). The step CORE is the playbook flow step (title, role, `after`, independence,
+  rework) and is DERIVED from the snapshot, never authored separately: `validate_document`
+  recomputes it and refuses a document whose steps say anything else. Only the envelope —
+  `reason`, and an `assignment` (#1950, P5: a pool specialist pinned `{id, version}`, an optional
+  per-mission model override, the server's reason, up to 3 alternates and closed notes) — is the
+  plan's own. A grade is never stored here: it is derived at read (`mission_team.view`).
+
+Nothing here touches a store, a session or the network. `missions` owns persistence (one
+transaction with the objective rows); this module is the shape and the derived step state.
+"""
+
+from __future__ import annotations
+
+import copy
+import hashlib
+import json
+import re
+
+from . import missions
+from .playbooks import PlaybookFormatError, schema, validate
+
+FORMAT = 1
+#: Objectives one plan may hold. Each brings its evidence rows, and `missions.OBJECTIVES_MAX`
+#: bounds those too; this bounds the document independently of how much evidence a flow has.
+MAX_OBJECTIVES = 20
+OBJECTIVE_ID_RE = re.compile(r"^o[1-9][0-9]?$")
+#: The project entity id shape (`template_vars.PROJECT_ID_RE`'s alphabet, bounded).
+PROJECT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+#: Where an input's value came from: `deployment`, `project`, `global`, `default`, `missing`, …
+INPUT_SOURCE_RE = re.compile(r"^[a-z][a-z_]{0,31}$")
+#: Who wrote a revision. `playbook`: a deployed procedure applied; `operator`: a mission-local
+#: procedure the operator added; `hq`: a team change HQ proposed and the operator confirmed
+#: (#1950 P5: a provenance label, never more authority than the operator's).
+AUTHOR_KINDS = frozenset({"playbook", "operator", "hq"})
+#: `authored` only in this slice; #1578 adds `reconstructed` (legacy missions, never runnable).
+KINDS = frozenset({"authored"})
+SOURCES = frozenset({"playbook", "mission_local"})
+REASON_MAX = 200
+#: Bound on one procedure's authored document, as stored JSON: a bundle bounds a flow file at
+#: `schema.MAX_TOML_BYTES` (64 KiB), and its JSON spelling gets twice that room.
+DOCUMENT_MAX = 128 * 1024
+#: The minted-key separator. `--` is refused in a playbook item key (`schema.
+#: ITEM_KEY_FORBIDDEN_SUBSTRING`) precisely so the store can namespace keys it mints.
+KEY_SEPARATOR = "--"
+
+#: Derived step states (never stored). No `working`: that needs per-step sessions (P6).
+STEP_STATES = ("waiting", "ready", "done", "failed", "note")
+
+
+class PlanError(missions.MissionError):
+    """A plan document the store refuses. Always a 422 with the reason."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(f"invalid plan: {reason}", status=422)
+
+
+def _canonical(value: object) -> bytes:
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    ).encode()
+
+
+def flow_digest(flow: dict) -> str:
+    """The digest of a normalized flow, which is what "the procedure this mission applied" means."""
+    return "sha256:" + hashlib.sha256(_canonical(flow)).hexdigest()
+
+
+#: Hex digits of the item key's digest a too-long evidence key ends in.
+_KEY_HASH = 12
+
+
+def evidence_key(oid: str, item_key: str) -> str:
+    """`o<k>--<item key>`, bounded to `missions.OBJECTIVE_KEY_MAX` (Hermes on #1781).
+
+    A flow may declare an item key of up to `schema.ITEM_KEY_MAX` (64) characters, the objective
+    store's own cap, so the namespace prefix can push it over. Such a key is minted as
+    `o<k>--<as much of the item key as fits>-<12 hex of its sha256>`: still the store's key
+    grammar, still distinct per item key (the digest is over the WHOLE key), and never longer
+    than a build that predates v34 can address after a rollback. The cap is not raised instead
+    for exactly that reason. Collisions are refused anyway (`validate_document`)."""
+    key = f"{oid}{KEY_SEPARATOR}{item_key}"
+    if len(key) <= missions.OBJECTIVE_KEY_MAX:
+        return key
+    digest = hashlib.sha256(item_key.encode()).hexdigest()[:_KEY_HASH]
+    room = missions.OBJECTIVE_KEY_MAX - len(oid) - len(KEY_SEPARATOR) - 1 - _KEY_HASH
+    return f"{oid}{KEY_SEPARATOR}{item_key[:room]}-{digest}"
+
+
+def step_id(oid: str, sid: str) -> str:
+    return f"{oid}.{sid}"
+
+
+def project_steps(oid: str, flow: dict, reason: str) -> list[dict]:
+    """The plan steps of one objective, derived from its snapshot flow (the step core)."""
+    out = []
+    for s in flow["steps"]:
+        rework = s.get("rework")
+        out.append(
+            {
+                "id": step_id(oid, s["id"]),
+                "objective": oid,
+                "procedure_step": s["id"],
+                "title": s["title"],
+                "actor": s["actor"]["kind"],
+                # The role a step BINDS: format 5 only. A format ≤4 step's projected legacy hint
+                # is a read-only view and is never promoted into a plan (#1654).
+                "role": copy.deepcopy(schema.binding_role(s)),
+                "after": [step_id(oid, p) for p in s["after"]],
+                "distinct_from": [
+                    {"step": step_id(oid, d["step"]), "constraint": d["constraint"]}
+                    for d in s["distinct_from"]
+                ],
+                "rework": (
+                    None
+                    if rework is None
+                    else {
+                        **rework,
+                        "to": step_id(oid, rework["to"]),
+                        "when": evidence_key(oid, rework["when"]),
+                    }
+                ),
+                "evidence": [evidence_key(oid, item["key"]) for item in s["checklist"]],
+                "envelope": {"reason": reason, "assignment": None},
+            }
+        )
+    return out
+
+
+def _one_line(value: object, what: str, *, max_len: int) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise PlanError(f"{what} is required")
+    if len(value) > max_len or any(ch < " " or ch == "\x7f" for ch in value):
+        raise PlanError(f"{what} must be one line of at most {max_len} characters")
+    try:
+        value.encode()
+    except UnicodeEncodeError:
+        raise PlanError(f"{what} must be encodable as UTF-8") from None
+    return value
+
+
+#: Bound on a CHOSEN input value recorded in a plan (S1d): a branch picked by index.
+INPUT_VALUE_MAX = 200
+
+
+def _input_value_ok(value: object) -> bool:
+    """A recorded input value: one bounded, printable, encodable line (a chosen branch)."""
+    if not isinstance(value, str) or not value or len(value) > INPUT_VALUE_MAX:
+        return False
+    if any(ch < " " or ch == "\x7f" for ch in value):
+        return False
+    try:
+        value.encode()
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _exact_keys(d: object, keys: set[str], what: str) -> dict:
+    if not isinstance(d, dict):
+        raise PlanError(f"{what} must be an object")
+    if set(d) != keys:
+        raise PlanError(f"{what} must have exactly {sorted(keys)}")
+    return d
+
+
+#: The assignment's shape (#1950 §5). Identities are resolved from indexes when the revision is
+#: written; nothing is remapped later.
+ASSIGNMENT_KEYS = {"specialist", "override", "reason", "alternates", "notes"}
+ALTERNATES_MAX = 3
+NOTE_CODES = frozenset({"usage_unknown", "will_queue"})
+_SPECIALIST_ID_RE = re.compile(r"\A[a-z0-9][a-z0-9-]{0,47}\Z")
+_ENGINE_ID_RE = re.compile(r"\A[a-z][a-z0-9-]{1,23}\Z")
+_MODEL_ID_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._:/-]{0,95}\Z")
+_EFFORT_RE = re.compile(r"\A[a-z][a-z0-9_-]{0,23}\Z")
+
+
+def _pin(p: object, what: str) -> dict:
+    p = _exact_keys(p, {"id", "version"}, what)
+    if not isinstance(p["id"], str) or not _SPECIALIST_ID_RE.fullmatch(p["id"]):
+        raise PlanError(f"{what}.id is not a specialist id")
+    if type(p["version"]) is not int or not 0 < p["version"] < 1_000_000:
+        raise PlanError(f"{what}.version must be a positive whole number")
+    return p
+
+
+def check_assignment(a: object, step: dict, what: str) -> dict:
+    """One step's assignment, checked to the letter (#1950 §5), or `PlanError`.
+
+    Only an agent step with a binding role is assigned. The model override is the per-mission
+    `{engine, model, effort}`; `default` is never one (it is not one model). Qualification is not
+    this function's: `mission_team.qualify` decides it, at write and again on every read."""
+    if step["actor"] != "agent" or step.get("role") is None:
+        raise PlanError(f"{what}: only an agent step with a role gets a specialist")
+    a = _exact_keys(a, ASSIGNMENT_KEYS, what)
+    pin = _pin(a["specialist"], f"{what}.specialist")
+    ovr = a["override"]
+    if ovr is not None:
+        ovr = _exact_keys(ovr, {"engine", "model", "effort"}, f"{what}.override")
+        if not isinstance(ovr["engine"], str) or not _ENGINE_ID_RE.fullmatch(ovr["engine"]):
+            raise PlanError(f"{what}.override.engine is not an agent id")
+        if (
+            not isinstance(ovr["model"], str)
+            or not _MODEL_ID_RE.fullmatch(ovr["model"])
+            or ovr["model"] == "default"
+        ):
+            raise PlanError(f"{what}.override.model must name one model")
+        if ovr["effort"] is not None and (
+            not isinstance(ovr["effort"], str) or not _EFFORT_RE.fullmatch(ovr["effort"])
+        ):
+            raise PlanError(f"{what}.override.effort is not an effort level")
+    _one_line(a["reason"], f"{what}.reason", max_len=REASON_MAX)
+    alts = a["alternates"]
+    if not isinstance(alts, list) or len(alts) > ALTERNATES_MAX:
+        raise PlanError(f"{what}.alternates lists at most {ALTERNATES_MAX} specialists")
+    seen = {pin["id"]}
+    for i, alt in enumerate(alts):
+        alt = _exact_keys(alt, {"specialist", "reason"}, f"{what}.alternates[{i}]")
+        apin = _pin(alt["specialist"], f"{what}.alternates[{i}].specialist")
+        if apin["id"] in seen:
+            raise PlanError(f"{what}.alternates names {apin['id']} twice or names the pick")
+        seen.add(apin["id"])
+        _one_line(alt["reason"], f"{what}.alternates[{i}].reason", max_len=REASON_MAX)
+    notes = a["notes"]
+    if (
+        not isinstance(notes, list)
+        or any(not isinstance(n, str) or n not in NOTE_CODES for n in notes)
+        or len(set(notes)) != len(notes)
+    ):
+        raise PlanError(f"{what}.notes must be distinct codes from {sorted(NOTE_CODES)}")
+    return a
+
+
+def _check_after(after: object, oid: str, earlier: set[str], what: str) -> None:
+    """`after` names objectives EARLIER in the list — never itself, never twice, never one that
+    comes later — so the objective graph is a DAG by construction (#1797 S2c). Never empty: no
+    order is written as no key, so one plan has one spelling."""
+    if not isinstance(after, list) or not after or len(after) > MAX_OBJECTIVES:
+        raise PlanError(f"{what}.after must list the objectives this one comes after")
+    for a in after:
+        if not isinstance(a, str) or not OBJECTIVE_ID_RE.fullmatch(a):
+            raise PlanError(f"{what}.after has an invalid objective id")
+        if a == oid:
+            raise PlanError(f"{what}.after names the objective itself")
+        if a not in earlier:
+            raise PlanError(f"{what}.after names {a!r}, which is not an earlier objective")
+    if len(set(after)) != len(after):
+        raise PlanError(f"{what}.after names an objective twice")
+
+
+def _snapshot(p: dict, what: str) -> dict:
+    """The procedure's flow, RE-VALIDATED from what the snapshot stores (Hermes on #1781).
+
+    A digest only proves the caller hashed what it supplied. So the snapshot carries the flow as
+    authored (`document`) and the declarations it may reference (`variables`), and the store
+    re-runs the bundle loader's own validator over them (`validate.flow_snapshot`): the stored
+    normalized `flow` must be exactly that result. A deployed procedure keeps its playbook's
+    reviewed format; a mission-local one must be format 5."""
+    if len(_canonical(p["document"])) > DOCUMENT_MAX:
+        raise PlanError(f"{what}.document is larger than {DOCUMENT_MAX} bytes")
+    try:
+        flow = validate.flow_snapshot(
+            p["document"],
+            p["flow_id"],
+            p["variables"],
+            roles_only=p["source"] == "mission_local",
+            manifest_format=p.get("manifest_format"),
+        )
+    except PlaybookFormatError as e:
+        raise PlanError(f"{what} is not a valid flow ({e})") from None
+    except RecursionError:
+        raise PlanError(f"{what}.document is nested too deeply") from None
+    if p["flow"] != flow:
+        raise PlanError(f"{what}.flow is not its document's validated form")
+    return flow
+
+
+def check_procedure(p: object, what: str) -> dict:
+    """A procedure snapshot, checked to the letter, and its RE-VALIDATED flow; else `PlanError`.
+
+    The one check for a procedure wherever a document carries one: a mission's plan revision
+    (`validate_document`) and a saved mission plan in the Library (`mission_plan_library`, #1924)
+    hold the same snapshot under the same rules."""
+    if (
+        not isinstance(p, dict)
+        or not isinstance(p.get("source"), str)
+        or p["source"] not in SOURCES
+    ):
+        raise PlanError(f"{what}.source must be one of {sorted(SOURCES)}")
+    keys = {"source", "flow_id", "title", "flow", "digest", "document", "variables"}
+    if p["source"] == "playbook":
+        keys |= {"playbook_id", "revision", "manifest_format"}
+    p = _exact_keys(p, keys, what)
+    if not isinstance(p["flow_id"], str) or not schema.FILE_ID_RE.fullmatch(p["flow_id"]):
+        raise PlanError(f"{what}.flow_id has an invalid shape")
+    _one_line(p["title"], f"{what}.title", max_len=schema.NAME_MAX)
+    if p["source"] == "playbook":
+        for k in ("playbook_id", "revision"):
+            if not isinstance(p[k], str) or not p[k]:
+                raise PlanError(f"{what}.{k} is required")
+    flow = _snapshot(p, what)
+    if p["title"] != flow["title"]:
+        raise PlanError(f"{what}.title is not its flow's title")
+    if p["digest"] != flow_digest(flow):
+        raise PlanError(f"{what}.digest does not match its flow")
+    return flow
+
+
+def objective_evidence(steps: list[dict], seen: set[str]) -> None:
+    """Add one objective's evidence keys to `seen`, refusing any key seen before. Shared with the
+    Library's saved plans (#1924), so the two documents can't disagree about evidence."""
+    for s in steps:
+        for k in s["evidence"]:
+            if k in seen:
+                raise PlanError(f"duplicate evidence key {k!r}")
+            seen.add(k)
+
+
+#: The objective-order rule (#1797 S2c), shared with the Library's saved plans (#1924).
+check_after = _check_after
+#: One-line text and exact keys, shared with the Library's saved plans (#1924).
+one_line = _one_line
+exact_keys = _exact_keys
+canonical = _canonical
+
+
+def validate_document(doc: object) -> dict:
+    """The document, checked, or `PlanError`. Every authored revision passes this on write.
+
+    The flow inside each objective was validated by the flow validator when it was snapshot; here
+    it is held to its digest, and the steps are held to the flow.
+    """
+    # PLAIN, ENCODABLE JSON FIRST (the independent review on #1781): a lone surrogate parses
+    # from JSON but cannot be encoded to UTF-8, and deep nesting overflows the recursion limit.
+    # Either must be this function's refusal, never an exception escaping from a later encode.
+    try:
+        _canonical(doc)
+    except (TypeError, ValueError, RecursionError):
+        raise PlanError("the document must be plain JSON data, encodable as UTF-8") from None
+    doc = _exact_keys(doc, {"format", "objectives", "steps"}, "the document")
+    if type(doc["format"]) is not int or doc["format"] != FORMAT:
+        raise PlanError(f"format must be {FORMAT}")
+    objectives = doc["objectives"]
+    if not isinstance(objectives, list) or not objectives:
+        raise PlanError("a plan needs at least one objective")
+    if len(objectives) > MAX_OBJECTIVES:
+        raise PlanError(f"a plan holds at most {MAX_OBJECTIVES} objectives")
+    expected_steps: list[dict] = []
+    seen: set[str] = set()
+    evidence: set[str] = set()
+    for i, o in enumerate(objectives):
+        what = f"objectives[{i}]"
+        keys = {"id", "project_id", "procedure", "inputs"}
+        # THE OBJECTIVE'S ORDER (#1797 S2c): optional, still format 1. Absent means "no order".
+        if isinstance(o, dict) and "after" in o:
+            keys = keys | {"after"}
+        o = _exact_keys(o, keys, what)
+        oid = o["id"]
+        if not isinstance(oid, str) or not OBJECTIVE_ID_RE.fullmatch(oid):
+            raise PlanError(f"{what}.id has an invalid shape")
+        if oid in seen:
+            raise PlanError(f"duplicate objective id {oid!r}")
+        if "after" in o:
+            _check_after(o["after"], oid, seen, what)
+        seen.add(oid)
+        if not isinstance(o["project_id"], str) or not PROJECT_ID_RE.fullmatch(o["project_id"]):
+            raise PlanError(f"{what}.project_id is required: every objective names a project")
+        flow = check_procedure(o["procedure"], f"{what}.procedure")
+        inputs = o["inputs"]
+        if (
+            not isinstance(inputs, list)
+            or len(inputs) > schema.MAX_VARIABLES
+            or any(
+                not isinstance(row, dict)
+                or set(row)
+                not in (
+                    {"name", "source"},
+                    {"name", "source", "value"},
+                    {"name", "source", "value", "number"},
+                )
+                or ("value" in row and not _input_value_ok(row["value"]))
+                or (
+                    "number" in row
+                    and (type(row["number"]) is not int or not 0 < row["number"] < 10_000_000_000)
+                )
+                or not isinstance(row["name"], str)
+                or not schema.VARIABLE_NAME_RE.fullmatch(row["name"])
+                or not isinstance(row["source"], str)
+                or not INPUT_SOURCE_RE.fullmatch(row["source"])
+                for row in inputs
+            )
+            or len({row["name"] for row in inputs}) != len(inputs)
+        ):
+            raise PlanError(f"{what}.inputs must list distinct {{name, source}} rows")
+        projected = project_steps(oid, flow, "")
+        objective_evidence(projected, evidence)
+        expected_steps.extend(projected)
+    # Every evidence item becomes an objective row, so the plan may not promise more rows than a
+    # mission can hold (Hermes on #1781): refused here rather than half-way through a write.
+    if len(evidence) > missions.OBJECTIVES_MAX:
+        raise PlanError(
+            f"the plan has {len(evidence)} evidence items; a mission holds at most "
+            f"{missions.OBJECTIVES_MAX} objectives"
+        )
+    steps = doc["steps"]
+    if not isinstance(steps, list) or len(steps) != len(expected_steps):
+        raise PlanError("the steps must be exactly the objectives' procedure steps")
+    for i, (got, want) in enumerate(zip(steps, expected_steps, strict=True)):
+        what = f"steps[{i}]"
+        if not isinstance(got, dict):
+            raise PlanError(f"{what} must be an object")
+        env = _exact_keys(got.get("envelope"), {"reason", "assignment"}, f"{what}.envelope")
+        _one_line(env["reason"], f"{what}.envelope.reason", max_len=REASON_MAX)
+        if env["assignment"] is not None:
+            check_assignment(env["assignment"], want, f"{what}.envelope.assignment")
+        core = {k: v for k, v in got.items() if k != "envelope"}
+        if core != {k: v for k, v in want.items() if k != "envelope"}:
+            raise PlanError(f"{what} does not match its procedure step {want['id']!r}")
+    return doc
+
+
+def build(objectives: list[dict], reasons: dict[str, str], assignments: dict | None = None) -> dict:
+    """A validated document from `objectives`; each objective's steps carry `reasons[oid]`, and a
+    step named in `assignments` keeps its assignment (#1950: applying another procedure never
+    drops the team the earlier steps already have)."""
+    steps: list[dict] = []
+    for o in objectives:
+        steps.extend(project_steps(o["id"], o["procedure"]["flow"], reasons[o["id"]]))
+    for s in steps:
+        if assignments and assignments.get(s["id"]) is not None:
+            s["envelope"]["assignment"] = copy.deepcopy(assignments[s["id"]])
+    return validate_document({"format": FORMAT, "objectives": objectives, "steps": steps})
+
+
+def step_states(doc: dict, rows: list[dict]) -> dict[str, str]:
+    """Each step's DERIVED state from its evidence rows (#1193: never a second stored truth).
+
+    * `note` — a step with no evidence (a note gates nothing; nothing may wait on it);
+    * `failed` — a gating evidence row is `failed`;
+    * `done` — its gating rows are satisfied by THE STORE'S OWN PREDICATE (`missions.gate_tally`:
+      a `met` row counts only while its latest observation still supports it, a waiver always
+      counts), so the plan and the completion gate can never give two answers (#897). A step
+      whose remaining evidence gates nothing is done once each row is met or waived;
+    * `ready` — every step in its `after` is done, and it is not;
+    * `waiting` — a prerequisite is not done. Every open step also waits until every objective
+      in its objective's `after` is done (#1797 S2c, `objective_states`); a step already done,
+      failed or a note keeps its own state.
+
+    A missing evidence row (dropped by the operator) counts as waived: dropping is the operator's
+    decision not to require it, which is what waiving is.
+    """
+    own = _own_states(doc, rows)
+    done = _objectives_done(doc, own)
+    # The objectives each objective comes after (#1797 S2c); absent is none.
+    order = {o["id"]: list(o.get("after") or []) for o in doc["objectives"]}
+    out: dict[str, str] = {}
+    for s in doc["steps"]:
+        state = own[s["id"]]
+        if state == "open":
+            prereqs_done = all(own.get(p) in ("done", "note") for p in s["after"])
+            # EVERY open step of an objective also waits for the objectives it comes after — not
+            # only its first: a first step already done from its own evidence must not release
+            # the rest of an objective whose predecessor is still open (independent review).
+            prereqs_done = prereqs_done and all(done.get(a) for a in order[s["objective"]])
+            state = "ready" if prereqs_done else "waiting"
+        out[s["id"]] = state
+    return out
+
+
+def objective_states(doc: dict, rows: list[dict]) -> dict[str, str]:
+    """Each objective's DERIVED state (#1797 S2c): `done` when every one of its steps is `done` or
+    `note` (so a note-only objective is done), else `open`. Never stored."""
+    done = _objectives_done(doc, _own_states(doc, rows))
+    return {oid: ("done" if d else "open") for oid, d in done.items()}
+
+
+def _objectives_done(doc: dict, own: dict[str, str]) -> dict[str, bool]:
+    out = {o["id"]: True for o in doc["objectives"]}
+    for s in doc["steps"]:
+        if own[s["id"]] not in ("done", "note"):
+            out[s["objective"]] = False
+    return out
+
+
+def _own_states(doc: dict, rows: list[dict]) -> dict[str, str]:
+    """Each step's state from its OWN evidence alone: `note`, `failed`, `done` or `open`."""
+    by_key = {r.get("key"): r for r in rows}
+    own: dict[str, str] = {}
+    for s in doc["steps"]:
+        if not s["evidence"]:
+            own[s["id"]] = "note"
+            continue
+        ev = [by_key[k] for k in s["evidence"] if k in by_key]
+        gates = [r for r in ev if r.get("gate")]
+        if any(r.get("state") == "failed" for r in (gates or ev)):
+            own[s["id"]] = "failed"
+        elif gates:
+            own[s["id"]] = "done" if missions.gate_tally(gates)[1] == 0 else "open"
+        else:
+            settled = all(r.get("state") in ("met", "waived") for r in ev)
+            own[s["id"]] = "done" if settled else "open"
+    return own

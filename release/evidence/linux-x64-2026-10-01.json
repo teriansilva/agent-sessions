@@ -1,0 +1,251 @@
+{
+  "issue": 1266,
+  "date": "2026-10-01",
+  "host": "Isolated Linux x86-64 verification host",
+  "os": "Ubuntu 24.04.5 LTS",
+  "architecture": "x86_64",
+  "node": "22.23.2",
+  "isolation": "Private disposable HOME and workspace; existing account configuration copied privately, no operator transcripts copied or operator files rewritten. No model permission bypass. Probe histories retained in the private vendor stores.",
+  "artifact_transport": "Previously downloaded immutable vendor bytes, served through a cached HTTP transport to the real digest/extract/npm-closure/provenance pipeline. npm publisher SHA-512 also verified. No lifecycle scripts.",
+  "feed_signature": "Ephemeral isolated test identity; production release trust root was not changed. Actual release signing remains pending.",
+  "results": [
+    {
+      "engine": "antigravity",
+      "install_state": "installed",
+      "install_seconds": 12.47,
+      "executable_sha256": "0d0d3eba22daf29504dd290151c7ed9a4d33b0c6aa0acfc5da27bc3b01d2f029",
+      "version": "1.2.14",
+      "version_passed": true,
+      "verification_state": "verified",
+      "verification_seconds": 44.5,
+      "checks": [
+        {
+          "check": "binary",
+          "passed": true
+        },
+        {
+          "check": "new",
+          "passed": true
+        },
+        {
+          "check": "resume",
+          "passed": true
+        },
+        {
+          "check": "store",
+          "passed": true
+        },
+        {
+          "check": "transcript",
+          "passed": true
+        },
+        {
+          "check": "usage",
+          "passed": true
+        },
+        {
+          "check": "version",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "engine": "claude",
+      "install_state": "installed",
+      "install_seconds": 12.93,
+      "executable_sha256": "fe503f65c6289d59c23e5b21ae44f03583f997dd33a2cbfc75ab4f96fb8fc73f",
+      "version": "2.1.286",
+      "version_passed": true,
+      "verification_state": "failed",
+      "verification_seconds": 15.5,
+      "checks": [
+        {
+          "check": "binary",
+          "passed": true
+        },
+        {
+          "check": "new",
+          "passed": false
+        },
+        {
+          "check": "resume",
+          "passed": false
+        },
+        {
+          "check": "store",
+          "passed": false
+        },
+        {
+          "check": "transcript",
+          "passed": false
+        },
+        {
+          "check": "usage",
+          "passed": false
+        },
+        {
+          "check": "version",
+          "passed": true
+        }
+      ],
+      "limitation": "Vendor account weekly quota exhausted; live new/resume/transcript/usage could not complete. Verification refused activation. Vendor reported reset 2026-10-04 17:00 Europe/Bucharest."
+    },
+    {
+      "engine": "codex",
+      "install_state": "installed",
+      "install_seconds": 18.54,
+      "executable_sha256": "8bf204b36a2f6dd0dab73aa2f639892e67ef9ac8befccb4a05b1496ebf25c479",
+      "version": "0.159.3",
+      "version_passed": true,
+      "verification_state": "verified",
+      "verification_seconds": 38.2,
+      "checks": [
+        {
+          "check": "binary",
+          "passed": true
+        },
+        {
+          "check": "new",
+          "passed": true
+        },
+        {
+          "check": "resume",
+          "passed": true
+        },
+        {
+          "check": "store",
+          "passed": true
+        },
+        {
+          "check": "transcript",
+          "passed": true
+        },
+        {
+          "check": "usage",
+          "passed": true
+        },
+        {
+          "check": "version",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "engine": "gemini",
+      "install_state": "installed",
+      "install_seconds": 37.04,
+      "executable_sha256": "ef1d1bd9ee5aaae37ebcfb601b56659e3b16c5b258b21c138109c541e487ade7",
+      "version": "0.62.0",
+      "version_passed": true,
+      "verification_state": "failed",
+      "verification_seconds": 16.0,
+      "checks": [
+        {
+          "check": "binary",
+          "passed": true
+        },
+        {
+          "check": "new",
+          "passed": false
+        },
+        {
+          "check": "resume",
+          "passed": false
+        },
+        {
+          "check": "store",
+          "passed": false
+        },
+        {
+          "check": "transcript",
+          "passed": false
+        },
+        {
+          "check": "version",
+          "passed": true
+        }
+      ],
+      "limitation": "Explicit Trust folder choice completed through the real sign-in transport in the isolated home. Subsequent authentication was refused by the vendor: UNSUPPORTED_CLIENT for Gemini Code Assist for individuals. Live new/resume/transcript checks could not complete; candidate remains disabled."
+    },
+    {
+      "engine": "kimi",
+      "install_state": "installed",
+      "install_seconds": 125.25,
+      "executable_sha256": "2563a338c94868a34e1bfd2e5579067d5a472acf4cb0bf350a3bfe1092bbe59d",
+      "version": "2.1.1",
+      "version_passed": true,
+      "verification_state": "verified",
+      "verification_seconds": 34.0,
+      "checks": [
+        {
+          "check": "binary",
+          "passed": true
+        },
+        {
+          "check": "new",
+          "passed": true
+        },
+        {
+          "check": "resume",
+          "passed": true
+        },
+        {
+          "check": "store",
+          "passed": true
+        },
+        {
+          "check": "transcript",
+          "passed": true
+        },
+        {
+          "check": "usage",
+          "passed": true
+        },
+        {
+          "check": "version",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "engine": "opencode",
+      "install_state": "installed",
+      "install_seconds": 14.59,
+      "executable_sha256": "9ca0b9953d49997601655e54f846a3efa464f237e47c6f1b04716d0f2e64c4c2",
+      "version": "1.18.34",
+      "version_passed": true,
+      "verification_state": "verified",
+      "verification_seconds": 39.1,
+      "checks": [
+        {
+          "check": "binary",
+          "passed": true
+        },
+        {
+          "check": "new",
+          "passed": true
+        },
+        {
+          "check": "resume",
+          "passed": true
+        },
+        {
+          "check": "store",
+          "passed": true
+        },
+        {
+          "check": "transcript",
+          "passed": true
+        },
+        {
+          "check": "usage",
+          "passed": true
+        },
+        {
+          "check": "version",
+          "passed": true
+        }
+      ]
+    }
+  ]
+}

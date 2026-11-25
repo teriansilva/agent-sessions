@@ -1,0 +1,150 @@
+/* THE ONE ACTION BUTTON (#967). Every call to action and every ghost action on the mission screens
+ * and in the HUD dialogs is drawn from this sheet, in three variants:
+ *
+ * - `primary`: the §6 CTA, an accent fill with `--on-accent` ink;
+ * - `ghost`: transparent, on a `--border` edge;
+ * - `icon`: a ghost sized 44×44 for a glyph such as ⋯.
+ *
+ * Why one sheet: the mission screen had grown six button styles (the mono accent `.send`,
+ * `.missionBtn` and `.planBtn`, the sidebar's new button, the Hand off `.go` / `.cancel`, the pane
+ * head's restart and the session Compose Send), and only `.go` / `.cancel` met both §6 (a CTA fill or
+ * a ghost) and §8 (the 44px floor) in one rule. So those two rules moved here unchanged, and
+ * HudDialog.module.css composes them rather than restating them: a dialog cannot drift from the
+ * header when there is nothing left to differ.
+ *
+ * `inline-flex` and centring are on both variants so an icon and its label share one centre line. For
+ * a text-only button that renders the same pixels as the inline-block it replaced, because a button
+ * already centres its content. e2e/dialog-hand-off-parity.spec.ts holds the dialogs to the Hand off
+ * dialog, and e2e/mission-control-polish.spec.ts holds the mission buttons to it as well.
+ *
+ * NIGHTJAR (#1531, docs/design.md v2 §6): chamfered by PAINT (`nj-plate`: the cut corners are drawn
+ * behind the label, so the whole rectangle stays the hit area — #782's corner taps, #946), display
+ * caps, the inset focus ring. No radius, no gradient,
+ * tokens only (src/theme/cssGuard.test.ts, nightjarLedger.test.ts). */
+
+.primary,
+.ghost {
+  composes: nj-plate from global;
+  --c: var(--cut-sm);
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-family: var(--font-display);
+  font-size: var(--fs-meta);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  border: 1px solid transparent;
+  border-radius: 0;
+  cursor: pointer;
+  /* Also drawn on links (Open, Use template): a plate is never underlined. */
+  text-decoration: none;
+  transition:
+    filter var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+.primary:focus-visible,
+.ghost:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+
+.primary {
+  --nj-face: var(--accent);
+  --nj-edge: color-mix(in srgb, var(--accent) 85%, black);
+  padding: 6px 18px;
+  font-weight: 700;
+  color: var(--on-accent);
+}
+.primary:focus-visible {
+  outline-color: var(--on-accent);
+}
+.primary:hover:not(:disabled),
+.primary:focus-visible:not(:disabled) {
+  --nj-face: color-mix(in srgb, var(--accent) 90%, white);
+}
+.primary:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.ghost {
+  --nj-face: color-mix(in srgb, var(--text-1) 5%, var(--bg-1));
+  --nj-edge: var(--border);
+  padding: 6px 16px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+.ghost:hover:not(:disabled),
+.ghost:focus-visible:not(:disabled) {
+  --nj-edge: var(--hud-dim);
+  color: var(--text-1);
+}
+.ghost:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* A glyph-only ghost at the §8 floor in both directions: ⋯ is narrow content, not a narrow target. */
+.icon {
+  composes: ghost;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+}
+
+/* Destructive (#1531): outlined in the failure hue, never filled in a list or a header — red is
+ * rare so it keeps meaning "this destroys". A destructive dialog's confirm composes `filled`. */
+.danger {
+  composes: ghost;
+  --nj-edge: color-mix(in srgb, var(--status-down) 60%, transparent);
+  color: var(--danger-text);
+}
+.danger:hover:not(:disabled),
+.danger:focus-visible:not(:disabled) {
+  --nj-edge: var(--status-down);
+  --nj-face: color-mix(in srgb, var(--status-down) 10%, var(--bg-1));
+  color: var(--danger-text);
+}
+.dangerFilled {
+  composes: primary;
+  --nj-face: var(--status-down);
+  --nj-edge: var(--status-down);
+  color: var(--on-danger);
+}
+.dangerFilled:hover:not(:disabled),
+.dangerFilled:focus-visible:not(:disabled) {
+  --nj-face: color-mix(in srgb, var(--status-down) 85%, white);
+}
+
+/* A row action (Open, Remove, Retry inside a list row): the same plate, tighter, at 32 px on a fine
+ * pointer, so a list does not grow a 44 px band per row on a desktop, and the §8 44 px floor wherever
+ * a finger is the input (coarse pointer or ≤800px) — the dialog close button's precedent. Name it
+ * after the variant it trims (`ghost compact`, `primary compact`, `icon compact`). */
+.compact {
+  min-height: 32px;
+  padding: 2px 10px;
+}
+/* The same narrow sides at the full 44px height: a row's one way in (Open, Open in map), which
+ * must sit beside the row's text yet keep the floor on every pointer. */
+.tight {
+  padding-left: 10px;
+  padding-right: 10px;
+}
+.icon.compact {
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0;
+}
+@media (pointer: coarse), (max-width: 800px) {
+  .compact,
+  .icon.compact {
+    min-height: 44px;
+  }
+  .icon.compact {
+    width: 44px;
+    height: 44px;
+  }
+}

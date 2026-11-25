@@ -1,0 +1,384 @@
+#!/usr/bin/env python3
+"""Generate the v0.20 "What's new" illustrations (#971): self-contained animated SVGs (640x360).
+
+    scripts/whatsnew-illustrations [OUT_DIR ...]      # default: web/public/whatsnew/0.20
+
+One source for every copy — the in-app slides, and later the landing page and docs — so they
+cannot drift. Each illustration is written twice: ``<name>.svg`` plays its story ONCE (~10 s) and
+rests on its final frame, and ``<name>-still.svg`` has no animation at all (the Pause toggle's
+target). Under prefers-reduced-motion the animated file starts on that final frame too.
+
+Each element's timeline is encoded in a class token and the keyframes are derived from the tokens
+actually used, so a timing lives in exactly one place:
+
+  aN        appear at N% of the pass and stay                            (final state: shown)
+  dN        shown until N%, then gone                                     (final state: hidden)
+  bN_M      appear at N%, gone at M%                                      (final state: hidden)
+  pN        a press flash at N%                                           (final state: hidden)
+  tyS_E_DX  typing cover: slides DX px right between S% and E%            (final state: revealed)
+  pgS_E     progress bar: scaleX 0 -> 1 between S% and E%                 (final state: full)
+  flyN      a file dropping in at N%                                      (final state: hidden)
+  fo        a typed group (kept for readability; no animation of its own)
+
+Only opacity, transform and stroke-dashoffset animate — never geometry or clip-path. A standalone
+image cannot read CSS variables, so colours are the dark web/src/tokens.css values as literals,
+like web/public/onboarding/*.svg.
+"""
+import html
+import os
+import re
+import sys
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+OUT = os.path.join(REPO, "web", "public", "whatsnew", "0.20")
+LOOP = 10  # seconds
+
+C = dict(
+    bg1="#131418", bg0="#0d0e10", bg2="#1a1c21", s3="#08090b", line="#25282e",
+    t1="#e8e9ec", t2="#a7abb3", t3="#6f747d", ac="#ffb000", ink="#120c00",
+    ok="#3fbf6f", warn="#f59e0b", kw="#c4a7ff", st="#d9c7a0", num="#f2a8c4",
+    com="#8b9099", ty="#8fd3c7", prop="#b9bec7", teal="#2dd4bf", white="#ffffff",
+)
+
+
+def col(c):
+    return C.get(c, c)
+
+
+def T(x, y, s, fill="t1", size=10.5, anchor=None, weight=None, ls=None, raw=False, pre=False, cls=None):
+    attrs = [f'x="{x}"', f'y="{y}"', f'fill="{col(fill)}"', f'font-size="{size}"']
+    if anchor:
+        attrs.append(f'text-anchor="{anchor}"')
+    if weight:
+        attrs.append(f'font-weight="{weight}"')
+    if ls:
+        attrs.append(f'letter-spacing="{ls}"')
+    if pre:
+        attrs.append('xml:space="preserve" style="white-space:pre"')
+    if cls:
+        attrs.append(f'class="{cls}"')
+    body = s if raw else html.escape(s, quote=False)
+    return f"<text {' '.join(attrs)}>{body}</text>"
+
+
+def S(s, fill):
+    return f'<tspan fill="{col(fill)}">{html.escape(s, quote=False)}</tspan>'
+
+
+def LBL(x, y, s):
+    return T(x, y, s, "t3", 9, ls=1.5)
+
+
+def BOX(x, y, w, h, fill="bg0", stroke="line", extra=""):
+    return f'<rect x="{x + .5}" y="{y + .5}" width="{w}" height="{h}" fill="{col(fill)}" stroke="{col(stroke)}"{extra}/>'
+
+
+def R(x, y, w, h, fill, cls=None, extra=""):
+    c = f' class="{cls}"' if cls else ""
+    return f'<rect x="{x}" y="{y}" width="{w}" height="{h}" fill="{col(fill)}"{c}{extra}/>'
+
+
+def G(cls, *parts):
+    return f'<g class="{cls}">' + "".join(parts) + "</g>"
+
+
+def BADGE(x, y, code, color):
+    return R(x, y, 18, 12, color) + T(x + 9, y + 9, code, "ink", 7.5, anchor="middle", weight=700)
+
+
+def BTN(x, y, w, h, label, kind="outline", size=9):
+    ty = y + h / 2 + size * 0.36
+    if kind == "solid":
+        return R(x, y, w, h, "ac") + T(x + w / 2, ty, label, "ink", size, anchor="middle", weight=700, ls=1)
+    if kind == "ghost":
+        return BOX(x, y, w, h, fill="none", stroke="line") + T(x + w / 2, ty, label, "t2", size, anchor="middle", ls=1)
+    return (BOX(x, y, w, h, fill="none", stroke="ac", extra=' stroke-opacity=".55"')
+            + T(x + w / 2, ty, label, "ac", size, anchor="middle", ls=1))
+
+
+def FLASH(x, y, w, h, n):
+    return R(x, y, w, h, "white", cls=f"p{n}", extra=' fill-opacity=".38"')
+
+
+def CHECKBOX(x, y, fill_n=None, fill="ok"):
+    box = BOX(x, y, 11, 11, fill="none", stroke="t3")
+    if fill_n is None:
+        return box
+    return box + G(f"a{fill_n}", R(x, y, 12, 12, fill),
+                   f'<path d="M{x + 2.5} {y + 6} l2.6 2.6 4.6 -5.2" fill="none" stroke="{C["ink"]}" stroke-width="1.8"/>')
+
+
+def CLIP(cid, x, y, w, h):
+    return f'<clipPath id="{cid}"><rect x="{x}" y="{y}" width="{w}" height="{h}"/></clipPath>'
+
+
+def TYPE(cid, x, y, w, h, text, s, e, cover="bg0"):
+    """A line of text revealed left to right between s% and e%."""
+    return (CLIP(cid, x, y, w, h)
+            + f'<g clip-path="url(#{cid})"><g class="fo">{text}'
+            + R(x, y, w, h, cover, cls=f"ty{s}_{e}_{w + 4}")
+            + "</g></g>")
+
+
+def ARROW(x1, x2, y, n):
+    return G(f"a{n}", f'<path d="M{x1} {y} H{x2}" stroke="{C["ac"]}" stroke-width="1.5" class="flow"/>',
+             f'<path d="M{x2 - 4} {y - 4} l5 4 -5 4" fill="none" stroke="{C["ac"]}" stroke-width="1.5"/>')
+
+
+def LED(cx, cy, color="ok"):
+    return f'<circle cx="{cx}" cy="{cy}" r="3.5" fill="{col(color)}" class="led"/>'
+
+
+# ---------------------------------------------------------------------------------------------
+def keyframes(body):
+    """Keyframes for one PASS of the story (#971 review): every timeline runs once and its 100%
+    keyframe IS the final frame — the same frame reduced motion shows — so the image comes to rest
+    on its own. Ambient effects (LED, cursor, dashes) are bounded to the same ~10 s."""
+    tokens = set()
+    for m in re.finditer(r'class="([^"]+)"', body):
+        tokens.update(m.group(1).split())
+    once = f"{LOOP}s 1 both"
+    css = []
+    for t in sorted(tokens):
+        if m := re.fullmatch(r"a(\d+)", t):
+            n = int(m.group(1))
+            css.append(f"@keyframes {t}{{0%,{n}%{{opacity:0}}{n + 3}%,100%{{opacity:1}}}}"
+                       f".{t}{{animation:{t} {once}}}")
+        elif m := re.fullmatch(r"d(\d+)", t):
+            n = int(m.group(1))
+            css.append(f"@keyframes {t}{{0%,{n}%{{opacity:1}}{n + 3}%,100%{{opacity:0}}}}"
+                       f".{t}{{opacity:0;animation:{t} {once}}}")
+        elif m := re.fullmatch(r"b(\d+)_(\d+)", t):
+            n, k = int(m.group(1)), int(m.group(2))
+            css.append(f"@keyframes {t}{{0%,{n}%{{opacity:0}}{n + 3}%,{k}%{{opacity:1}}{k + 3}%,100%{{opacity:0}}}}"
+                       f".{t}{{opacity:0;animation:{t} {once}}}")
+        elif m := re.fullmatch(r"p(\d+)", t):
+            n = int(m.group(1))
+            css.append(f"@keyframes {t}{{0%,{n}%{{opacity:0}}{n + 1}%{{opacity:1}}{n + 6}%,100%{{opacity:0}}}}"
+                       f".{t}{{opacity:0;animation:{t} {once}}}")
+        elif m := re.fullmatch(r"ty(\d+)_(\d+)_(\d+)", t):
+            s, e, dx = (int(v) for v in m.groups())
+            css.append(f"@keyframes {t}{{0%,{s}%{{transform:translateX(0)}}{e}%,100%{{transform:translateX({dx}px)}}}}"
+                       f".{t}{{transform:translateX({dx}px);animation:{t} {LOOP}s steps(18,end) 1 both}}")
+        elif m := re.fullmatch(r"pg(\d+)_(\d+)", t):
+            s, e = int(m.group(1)), int(m.group(2))
+            css.append(f"@keyframes {t}{{0%,{s}%{{transform:scaleX(0)}}{e}%,100%{{transform:scaleX(1)}}}}"
+                       f".{t}{{transform-box:fill-box;transform-origin:left center;animation:{t} {LOOP}s ease-in-out 1 both}}")
+        elif m := re.fullmatch(r"fly(\d+)", t):
+            n = int(m.group(1))
+            css.append(f"@keyframes {t}{{0%,{n}%{{opacity:0;transform:translateY(-42px)}}{n + 3}%{{opacity:1;transform:translateY(-42px)}}"
+                       f"{n + 11}%{{opacity:1;transform:translateY(0)}}{n + 14}%,100%{{opacity:0;transform:translateY(0)}}}}"
+                       f".{t}{{opacity:0;animation:{t} {LOOP}s ease-in 1 both}}")
+        elif t == "fo":
+            pass  # a typed group stays shown: with one pass there is no loop end to fade into
+        elif t == "led":
+            css.append("@keyframes led{0%,100%{opacity:1}50%{opacity:.35}}.led{animation:led 1.6s ease-in-out 6}")
+        elif t == "cur":
+            css.append("@keyframes cur{50%{opacity:0}}.cur{animation:cur 1s steps(1,end) 10}")
+        elif t == "flow":
+            css.append("@keyframes flow{to{stroke-dashoffset:-8}}.flow{stroke-dasharray:4 4;animation:flow .8s linear 12}")
+        else:
+            sys.exit(f"unknown timeline token: {t}")
+    return "".join(css)
+
+
+def frame(name, label, title, right, caption, body):
+    """Writes `<name>.svg` (one pass, then rest) and `<name>-still.svg` (no animation at all — the
+    Pause toggle's target). Both share the markup, so the still is exactly the final frame."""
+    for suffix, motion in (("", keyframes(body) + "@media (prefers-reduced-motion:reduce){*{animation:none!important}}"),
+                           ("-still", "*{animation:none!important}")):
+        style = 'text{font-family:"JetBrains Mono","DejaVu Sans Mono","Liberation Mono",ui-monospace,monospace}' + motion
+        if suffix:
+            style = keyframes(body) + style  # keep the base (final-state) rules; kill every animation
+        svg = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" width="640" height="360" role="img" aria-label="{html.escape(label)}">'
+               f"<!-- BattleLab v0.20 illustration: {name}{suffix}. Generated by scripts/whatsnew-illustrations (#971); standalone, so colours are the dark tokens.css values. -->"
+               f"<style>{style}</style>"
+               + R(0, 0, 640, 360, "bg1")
+               + f'<g stroke="{C["ac"]}" stroke-width="2" fill="none"><path d="M8 20V8h12"/><path d="M620 8h12v12"/><path d="M8 340v12h12"/><path d="M632 340v12h-12"/></g>'
+               + T(28, 40, title, "ac", 10.5, weight=700, ls=2)
+               + right
+               + body
+               + T(320, 338, caption, "t3", 11, anchor="middle")
+               + "</svg>\n")
+        with open(os.path.join(OUT, f"{name}{suffix}.svg"), "w") as f:
+            f.write(svg)
+
+
+# --- MISSION CONTROL ---------------------------------------------------------------------------
+def missions():
+    b = [LBL(28, 66, "01 INSTRUCTION"), BOX(28, 74, 176, 100),
+         LBL(232, 66, "02 PLAN"), BOX(232, 74, 176, 100),
+         LBL(436, 66, "03 DISPATCH"), BOX(436, 74, 176, 100)]
+    b.append(TYPE("mi1", 36, 88, 164, 17, T(40, 100, "fix the flaky upload"), 2, 8))
+    b.append(TYPE("mi2", 36, 106, 164, 17, T(40, 118, "retry, then open a PR"), 8, 14))
+    b.append(R(182, 108, 6, 12, "ac", cls="cur"))
+    b.append(BTN(40, 144, 110, 20, "NEW MISSION →") + FLASH(40, 144, 110, 20, 15))
+    b.append(ARROW(206, 228, 124, 18))
+    b.append(G("a18",
+               T(244, 96, "PROJECT", "t3", 9, ls=1), T(314, 96, "upload-svc"),
+               T(244, 116, "AGENT", "t3", 9, ls=1), BADGE(314, 107, "CC", "ac"), T(338, 116, "claude"),
+               T(244, 136, "CHECKS", "t3", 9, ls=1), T(314, 136, "4 objectives"),
+               BTN(244, 146, 64, 20, "BEGIN", "solid"), T(318, 160, "RE-PLAN", "t3", 9, ls=1)))
+    b.append(FLASH(244, 146, 64, 20, 28))
+    b.append(ARROW(410, 432, 124, 32))
+    b.append(G("a32", BADGE(448, 84, "CC", "ac"), T(472, 94, "upload-svc", "t2", 10),
+               f'<line x1="448" y1="102.5" x2="600" y2="102.5" stroke="{C["line"]}"/>'))
+    b.append(G("a32", LED(598, 90)))
+    b.append(G("a38", T(448, 120, "$ pytest -q", "t2", 10)))
+    b.append(G("a44", T(448, 136, "  42 passed", "ok", 10, pre=True)))
+    b.append(G("a50", T(448, 152, "$ gh pr create", "t2", 10)))
+    b.append(G("a56", T(448, 168, "  PR #418 opened", "t1", 10, pre=True)))
+
+    b += [LBL(28, 198, "04 OBJECTIVES · SETTLED ON EVIDENCE"), BOX(28, 206, 380, 100)]
+    rows = [(226, "tests pass", "CI · 42 passed", 47), (248, "PR opened", "#418", 59),
+            (270, "checks green", "3 / 3", 67), (292, "deployed and live", None, None)]
+    for y, label, ev, n in rows:
+        b.append(CHECKBOX(40, y - 9, n))
+        b.append(T(60, y, label))
+        if ev:
+            b.append(G(f"a{n}", T(396, y, ev, "t3", 9.5, anchor="end")))
+    b.append(G("d86", T(396, 292, "WAITING", "t3", 9.5, anchor="end", ls=1)))
+    b.append(G("a86", T(396, 292, "DEPLOYING", "t2", 9.5, anchor="end", ls=1)))
+
+    b += [LBL(436, 198, "05 WHEN UNSURE, IT ASKS"), BOX(436, 206, 176, 100)]
+    b.append(G("a72",
+               BOX(436, 206, 176, 100, fill="none", stroke="ac", extra=' stroke-opacity=".55"'),
+               T(448, 226, "THE MISSION IS ASKING", "t3", 8.5, ls=1),
+               T(448, 246, "Deploy to staging"), T(448, 262, "or production?"),
+               BTN(448, 276, 72, 20, "STAGING"), BTN(528, 276, 72, 20, "PROD", "ghost")))
+    b.append(G("a82", BTN(448, 276, 72, 20, "STAGING", "solid")))
+
+    right = LED(551, 36.5) + T(612, 40, "RUNNING", "t2", 10, anchor="end", ls=1)
+    frame("missions", "Mission control: an instruction becomes a plan, an agent is dispatched, objectives settle on evidence, and the mission asks when it is unsure",
+          "MISSION CONTROL", right, "MISSION CONTROL // say the outcome, it follows through", "".join(b))
+
+
+# --- FILES & GIT -------------------------------------------------------------------------------
+def files():
+    b = [LBL(28, 66, "01 UPLOAD FILES & FOLDERS"), BOX(28, 74, 272, 232),
+         T(40, 94, "~/upload-svc/assets", "t2", 10),
+         f'<line x1="40" y1="102.5" x2="288" y2="102.5" stroke="{C["line"]}"/>']
+    entries = [(122, "icons/", "t2", "—", None), (142, "logo.svg", "t1", "12 KB", None),
+               (162, "banner.png", "t1", "88 KB", None), (182, "hero.webp", "t1", "210 KB", 38),
+               (202, "og-card.png", "t1", "64 KB", 42)]
+    for y, name, fill, size, n in entries:
+        row = R(42, y - 7, 6, 6, "ac" if n else "t3") + T(56, y, name, fill) + T(288, y, size, "t3", 9.5, anchor="end")
+        b.append(G(f"a{n}", row) if n else row)
+    b.append(BOX(40, 220, 248, 76, fill="none", stroke="ac", extra=' stroke-opacity=".55" stroke-dasharray="4 3"'))
+    b.append(T(164, 240, "UPLOAD INTO THIS FOLDER", "ac", 9, anchor="middle", ls=1))
+    b.append(BTN(92, 250, 64, 18, "FILES…", "ghost", 8.5) + BTN(172, 250, 64, 18, "FOLDER…", "ghost", 8.5))
+    b.append(R(52, 282, 224, 4, "line"))
+    b.append(R(52, 282, 224, 4, "ac", cls="pg14_34"))
+    for x, n in ((118, 3), (196, 6)):
+        b.append(G(f"fly{n}", f'<path d="M{x} 232 h10 l5 5 v14 h-15 z" fill="{C["bg2"]}" stroke="{C["ac"]}"/>'))
+
+    b += [LBL(324, 66, "02 STAGE, COMMIT, PUSH"), BOX(324, 74, 288, 232),
+          T(336, 94, "BRANCH", "t3", 9, ls=1), T(386, 94, "main"),
+          BTN(512, 82, 44, 17, "FETCH", "ghost", 8), BTN(560, 82, 40, 17, "PULL", "ghost", 8),
+          f'<line x1="336" y1="104.5" x2="600" y2="104.5" stroke="{C["line"]}"/>']
+    for y, letter, lcol, path, n in ((124, "A", "ok", "assets/hero.webp", 46), (146, "A", "ok", "assets/og-card.png", 50),
+                                     (168, "M", "warn", "src/upload/retry.py", 54)):
+        b.append(CHECKBOX(336, y - 9, n, fill="ac"))
+        b.append(T(356, y, letter, lcol, 10.5, weight=700) + T(372, y, path))
+    b.append(BOX(336, 182, 264, 28))
+    b.append(TYPE("fi1", 344, 188, 250, 16, T(346, 200, "feat: hero and og images"), 57, 67))
+    b.append(BTN(336, 222, 80, 22, "COMMIT", "solid") + FLASH(336, 222, 80, 22, 70))
+    b.append(BTN(424, 222, 118, 22, "PUSH → origin") + FLASH(424, 222, 118, 22, 78))
+    b.append(R(336, 262, 264, 4, "line"))
+    b.append(R(336, 262, 264, 4, "ac", cls="pg79_88"))
+    b.append(G("a89", LED(340, 285), T(352, 289, "pushed a41c9e2 → origin/main", "ok", 10)))
+
+    right = T(612, 40, "upload-svc · main", "t2", 10, anchor="end")
+    frame("files", "Files and git: files dropped into a folder upload into the session's directory, then the changes are staged, committed and pushed from the Git tab",
+          "FILES & GIT", right, "FILES & GIT // upload in, commit and push out, no terminal", "".join(b))
+
+
+# --- EDIT IN PLACE -----------------------------------------------------------------------------
+def editing():
+    b = [BOX(28, 56, 584, 250, fill="s3"), BOX(28, 56, 584, 26, fill="bg1"),
+         T(40, 73, "retry.py"), T(96, 73, "src/upload", "t3", 9.5)]
+    b.append(G("b20_67", T(462, 73, "UNSAVED EDITS", "warn", 9, ls=1)))
+    b.append(G("a70", LED(470, 69.5), T(480, 73, "SAVED 14:02", "ok", 9, ls=1)))
+    b.append(BTN(560, 61, 44, 16, "SAVE", size=8.5) + FLASH(560, 61, 44, 16, 33))
+
+    code = [
+        [S("def ", "kw"), S("upload", "t1"), S("(path, retries=", "t2"), S("3", "num"), S("):", "t2")],
+        [S("    for ", "kw"), S("attempt ", "t1"), S("in ", "kw"), S("range", "t1"), S("(retries):", "t2")],
+        [S("        try", "kw"), S(":", "t2")],
+        [S("            return ", "kw"), S("send", "t1"), S("(path)", "t2")],
+        [S("        except ", "kw"), S("TimeoutError", "ty"), S(":", "t2")],
+        None,  # the edited line
+        [S("    raise ", "kw"), S("UploadFailed", "ty"), S("(path)", "t2")],
+    ]
+    for i, parts in enumerate(code):
+        y = 104 + i * 20
+        b.append(T(58, y, str(i + 1), "t3", 10, anchor="end"))
+        if parts:
+            b.append(T(72, y, "".join(parts), size=11, raw=True, pre=True))
+    b.append(G("a8", R(29, 190, 583, 20, "bg2")))
+    b.append(T(58, 204, "6", "t3", 10, anchor="end"))
+    b.append(G("d10", T(72, 204, "".join([S("            sleep", "t1"), S("(", "t2"), S("1", "num"), S(")", "t2")]), size=11, raw=True, pre=True)))
+    new = T(72, 204, "".join([S("            sleep", "t1"), S("(", "t2"), S("2", "num"), S(" ** attempt)", "t2")]), size=11, raw=True, pre=True)
+    b.append(CLIP("ed1", 150, 192, 130, 16) + f'<g clip-path="url(#ed1)"><g class="fo">{new}' + R(150, 192, 130, 16, "bg2", cls="ty11_21_134") + "</g></g>")
+    b.append(f'<g clip-path="url(#ed0)">{CLIP("ed0", 72, 192, 78, 16)}<g class="a11">{new}</g></g>')
+    b.append(R(279, 194, 1.5, 13, "ac", cls="cur"))
+
+    b.append(G("b37_66",
+               R(40, 236, 560, 60, "bg2"), R(40, 236, 3, 60, "warn"),
+               T(54, 256, "CHANGED ON DISK — the agent wrote this file while you edited"),
+               BTN(54, 268, 128, 20, "RELOAD FROM DISK", "ghost", 8.5),
+               BTN(190, 268, 150, 20, "OVERWRITE WITH MINE", size=8.5),
+               FLASH(190, 268, 150, 20, 60)))
+    b.append(G("a67",
+               R(40, 236, 560, 60, "bg2"), R(40, 236, 3, 60, "ok"),
+               T(54, 258, "BOTH VERSIONS KEPT", "ok", 10.5, weight=700, ls=1),
+               T(54, 278, "yours is saved; the disk copy went to the recovery store", "t2", 10)))
+
+    right = T(612, 40, "FILES → retry.py → EDIT", "t2", 10, anchor="end")
+    frame("editing", "Edit in place: a change typed into the file viewer; the agent changed the file meanwhile, so the save stops, and after the operator chooses, both versions are kept",
+          "EDIT IN PLACE", right, "EDIT IN PLACE // a save that cannot lose the agent's work", "".join(b))
+
+
+# --- TEMPLATES ---------------------------------------------------------------------------------
+def templates():
+    b = [LBL(28, 66, "01 PICK FROM YOUR LIBRARY")]
+    cards = [(28, 74, "Fix an issue", "#bugfix"), (170, 74, "Review a PR", "#review"),
+             (28, 146, "Write tests", "#tests"), (170, 146, "Release notes", "#docs")]
+    for x, y, title, tag in cards:
+        b.append(BOX(x, y, 130, 62) + T(x + 10, y + 18, title) + T(x + 10, y + 34, tag, "t3", 9)
+                 + R(x + 10, y + 42, 92, 3, "line") + R(x + 10, y + 50, 60, 3, "line"))
+    b.append(G("a5", BOX(28, 74, 130, 62, fill="none", stroke="ac"), BTN(122, 80, 30, 15, "USE", "solid", 8)))
+    b.append(FLASH(122, 80, 30, 15, 11))
+
+    b += [LBL(28, 226, "02 FILL THE BLANKS"),
+          T(28, 250, "issue", "t3", 10), BOX(88, 237, 212, 18),
+          T(28, 276, "branch", "t3", 10), BOX(88, 263, 212, 18)]
+    b.append(TYPE("tf1", 92, 240, 204, 13, T(96, 250, "#412", "ac"), 15, 21))
+    b.append(TYPE("tf2", 92, 266, 204, 13, T(96, 276, "main", "ac"), 22, 28))
+
+    b += [LBL(324, 66, "03 SEND TO ANY SESSION"), BOX(324, 74, 288, 132)]
+    b.append(G("a36", T(336, 98, "Fix issue " + S("#412", "ac") + " on branch " + S("main", "ac") + ".", raw=True)))
+    b.append(G("a40", T(336, 116, "Reproduce it first, then add a")))
+    b.append(G("a44", T(336, 134, "regression test and open a PR.")))
+    b.append(G("a46", T(600, 190, "PREVIEW = WHAT THE AGENT RECEIVES", "t3", 8.5, anchor="end", ls=1)))
+    chips = [(324, "CC", "ac", "upload"), (414, "CX", "ok", "api"), (504, "OC", "teal", "web")]
+    for x, code, color, name in chips:
+        b.append(BOX(x, 222, 84, 22) + BADGE(x + 8, 227, code, color) + T(x + 32, 237, name, "t2", 10))
+    b.append(G("a54", BOX(324, 222, 84, 22, fill="none", stroke="ac")))
+    b.append(BTN(532, 256, 80, 22, "SEND →", "solid") + FLASH(532, 256, 80, 22, 66))
+    b.append(G("a72", LED(330, 294), T(342, 298, "sent to claude · upload", "t2", 10)))
+
+    right = T(612, 40, "/templates", "t2", 10, anchor="end")
+    frame("templates", "Templates: a saved instruction is picked from the library, its fields are filled in, and it is sent to a chosen session",
+          "TEMPLATES", right, "TEMPLATES // write it once, fill the blanks, send it anywhere", "".join(b))
+
+
+if __name__ == "__main__":
+    for target in sys.argv[1:] or [OUT]:
+        OUT = os.path.abspath(target)
+        os.makedirs(OUT, exist_ok=True)
+        missions()
+        files()
+        editing()
+        templates()
+        print("wrote", OUT, sorted(f for f in os.listdir(OUT) if f.endswith(".svg")))

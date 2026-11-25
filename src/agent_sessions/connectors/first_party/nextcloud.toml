@@ -1,0 +1,27 @@
+# The bundled Nextcloud connector (#1829): the Commander's own files, read-only, over WebDAV. Every
+# value is a member of a set in connectors/kinds.py; an unknown field anywhere refuses the manifest.
+contract = 1
+
+[identity]
+id = "nextcloud"
+label = "Nextcloud"
+publisher = "battlelab"
+version = "1"
+category = "storage"
+
+[adapter]
+kind = "nextcloud"
+
+[origin]
+mode = "operator"
+
+[auth]
+kind = "basic"
+scheme = "Basic"
+scopes = ["app-password"]
+
+[capabilities]
+read = ["folders", "search", "documents"]
+
+[docs]
+setup = "Create an app password in Nextcloud under Personal settings → Security → Devices & sessions, named for BattleLab, so you can revoke it on its own. Nextcloud app passwords can't be limited to reading; HQ only ever reads."

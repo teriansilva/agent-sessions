@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>BattleLab — Remote Connect</title>
+    <!-- The relay favicon (#1736). Vite serves public files under the build's base, so this
+         ships as /connect/favicon-relay.svg in the relay build. -->
+    <link rel="icon" type="image/svg+xml" href="/favicon-relay.svg" />
+    <meta name="color-scheme" content="dark light" />
+  </head>
+  <body class="connect-page" data-state="signed-out">
+    <!-- The app's atmosphere (nightjar.css .nj-atmo, Atmosphere.tsx): hex grid, scanlines, grain,
+         sweep and vignette. It follows the motion mode: Full drifts, Reduced and Off are a still
+         frame, a hidden tab or 10 idle minutes pause it, light shows the hex grid only. -->
+    <div class="nj-atmo" aria-hidden="true" data-testid="nj-atmo">
+      <i class="nj-hex"></i><i class="nj-scan"></i><i class="nj-noise"></i><i class="nj-sweep"></i
+      ><i class="nj-vig"></i>
+    </div>
+    <main class="connect-shell">
+      <section class="connect-card nj-frame" data-view="form" aria-labelledby="connect-title">
+        <div class="card-head">
+          <div class="brand" aria-label="BattleLab Connect">
+            <!-- brand:mark --><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" class="brand-mark" aria-hidden="true" focusable="false"><path d="M14 0 H64 V50 L50 64 H0 V14 Z" fill="#FFB000"/><path d="M18 17 L33 32 L18 47" fill="none" stroke="#120C00" stroke-width="9" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="10"/><rect x="37" y="40" width="13" height="7" fill="#120C00"/></svg><!-- /brand:mark -->
+            <span>BattleLab Connect</span>
+          </div>
+          <span class="hud-tag" aria-hidden="true">
+            <span class="hud-led idle link-led"></span>
+            <span id="uplink-label">Uplink // Offline</span>
+          </span>
+        </div>
+
+        <div id="connect-view" class="connect-view">
+          <p class="nj-kicker connect-kicker">Home Free <b>// Blind relay sign-in</b></p>
+          <h1 id="connect-title" class="nj-h1 connect-title">Remote connect</h1>
+          <p class="lede">Use the console key and access password printed by your streaming install.</p>
+          <p class="how-row">
+            <button id="how-it-works" class="linklike" type="button">How does it work?</button>
+          </p>
+
+          <form id="connect-form" class="connect-form">
+            <label class="field" for="name">
+              <span class="nj-label">Console key</span>
+              <input id="name" class="nj-field is-mono" autocomplete="off" inputmode="text" placeholder="viper-8231" />
+            </label>
+            <label class="field" for="key">
+              <span class="nj-label">Access password</span>
+              <input id="key" class="nj-field is-mono" type="password" autocomplete="off" placeholder="access password" />
+            </label>
+            <details id="relay-options" class="relay-options">
+              <summary>Custom relay</summary>
+              <label class="field" for="relay">
+                <span class="nj-label">Relay base URL</span>
+                <input id="relay" class="nj-field is-mono" placeholder="https://relay.example" />
+              </label>
+            </details>
+            <div id="status" role="status" aria-live="polite">
+              Enter your console key and access password, then hold to verify you're human.
+            </div>
+            <div class="verify-gate nj-frame-quiet" id="verify-gate" data-state="idle">
+              <span class="nj-tick tr" aria-hidden="true"></span>
+              <h2 class="gate-title" id="gate-title">Are you human?</h2>
+              <p class="gate-hint" id="gate-hint">
+                Press and hold to verify — remote connect is for people, not scripts. Automated
+                clients are not allowed through the relay.
+              </p>
+              <button id="gate-hold" class="gate-hold nj-plate" type="button" aria-describedby="gate-hint">
+                <span class="gate-led hud-led" aria-hidden="true"></span>
+                <span id="gate-hold-label">Hold to verify</span>
+              </button>
+              <div
+                id="gate-meter"
+                class="gate-meter"
+                role="progressbar"
+                aria-labelledby="gate-title"
+                aria-valuemin="0"
+                aria-valuemax="100"
+                aria-valuenow="0"
+              >
+                <div class="gate-fill" id="gate-fill"></div>
+              </div>
+              <div class="gate-meter-label">
+                <span id="gate-state-label" aria-live="polite">Hold to verify</span>
+                <b id="gate-pct">0%</b>
+              </div>
+            </div>
+            <div class="actions">
+              <p class="warning">
+                The access password grants full control of that machine. Never enter one given to
+                you by someone who contacted you.
+              </p>
+              <button id="connect" class="primary shine nj-plate" type="submit" disabled>Connect ▸</button>
+            </div>
+          </form>
+        </div>
+
+        <!-- Connecting (radar, steps, acquire bar) and the error card with Back and Retry: rendered
+             by homefree/connectState.ts while the form is put away. -->
+        <div id="connect-progress" class="cs-view" role="status" aria-live="polite" hidden></div>
+        <div id="connect-error" class="cs-view" role="alert" hidden></div>
+      </section>
+
+      <section id="session-box" class="session-box nj-frame" aria-label="Streaming session" hidden>
+        <button
+          id="session-toggle"
+          class="session-toggle"
+          type="button"
+          aria-expanded="true"
+          aria-label="Collapse connection bar"
+        >
+          <span class="session-led hud-led" aria-hidden="true"></span>
+        </button>
+        <span class="session-meta">
+          <span id="session-name" class="session-title">Connected</span>
+          <span id="session-status" class="session-subtitle">Reload returns to the connect page.</span>
+        </span>
+        <span class="session-clock">Session <span id="countdown">--:--</span></span>
+        <button id="signout" class="ghost nj-plate" type="button">Sign out</button>
+      </section>
+
+      <div id="app-root"></div>
+    </main>
+
+    <dialog id="how-modal" class="nj-frame" aria-labelledby="how-title">
+      <div class="modal-inner">
+        <div class="modal-head">
+          <span class="nj-callsign"><span class="nj-notch" aria-hidden="true"></span>Sec // End-to-end</span>
+          <button id="how-close" class="ghost nj-plate" type="button">Close</button>
+        </div>
+        <h2 id="how-title">The relay is blind</h2>
+        <p class="modal-lede">
+          Your browser and your box run an authenticated key exchange <em>through</em> the relay.
+          The relay forwards frames it cannot read: it never receives your access password, so it
+          cannot derive the session keys.
+        </p>
+
+        <dl class="spec-grid">
+          <dt>Key exchange</dt>
+          <dd><b>X25519</b>, ephemeral — a fresh keypair on both sides, every session.</dd>
+          <dt>Authentication</dt>
+          <dd>
+            Your access password is stretched with <b>HKDF-SHA256</b> into a pre-shared key that
+            is mixed into the key schedule (an NNpsk0-style pattern).
+          </dd>
+          <dt>Transport</dt>
+          <dd><b>AES-256-GCM</b> — a separate key and counter for each direction.</dd>
+          <dt>Relay sees</dt>
+          <dd>Ciphertext and routing metadata. Nothing else.</dd>
+        </dl>
+
+        <ul class="props">
+          <li>
+            <span class="prop-mark" aria-hidden="true"></span>
+            <span>
+              <b>Forward secrecy</b>
+              Session keys are ephemeral. Recorded traffic stays unreadable even if the access
+              password leaks later.
+            </span>
+          </li>
+          <li>
+            <span class="prop-mark" aria-hidden="true"></span>
+            <span>
+              <b>Mutual authentication</b>
+              Without the password neither side can produce a valid confirmation tag, so a
+              man-in-the-middle — the relay included — is rejected before any data flows.
+            </span>
+          </li>
+          <li>
+            <span class="prop-mark" aria-hidden="true"></span>
+            <span>
+              <b>Replay protection</b>
+              Every frame carries a strictly increasing counter. Repeated or reordered frames are
+              dropped.
+            </span>
+          </li>
+          <li>
+            <span class="prop-mark" aria-hidden="true"></span>
+            <span>
+              <b>Session cap</b>
+              A tunnel closes automatically after 4 hours.
+            </span>
+          </li>
+        </ul>
+
+        <p class="modal-warning">
+          The access password grants full control of the machine you connect to. Never enter one
+          that someone else gave you — no legitimate operator will ask you for it.
+        </p>
+
+        <div class="modal-foot">
+          <span class="hud-tag"><span>Wire spec // Public</span></span>
+          <a
+            href="https://github.com/teriansilva/agent-sessions/blob/main/docs/home-free-handshake.md"
+            target="_blank"
+            rel="noopener noreferrer"
+            >docs/home-free-handshake.md</a
+          >
+        </div>
+      </div>
+    </dialog>
+
+    <script type="module" src="/src/homefree/connect.main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,446 @@
+/* The New session page ("Deploy", #1531 Phase 6; the v5 board 08-deploy). NIGHTJAR v2
+ * (docs/design.md): tokens only — no literal colour, radius, shadow or px font size (cssGuard,
+ * nightjarLedger). The page keeps its layout (#1436 / #1473 / #1478): a centred form, two columns
+ * on a wide pane, the Start footer spanning the pane. What changes is the chrome: a kicker and a
+ * display heading, callsign section heads behind the hazard notch, square `nj-field` selects, the
+ * inset focus ring everywhere, and Start as THE primary plate — the accent's one call to action
+ * on the page. The pickers' own look is NewSessionControls.module.css. */
+.landing {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+.form {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.scroll {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  padding: var(--sp-5);
+  overflow-y: auto;
+  /* The two-column switch follows the PANE's width, not the window's: the sidebar and the map
+   * window both make the pane narrower than the viewport (#1473). */
+  container: new-session / inline-size;
+}
+.card {
+  /* Plain centered content — NOT a second framed box. The pane is the panel (design §5: no
+   * box-in-a-box); the card is just the centered new-session content inside it. margin:auto
+   * keeps the top reachable when it's tall. */
+  margin: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  width: 100%;
+  min-width: 0;
+  max-width: 560px;
+}
+
+/* The brand line becomes the page's kicker (v5: `SEC // 03 – SESSIONS`): the wordmark and the
+ * tagline in the mono caps voice, `//` between them. Weight 700 is the wordmark's (design §4). */
+.brandHero {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 var(--sp-2);
+  min-width: 0;
+}
+.wordmark {
+  font: 700 var(--fs-label) / 1.4 var(--font-display);
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.wordmark b {
+  font-weight: 700;
+  color: var(--hud-text);
+}
+.tagline {
+  margin: 0;
+  font: 400 var(--fs-label) / 1.4 var(--font-mono);
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.tagline::before {
+  content: "// ";
+  color: var(--hud-text);
+}
+/* The page heading on the display face, with the board's steady block cursor. The cursor is a
+ * still, text-free mark (no blink: a loop here would be ambient motion on a form). */
+.card h1 {
+  margin: 0;
+  font: 600 var(--fs-h1) / 1.15 var(--font-display);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--hud-text);
+  overflow-wrap: anywhere;
+}
+.card h1::after {
+  content: "";
+  display: inline-block;
+  width: 0.42em;
+  height: 0.8em;
+  margin-left: 0.18em;
+  vertical-align: -0.04em;
+  background: var(--hud);
+}
+
+/* Model / effort: a mono caps label over a square NIGHTJAR field (`nj-field`'s look at the §8
+ * floor). */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 0;
+  font: 500 var(--fs-micro) / 1.2 var(--font-mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.field select {
+  min-height: 44px;
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--bg-2);
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-row);
+  letter-spacing: normal;
+  text-transform: none;
+  /* Inherit the theme's color-scheme so the native option popup is dark in dark and light in
+   * light. */
+  color-scheme: inherit;
+  cursor: pointer;
+  transition: border-color var(--t-fast) var(--ease-out);
+}
+.field select:hover:not(:disabled) {
+  border-color: var(--hud-dim);
+}
+.field select:focus-visible {
+  border-color: var(--hud);
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.field select:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+/* A background refresh of the model list (#1503): quiet, beside the label, never moving it. */
+.fieldStatus {
+  margin-left: var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.14em;
+  color: var(--text-2);
+}
+/* The list could not be refreshed and the last one is shown (#1503): a degraded state, not an
+   error — one line, left-aligned under the select it describes, with a steady status LED. */
+.degraded {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  text-align: left;
+}
+.led {
+  composes: hud-led from global;
+  --led: var(--status-degraded);
+}
+.degraded .led {
+  animation: none;
+}
+/* Skip permission prompts: the whole row is the 44px target (§8), the native box keeps the
+ * accent tint, and the focus ring is drawn inset on the row. */
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 44px;
+  padding: 0 var(--sp-1);
+  font-size: var(--fs-row);
+  color: var(--text-1);
+  cursor: pointer;
+}
+.checkbox input[type="checkbox"] {
+  flex: none;
+  accent-color: var(--accent);
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  cursor: pointer;
+}
+.checkbox input[type="checkbox"]:focus-visible {
+  outline: none;
+}
+.checkbox:has(input:focus-visible) {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+/* THE call to action: the one `primary` plate (actionButton.module.css) — accent face,
+ * `--on-accent` ink, display caps, the 44px floor. The global `.shine` adds the press glitch
+ * (Start acknowledges, design §8). */
+.start {
+  composes: primary from "../components/ui/actionButton.module.css";
+}
+.hint {
+  margin: 0;
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+  color: var(--text-2);
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+.hint code {
+  font-family: var(--font-mono);
+  color: var(--text-1);
+}
+/* A refused start: the NIGHTJAR error block, with the server's own words. */
+.startError {
+  composes: nj-error from global;
+  overflow-wrap: anywhere;
+}
+
+/* A previous API attempt, scoped to that client: a quiet callout on the chrome's dim edge, its
+ * actions full 44px targets. */
+.recovery {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 2px solid var(--hud-dim);
+  background: var(--bg-1);
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.recovery p {
+  margin: 0;
+}
+.recoveryActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+.recoveryActions a,
+.recoveryActions button {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 var(--sp-2);
+  border: 0;
+  background: transparent;
+  color: var(--accent-text);
+  font: inherit;
+  cursor: pointer;
+}
+.recoveryActions a {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.recoveryActions button {
+  color: var(--text-2);
+}
+.recoveryActions button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.recoveryActions a:focus-visible,
+.recoveryActions button:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+
+/* The new-session defaults note (#1407): its Reset / Edit action is a real 44px target (§8). */
+.defaultsHint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0 var(--sp-2);
+}
+.defaultsHint a,
+.linkButton {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  color: var(--accent-text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.linkButton {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+}
+.linkButton:focus-visible,
+.defaultsHint a:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+
+/* The form's sections (#1436): a callsign head — the hazard notch, then the title in display
+ * caps — over its picker. */
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.sectionHead {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  font: 600 var(--fs-label) / 1.2 var(--font-display);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+.sectionHead::before {
+  content: "";
+  flex: none;
+  width: 22px;
+  height: 10px;
+  background: repeating-linear-gradient(-45deg, var(--hud) 0 3px, transparent 3px 6px);
+  opacity: 0.85;
+}
+
+/* A full-width footer OUTSIDE the form's scroll area (#1478). No outer margin: the bar meets
+ * the pane's left, right and bottom edges even when the centered form is shorter than the pane.
+ * Its height is reserved, so scrolling the last field into view never puts it behind Start. On
+ * NIGHTJAR it is the deck's command strip: the `--bg-1` face under a 1px chrome rule. */
+.startBar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin: 0;
+  padding: var(--sp-3) var(--sp-5) calc(var(--sp-4) + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--hud-dim);
+  background: var(--bg-1);
+}
+.summary {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.summary b {
+  color: var(--text-1);
+  font-weight: 600;
+}
+.summary code {
+  font-family: var(--font-mono);
+  color: var(--hud-text);
+}
+/* The missing-folder action lives in the summary (#1458): a real link, the same 44px target as
+ * every other action on the form (design §8), and it wraps with the line on a phone. */
+.summary a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  color: var(--accent-text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.summary a:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.startBar .start {
+  margin: 0;
+  flex: none;
+  padding: 0 var(--sp-5);
+}
+
+/* Two columns on a wide pane (#1473): agent on the left, project on the right. The separate
+ * Start footer spans the pane below the scrolling form. */
+.columns {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  min-width: 0;
+}
+.column {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  min-width: 0;
+}
+@container new-session (min-width: 880px) {
+  .card {
+    max-width: 1120px;
+  }
+  .columns {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: var(--sp-6);
+    align-items: start;
+  }
+}
+@media (max-width: 800px) {
+  .scroll {
+    padding: var(--sp-4);
+  }
+  .startBar {
+    padding-left: var(--sp-4);
+    padding-right: var(--sp-4);
+  }
+}
+
+/* A field the selected project's session defaults filled (#1508): a mono stamp, inline. */
+.projectBadge {
+  composes: nj-stamp from global;
+  margin-left: var(--sp-2);
+  padding: 2px 5px;
+  color: var(--hud-text);
+}
+
+/* In the map's New session modal (#1648): a full map says so before Start, on its own line above
+ * the summary, in the degraded status colour (the map really is at its cap). */
+.startBar:has(.mapFull) {
+  flex-wrap: wrap;
+}
+.mapFull {
+  flex-basis: 100%;
+  order: -1;
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 3px solid var(--warn-text);
+  background: color-mix(in srgb, var(--warn-text) 10%, transparent);
+  font-size: var(--fs-meta);
+  color: var(--text-1);
+}
+/* A detour out of the modal (Settings → Projects, the wizard) is a full page: it says it leaves. */
+.leavesMap {
+  color: var(--text-2);
+  font-size: var(--fs-meta);
+  white-space: nowrap;
+}
+/* A create in flight holds every route-leaving link (#1648, Hermes on #1717): leaving would drop
+ * the session the create is about to answer with. Dimmed, and the form's capture handler
+ * cancels the click (keyboard included). */
+.form[data-creating] a[href]:not([data-during-create]) {
+  opacity: 0.55;
+  cursor: progress;
+}
+/* "+ Add agent" (#1739): the agent catalog one tap away, quiet beside the form's own choices. */
+.addAgentRow {
+  display: flex;
+  justify-content: flex-start;
+}
+.addAgent {
+  padding: 0 var(--sp-3);
+  color: var(--accent-text);
+}

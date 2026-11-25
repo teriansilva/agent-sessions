@@ -1,0 +1,17 @@
+{
+  "process_cold_reads": [
+    {
+      "fixture": "service-release-100k-short",
+      "first_fresh_process_query_ms": 938.7066783383489,
+      "hits": 8,
+      "peak_rss_kib": 88512
+    },
+    {
+      "fixture": "service-release-100k-large",
+      "first_fresh_process_query_ms": 953.3488196320832,
+      "hits": 8,
+      "peak_rss_kib": 76288
+    }
+  ],
+  "limits": "One new interpreter per existing synthetic fixture, after its recorded update/delete cleanup. Application-process cold; OS filesystem cache is not flushed on the shared host. Empty registered-secret inventory. No embedding or model generation; not a cold-query p95 or latency guarantee."
+}

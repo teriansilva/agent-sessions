@@ -1,0 +1,86 @@
+/* THE confirm dialog (#905, NIGHTJAR #1531): on THE dialog chrome (components/HudDialog.module.css),
+ * composed, never restated. What is its own: the title line, a body that scrolls between a fixed
+ * head and fixed actions (the confirm is always reachable, Hermes on #1484), and the destructive
+ * confirm, which is the one place red is filled. Tokens only. */
+
+.backdrop {
+  composes: backdrop from "../HudDialog.module.css";
+}
+/* A confirmation is the TOP of the stack (#1531): it can be raised from inside any sheet or viewer
+ * (the phone's file sheet sits at --z-dialog + 1, the viewer at --z-dialog-stack), and a confirm
+ * under its own opener cannot be answered. Doubled class: wins whatever the stylesheet order. */
+.backdrop.backdrop {
+  z-index: calc(var(--z-dialog-stack) + 5);
+}
+
+.dialog {
+  composes: dialog from "../HudDialog.module.css";
+  width: min(460px, 100%);
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100dvh - 40px);
+  overflow-y: hidden;
+}
+
+.head {
+  composes: head from "../HudDialog.module.css";
+}
+.tag {
+  composes: tag from "../HudDialog.module.css";
+}
+.close {
+  composes: close from "../HudDialog.module.css";
+}
+
+.title {
+  margin: 0 0 var(--sp-2);
+  font-family: var(--font-display);
+  font-size: var(--fs-title);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-1);
+}
+.body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  font-size: var(--fs-row);
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.body p {
+  margin: 0 0 var(--sp-2);
+}
+
+.actions {
+  composes: actions from "../HudDialog.module.css";
+  flex: none;
+}
+.cancel {
+  composes: cancel from "../HudDialog.module.css";
+}
+.confirm {
+  composes: go from "../HudDialog.module.css";
+}
+/* A second destructive action (#1724): outlined in the failure hue, never filled. */
+.secondary {
+  composes: danger from "../ui/actionButton.module.css";
+}
+/* A destructive confirm: filled red with `--on-danger` ink (AA in both modes). */
+.danger {
+  composes: danger from "../HudDialog.module.css";
+}
+
+@media (max-width: 800px) {
+  .dialog {
+    max-height: 100dvh;
+    padding-bottom: calc(var(--sp-4) + env(safe-area-inset-bottom, 0px));
+  }
+}
+/* #1724: a dialog whose safe action must stay first in reading order on the sheet as well. */
+@media (max-width: 800px) {
+  /* Doubled: wins over the composed HudDialog sheet's column-reverse whatever the CSS order. */
+  .actions.safeFirst {
+    flex-direction: column;
+  }
+}

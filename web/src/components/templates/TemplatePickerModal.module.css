@@ -1,0 +1,288 @@
+/* Template picker + session chooser (#905 P3) on THE dialog (../HudDialog.module.css, NIGHTJAR
+ * #1531): frame, head, close and the ≤800px bottom sheet are composed; this sheet holds the
+ * search, the template and session rows, the fill form, the preview and the row actions. Tokens
+ * only; ≥44px actions on a phone. */
+
+.backdrop {
+  composes: backdrop from "../HudDialog.module.css";
+}
+.dialog {
+  composes: dialog from "../HudDialog.module.css";
+  width: min(520px, 100%);
+  max-height: min(84vh, 720px);
+}
+.head {
+  composes: head from "../HudDialog.module.css";
+}
+.tag {
+  composes: tag from "../HudDialog.module.css";
+}
+.close {
+  composes: close from "../HudDialog.module.css";
+}
+
+.search {
+  composes: nj-frame-sm from global;
+  --nj-face: var(--bg-2);
+  --nj-edge: var(--border);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 36px;
+  padding: 0 var(--sp-3);
+  border-top-width: 1px;
+  border-top-color: var(--border);
+  color: var(--text-3);
+  margin-bottom: var(--sp-2);
+}
+.search input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  color: var(--text-1);
+  font: inherit;
+  font-size: var(--fs-meta);
+  outline: none;
+}
+.search:focus-within {
+  --nj-edge: var(--hud);
+  border-color: var(--hud);
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+
+.err {
+  font-size: var(--fs-label);
+  color: var(--danger-text);
+  margin: var(--sp-1) 0;
+}
+.state {
+  margin: 12px 0;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.state a,
+.foot a {
+  color: var(--accent-text);
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.row {
+  border-top: 1px solid var(--line);
+}
+.rowOn {
+  background: var(--hud-tint);
+  margin: 0 calc(-1 * var(--sp-5));
+  padding: 0 var(--sp-5);
+  box-shadow: inset 2px 0 0 var(--hud);
+  border-top-color: var(--hud-dim);
+}
+.pick {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  width: 100%;
+  min-height: 44px;
+  padding: 9px 0;
+  background: transparent;
+  border: 0;
+  color: var(--text-1);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+.pick:hover .name,
+.pick:focus-visible .name {
+  color: var(--accent-text);
+}
+.pick:focus-visible,
+.srow:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.name {
+  font-size: var(--fs-row);
+  font-weight: 600;
+}
+.sub {
+  font-size: var(--fs-label);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+/* Session rows (the chooser): a badge + title + folder + state, one line each. */
+.srow {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 0;
+  background: transparent;
+  border: 0;
+  color: var(--text-1);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+.srow:hover .name,
+.srow:focus-visible .name {
+  color: var(--accent-text);
+}
+.badge {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.1em;
+  padding: 1px 5px;
+  border: 1px solid var(--line);
+  color: var(--text-3);
+}
+.stitle {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.stitle .name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.stitle .sub {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sstate {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.sstateUp {
+  color: var(--ok-text);
+}
+
+.fill {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 0 12px;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.flabel {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.input {
+  composes: nj-field from global;
+  min-height: 36px;
+  padding: 0 var(--sp-3);
+  font-size: var(--fs-row);
+}
+/* The field control is a textarea (multi-line values): one line tall until it holds more. */
+textarea.input {
+  display: block;
+  padding: 7px 10px;
+  line-height: 1.45;
+  resize: vertical;
+}
+.input:focus {
+  border-color: var(--hud);
+}
+.preview {
+  margin: 0;
+  border: 1px solid var(--line);
+  background: var(--term-bg);
+  padding: 9px 10px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  line-height: 1.5;
+  color: var(--text-1);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 32vh;
+  overflow-y: auto;
+}
+.acts {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+/* A picker row's actions are the shared plates at row height (docs/design.md §6): Insert a ghost,
+ * Send the call to action. */
+.act {
+  composes: ghost compact from "../ui/actionButton.module.css";
+}
+.send {
+  composes: primary compact from "../ui/actionButton.module.css";
+}
+.note,
+.foot {
+  margin: 4px 0 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+/* A library variable the template needs is missing (#1090): Send and Insert are off. The
+ * warning ink, not a status LED — nothing is down, the operator has a step to take. */
+/* A stored secret (#1090 Phase 2): the browser has no value — only that one is stored. */
+.stored {
+  display: block;
+  padding: 7px 10px;
+  border: 1px dashed var(--line-strong);
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.12em;
+  color: var(--text-3);
+}
+.blocked {
+  margin: 6px 0 0;
+  font-size: var(--fs-label);
+  color: var(--warn-text);
+}
+.blocked a {
+  color: inherit;
+}
+.foot {
+  margin-top: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+@media (max-width: 800px) {
+  .dialog {
+    max-height: 86vh;
+    padding-bottom: calc(var(--sp-4) + env(safe-area-inset-bottom, 0px));
+  }
+  .act,
+  .send {
+    flex: 1;
+  }
+}
+@media (pointer: coarse), (max-width: 800px) {
+  .input,
+  .search {
+    min-height: 44px;
+  }
+}

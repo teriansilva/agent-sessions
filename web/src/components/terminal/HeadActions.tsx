@@ -1,0 +1,562 @@
+import { MoreHorizontal } from "lucide-react";
+import { createPortal } from "react-dom";
+import { Fragment, type ReactNode, type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import menu from "../files/filePanel.module.css";
+import { MenuPopover } from "../sidebar/RowMenu";
+import { foldSelection } from "./headActionsFold";
+
+export interface HeadAction {
+  id: string;
+  /** Visible chip text. */
+  label: string;
+  /** Accessible name. Kept SEPARATE from `label` because the shipped buttons already have
+   *  descriptive aria-labels ("Open session brief", not "Recap") that tests and screen readers
+   *  depend on — collapsing the two silently renamed them. */
+  aria: string;
+  title: string;
+  icon: ReactNode;
+  active?: boolean;
+  disabled?: boolean;
+  /** The overflow menu is this action's canonical home (#1329): a window's chrome bar is slim
+   *  by default and only surfaces this action as a chip when the bar has room to spare. A
+   *  session-mirrored pane action sets it — the session ⋯ menu already carries it under a stable
+   *  name, so the chip is the exception, not the rule. */
+  menuFirst?: boolean;
+  /** A second, smaller line under the label wherever this action is a MENU ITEM, e.g. why a
+   *  disabled item is disabled (#2173). A chip has `title` for that. */
+  hint?: string;
+  /** This action is a group of choices, not one command (#2173, Share: Public / Peer). As a chip
+   *  it opens a small anchored menu of them; folded (the "…", the phone Actions menu, a window's
+   *  ⋯) it is drawn as a group label, `label`, followed by the items. No nested fly-out. `run` is
+   *  never called on an action with `menu`; each item's `run` gets a PERSISTENT trigger: the chip,
+   *  or the menu's own trigger. One level only: an item's own `menu` is ignored. */
+  menu?: HeadAction[];
+  /** `trigger` is the element focus should return to when whatever this opens is closed. For an
+   *  overflow item that is the persistent "…" button, NOT the menu item — the item unmounts with
+   *  the menu, and a modal handed a detached node cannot restore focus at all. */
+  run: (trigger?: HTMLElement | null) => void;
+}
+
+/** Whether two folds kept the same actions — the state identity check that keeps a settled fold
+ *  from re-rendering on every ResizeObserver tick. */
+function sameSelection(a: boolean[], b: boolean[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+const GAP = 6; // matches .headActions gap
+
+/** An action's choices. A function, so the field is never spelled `menu.<name>` beside the
+ *  CSS-module import of the same name (the class guard reads that as a class). */
+const choicesOf = (a: HeadAction): HeadAction[] => a.menu ?? [];
+
+/** The width `el` cannot give up (#2055): a `flex: none` member at its width, a shrinkable one at
+ *  its own `min-width` (an `auto` minimum is taken as its width: folding a little early is the
+ *  safe direction), a flex container at least the floors of its members and their gaps. `root`
+ *  is the run itself: shrinkable to nothing by contract, so only its members count. */
+function floorWidth(el: Element, root = false): number {
+  const cs = getComputedStyle(el);
+  if (cs.display === "none" || cs.position === "absolute" || cs.position === "fixed") return 0;
+  const box = el instanceof HTMLElement ? el.offsetWidth : el.getBoundingClientRect().width;
+  if (!root && cs.flexShrink === "0") return box;
+  const min = root ? 0 : cs.minWidth === "auto" ? box : parseFloat(cs.minWidth) || 0;
+  if (!cs.display.endsWith("flex")) return min;
+  const kids = Array.from(el.children).filter((k) => getComputedStyle(k).display !== "none");
+  const gap = parseFloat(cs.columnGap) || 0;
+  const inner = kids.reduce((sum, k) => sum + floorWidth(k), 0) + gap * Math.max(0, kids.length - 1);
+  return Math.max(min, inner);
+}
+
+
+
+/** What the session pane's own bar hands `HeadActions` so its "…" opens the MERGED session menu
+ *  (#2173): the Session group and, after it, whatever of these actions the fold kept off the bar.
+ *  The trigger is then always on the bar (the Session group must be reachable when every chip
+ *  fits), its width is always budgeted, and a press calls `toggle` with the trigger instead of
+ *  opening the pane-only menu below. The host reads the fold from `overflowRef` / `allRef`. */
+export interface MergedMenuHost {
+  /** The merged menu is open: the trigger's `aria-expanded`. */
+  expanded: boolean;
+  /** Toggle the merged menu. `trigger` is its anchor and where focus returns. */
+  toggle: (trigger: HTMLElement) => void;
+}
+
+export interface HeadActionsProps {
+  actions: HeadAction[];
+  className: string;
+  btnClassName: string;
+  /** Wraps the visible text so the stylesheet can drop it on coarse pointers. */
+  labelClassName: string;
+  /** ONE MENU ON A SMALL SCREEN (#948 P6). At the shell's ≤800px breakpoint the header renders a
+   *  single labelled "Actions" trigger and every action lives in the menu, with its full label.
+   *  This deliberately replaces #744/#859's "every action one tap away on touch" on phones only —
+   *  the operator asked for the header to become a context menu there. Wider panes, touch or not,
+   *  keep the measured fold below. */
+  collapsed?: boolean;
+  /** The width, in px, the bar must still hold BESIDES the chips — identity run, title, fixed
+   *  buttons. The pane's own bar is modelled by the built-in default (LED + engine box + the
+   *  bar's padding; the meta run is the designated shrink absorber there). A window's chrome bar
+   *  passes a MEASURED reserve instead (#1109): its facts run is `flex: none`, so its width is a
+   *  fact, and the title + window buttons + grip are constants the chrome owns. Folding late
+   *  would clip the title; folding a little early is the safe direction. */
+  reservePx?: number;
+  /** The bar's left run, measured instead of the built-in 54 px (#2055). The pane model lets the
+   *  meta run absorb all shrink, which holds while nothing follows it; an API pane's run also
+   *  carries chips AFTER it (who is connected, Skip permissions) and a `flex: none` update time
+   *  inside it, so squeezing the run below those drew the facts under the chip. With this, the
+   *  fold leaves the run what it cannot give up (`floorWidth`: every fixed member and fact, the
+   *  project name still free to ellipsise), plus the bar's own gap, and folds actions into the
+   *  "…" before that. Re-measured when the run's content or the bar's width changes. Ignored when
+   *  `reservePx` is given. */
+  reserveRef?: RefObject<HTMLElement | null>;
+  /** Where the overflow goes. `"self"` (default): this component renders its own "…" trigger +
+   *  portal menu, exactly as shipped. `"external"` (#1109): a host that carries the ONE merged
+   *  menu itself — no trigger, no menu here, and the overflow published via `overflowRef`. */
+  foldInto?: "self" | "external";
+  /** With `foldInto: "external"`: the host's ref to read the overflowed actions from, updated
+   *  after every commit so a menu built at open time is never stale. */
+  overflowRef?: { current: HeadAction[] };
+  /** With `foldInto: "external"`: the host's ref to read the FULL action list from (#1329),
+   *  published after every commit beside the overflow. A host whose merged menu must omit only the
+   *  twins of actions this pane really offers reads it — `overflowRef` cannot say whether an action
+   *  the fold kept on the bar is offered at all. */
+  allRef?: { current: HeadAction[] };
+  /** The BAR the fold budgets against. Default is this wrapper's parent — true in the pane,
+   *  where the wrapper sits directly under `.panelHead`; a window's chips sit in a dedicated
+   *  slot span instead, so the host passes its bar (`[data-window-head]`) explicitly (#1109).
+   *  The observer watches the same element: observing the slot would measure the fold's own
+   *  output, an unstable feedback loop. */
+  barRef?: RefObject<HTMLElement | null>;
+  /** The session pane's merged menu (#2173). Absent: the pane-only overflow menu, as shipped —
+   *  a pane whose session row is not known yet, and every host that passes `foldInto: "external"`
+   *  (which ignores this). */
+  merged?: MergedMenuHost;
+}
+
+/** Pane-head actions with measurement-driven overflow (#783).
+ *
+ *  **At the shell's ≤800px breakpoint there is no measuring (#948 P6).** `collapsed` puts every
+ *  action into the one "Actions for this session" menu, capped to the viewport and scrollable. The
+ *  measured fold described below applies to wider panes only.
+ *
+ *  The header carries a *measured* contract (`Terminal.module.css`): three labelled buttons occupy
+ *  ~240px and "button labels are never hidden … the labelled buttons still fit a 320px pane". A
+ *  fourth (`Files`) breaks that at a 320px pane and is marginal at the 360px `PANE_MIN`. Shrinking
+ *  to icon-only is what that same comment rejects on touch-target grounds.
+ *
+ *  So this reuses the idiom already shipped in `KeyBar`: trailing actions fold into one `…` chip
+ *  whose menu still carries **full labels**. Labels are not hidden — they move. `Files` leads (the
+ *  new primary affordance) and `Repaint` stays out of the menu: burying the recovery control when
+ *  the screen is blank is the wrong trade.
+ *
+ *  **A `menuFirst` action folds before the trailing ones (#1329).** The overflow menu is its
+ *  canonical home — a window's chrome bar is slim by default and only surfaces it as a chip when the
+ *  bar has room to spare. A session-mirrored pane action (Recap, Hand off, mission) sets it, because
+ *  the session ⋯ menu already carries it under a stable name; folding it first is what stops the bar
+ *  from showing a chip AND its menu twin. `foldSelection` returns a per-action boolean, so a `menuFirst`
+ *  action folding from the middle leaves no hole — the flex row packs what is left.
+ *
+ *  The menu is portalled to <body> because `.terminal-pane` is `overflow: hidden` — the same
+ *  reason KeyBar portals its own. KeyBar supplies the measurement and portal pattern only; the
+ *  menu a11y (focus-in, arrow keys, Esc, focus return, roving `menuitem`) is implemented here.
+ *
+ *  **A map window folds into ITS chrome's ⋯ instead (#1109).** `foldInto: "external"` renders no
+ *  "…" trigger and no portal menu of its own — the window bar already carries exactly one ⋯, the
+ *  one that opens the merged session+pane menu — and publishes whatever overflowed through
+ *  `overflowRef` after every commit, so the chrome reads the CURRENT fold at menu-open time
+ *  without a single extra render. The chips that fit stay chips; the rest are reachable only
+ *  through that one menu, which is the point: a window never shows two menus. */
+export function HeadActions({ actions, className, btnClassName, labelClassName, collapsed = false, reservePx, reserveRef, foldInto = "self", overflowRef, allRef, barRef, merged }: HeadActionsProps) {
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const moreRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const widths = useRef<number[]>([]);
+  // `w` is the bar width the committed fit was measured at — the measurement-complete invariant
+  // the #744 ladder spec waits on (`data-fit-width`), since "the '…' trigger exists" cannot tell a
+  // settled narrower rung from the previous wider one (#909). `sel` is WHICH actions that fit kept —
+  // a boolean per action, because a `menuFirst` action folds from the middle (#1329). Absent until the
+  // first measurement.
+  const [fit, setFit] = useState<{ sig: string; sel: boolean[]; w?: number }>({
+    sig: "",
+    sel: [],
+  });
+  const hasMerged = merged !== undefined;
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<{ top: number; right: number; maxHeight: number } | null>(null);
+  // The open CHIP menu (#2173): which action's, and the chip it hangs from. The chip is the
+  // popover's anchor, its owner (a press on it toggles, it is not an outside press) and the
+  // element every item's `run` and Esc hand focus back to.
+  const [chipMenu, setChipMenu] = useState<{ id: string; el: HTMLElement } | null>(null);
+  const chipOwnerRef = useRef<HTMLElement | null>(null);
+  const closeChipMenu = useCallback((refocus: boolean) => {
+    setChipMenu(null);
+    if (refocus) chipOwnerRef.current?.focus();
+  }, []);
+
+  // A stable identity for "which actions are these". `actions` is rebuilt every render, so keying
+  // anything on the array itself re-runs on every commit and re-measures against a target that is
+  // still moving — the head visibly thrashes.
+  const sig = actions.map((a) => a.id).join(",");
+
+  // Derived-state reconciliation during render (not an effect): when the action set changes, show
+  // them all and re-measure from scratch. setState-during-render is React's documented way to
+  // adjust state to a prop change, and it avoids the extra commit an effect would cost.
+  if (fit.sig !== sig) {
+    setFit({ sig, sel: actions.map(() => true) });
+  }
+  const selected = collapsed
+    ? actions.map(() => false)
+    : fit.sig === sig
+      ? fit.sel
+      : actions.map(() => true);
+
+  useLayoutEffect(() => {
+    const el = wrapRef.current;
+    // Collapsed, there are no chips to measure — everything is in the menu.
+    if (collapsed || !el || typeof ResizeObserver === "undefined") return;
+    const measure = () => {
+      // Recapture the natural widths whenever every chip is on the bar — which is exactly the
+      // state a new action set starts in, so no explicit reset is needed (and a ref write during
+      // render would not be allowed anyway).
+      const kids = Array.from(el.querySelectorAll<HTMLElement>("[data-head-action]"));
+      if (kids.length === actions.length) {
+        widths.current = kids.map((k) => k.offsetWidth);
+      }
+      const bar = barRef?.current?.clientWidth ?? el.parentElement?.clientWidth ?? 0;
+      if (!bar || widths.current.length !== actions.length) return;
+      // Budget = the whole bar minus the irreducible left identity (LED + engine box) and the
+      // bar's own padding. Per Terminal.module.css the meta run absorbs ALL shrink, so the
+      // actions may legitimately take everything else — an earlier `bar * 0.66` guess collapsed
+      // the head at 412px where all four chips fit comfortably, needlessly burying Recap and
+      // Hand off behind the menu on every phone. A window's chrome bar passes a measured
+      // `reservePx` instead (#1109): its facts run is fixed-width, its title and window buttons
+      // are constants, and the fold must budget for them or it would clip the title.
+      const run = reservePx === undefined ? reserveRef?.current : null;
+      const barEl = barRef?.current ?? el.parentElement;
+      const runFloor = run
+        ? floorWidth(run, true) + (barEl ? parseFloat(getComputedStyle(barEl).columnGap) || 0 : 0)
+        : 0;
+      const IDENTITY_W = reservePx ?? Math.max(54, runFloor); // LED + engine box (the pane model)
+      const PAD = 20;
+      const avail = bar - IDENTITY_W - PAD;
+      // The "…" chip is reserved only when something will actually overflow — and only when THIS
+      // component renders the trigger at all. `foldInto: "external"` folds into a menu the host
+      // owns, mounted outside this slot's flow, so nothing here is reserved for it.
+      const MORE_W = foldInto === "external" ? 0 : 34;
+      // With the merged menu (#2173) the trigger is on the bar whether or not anything folds, so
+      // its width and gap come off the budget up front and nothing more is reserved on a fold.
+      const always = hasMerged && foldInto === "self";
+      const next = foldSelection(
+        widths.current,
+        always ? avail - MORE_W - GAP : avail,
+        GAP,
+        always ? -GAP : MORE_W,
+        actions.map((a) => Boolean(a.menuFirst)),
+      );
+      setFit((prev) =>
+        prev.sig === sig && prev.w === bar && sameSelection(prev.sel, next)
+          ? prev
+          : { sig, sel: next, w: bar },
+      );
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    const watched = barRef?.current ?? el.parentElement;
+    if (watched) ro.observe(watched);
+    // The measured run (#2055): its members change size without the bar doing so (a chip
+    // appears, the update time ticks, the container-query ladder hides a fact).
+    const run = reservePx === undefined ? reserveRef?.current : null;
+    let mo: MutationObserver | null = null;
+    if (run) {
+      const watchMembers = () => {
+        for (const k of Array.from(run.querySelectorAll("*"))) ro.observe(k);
+      };
+      watchMembers();
+      mo = new MutationObserver(() => {
+        watchMembers();
+        measure();
+      });
+      mo.observe(run, { childList: true, subtree: true, characterData: true });
+    }
+    return () => {
+      ro.disconnect();
+      mo?.disconnect();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sig, collapsed, reservePx, hasMerged]);
+
+  const inline = actions.filter((_, i) => selected[i]);
+  const overflow = actions.filter((_, i) => !selected[i]);
+
+  // The host's fold is published after EVERY commit, unconditionally: the chrome builds its menu
+  // from this ref at open time, so it must name the actions that are actually folded right now.
+  // A ref write never re-renders, so this cannot loop — it is what makes the merged menu read
+  // current state (disabled flips, a Repaint that just became possible) with no render coupling.
+  useEffect(() => {
+    if (overflowRef) overflowRef.current = overflow;
+    // The FULL list too (#1329): a pane that offers NO action (a chat/api runtime, or the
+    // one-frame gap before the first commit) must publish an EMPTY list, not leave a stale one,
+    // so the host omits nothing and the session entries survive.
+    if (allRef) allRef.current = actions;
+    // Clear both on unmount (#1329): RuntimeGate mounts THIS Terminal while the engine roster
+    // is unknown, then swaps in ChatPane/StructuredPane when a chat/api entry arrives. The host
+    // keeps the same refs, so without this cleanup its ⋯ would still omit session actions the
+    // (now unmounted) pane offered, and run stale callbacks from the torn-down terminal.
+    return () => {
+      if (overflowRef) overflowRef.current = [];
+      if (allRef) allRef.current = [];
+    };
+  });
+
+  const place = useCallback(() => {
+    const r = moreRef.current?.getBoundingClientRect();
+    if (!r) return;
+    const top = r.bottom + 4;
+    // On a phone EVERY action lives in this menu (#948 P6), so on a short viewport (a landscape
+    // phone) it can be taller than the space under the trigger. Cap it to that space and let it
+    // scroll, so the last action stays reachable (#958 review). Re-placed on resize and scroll.
+    const maxHeight = Math.max(88, window.innerHeight - top - 8);
+    setPos({ top, right: Math.max(8, window.innerWidth - r.right), maxHeight });
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    place();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        setOpen(false);
+        moreRef.current?.focus();
+        return;
+      }
+      if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+      e.preventDefault();
+      const items = Array.from(
+        menuRef.current?.querySelectorAll<HTMLElement>("[role='menuitem']:not([disabled])") ?? [],
+      );
+      if (!items.length) return;
+      const i = items.indexOf(document.activeElement as HTMLElement);
+      // `i === -1` (focus still on the trigger) walks to the first item on ArrowDown and the last
+      // on ArrowUp, rather than looping on an unreachable index.
+      const next = e.key === "ArrowDown" ? (i + 1) % items.length : (i <= 0 ? items.length : i) - 1;
+      items[next]?.focus();
+    };
+    const onDown = (e: PointerEvent) => {
+      if (menuRef.current?.contains(e.target as Node) || moreRef.current?.contains(e.target as Node)) return;
+      setOpen(false);
+    };
+    document.addEventListener("keydown", onKey, true);
+    document.addEventListener("pointerdown", onDown, true);
+    window.addEventListener("resize", place);
+    // A scroll INSIDE the menu (the list scrolling under its own height cap, #958) must not re-place
+    // it: that is the menu moving its content, not the trigger moving on the page.
+    const onScroll = (e: Event) => {
+      if (menuRef.current && e.target instanceof Node && menuRef.current.contains(e.target)) return;
+      place();
+    };
+    window.addEventListener("scroll", onScroll, true);
+    return () => {
+      document.removeEventListener("keydown", onKey, true);
+      document.removeEventListener("pointerdown", onDown, true);
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", onScroll, true);
+    };
+  }, [open, place]);
+
+  // A resize can make every action fit, which unmounts the menu (and its "…" trigger) underneath
+  // whatever had focus. Close during render — the documented way to adjust state to a prop
+  // change — and restore focus in an effect that touches no state.
+  // The merged menu taking over (the row just resolved) closes the pane-only one the same way.
+  if (open && (overflow.length === 0 || hasMerged)) setOpen(false);
+  // Same for a chip menu whose chip just folded away (or whose action left the list): the popover
+  // would hang from a detached node.
+  const chipMenuAction = chipMenu
+    ? inline.find((a) => a.id === chipMenu.id && a.menu?.length)
+    : undefined;
+  if (chipMenu && !chipMenuAction) setChipMenu(null);
+
+  // One row of the folded menu. Focus goes back to the "…" trigger, which survives the menu.
+  const foldedItem = (a: HeadAction) => (
+    <button
+      key={a.id}
+      type="button"
+      role="menuitem"
+      className={menu.headMenuItem}
+      disabled={a.disabled}
+      title={a.title}
+      aria-label={a.aria}
+      data-head-menu-item={a.id}
+      onClick={() => {
+        setOpen(false);
+        a.run(moreRef.current);
+      }}
+    >
+      {a.icon}
+      {a.hint ? (
+        <span className={menu.headMenuText}>
+          {a.label}
+          <span className={menu.headMenuHint}>{a.hint}</span>
+        </span>
+      ) : (
+        a.label
+      )}
+    </button>
+  );
+
+  useEffect(() => {
+    if (open) return;
+    if (document.activeElement !== document.body) return;
+    const fallback = wrapRef.current?.querySelector<HTMLElement>("[data-head-action]");
+    (moreRef.current && document.contains(moreRef.current) ? moreRef.current : fallback)?.focus();
+  }, [open]);
+
+  // Focus the first ENABLED item, once the menu is really in the DOM. It renders on `open && pos`
+  // and `pos` is set by the effect above, so doing this there ran against a null ref and did
+  // nothing at all — the a11y contract only looked implemented. Repaint is disabled while the
+  // socket is down and can be first in the overflow, so skipping disabled items matters here.
+  // ONCE PER OPENING (#958 review 4810). `pos` changes on every resize and page scroll, and this used
+  // to re-run on each one — so ArrowDown to an offscreen item scrolled it into view, the scroll re-placed
+  // the menu, and focus jumped back to the first item. The ref is cleared when the menu closes.
+  const focusedOnOpen = useRef(false);
+  useEffect(() => {
+    if (!open) {
+      focusedOnOpen.current = false;
+      return;
+    }
+    if (!pos || focusedOnOpen.current) return;
+    focusedOnOpen.current = true;
+    menuRef.current?.querySelector<HTMLElement>("[role='menuitem']:not([disabled])")?.focus();
+  }, [open, pos]);
+
+  return (
+    <div
+      className={className}
+      ref={wrapRef}
+      data-fit-width={fit.sig === sig && fit.w !== undefined ? fit.w : "unmeasured"}
+    >
+      {inline.map((a) =>
+        a.menu?.length ? (
+          // A chip that opens a menu of choices (#2173) rather than running one command.
+          <button
+            key={a.id}
+            type="button"
+            data-head-action={a.id}
+            className={btnClassName}
+            onClick={(e) => {
+              const el = e.currentTarget;
+              chipOwnerRef.current = el;
+              setChipMenu((cur) => (cur?.id === a.id ? null : { id: a.id, el }));
+            }}
+            disabled={a.disabled}
+            title={a.title}
+            aria-label={a.aria}
+            aria-haspopup="menu"
+            aria-expanded={chipMenu?.id === a.id}
+          >
+            {a.icon}
+            <span className={labelClassName}>{a.label}</span>
+          </button>
+        ) : (
+          <button
+            key={a.id}
+            type="button"
+            data-head-action={a.id}
+            className={btnClassName}
+            onClick={(e) => a.run(e.currentTarget)}
+            disabled={a.disabled}
+            title={a.title}
+            aria-label={a.aria}
+            aria-pressed={a.active}
+          >
+            {a.icon}
+            <span className={labelClassName}>{a.label}</span>
+          </button>
+        ),
+      )}
+      {/* The chip's menu is the shared `MenuPopover`: focus in, arrows, Home/End, Esc back to the
+          chip. Its ≤800px bottom-sheet form is never reached from here: at that breakpoint the
+          head is `collapsed` (pane and window alike), so no chip exists to open it and the pane's
+          menus stay anchored popovers (docs/design.md §5). */}
+      {chipMenu && chipMenuAction && (
+        <MenuPopover
+          items={choicesOf(chipMenuAction).map((m) => ({
+            key: m.id,
+            label: m.label,
+            ariaLabel: m.aria,
+            icon: m.icon,
+            disabled: m.disabled,
+            hint: m.hint,
+            data: { "data-head-menu-item": m.id },
+            onSelect: () => m.run(chipMenu.el),
+          }))}
+          anchor={{ element: chipMenu.el }}
+          label={chipMenuAction.aria}
+          onClose={closeChipMenu}
+          ownerRef={chipOwnerRef}
+        />
+      )}
+      {/* The fold trigger lives HERE only in the self-hosted case. `foldInto: "external"` (#1109)
+          leaves the overflow to the host's single ⋯ menu — a window must never render a second
+          "…" chip beside its chrome's own. */}
+      {(overflow.length > 0 || hasMerged) && foldInto === "self" && (
+        <>
+          <button
+            ref={moreRef}
+            type="button"
+            className={btnClassName}
+            aria-haspopup="menu"
+            aria-expanded={merged ? merged.expanded : open}
+            aria-label={collapsed ? "Actions for this session" : "More session actions"}
+            title={collapsed ? "Actions for this session" : "More session actions"}
+            onClick={(e) => (merged ? merged.toggle(e.currentTarget) : setOpen((o) => !o))}
+            data-testid={collapsed ? "head-actions-menu" : undefined}
+            data-head-more=""
+            data-head-more-merged={merged ? "" : undefined}
+          >
+            {collapsed ? <span>Actions</span> : null}
+            <MoreHorizontal size={13} aria-hidden="true" />
+          </button>
+          {open &&
+            pos &&
+            createPortal(
+              <div
+                ref={menuRef}
+                className={menu.headMenu}
+                role="menu"
+                aria-label={collapsed ? "Actions for this session" : "More session actions"}
+                style={{ top: pos.top, right: pos.right, maxHeight: pos.maxHeight }}
+              >
+                {overflow.map((a, i) =>
+                  a.menu?.length ? (
+                    // A folded group (#2173): its label once, then its items as ordinary rows,
+                    // ruled off from whatever sits on either side.
+                    <Fragment key={a.id}>
+                      {i > 0 && !overflow[i - 1].menu?.length && (
+                        <div className={menu.headMenuSep} role="separator" />
+                      )}
+                      <div
+                        className={menu.headMenuGroup}
+                        aria-hidden="true"
+                        data-menu-group={a.label}
+                      >
+                        {a.label}
+                      </div>
+                      {choicesOf(a).map(foldedItem)}
+                      {i < overflow.length - 1 && (
+                        <div className={menu.headMenuSep} role="separator" />
+                      )}
+                    </Fragment>
+                  ) : (
+                    foldedItem(a)
+                  ),
+                )}
+              </div>,
+              document.body,
+            )}
+        </>
+      )}
+    </div>
+  );
+}

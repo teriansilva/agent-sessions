@@ -1,0 +1,43 @@
+@import url('../mission-team-1950/base.css');
+/* the PLAN APPROVAL card (#1951) */
+.appr{padding:12px 16px 14px;display:flex;flex-direction:column;gap:10px}
+.sect{display:flex;flex-direction:column;gap:6px}
+.sh{font:600 10px/1.4 "Liberation Mono",monospace;letter-spacing:.16em;text-transform:uppercase;color:var(--text-2);margin:0}
+.pins{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
+.pin{display:grid;grid-template-columns:150px minmax(0,1fr) auto;gap:2px 12px;align-items:baseline;padding:6px 10px;background:var(--bg-2);border:1px solid var(--line);min-width:0}
+.pin .k{font:11px "Liberation Mono",monospace;color:var(--text-2);overflow-wrap:anywhere}
+.pin .v{font-size:13px;min-width:0;overflow-wrap:anywhere}
+.pin .v b{font-weight:600}
+.pin .b{font:11px "Liberation Mono",monospace;color:var(--text-2);white-space:nowrap}
+.pin.bad{border-left:3px solid var(--warn-text)}
+.pin.ok .b{color:var(--ok-text)}
+.chg{grid-column:2/-1;margin:0;font-size:12px;color:var(--text-1)}
+.chg s{color:var(--text-2)}
+.chg .arrow{color:var(--warn-text);padding:0 4px}
+.code{font:11px "Liberation Mono",monospace;color:var(--text-2)}
+.cover{margin:0;padding:8px 10px;border:1px dashed var(--line-strong);font-size:12px;color:var(--text-2)}
+.cover b{color:var(--text-1);font-weight:600}
+.digest{font:11px "Liberation Mono",monospace;color:var(--text-2);overflow-wrap:anywhere}
+.foot{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center}
+.foot .digest{margin-right:auto}
+.okline{margin:0;padding:8px 10px;border-left:3px solid var(--status-up);background:color-mix(in srgb,var(--status-up) 8%,transparent);font-size:13px}
+.okline b{color:var(--ok-text);font:600 10px "Liberation Mono",monospace;letter-spacing:.14em;margin-right:6px}
+.scope{margin:0;padding:0 0 0 18px;font-size:13px;display:flex;flex-direction:column;gap:2px}
+.field{display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:13px}
+.select{display:inline-flex;align-items:center;min-height:44px;padding:0 12px;border:1px solid var(--border);background:var(--bg-0);font:12px "Liberation Mono",monospace}
+.stamp{font:600 10px "Liberation Mono",monospace;letter-spacing:.16em;padding:2px 6px;border:1px solid var(--line-strong);color:var(--text-2)}
+.stamp.live{border-color:var(--status-up);color:var(--ok-text)}
+.stamp.warn{border-color:var(--warn-text);color:var(--warn-text)}
+.q{padding:12px 16px 14px;display:flex;flex-direction:column;gap:10px}
+.q p{margin:0}
+.mobile .pin{grid-template-columns:minmax(0,1fr)}
+.mobile .chg{grid-column:1/-1}
+.mobile .foot .btn{flex:1 1 auto}
+.mobile .appr,.mobile .q{padding:10px}
+/* Hermes on #1951 (127328): painted targets at least 44px; secondary copy at AA (--text-2); narrow
+   frames stack their pins so a long code never squeezes the text column to one glyph. */
+.btn{height:48px;min-height:48px}
+.ann,.sub,.label{color:var(--text-2)}
+.frame.narrow .pin{grid-template-columns:minmax(0,1fr)}
+.frame.narrow .chg{grid-column:1/-1}
+.pin .b{white-space:normal;overflow-wrap:anywhere}

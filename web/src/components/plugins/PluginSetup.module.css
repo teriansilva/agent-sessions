@@ -1,0 +1,66 @@
+/* Gallery/setup additions (#1261): shared HUD tokens and action buttons; no separate theme. */
+.stack { display: grid; gap: 16px; min-width: 0; }
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; min-width: 0; }
+.field { display: grid; gap: 7px; min-width: 0; flex: 1 1 180px; }
+.field > span { font: 600 var(--fs-label) var(--font-mono); text-transform: uppercase; letter-spacing: .1em; color: var(--text-2); }
+/* The nj-field look: --bg-2, the edge lights on hover/focus, the focus ring inset (design.md §6). */
+.input { width: 100%; min-width: 0; min-height: 44px; padding: 10px 12px; background: var(--bg-2); color: var(--text); border: 1px solid var(--border); font: var(--fs-row) var(--font-mono); border-radius: 0; }
+.input:hover { border-color: var(--hud-dim); }
+.input:focus-visible { outline: 2px solid var(--accent-text); outline-offset: -3px; border-color: var(--hud); }
+.check:focus-within { outline: 2px solid var(--accent-text); outline-offset: 2px; }
+textarea.input { min-height: 180px; resize: vertical; }
+/* A setup step's panel: the small NIGHTJAR frame (clips its chamfer); headings in the HUD caps. */
+.panel { composes: nj-frame-sm from global; position: relative; padding: var(--sp-4); min-width: 0; overflow-wrap: anywhere; }
+.panel h2, .panel h3 { margin: 0 0 12px; font: 600 var(--fs-body) var(--font-mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--text); }
+.panel p { margin: 0 0 12px; color: var(--text-2); line-height: 1.5; }
+.note { padding: 12px 14px; border-left: 2px solid var(--status-degraded); background: color-mix(in srgb, var(--status-degraded) 10%, var(--bg-2)); line-height: 1.5; color: var(--text); overflow-wrap: anywhere; }
+/* A note that lists (the Add-agent picker's agents that can't be installed, #2245). */
+.listNote { margin: 0 0 12px; }
+.reasons { margin: -4px 0 12px; padding-left: 18px; color: var(--text-2); line-height: 1.5; }
+.note .reasons { margin: 6px 0 0; color: inherit; }
+.reasons li + li { margin-top: 4px; }
+.error { border-color: var(--status-down); color: var(--danger-text); }
+.ok { color: var(--ok-text); }
+.older { font: 600 var(--fs-micro) var(--font-mono); letter-spacing: .14em; text-transform: uppercase; color: var(--warn-text); }
+.kv { display: grid; grid-template-columns: minmax(90px, .35fr) minmax(0, 1fr); gap: 12px; margin: 0; }
+.kv dt { color: var(--text-2); } .kv dd { margin: 0; overflow-wrap: anywhere; min-width: 0; }
+.check { min-height: 44px; display: flex; align-items: center; gap: 12px; padding: 8px 0; cursor: pointer; }
+.check input { width: 20px; height: 20px; flex: none; accent-color: var(--accent); }
+.details summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; gap: 8px; color: var(--text); }
+.details summary::before { content: "▸"; } .details[open] summary::before { content: "▾"; }
+.digest { margin: 4px 0 12px; font: var(--fs-label) / 1.6 var(--font-mono); overflow-wrap: anywhere; }
+.checks { margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; }
+.checks li { display: flex; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--line); padding: 8px 0; min-width: 0; overflow-wrap: anywhere; }
+.checks small { display: block; color: var(--text-2); margin-top: 4px; }
+/* The sign-in's output as readable text (#2106): the hidden xterm is the emulator, this is its
+   screen. Body font, wrapped, links break anywhere so a 400-character OAuth URL never overflows. */
+.output { position: relative; display: grid; gap: 8px; min-width: 0; }
+.outputHead { display: flex; justify-content: space-between; align-items: center; gap: 10px; font: 600 var(--fs-label) var(--font-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--text-2); }
+.textButton { min-height: 44px; padding: 0 4px; background: none; border: 0; color: var(--accent-text); font: 500 var(--fs-meta) var(--font-mono); letter-spacing: .04em; text-transform: none; text-decoration: underline; cursor: pointer; }
+.textButton:focus-visible { outline: 2px solid var(--accent-text); outline-offset: 2px; }
+.outputText { max-height: 320px; overflow: auto; padding: 12px 14px; background: var(--bg-2); border: 1px solid var(--border); color: var(--text); line-height: 1.55; overflow-wrap: anywhere; }
+.outputText p { margin: 0 0 4px; white-space: pre-wrap; }
+.outputText a { color: var(--accent-text); word-break: break-all; }
+.quiet { color: var(--text-2); }
+/* Kept laid out (xterm measures its cells) but off-screen and out of the accessibility tree. */
+.terminalHidden { position: absolute; left: -10000px; top: 0; width: 760px; height: 320px; overflow: hidden; visibility: hidden; }
+.info { margin: 0; padding: 12px 14px; border-left: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--bg-2)); line-height: 1.5; color: var(--text); overflow-wrap: anywhere; }
+.info b { display: block; margin-bottom: 4px; }
+.keys { display: flex; flex-wrap: wrap; gap: 8px; }
+.keys > button { min-width: 56px; }
+.terminal { height: 320px; max-width: 100%; min-width: 0; overflow: hidden; background: var(--term-bg); border: 1px solid var(--border); padding: 8px; }
+.filter[aria-pressed="true"] { border-color: var(--accent); color: var(--text); background: var(--surface-2); }
+@media (max-width: 800px) {
+  .kv { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .kv dd { margin-bottom: 10px; }
+  .terminal { height: 280px; }
+  .row > button, .row > a { flex: 1 1 auto; }
+}
+/* The flow embedded in the setup wizard (#1739): step chips instead of the shell's rail. */
+.embedded { display: grid; gap: 12px; min-width: 0; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.chips li { padding: 4px 8px; border: 1px solid var(--line); font: 600 var(--fs-micro) var(--font-mono); letter-spacing: .14em; text-transform: uppercase; color: var(--text-3); }
+.chips li[data-state="done"] { color: var(--ok-text); border-color: var(--line-strong); }
+.chips li[data-state="current"] { color: var(--accent-text); border-color: var(--accent); }
+.embeddedHeading { margin: 0; font: 700 var(--fs-row) var(--font-display); letter-spacing: .12em; text-transform: uppercase; color: var(--text); }
+.embeddedHeading:focus-visible { outline: 2px solid var(--accent-text); outline-offset: 2px; }

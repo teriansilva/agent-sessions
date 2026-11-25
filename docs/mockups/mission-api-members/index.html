@@ -1,0 +1,131 @@
+<!doctype html>
+<html data-theme="dark"><meta charset="utf-8"><title>#1900 · API members on a mission</title>
+<style>
+@import url('../../../web/src/tokens.css');
+@import url('../../../web/src/components/hud/nightjar.css');
+*{box-sizing:border-box}
+:root{--font-mono:"Liberation Mono",monospace}
+body{margin:0;padding:24px;background:var(--bg-0);color:var(--text-1);font:14px/1.5 "Liberation Sans",sans-serif}
+button,a{font-family:inherit;font-size:inherit;line-height:inherit;color:inherit}
+h1{font:700 18px "Liberation Mono",monospace;margin:0 0 4px}
+.sub{margin:0 0 20px;color:var(--text-3);font-size:13px}
+.board{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px;align-items:start}
+.label{margin:0 0 8px;color:var(--text-3);font:11px "Liberation Mono",monospace;letter-spacing:.08em}
+.frame{border:1px solid var(--border);background:var(--bg-1);min-width:0}
+.mhead{padding:10px 16px;border-bottom:1px solid var(--line);display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+.mhead b{font:600 14px "Liberation Sans",sans-serif}
+.mstate{font:600 10px "Liberation Mono",monospace;letter-spacing:.16em;color:var(--hud-text);border:1px solid var(--hud-dim);padding:2px 6px}
+/* Now strip — the real .nowStrip rules */
+.nowStrip{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px;padding:8px 16px;border-bottom:1px solid var(--line);background:color-mix(in srgb,var(--hud) 4%,transparent);font-size:12px;color:var(--text-2)}
+.nowHead{font:600 10px/1.4 "Liberation Mono",monospace;letter-spacing:.18em;text-transform:uppercase;color:var(--hud-text)}
+.nowList{display:flex;flex-direction:column;gap:2px;margin:0;padding:0;list-style:none;flex:1 1 240px;min-width:0}
+.nowRow{display:flex;flex-wrap:wrap;align-items:center;gap:2px 8px;min-width:0;min-height:24px}
+.nowDot{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
+.nowProducing{background:var(--status-up);box-shadow:0 0 var(--glow-led) var(--status-up)}
+.nowAtPrompt{background:var(--text-2)}
+.nowQuiet{background:transparent;border:1.5px solid var(--text-3)}
+.nowWho{font:12px "Liberation Mono",monospace;color:var(--text-1)}
+.nowWhat{color:var(--text-1)}
+.nowMuted{color:var(--text-2)}
+.api{font:10px "Liberation Mono",monospace;color:var(--text-2);border:1px solid var(--line);padding:1px 4px;letter-spacing:.08em}
+.nowLink{height:32px;min-height:32px;padding:2px 12px;font-size:11px;align-self:center;margin-left:auto}
+/* session block */
+.sess{margin:12px 16px;border:1px solid var(--line);background:var(--bg-0)}
+.sessHead{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 12px;border-bottom:1px solid var(--line);font:11px "Liberation Mono",monospace;color:var(--text-2);letter-spacing:.06em}
+.role{color:var(--hud-text);border:1px solid var(--hud-dim);padding:1px 5px;letter-spacing:.14em;font-size:10px}
+.pre{margin:0;padding:10px 12px;font:12px/1.45 "Liberation Mono",monospace;color:var(--text-2);white-space:pre;overflow:hidden}
+.empty{padding:14px 12px;display:flex;flex-direction:column;gap:10px}
+.empty p{margin:0;color:var(--text-2)}
+.empty p b{color:var(--text-1)}
+/* The shared action plate (actionButton.module.css .primary / .ghost: nj-plate, --cut-sm). */
+.btn{--c:var(--cut-sm);box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;height:44px;min-height:44px;padding:6px 18px;border:1px solid transparent;font:700 12px "Liberation Mono",monospace;letter-spacing:.12em;text-transform:uppercase;text-decoration:none;cursor:pointer;align-self:flex-start}
+.btn.primary{--nj-face:var(--accent);--nj-edge:color-mix(in srgb,var(--accent) 85%,black);color:var(--on-accent)}
+.btn.ghost{--nj-face:color-mix(in srgb,var(--text-1) 5%,var(--bg-1));--nj-edge:var(--border);color:var(--text-2);font-weight:500;padding:6px 16px}
+/* decision card — the real .act / .actTop / .verb / .verbEsc / .conf rules */
+.act{margin:12px 16px;padding:12px 16px;background:var(--bg-1);border:1px solid color-mix(in srgb,var(--status-degraded) 45%,transparent);border-top:2px solid var(--status-degraded);display:flex;flex-direction:column;gap:8px}
+.actTop{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.verb{padding:3px 7px;font:600 10px/1 "Liberation Mono",monospace;letter-spacing:.16em;color:var(--warn-text);border:1px solid color-mix(in srgb,var(--status-degraded) 60%,transparent)}
+.sname{font-weight:600;color:var(--text-1)}
+.eng{font:10px "Liberation Mono",monospace;color:var(--text-2);border:1px solid var(--line);padding:1px 4px}
+.conf{font:11px/1.4 "Liberation Mono",monospace;letter-spacing:.1em;color:var(--text-2);margin-left:auto}
+.why{margin:0;color:var(--text-1)}
+.pend{margin:0;padding:0;list-style:none;border-top:1px solid var(--line)}
+.pend li{display:flex;gap:10px;align-items:baseline;padding:6px 0;border-bottom:1px solid var(--line);font-size:13px;min-width:0}
+.pend .k{flex:0 0 74px;font:11px "Liberation Mono",monospace;letter-spacing:.12em;color:var(--text-2);text-transform:uppercase}
+.pend code{font:12px "Liberation Mono",monospace;color:var(--text-1);overflow-wrap:anywhere}
+.more{color:var(--text-2);font-size:12px}
+.foot{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font:11px "Liberation Mono",monospace;letter-spacing:.08em;color:var(--text-2)}
+.note{font-size:12px;color:var(--text-3);margin:0}
+.ann{margin:8px 0 0;font-size:12px;color:var(--text-3);border-left:2px solid var(--line-strong);padding-left:8px}
+.mobile{padding:14px}
+.mobile .board{grid-template-columns:390px 390px}
+.mobile .btn{align-self:stretch}
+.mobile .nowLink{height:44px;min-height:44px;padding:6px 16px}
+.acts{display:flex;gap:8px;flex-wrap:wrap}
+.mobile .act .btn{width:100%}
+</style>
+<h1>#1900 · a mission with a Claude API member</h1>
+<p class="sub">Frame 1: Now strip + the member's block. Frame 2: one decision card per API session for its waiting approvals and questions.</p>
+<div class="board">
+
+<div><div class="label">1 · NOW STRIP + MEMBER BLOCK — NO EMPTY TERMINAL</div>
+<section class="frame">
+ <div class="mhead"><b>Harden the login flow</b><span class="mstate">RUNNING</span></div>
+ <div class="nowStrip"><span class="nowHead">Now</span>
+  <ul class="nowList">
+   <li class="nowRow"><span class="nowDot nowProducing"></span><span class="nowWho">claude · 3f2a91</span><span class="nowWhat">producing output</span><span class="nowMuted">· recap 2 min ago</span></li>
+   <li class="nowRow"><span class="nowDot nowAtPrompt"></span><span class="nowWho">claude-api · 8c41</span><span class="api">API</span><span class="nowWhat">waiting on 3 approvals</span><span class="nowMuted">· last turn 40s ago</span><a class="nj-plate btn ghost nowLink" href="#">Conversation →</a></li>
+   <li class="nowRow"><span class="nowDot nowProducing"></span><span class="nowWho">claude-api · 1d07</span><span class="api">API</span><span class="nowWhat">working on a turn</span><span class="nowMuted">· last turn 12s ago</span><a class="nj-plate btn ghost nowLink" href="#">Conversation →</a></li>
+   <li class="nowRow"><span class="nowDot nowQuiet"></span><span class="nowWho">claude-api · 5b9e</span><span class="api">API</span><span class="nowWhat">at rest</span><span class="nowMuted">· last turn 3m ago</span><a class="nj-plate btn ghost nowLink" href="#">Conversation →</a></li>
+  </ul>
+ </div>
+ <div class="sess">
+  <div class="sessHead"><span class="role">PRIMARY</span>claude · 3f2a91 · VIEW SCREEN <span style="color:var(--text-2)">(the console block, unchanged by this issue)</span></div>
+  <pre class="pre">● Running tests…
+  tests/test_login.py ........  8 passed
+● Editing src/auth/session.py</pre>
+ </div>
+ <div class="sess">
+  <div class="sessHead"><span class="role">REVIEWER</span>claude-api · 8c41 <span class="api">API</span></div>
+  <div class="empty">
+   <p><b>API session — it has no terminal screen.</b> Its turns, tool calls and approvals are in its conversation.</p>
+   <a class="nj-plate btn primary" href="#">Open conversation</a>
+  </div>
+ </div>
+ <p class="ann" style="margin:0 16px 14px">The three API states, from the structured snapshot: waiting on N approvals (neutral dot: the card owns the ask), working on a turn (live dot), at rest (hollow dot). CONVERSATION opens /s/&lt;engine&gt;/&lt;id&gt;; its plate is a 44px target on the phone.</p>
+</section></div>
+
+<div><div class="label">2 · ONE DECISION CARD PER API SESSION</div>
+<section class="frame">
+ <div class="mhead"><b>Harden the login flow</b><span class="mstate">RUNNING</span></div>
+ <div class="act">
+  <div class="actTop"><span class="verb">ESCALATE</span><span class="sname">Review auth changes</span><span class="eng">CLAUDE API</span><span class="conf">3 waiting</span></div>
+  <p class="why">2 approvals and 1 question waiting in <b>Review auth changes</b>. Decide each one in its conversation.</p>
+  <ul class="pend">
+   <li><span class="k">Edit</span><code>src/auth/session.py</code></li>
+   <li><span class="k">Bash</span><code>npm test -- login</code></li>
+   <li><span class="k">Question</span><span>Keep the old cookie name for one release?</span></li>
+  </ul>
+  <div class="acts"><a class="nj-plate btn primary" href="#">Open conversation</a><button class="nj-plate btn ghost" type="button">✕ Dismiss</button></div>
+  <p class="note">Notified once when the first one arrived. The count follows the session; the card goes away when none are left.</p>
+  <div class="foot"><span>MISSION</span><span>ESCALATED</span><span style="margin-left:auto">1 min ago</span></div>
+ </div>
+ <div class="act">
+  <div class="actTop"><span class="verb">ESCALATE</span><span class="sname">Review auth changes</span><span class="eng">CLAUDE API</span><span class="conf">7 waiting</span></div>
+  <p class="why">7 approvals waiting in <b>Review auth changes</b>. Decide each one in its conversation.</p>
+  <ul class="pend">
+   <li><span class="k">Edit</span><code>src/auth/session.py</code></li>
+   <li><span class="k">Edit</span><code>src/auth/cookies.py</code></li>
+   <li><span class="k">Bash</span><code>npm test -- login</code></li>
+  </ul>
+  <span class="more">and 4 more</span>
+  <div class="acts"><a class="nj-plate btn primary" href="#">Open conversation</a><button class="nj-plate btn ghost" type="button">✕ Dismiss</button></div>
+  <div class="foot"><span>MISSION</span><span>ESCALATED</span><span style="margin-left:auto">just now</span></div>
+ </div>
+ <p class="ann" style="margin:0 16px 14px">Second card: the same card later in the turn, with no second notification. At most 3 rows, then "and N more".</p>
+</section></div>
+
+</div>
+<script>
+const q=new URLSearchParams(location.search);document.documentElement.dataset.theme=q.get('theme')||'dark';if(q.get('mobile'))document.body.classList.add('mobile');
+</script>

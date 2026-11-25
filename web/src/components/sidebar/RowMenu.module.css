@@ -1,0 +1,169 @@
+/* Row ⋯ context menu (#384) on THE menu chrome (components/ui/menu.module.css, NIGHTJAR #1531).
+ * Desktop: a fixed-position popover anchored to the trigger (coords arrive as --rm-top/--rm-right
+ * custom props so the mobile query below can override the placement wholesale). Mobile: the shared
+ * bottom sheet. Portaled to <body>.
+ *
+ * The names below (`item`, `itemIcon`, `sep`, …) are composed by many menus across the app; they
+ * re-export the chrome, so changing a menu's look is one edit in ui/menu.module.css. */
+
+.trigger {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0;
+  transition: color var(--t-fast) var(--ease-out);
+}
+.trigger:hover,
+.trigger[aria-expanded="true"] {
+  background: color-mix(in srgb, var(--hud) 10%, transparent);
+  color: var(--accent-text);
+}
+.trigger:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -2px;
+  color: var(--accent-text);
+}
+
+.scrim {
+  composes: scrim from "../ui/menu.module.css";
+}
+/* The overrides below are DOUBLED selectors: they must beat the composed chrome's own `display` /
+ * `position` whatever order the two stylesheets load in (a single class tied with it, and on
+ * desktop the sheet title showed and the popover lost its anchor). */
+.scrim.scrim {
+  display: none;
+}
+
+/* Desktop: a transparent passthrough — the menu inside keeps behaving as the fixed popover (and
+ * stays clickable: the sheet wrapper is click-through only on a phone). The mobile query turns
+ * this into the dynamic-viewport sheet container. */
+.sheetWrap {
+  composes: sheetWrap from "../ui/menu.module.css";
+}
+.sheetWrap.sheetWrap {
+  display: contents;
+  pointer-events: auto;
+}
+
+.menu {
+  composes: panel from "../ui/menu.module.css";
+}
+.menu.menu {
+  position: fixed;
+  top: var(--rm-top);
+  right: var(--rm-right);
+  z-index: calc(var(--z-shell) + 1);
+  min-width: 208px;
+  /* #1109 review: a merged Session+Pane menu can exceed the space any placement has, so the menu
+     itself is bounded by the viewport and scrolls — the placement clamp then keeps it on screen. */
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+}
+/* An ANCHORED menu (#2173: the session pane's own menu, design.md §5) stays this popover at every
+ * width, capped to the space under its trigger (set by the placement, `--rm-max-h`) and scrolling
+ * inside the cap. The phone query below skips it: every sheet rule there is `:not(.anchored…)`.
+ * z-index: over the compose bar and the files drawer's own head, as the pane's overflow always sat. */
+.menu.menu.anchored {
+  max-height: var(--rm-max-h, calc(100vh - 16px));
+  z-index: calc(var(--z-shell) + 5);
+}
+/* The placement props default to the corner until the layout effect measures the anchor. */
+.menu {
+  --rm-top: 0px;
+  --rm-right: 0px;
+}
+
+.item {
+  composes: item from "../ui/menu.module.css";
+}
+.itemIcon {
+  composes: itemIcon from "../ui/menu.module.css";
+}
+.itemDanger {
+  composes: itemDanger from "../ui/menu.module.css";
+}
+.itemText {
+  composes: itemText from "../ui/menu.module.css";
+}
+.itemHint {
+  composes: itemHint from "../ui/menu.module.css";
+}
+.sep {
+  composes: sep from "../ui/menu.module.css";
+}
+.groupLabel {
+  composes: groupLabel from "../ui/menu.module.css";
+}
+
+/* Sheet chrome — hidden on desktop, shown by the mobile query below. */
+.sheetHead {
+  composes: sheetHead from "../ui/menu.module.css";
+}
+.sheetHead.sheetHead {
+  display: none;
+}
+.sheetTitle {
+  composes: sheetTitle from "../ui/menu.module.css";
+}
+.sheetSession {
+  composes: sheetSub from "../ui/menu.module.css";
+}
+.cancel {
+  composes: cancel from "../ui/menu.module.css";
+}
+.cancel.cancel {
+  display: none;
+}
+
+@media (max-width: 800px) {
+  .trigger {
+    width: 32px;
+    height: 32px;
+  }
+  .scrim.scrim:not(.anchoredScrim) {
+    display: block;
+  }
+  .sheetWrap.sheetWrap:not(.anchoredWrap) {
+    display: flex;
+    pointer-events: none;
+  }
+  .menu.menu:not(.anchored) {
+    /* relative + inset:auto: a normal flex item (neutralising the desktop --rm-top/right offsets),
+     * flush to the floor with the rail along its top. */
+    position: relative;
+    inset: auto;
+    min-width: 0;
+    width: 100%;
+    max-height: 100vh;
+    max-height: 100dvh;
+    padding: 0 0 max(var(--sp-3), env(safe-area-inset-bottom));
+    border-left: none;
+    border-right: none;
+    border-bottom: none;
+    pointer-events: auto;
+    /* Flush to the floor: one cut corner, and a plain face (the frame's bottom-right cut line
+       would otherwise draw across a corner that is no longer cut). */
+    background: var(--bg-1);
+    clip-path: polygon(var(--cut) 0, 100% 0, 100% 100%, 0 100%, 0 var(--cut));
+    animation: global(nj-sheet-up) var(--t-slow) var(--ease-out) both;
+  }
+  .menu:not(.anchored) > .sheetHead.sheetHead {
+    display: flex;
+  }
+  .item {
+    min-height: 48px;
+    padding: 0 var(--sp-4);
+    font-size: var(--fs-row);
+    gap: var(--sp-3);
+  }
+  .menu:not(.anchored) > .cancel.cancel {
+    display: inline-flex;
+  }
+}

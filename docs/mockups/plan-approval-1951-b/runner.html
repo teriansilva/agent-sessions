@@ -1,0 +1,69 @@
+<!doctype html>
+<html data-theme="dark"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>#1951 slice B · the board under an approval</title>
+<link rel="stylesheet" href="base.css">
+<body>
+<h1>#1951 slice B · steps under your approval, refused launches</h1>
+<p class="sub">Frames 10, 7 and 7b–7c. A synthetic job-application mission (no personal content). The running board (#1581) under an approval in force: HQ starts each ready agent step on its approved specialist, re-checking every pin first. Every state and sentence is server text from <code>GET …/steps</code>; the client renders it and decides nothing.</p>
+<div class="board">
+
+<div><div class="label">10 · UNDER YOUR APPROVAL — HQ STARTS READY STEPS; “ASK ME BEFORE” HOLDS ONE</div>
+<section class="frame">
+ <div class="mhead"><b>Apply: Data analyst, Example GmbH</b><span class="mstate">RUNNING</span></div>
+ <div class="run">
+  <div class="thead"><span class="ttl">Steps</span><span class="rev">revision 6 · 2 of 2 running</span><span class="auth">under your approval</span></div>
+  <div class="ctl"><p class="tsum">HQ starts each agent step of revision 6 when it is ready, on its approved specialist, after checking the approval again. A step you hold waits for your Start.</p><button class="nj-plate btn ghost">Pause new steps</button><button class="nj-plate btn ghost">Stop mission…</button></div>
+  <ul class="steps">
+   <li class="step quiet"><div class="sline"><span class="stitle">Read the posting</span><span class="sid">o1.posting</span><span class="st live">done</span></div>
+    <p class="why">career-archivist v2 · episode 1 · started by HQ under your approval · finished 10:51</p></li>
+   <li class="step run-live"><div class="sline"><span class="led"></span><span class="stitle">Tailor the CV</span><span class="sid">o1.cv</span><span class="st live">running</span></div>
+    <div class="side"><button class="nj-plate btn ghost">Redirect…</button><button class="nj-plate btn ghost">Stop step…</button></div>
+    <p class="why"><b>cv-writer v2</b> · sonnet · episode 1 · started by HQ under your approval · <a class="sess" href="#">claude-api:9a41…2c7b</a></p></li>
+   <li class="step run-live"><div class="sline"><span class="led"></span><span class="stitle">Cover letter</span><span class="sid">o1.cover_letter</span><span class="st live">running</span></div>
+    <div class="side"><button class="nj-plate btn ghost">Redirect…</button><button class="nj-plate btn ghost">Stop step…</button></div>
+    <p class="why"><b>letter-writer v1</b> · approved alternate 1 · started because cv-writer's client is out of quota · <a class="sess" href="#">opencode:ses_51d8…</a></p></li>
+   <li class="step"><div class="sline"><span class="stitle">Assemble the documents</span><span class="sid">o1.documents</span><span class="st">waiting</span></div>
+    <p class="why">Waits for o1.cv and o1.cover_letter. HQ starts it when they are done.</p>
+    <label class="hold"><span class="box"></span>Ask me before this step starts</label></li>
+   <li class="step"><div class="sline"><span class="stitle">Review the application</span><span class="sid">o1.review</span><span class="st ready">held</span></div>
+    <div class="side"><button class="nj-plate btn primary">Start step</button></div>
+    <p class="why">Ready, and waiting for you: you asked to be asked before it starts. <b>application-reviewer v1</b> · opus</p>
+    <label class="hold"><span class="box on"></span>Ask me before this step starts</label></li>
+   <li class="step quiet"><div class="sline"><span class="stitle">Approve</span><span class="sid">o1.approve</span><span class="actor">operator</span><span class="st">waiting</span></div>
+    <p class="why">Your step. Approving the plan never covers it.</p></li>
+  </ul>
+ </div>
+</section></div>
+
+<div><div class="label">7 · A REFUSED LAUNCH — THE ONE DECISION, ON THE BOARD</div>
+<section class="frame">
+ <div class="mhead"><b>Apply: Data analyst, Example GmbH</b><span class="mstate">RUNNING</span></div>
+ <div class="run">
+  <p class="alert"><b>REFUSED</b>o1.cv was not started. Plan changed since you approved it: <strong>cv-writer</strong> changed from v2 to v3. Review it again.</p>
+  <ul class="steps">
+   <li class="step run-bad"><div class="sline"><span class="stitle">Tailor the CV</span><span class="sid">o1.cv</span><span class="st warn">refused</span></div>
+    <p class="why">Checked at launch 11:02: <b>cv-writer</b> <s>v2</s> → v3 <span class="code">specialist_version_changed</span>. Nothing was reserved, given or started. HQ asks once per change: it will not ask again until something else changes.</p></li>
+  </ul>
+  <p class="tsum">Steps already running keep running. Approve the new plan to let HQ go on, or start the step yourself.</p>
+  <div class="ctl"><button class="nj-plate btn ghost">Stop mission…</button><button class="nj-plate btn ghost">Start step myself</button><a class="nj-plate btn primary" href="#">Review the plan</a></div>
+ </div>
+</section>
+<div class="label" style="margin-top:20px">7B · GRADE DRIFT, REFUSED AT LAUNCH</div>
+<section class="frame">
+ <div class="run">
+  <ul class="steps">
+   <li class="step run-bad"><div class="sline"><span class="stitle">Review the application</span><span class="sid">o1.review</span><span class="st warn">refused</span></div>
+    <p class="why">Checked at launch 11:40: sonnet on claude-api is now graded <b>fast</b>; this step needs at least <b>strong</b> <span class="code">grade_below_min</span>. Grades are never pinned: grade it strong again in Settings → Agents and the same approval starts it.</p></li>
+  </ul>
+ </div>
+</section>
+<div class="label" style="margin-top:20px">7C · NOBODY WATCHING — ONE NOTIFICATION PER REFUSAL</div>
+<div class="bell">
+ <div class="brow"><span class="dot"></span><span class="t">Mission step not started: Apply: Data analyst, Example GmbH</span><span class="d">o1.cv · plan changed since you approved it · 11:02</span></div>
+</div>
+<div class="push" style="margin-top:12px"><span class="ic"></span><span class="t">BattleLab · step not started</span><span class="d">Apply: Data analyst, Example GmbH — o1.cv: plan changed since you approved it.</span></div>
+<p class="ann">Server text only: the mission, the step and the change class. It is retracted when you approve again or revoke.</p>
+</div>
+
+</div>
+<script src="head.js"></script>
+</body></html>

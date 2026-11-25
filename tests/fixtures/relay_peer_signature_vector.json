@@ -1,0 +1,11 @@
+{
+ "about": "Shared between the relay (battlelab-cloud#94) and its clients. The peer_hello signature is Ed25519 over: the ASCII bytes 'bl-relay peer v1', 0x00, the 32 raw nonce bytes, 0x00, the caller's name lowercased as ASCII, 0x00, the target's name lowercased as ASCII. Ed25519 is deterministic, so the signature below is the only valid one for this key and message.",
+ "seed_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+ "public_key_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+ "nonce_hex": "6465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283",
+ "name": "Alpha-Box",
+ "target": "beta-box",
+ "message_hex": "626c2d72656c61792070656572207631006465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f8081828300616c7068612d626f7800626574612d626f78",
+ "signature_hex": "1ba133b9195d1b7860e9cfc1b53f66e1779ad6eb9e1d28f5df54bccf28cb704941c5510a7623460a71b3609d04cc4472368df1e1b42467ad188c6a88030eb309",
+ "register_signature_hex": "0e6d264980051744d1e68c83a5c480a44aaf8178de36baa71b3c95eeaa825b1d5a435bbd6ea103d1e39a82d6b134f59f56c38c4d1496e64227847dba0552e80e"
+}

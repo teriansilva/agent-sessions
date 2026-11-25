@@ -1,0 +1,35 @@
+# A bundled action manifest (#2248 P2). Data only: every value is a member of a set in
+# actions/manifest.py, an unknown field anywhere refuses it, and `executor` names reviewed code in
+# actions/executors.py (the plugin `actions/write_memory.py`).
+contract = 1
+id = "write_memory"
+label = "Write a memory note"
+category = "battlelab"
+description = "Leaves a short note in a project's memory; BattleLab reviews it before other sessions see it."
+effect = "write-battlelab"
+executor = "write_memory"
+requires = ["project", "memory"]
+triggers = ["once", "schedule", "manual", "webhook"]
+
+[[inputs]]
+name = "project_id"
+type = "project"
+label = "Project"
+required = true
+
+[[inputs]]
+name = "title"
+type = "text"
+label = "Title"
+required = true
+
+[[inputs]]
+name = "message"
+type = "message"
+label = "Note"
+required = true
+
+[[outputs]]
+name = "note"
+type = "note"
+label = "The note"

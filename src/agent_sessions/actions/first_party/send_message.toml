@@ -1,0 +1,36 @@
+# A bundled action manifest (#2248 P2). Data only: every value is a member of a set in
+# actions/manifest.py, an unknown field anywhere refuses it, and `executor` names reviewed code in
+# actions/executors.py (the plugin `actions/send_message.py`). Stored as a plugin action:
+# `{kind: "plugin", plugin: "send_message", version: 1, inputs, from_delivery?}`.
+contract = 1
+id = "send_message"
+label = "Send a message"
+category = "messaging"
+description = "Posts to a chat or an inbox you set up: Telegram, Matrix or mail, to a recipient you allowed."
+effect = "notify"
+executor = "send_message"
+requires = ["messenger"]
+triggers = ["once", "schedule", "manual", "webhook"]
+
+[[inputs]]
+name = "connector"
+type = "connector"
+label = "Send with"
+required = true
+
+[[inputs]]
+name = "recipient"
+type = "recipient"
+label = "To"
+required = true
+
+[[inputs]]
+name = "message"
+type = "message"
+label = "Message"
+required = true
+
+[[outputs]]
+name = "message"
+type = "message"
+label = "The message sent"

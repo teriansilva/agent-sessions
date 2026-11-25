@@ -1,0 +1,82 @@
+/* The setup wizard's Connect HQ step (#1880). Tokens only; no radius, no gradient
+ * (docs/design.md). The open card is Settings' own `ConnectorCard` and keeps its own styles; this
+ * sheet only lays out the tiles around it. */
+
+.step {
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-3);
+}
+/* An open card (anything that isn't a tile) spans the row, so its form has the full width. */
+.grid > :not(.tile) {
+  grid-column: 1 / -1;
+}
+
+.tile {
+  display: grid;
+  align-content: start;
+  gap: var(--sp-1);
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px dashed var(--line-strong);
+  background: var(--bg-1);
+  min-width: 0;
+}
+
+.tileHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.name {
+  color: var(--text-1);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  overflow-wrap: anywhere;
+}
+.state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+
+.line {
+  margin: 0;
+  font-size: var(--fs-row);
+  color: var(--text-2);
+  line-height: 1.5;
+}
+.meta {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+
+/* ≥44 px touch target (docs/design.md §8): the ghost chip alone is 34 px. */
+.tileBtn {
+  justify-self: start;
+  min-height: 44px;
+  margin-top: var(--sp-1);
+}
+
+@media (max-width: 800px) {
+  .grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .tileBtn {
+    justify-self: stretch;
+  }
+}

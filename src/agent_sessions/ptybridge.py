@@ -1,0 +1,352 @@
+"""dtach-backed persistent PTY sessions for the web terminal (issue #49).
+
+The replacement for the ttyd + Zellij stack. Each agent session runs under its
+own ``dtach`` master — a transparent single-program detach with **no terminal
+UI, no mouse capture, no alt-screen** — so the agent's output reaches xterm.js
+raw (native scroll/select/copy) and survives browser disconnects + app
+redeploys. One dtach socket per ``{engine}-{session_id}``; identity is the
+socket, never a mutable tab label (the Zellij failure mode this removes).
+
+This module is the shell-free session/identity layer: it builds the validated
+``dtach`` argv and maps session ids to sockets. The asyncio websocket↔PTY bridge
+that attaches to these sockets lives in the web layer.
+"""
+
+from __future__ import annotations
+
+import errno
+import os
+import re
+import shutil
+import socket
+import sys
+from collections.abc import Iterable
+from pathlib import Path
+
+DTACH_BIN = os.environ.get("AGENT_SESSIONS_DTACH_BIN") or shutil.which("dtach") or "dtach"
+
+
+def _sun_path_max(platform: str) -> int:
+    """The longest usable AF_UNIX pathname, in bytes, on ``platform`` (#2088).
+
+    ``struct sockaddr_un.sun_path`` holds the path AND its trailing NUL, and CPython refuses a
+    path whose length is >= the field size before it calls ``bind``/``connect``. Linux's field
+    is 108 bytes, so 107 are usable; macOS's and the BSDs' field is 104, so 103 are usable.
+    """
+    return 107 if platform.startswith("linux") else 103
+
+
+#: The kernel's AF_UNIX `sun_path` budget (#2088): 107 usable bytes on Linux, 103 on macOS/BSD
+#: (see `_sun_path_max`). A longer path cannot be `bind()`/`connect()`ed: dtach may still
+#: create its master (it addresses the socket differently), but every liveness probe then fails
+#: with ENAMETOOLONG and each attach is answered BUSY forever. Measured in `os.fsencode` bytes,
+#: because that is what the kernel stores (a non-ASCII runtime dir is longer than its chars).
+SUN_PATH_MAX = _sun_path_max(sys.platform)
+
+# Tri-state master probe (#355). Verdicts: a successful connect or a decisive errno
+# (refused/missing — both immediate) settle on the first attempt; only timeouts walk
+# the escalating ladder, i.e. the extra budget is spent exactly where the old single
+# 0.2 s attempt mis-verdicted a starved-but-alive master as dead.
+_PROBE_TIMEOUTS_S = (0.2, 0.5, 1.0)
+
+# Errnos that PROVE no master holds the socket: nothing listening (orphan file from a
+# crashed master) or the path gone/not a socket. Anything else — most importantly a
+# connect timeout on a loaded host — is UNKNOWN, never "dead": a false dead on the
+# LAUNCH path unlinks a live master's sock and `dtach -c` then creates a SECOND
+# master on the same path (the #165 split-brain).
+_DEAD_ERRNOS = frozenset(
+    {errno.ECONNREFUSED, errno.ENOENT, errno.ENOTSOCK, errno.ENOTDIR, errno.EISDIR}
+)
+
+ALIVE = "alive"
+DEAD = "dead"
+UNKNOWN = "unknown"
+
+# Only these chars are allowed in the socket filename; everything else is
+# squashed so an engine id / session id can never escape the runtime dir or
+# inject argv. The real identity is still the full {engine}-{session_id}.
+_UNSAFE = re.compile(r"[^A-Za-z0-9_.-]")
+# The secrets broker's socket shares this directory (`secrets_broker.socket_path`: an agent's
+# environment names it, so it stays here) but is no dtach master: never probe it as a session.
+# Nor is the HQ report broker's (`hq_report_broker.socket_path`, #1882), nor the shelf broker's
+# (`shelf_broker.socket_path`, #1740), nor the artifacts broker's (`artifact_broker.socket_path`,
+# #1932), nor the shared Memory broker (#2036, a 12-digit root tag).
+_BROKER_SOCKET = re.compile(
+    r"(?:(?:secrets|hq-report|shelf|artifacts)-[0-9a-f]{10}|memory-[0-9a-f]{12})\.sock"
+)
+
+
+class PtyBridgeError(RuntimeError):
+    """Raised when a session descriptor is malformed or unsafe."""
+
+
+class SocketPathTooLong(PtyBridgeError):
+    """The dtach socket path cannot fit the kernel's AF_UNIX ``sun_path`` (#2088).
+
+    A distinct, terminal refusal: this is not BUSY (a retry cannot clear it) and not an
+    uncertain liveness probe. The message reports the measured bytes and the limit only —
+    never the path, which would echo the operator's runtime dir into a websocket close
+    reason.
+    """
+
+
+# The last runtime dir we ensured exists (#678). `socket_path()` runs per probe candidate in
+# the cap sweep and used to `mkdir(parents=True, exist_ok=True)` every call — a syscall per
+# probe. Keyed by the CONFIGURED path (not cached forever): tests and deployments that change
+# `AGENT_SESSIONS_RUNTIME_DIR` still get the new dir ensured on first use.
+_DIR_READY_FOR: str | None = None
+
+
+def runtime_dir() -> Path:
+    """Directory holding the per-session dtach sockets. Created on demand, 0700."""
+    global _DIR_READY_FOR
+    raw = os.environ.get("AGENT_SESSIONS_RUNTIME_DIR") or str(
+        Path.home() / ".agent-sessions" / "pty"
+    )
+    d = Path(raw)
+    if _DIR_READY_FOR != raw:
+        d.mkdir(parents=True, exist_ok=True, mode=0o700)
+        _DIR_READY_FOR = raw
+    return d
+
+
+def socket_path(engine: str, session_id: str) -> Path:
+    """Path of the dtach socket for one session. Stable + collision-free.
+
+    The filename is sanitised, but a sanitised collision can't silently merge two
+    sessions: the unsanitised ``{engine}\\x00{session_id}`` would have to differ
+    only in unsafe chars, which the picker's ids (uuids / ``ses_…`` / engine
+    names) never do. Empty parts are rejected outright.
+    """
+    if not engine or not session_id:
+        raise PtyBridgeError(f"empty engine/session id: {engine!r}/{session_id!r}")
+    name = f"{_UNSAFE.sub('_', engine)}-{_UNSAFE.sub('_', session_id)}.sock"
+    return runtime_dir() / name
+
+
+def check_socket_path(engine: str, session_id: str) -> None:
+    """Refuse a socket path the kernel cannot ``bind()``/``connect()`` (#2088).
+
+    Called before the open-action probes and before every create/attach argv is built, so
+    an impossible path is a terminal refusal instead of a BUSY reconnect loop: dtach can
+    still create a master whose socket the broker can never reach, and every attach then
+    reads "not alive + lock held" → 4409 forever with no visible cause. ``socket_path``
+    itself stays a pure path builder (the census, owner records and maintenance compare
+    those paths), so this is the one explicit gate.
+    """
+    path = socket_path(engine, session_id)
+    size = len(os.fsencode(str(path)))
+    if size > SUN_PATH_MAX:
+        raise SocketPathTooLong(
+            f"dtach socket path is {size} bytes; the AF_UNIX limit is {SUN_PATH_MAX} bytes "
+            "— this session cannot be launched or attached"
+        )
+
+
+def attach_argv(*, engine: str, session_id: str) -> list[str]:
+    """Build the **attach-only** ``dtach`` command — no fallback to create.
+
+    ``dtach -a <sock>`` — attach to an already-running master, fail loud (non-zero
+    exit) if no master is accepting. The server's `open_action` is the one place
+    that decides ATTACH vs LAUNCH; dtach must not silently fall back to "create"
+    when its `-A` mode can't connect (that fallback unlinks + re-binds the sock,
+    producing a second master on the same path = split-brain). #165.
+    """
+    # dtach's argv shape is `-a <socket> <options>` — the socket must come immediately
+    # after `-a` or dtach parses the next option (e.g. `-z`) as the socket path and fails.
+    check_socket_path(engine, session_id)
+    sock = str(socket_path(engine, session_id))
+    return [DTACH_BIN, "-a", sock, "-z", "-E", "-r", "winch"]
+
+
+#: The two create modes, and the difference is the whole reason #732 could not work.
+#:
+#: ``-c`` creates a master and **attaches** the caller to it, so it needs a terminal on stdin.
+#: The viewer path satisfies that by handing dtach a real PTY slave; the headless path passed
+#: ``DEVNULL`` and every launch died with *"Attaching to a session requires a terminal"*, then
+#: fell into the aliveness timeout looking like a slow start rather than a refusal.
+#:
+#: ``-n`` creates the master **detached** — no terminal, no attach. It is the mode that exists
+#: for exactly this case, and it keeps the process tree simpler than allocating a throwaway PTY
+#: and mimicking the viewer path would.
+CREATE_ATTACHED = "-c"
+CREATE_DETACHED = "-n"
+
+
+def launch_argv(
+    *,
+    engine: str,
+    session_id: str,
+    launch_argv: Iterable[str],
+    detached: bool = False,
+) -> list[str]:
+    """Build the **create-only** ``dtach`` command — fails loud if a sock exists.
+
+    ``dtach -c <sock> -z -E -r winch <launch_argv…>`` — create the master running
+    ``launch_argv``, refusing to start if the sock file is already there. The
+    caller must hold the single-writer lock for the session and have unlinked any
+    stale sock under that lock (see `unlink_if_stale`). ``launch_argv`` is the
+    already-validated absolute-path engine command; no shell is ever involved.
+
+    ``detached=True`` builds the ``-n`` variant for a launch with nobody watching (#739). Only the
+    MODE FLAG changes: the socket path, the validation, and the literal-argv shape are identical,
+    because a second builder is a second place for the shell-free guarantee to be got wrong.
+    """
+    argv = list(launch_argv)
+    if not argv:
+        raise PtyBridgeError("launch_argv must not be empty")
+    if not argv[0].startswith("/"):
+        raise PtyBridgeError(f"launch binary must be an absolute path: {argv[0]!r}")
+    check_socket_path(engine, session_id)
+    sock = str(socket_path(engine, session_id))
+    mode = CREATE_DETACHED if detached else CREATE_ATTACHED
+    return [DTACH_BIN, mode, sock, "-z", "-E", "-r", "winch", *argv]
+
+
+def _probe_once(sock_path: Path, timeout: float) -> str:
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    try:
+        s.connect(str(sock_path))
+        return ALIVE
+    except TimeoutError:
+        return UNKNOWN
+    except OSError as e:
+        return DEAD if e.errno in _DEAD_ERRNOS else UNKNOWN
+    finally:
+        s.close()
+
+
+def probe_master(sock_path: Path) -> str:
+    """Tri-state liveness of the master on ``sock_path``: ALIVE / DEAD / UNKNOWN.
+
+    ALIVE and DEAD are decisive. UNKNOWN means every attempt timed out — on a
+    starved host a live master can be too slow to accept within budget, so a
+    caller with destructive consequences (socket unlink) must NOT read UNKNOWN
+    as dead (#355).
+    """
+    for t in _PROBE_TIMEOUTS_S:
+        verdict = _probe_once(sock_path, t)
+        if verdict is not UNKNOWN:
+            return verdict
+    return UNKNOWN
+
+
+def _master_alive(sock_path: Path) -> bool:
+    """Boolean view of :func:`probe_master` for the ATTACH-vs-LAUNCH decision.
+
+    UNKNOWN maps to False: routing to LAUNCH is non-destructive by itself
+    (``dtach -c`` refuses an existing sock and the client retries), while the
+    destructive step — removing the sock — is verdict-aware in
+    `unlink_if_stale` and never fires on UNKNOWN.
+    """
+    return probe_master(sock_path) is ALIVE
+
+
+def session_exists(engine: str, session_id: str) -> bool:
+    """True if a live dtach master is **accepting connections** for this session.
+
+    File presence alone is not enough: a master that crashed (SIGKILL, OOM, host
+    reboot mid-write) can leave its `.sock` file behind, and trusting that file
+    as "alive" would point a subsequent ATTACH at nothing. We additionally probe
+    with a short `connect()` so a stale sock is correctly classified as not-alive,
+    letting `open_action` route to LAUNCH instead. #165.
+    """
+    try:
+        p = socket_path(engine, session_id)
+    except PtyBridgeError:
+        return False
+    if not p.is_socket():
+        return False
+    return _master_alive(p)
+
+
+def unlink_if_stale(engine: str, session_id: str) -> bool:
+    """Remove a `.sock` file whose master is gone; no-op if alive or absent.
+
+    Caller MUST hold the single-writer fcntl lock for the session — that is what
+    makes "the sock exists but probe says dead" unambiguously mean "orphan from a
+    prior generation" (no one else is racing to launch). Returns True iff we
+    removed a stale file (informational for tests / logging).
+    """
+    try:
+        p = socket_path(engine, session_id)
+    except PtyBridgeError:
+        return False
+    if not p.exists():
+        return False
+    # Destructive step gated on a DECISIVE dead verdict (#355): UNKNOWN (probe
+    # timeouts under load) must never unlink — the master may be alive and a
+    # subsequent `dtach -c` would bind a second master to the same session.
+    if probe_master(p) is not DEAD:
+        return False
+    try:
+        p.unlink()
+    except OSError:
+        return False
+    return True
+
+
+def is_broker_socket(name: str) -> bool:
+    """Is this runtime-directory entry a broker's socket (secrets, HQ report), not a session's?"""
+    return _BROKER_SOCKET.fullmatch(name) is not None
+
+
+def list_sessions() -> list[tuple[str, str]]:
+    """Every live ``(engine, session_id)`` whose dtach master is accepting.
+
+    Orphan sock files (master dead but file lingered) are filtered out by the
+    same connect-probe `session_exists` uses, so callers never see a phantom
+    session that would 4500 on the next attach. Fail-soft: see
+    :func:`list_sessions_checked` for the same enumeration with its read health.
+    """
+    return list_sessions_checked()[0]
+
+
+def list_sessions_checked() -> tuple[list[tuple[str, str]], bool]:
+    """``(sessions, complete)`` — :func:`list_sessions` plus whether the answer is COMPLETE (#1123).
+
+    ``complete`` is False when the runtime directory could not be listed, or when any socket's
+    probe was UNKNOWN (every attempt timed out). Both are "we could not tell", which
+    :func:`list_sessions` folds into "not running" — right for routing, wrong for a count that
+    claims to know how many agents run. The sessions that DID answer ALIVE are still returned.
+    """
+    found, unknown, listed = _census()
+    return found, listed and not unknown
+
+
+def master_census() -> tuple[list[tuple[str, str]], int]:
+    """``(alive, unknown)``: the masters that answered, and how many sockets could not be asked.
+
+    For a limit (#1819): a socket that could not be asked may be a running agent, so it is a number
+    the caller adds, where :func:`list_sessions_checked` only says that something was unclear.
+    Raises OSError when the runtime directory itself can't be listed."""
+    found, unknown, listed = _census()
+    if not listed:
+        raise OSError("the runtime directory could not be listed")
+    return found, unknown
+
+
+def _census() -> tuple[list[tuple[str, str]], int, bool]:
+    out: list[tuple[str, str]] = []
+    try:
+        entries = list(runtime_dir().iterdir())
+    except FileNotFoundError:
+        return out, 0, True  # no runtime dir means no sockets: a COMPLETE "nothing is running"
+    except OSError:
+        return out, 0, False
+    unknown = 0
+    for p in entries:
+        if p.suffix != ".sock" or is_broker_socket(p.name) or not p.is_socket():
+            continue
+        verdict = probe_master(p)
+        if verdict is UNKNOWN:
+            unknown += 1
+            continue
+        if verdict is not ALIVE:
+            continue
+        stem = p.stem
+        engine, sep, sid = stem.partition("-")
+        if sep and engine and sid:
+            out.append((engine, sid))
+    return out, unknown, True

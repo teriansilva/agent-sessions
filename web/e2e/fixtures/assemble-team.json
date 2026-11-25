@@ -1,0 +1,283 @@
+{
+  "legacy": {
+    "action_id": "33333333333333333333333333333333",
+    "agent": "",
+    "can_confirm": true,
+    "can_dismiss": true,
+    "key": null,
+    "kind": "operation",
+    "label": "Assemble the team",
+    "mission": {
+      "id": "msn_ffffffffffffffffffffffffffffffff"
+    },
+    "needs": [],
+    "op": "team.assemble",
+    "reason": "",
+    "risk": "reversible",
+    "state": "pending",
+    "summary": "",
+    "text": "Picks the cheapest qualifying specialist for every agent step that has none: o1.cv → cv-writer, o1.documents → career-archivist-for-the-eu-tenants-back… and 11 more (plan revision 1). It writes a new plan revision and launches nothing; if the plan or these picks changed since HQ read it, nothing is written.",
+    "title": "Migrate the billing exports, old card",
+    "verb": "Assemble"
+  },
+  "pending": {
+    "action_id": "11111111111111111111111111111111",
+    "agent": "",
+    "can_confirm": true,
+    "can_dismiss": true,
+    "key": null,
+    "kind": "operation",
+    "label": "Assemble the team",
+    "mission": {
+      "id": "msn_ffffffffffffffffffffffffffffffff"
+    },
+    "needs": [],
+    "op": "team.assemble",
+    "reason": "",
+    "risk": "reversible",
+    "state": "pending",
+    "summary": "",
+    "team": [
+      {
+        "engine": "claude-api",
+        "model": "sonnet",
+        "specialist": "career-archivist-for-the-eu-tenants-backfill-ops",
+        "state": "kept",
+        "step": "o1.posting",
+        "version": 1
+      },
+      {
+        "engine": "claude-api",
+        "model": "sonnet",
+        "specialist": "cv-writer",
+        "state": "assembled",
+        "step": "o1.cv",
+        "version": 1
+      },
+      {
+        "engine": "claude-api",
+        "model": "sonnet",
+        "specialist": "cv-writer",
+        "state": "assembled",
+        "step": "o1.cover_letter",
+        "version": 1
+      },
+      {
+        "engine": "claude-api",
+        "model": "sonnet",
+        "specialist": "career-archivist-for-the-eu-tenants-backfill-ops",
+        "state": "assembled",
+        "step": "o1.documents",
+        "version": 1
+      },
+      {
+        "reason": "no qualifying specialist: needs Senior + application-review, distinct from cv-writer",
+        "state": "unassigned",
+        "step": "o1.review"
+      },
+      {
+        "engine": "claude-api",
+        "model": "sonnet",
+        "specialist": "career-archivist-for-the-eu-tenants-backfill-ops",
+        "state": "assembled",
+        "step": "o1.pull_request",
+        "version": 1
+      },
+      {
+        "engine": "claude-api",
+        "model": "sonnet",
+        "specialist": "career-archivist-for-the-eu-tenants-backfill-ops",
+        "state": "assembled",
+        "step": "o1.record",
+        "version": 1
+      },
+      {
+        "engine": "claude-api",
+        "model": "sonnet",
+        "specialist": "career-archivist-for-the-eu-tenants-backfill-ops",
+        "state": "assembled",
+        "step": "o2.posting",
+        "version": 1
+      },
+      {
+        "engine": "claude-api",
+        "model": "sonnet",
+        "specialist": "cv-writer",
+        "state": "assembled",
+        "step": "o2.cv",
+        "version": 1
+      },
+      {
+        "engine": "claude-api",
+        "model": "sonnet",
+        "specialist": "cv-writer",
+        "state": "assembled",
+        "step": "o2.cover_letter",
+        "version": 1
+      },
+      {
+        "engine": "claude-api",
+        "model": "sonnet",
+        "specialist": "career-archivist-for-the-eu-tenants-backfill-ops",
+        "state": "assembled",
+        "step": "o2.documents",
+        "version": 1
+      },
+      {
+        "reason": "no qualifying specialist: needs Senior + application-review, distinct from cv-writer",
+        "state": "unassigned",
+        "step": "o2.review"
+      },
+      {
+        "engine": "claude-api",
+        "model": "sonnet",
+        "specialist": "career-archivist-for-the-eu-tenants-backfill-ops",
+        "state": "assembled",
+        "step": "o2.pull_request",
+        "version": 1
+      },
+      {
+        "engine": "claude-api",
+        "model": "sonnet",
+        "specialist": "career-archivist-for-the-eu-tenants-backfill-ops",
+        "state": "assembled",
+        "step": "o2.record",
+        "version": 1
+      }
+    ],
+    "team_revision": 2,
+    "text": "Picks the cheapest qualifying specialist for every agent step that has none (plan revision 2). It writes a new plan revision and launches nothing; if the plan or these picks changed since HQ read it, nothing is written.",
+    "title": "Migrate the billing exports onto the event pipeline",
+    "verb": "Assemble"
+  },
+  "stale": {
+    "action_id": "22222222222222222222222222222222",
+    "agent": "",
+    "can_confirm": false,
+    "can_dismiss": false,
+    "key": null,
+    "kind": "operation",
+    "label": "Assemble the team",
+    "mission": {
+      "id": "msn_ffffffffffffffffffffffffffffffff"
+    },
+    "needs": [],
+    "op": "team.assemble",
+    "reason": "the team it would assemble changed since this was proposed; nothing ran",
+    "risk": "reversible",
+    "state": "stale",
+    "summary": "",
+    "team": [
+      {
+        "engine": "claude-api",
+        "model": "sonnet",
+        "specialist": "career-archivist-for-the-eu-tenants-backfill-ops",
+        "state": "assembled",
+        "step": "o1.posting",
+        "version": 1
+      },
+      {
+        "engine": "claude-api",
+        "model": "sonnet",
+        "specialist": "cv-writer",
+        "state": "assembled",
+        "step": "o1.cv",
+        "version": 1
+      },
+      {
+        "engine": "claude-api",
+        "model": "sonnet",
+        "specialist": "cv-writer",
+        "state": "assembled",
+        "step": "o1.cover_letter",
+        "version": 1
+      },
+      {
+        "engine": "claude-api",
+        "model": "sonnet",
+        "specialist": "career-archivist-for-the-eu-tenants-backfill-ops",
+        "state": "assembled",
+        "step": "o1.documents",
+        "version": 1
+      },
+      {
+        "reason": "no qualifying specialist: needs Senior + application-review, distinct from cv-writer",
+        "state": "unassigned",
+        "step": "o1.review"
+      },
+      {
+        "engine": "claude-api",
+        "model": "sonnet",
+        "specialist": "career-archivist-for-the-eu-tenants-backfill-ops",
+        "state": "assembled",
+        "step": "o1.pull_request",
+        "version": 1
+      },
+      {
+        "engine": "claude-api",
+        "model": "sonnet",
+        "specialist": "career-archivist-for-the-eu-tenants-backfill-ops",
+        "state": "assembled",
+        "step": "o1.record",
+        "version": 1
+      },
+      {
+        "engine": "claude-api",
+        "model": "sonnet",
+        "specialist": "career-archivist-for-the-eu-tenants-backfill-ops",
+        "state": "assembled",
+        "step": "o2.posting",
+        "version": 1
+      },
+      {
+        "engine": "claude-api",
+        "model": "sonnet",
+        "specialist": "cv-writer",
+        "state": "assembled",
+        "step": "o2.cv",
+        "version": 1
+      },
+      {
+        "engine": "claude-api",
+        "model": "sonnet",
+        "specialist": "cv-writer",
+        "state": "assembled",
+        "step": "o2.cover_letter",
+        "version": 1
+      },
+      {
+        "engine": "claude-api",
+        "model": "sonnet",
+        "specialist": "career-archivist-for-the-eu-tenants-backfill-ops",
+        "state": "assembled",
+        "step": "o2.documents",
+        "version": 1
+      },
+      {
+        "reason": "no qualifying specialist: needs Senior + application-review, distinct from cv-writer",
+        "state": "unassigned",
+        "step": "o2.review"
+      },
+      {
+        "engine": "claude-api",
+        "model": "sonnet",
+        "specialist": "career-archivist-for-the-eu-tenants-backfill-ops",
+        "state": "assembled",
+        "step": "o2.pull_request",
+        "version": 1
+      },
+      {
+        "engine": "claude-api",
+        "model": "sonnet",
+        "specialist": "career-archivist-for-the-eu-tenants-backfill-ops",
+        "state": "assembled",
+        "step": "o2.record",
+        "version": 1
+      }
+    ],
+    "team_revision": 1,
+    "text": "Picks the cheapest qualifying specialist for every agent step that has none (plan revision 1). It writes a new plan revision and launches nothing; if the plan or these picks changed since HQ read it, nothing is written.",
+    "title": "Migrate the billing exports, second attempt",
+    "verb": "Assemble"
+  }
+}

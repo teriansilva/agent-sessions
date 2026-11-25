@@ -1,0 +1,56 @@
+/* The project colour picker (#1187), drawn like Settings → Interface → Accent (#1508): 44 px
+ * squares at the touch-target floor (design.md §8), eight to a row and wrapping on a narrow pane,
+ * with None beside them. NIGHTJAR (#2143): the chosen swatch carries an outline ring AND a check —
+ * never colour alone — and the swatch colours are DATA (the stored hex, set inline as `--dot`). */
+.picker {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-4);
+}
+.swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  /* Eight swatches and their seven gaps: the second row starts at Cyan, as in the accent grid. */
+  max-width: calc(8 * 44px + 7 * var(--sp-2));
+}
+.swatch {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: var(--dot);
+  cursor: pointer;
+}
+/* The chosen swatch: a reticle ring and a check. */
+.swatch.on {
+  outline: 2px solid var(--text-1);
+  outline-offset: 2px;
+}
+/* The check takes the ink computed for THIS swatch (onAccentFor), so it reads on every colour. */
+.swatch.on::after {
+  content: "\2713";
+  font-weight: 700;
+  font-size: var(--fs-input);
+  color: var(--dot-ink);
+}
+.swatch:focus-visible,
+.swatch.on:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
+.clear {
+  composes: ghost from "./ui/actionButton.module.css";
+}
+.clear[aria-checked="true"] {
+  --nj-edge: var(--hud);
+  color: var(--hud-text);
+}
+.swatch:disabled {
+  opacity: 0.55;
+  cursor: default;
+}

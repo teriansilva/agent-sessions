@@ -1,0 +1,524 @@
+"""Canonical signed agent catalogs and their immutable artifact recipes (#1259).
+
+Signatures use the INSTALLED package's trust root, never keys supplied by the downloaded feed.
+Parsing and signature verification are separate from acceptance: acceptance also serializes the
+durable high-water mark, so racing refreshes cannot roll the feed backwards. No artifact runs here.
+
+A release-signed cut may be long-lived (#1730, up to `freshness.MAX_CONTENT_AGE`); a long cut is
+usable only with a current freshness statement that names it (`freshness.py`). A cut whose own
+window is at most `MAX_AGE` needs none, exactly as before. `fresh` is the one usability rule.
+
+A cut verifies against the release key (`SIGNERS`, `PRINCIPAL`) or, for agents cuts only, the
+catalog key (`CATALOG_SIGNERS`, `CATALOG_PRINCIPAL`, #2082). One sequence space, whichever signed.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+import tempfile
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from urllib.parse import unquote, urlsplit
+
+from . import kinds, provenance, runner
+from .manifest import SIGNED_FEED, Manifest, load_bytes
+
+MAX_BYTES = 2 * 1024 * 1024
+MAX_PLUGINS = 64
+MAX_ARTIFACTS = 1024
+MAX_AGE = 7 * 86400
+CLOCK_SKEW = 300
+PRINCIPAL = "release@agent-sessions"
+NAMESPACE = "battlelab-plugins"
+SIGNERS = Path(__file__).with_name("feed-signers")
+# The unattended catalog key (#2082): agents cuts only, never the gallery, freshness or tags.
+CATALOG_PRINCIPAL = "catalog@battlelab"
+CATALOG_SIGNERS = Path(__file__).with_name("catalog-signers")
+# A cut only the catalog key vouches for may advance the accepted sequence by at most this much
+# (first use: may name at most this sequence). Recovery is a release-signed cut at a higher
+# sequence, so a stolen catalog key must not be able to sign one that can never be exceeded.
+CATALOG_MAX_STEP = 1000
+_SHA = re.compile(r"[0-9a-f]{64}")
+_PART = re.compile(r"[A-Za-z0-9@_.+-]{1,200}")
+
+
+class FeedError(ValueError):
+    pass
+
+
+def canonical(value: object) -> bytes:
+    try:
+        # ASCII escapes must not make an invalid Unicode surrogate look like a valid label/path.
+        json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        return json.dumps(
+            value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False
+        ).encode("ascii")
+    except (ValueError, TypeError, RecursionError):
+        raise FeedError("the feed is not canonical JSON data") from None
+
+
+def _pairs(pairs: list[tuple[str, object]]) -> dict:
+    out = {}
+    for key, value in pairs:
+        if key in out:
+            raise FeedError("duplicate JSON field")
+        out[key] = value
+    return out
+
+
+def _no_float(value: str):
+    raise FeedError("numbers must be integers")
+
+
+def decode(data: bytes) -> dict:
+    if len(data) > MAX_BYTES:
+        raise FeedError("the feed is too large")
+    try:
+        value = json.loads(
+            data.decode("utf-8"),
+            object_pairs_hook=_pairs,
+            parse_float=_no_float,
+            parse_constant=_no_float,
+        )
+    except (UnicodeError, ValueError, RecursionError):
+        raise FeedError("the feed must be unambiguous UTF-8 JSON") from None
+    if not isinstance(value, dict) or canonical(value) != data:
+        raise FeedError("the feed bytes are not canonical")
+    return value
+
+
+def _fields(value: object, fields: set[str]) -> dict:
+    if not isinstance(value, dict) or set(value) != fields:
+        raise FeedError("unexpected or missing fields")
+    return value
+
+
+def relative(value: object, *, root: bool = False) -> str:
+    if value == "." and root:
+        return "."
+    if not isinstance(value, str) or len(value) > 1024:
+        raise FeedError("invalid relative destination")
+    if any(p in (".", "..") or not _PART.fullmatch(p) for p in value.split("/")):
+        raise FeedError("invalid relative destination")
+    return value
+
+
+def artifact_url(value: object, kind: str, *, redirect: bool = False) -> str:
+    if not isinstance(value, str) or len(value) > 4096 or any(ord(c) < 33 for c in value):
+        raise FeedError("invalid artifact URL")
+    try:
+        url = urlsplit(value)
+        port = url.port
+    except ValueError:
+        raise FeedError("invalid artifact URL") from None
+    authorities = kinds.INSTALL_AUTHORITIES.get(kind, frozenset())
+    if redirect and kind == "tarball":
+        # GitHub's release redirect destination. No suffix/wildcard host matching.
+        authorities = authorities | {"release-assets.githubusercontent.com"}
+    if (
+        url.scheme != "https"
+        or url.hostname not in authorities
+        or port not in (None, 443)
+        or url.username is not None
+        or url.password is not None
+        or url.fragment
+    ):
+        raise FeedError("artifact authority is not allowed")
+    if "\\" in value or any(p in (".", "..") for p in unquote(url.path).split("/")):
+        raise FeedError("invalid artifact URL path")
+    if not redirect:
+        if url.query or not url.path.startswith("/"):
+            raise FeedError("artifact URL must be immutable")
+        if kind == "npm-prefix" and not re.fullmatch(
+            r"/(?:@[a-z0-9._-]+/)?[a-z0-9._-]+/-/[A-Za-z0-9._+-]+\.tgz", url.path
+        ):
+            raise FeedError("expected an npm distribution URL")
+        if kind == "tarball" and not re.fullmatch(
+            r"/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/releases/download/[A-Za-z0-9_.+-]+/"
+            r"[A-Za-z0-9_.+-]+\.(?:tar\.gz|tgz)",
+            url.path,
+        ):
+            raise FeedError("expected a versioned GitHub release archive")
+    return value
+
+
+@dataclass(frozen=True)
+class Artifact:
+    url: str
+    sha256: str
+    destination: str
+
+
+@dataclass(frozen=True)
+class Entry:
+    manifest: Manifest
+    manifest_bytes: bytes
+    artifacts: tuple[Artifact, ...]
+    digest: str
+
+
+@dataclass(frozen=True)
+class Feed:
+    sequence: int
+    issued_at: int
+    expires_at: int
+    entries: tuple[Entry, ...]
+    digest: str
+
+
+def entry(value: object, *, signed: bool) -> Entry:
+    value = _fields(value, {"manifest", "recipe"})
+    raw = canonical(value["manifest"])
+    manifest = load_bytes(raw, name="plugin.json", source=SIGNED_FEED if signed else "local")
+    if manifest.runtime == "api" and not signed:
+        # A native API client (#1311) only arrives through the operator-signed catalog (or
+        # in-tree). It names no executable, but it does choose which console agent the app
+        # drives without a terminal — not a choice a hand-placed local manifest may make.
+        raise FeedError("a native API client can only be installed from the signed catalog")
+    if manifest.id in kinds.ROUTE_RESERVED_IDS:
+        raise FeedError("this plugin id is reserved for a Settings route")
+    if not signed and manifest.id in kinds.RESERVED_IDS:
+        raise FeedError("a local manifest cannot replace a first-party agent")
+    # Signed runtime data never inherits the in-tree exemption for shells/adopted binaries.
+    provenance.check_vocabulary(manifest, provenance.LOCAL)
+    if manifest.session_id.legacy_bare_id and manifest.id not in kinds.RESERVED_IDS:
+        raise FeedError("only the in-tree identity may retain legacy bare IDs")
+    recipe = _fields(value["recipe"], {"artifacts"})
+    artifacts = recipe["artifacts"]
+    install = manifest.install
+    if install is None:
+        # `chat` (#1209) executes nothing; `api` (#1311) runs its source console agent's
+        # verified installation. Neither carries artifacts of its own.
+        if manifest.runtime not in ("chat", "api"):
+            raise FeedError("a terminal agent needs an install recipe")
+        if artifacts != []:
+            raise FeedError(f"a runtime {manifest.runtime!r} agent installs no artifacts")
+        return Entry(manifest, raw, (), hashlib.sha256(canonical(value)).hexdigest())
+    if not isinstance(artifacts, list) or not 1 <= len(artifacts) <= MAX_ARTIFACTS:
+        raise FeedError("invalid artifact closure")
+    out = []
+    destinations = set()
+    for item in artifacts:
+        item = _fields(item, {"url", "sha256", "destination"})
+        if not isinstance(item["sha256"], str) or not _SHA.fullmatch(item["sha256"]):
+            raise FeedError("invalid artifact digest")
+        destination = relative(item["destination"], root=install.kind == "tarball")
+        if destination in destinations:
+            raise FeedError("duplicate artifact destination")
+        destinations.add(destination)
+        if install.kind == "npm-prefix" and not destination.startswith("node_modules/"):
+            raise FeedError("npm packages must be installed below node_modules")
+        if install.kind == "npm-prefix":
+            from . import npm_closure
+
+            npm_closure.destination(destination)
+        out.append(Artifact(artifact_url(item["url"], install.kind), item["sha256"], destination))
+    if install.digest != "sha256:" + out[0].sha256:
+        raise FeedError("the primary artifact does not match install.digest")
+    if install.kind == "tarball":
+        if len(out) != 1 or out[0].destination != ".":
+            raise FeedError("tarball recipes contain one root archive")
+        package = install.package.removeprefix("@")
+        prefix = f"/{package}/releases/download/{install.version}/"
+        if not urlsplit(out[0].url).path.startswith(prefix):
+            raise FeedError("the archive does not match the manifest's package/version")
+    else:
+        package = install.package
+        basename = package.rsplit("/", 1)[-1]
+        expected = f"/{package}/-/{basename}-{install.version}.tgz"
+        if urlsplit(out[0].url).path != expected or out[0].destination != f"node_modules/{package}":
+            raise FeedError("the npm distribution does not match the manifest's package/version")
+    return Entry(manifest, raw, tuple(out), hashlib.sha256(canonical(value)).hexdigest())
+
+
+def parse(data: bytes, *, now: int | None = None, _historical: bool = False) -> Feed:
+    doc = _fields(decode(data), {"contract", "sequence", "issued_at", "expires_at", "plugins"})
+    now = int(time.time()) if now is None else now
+    if type(doc["contract"]) is not int or doc["contract"] != 1:
+        raise FeedError("unsupported plugin feed contract")
+    if any(type(doc[k]) is not int or doc[k] <= 0 for k in ("sequence", "issued_at", "expires_at")):
+        raise FeedError("invalid feed sequence or timestamp")
+    issued, expires = doc["issued_at"], doc["expires_at"]
+    from . import freshness
+
+    if not freshness.content_window_ok(issued, expires) or (
+        not _historical and (issued > now + CLOCK_SKEW or expires <= now)
+    ):
+        raise FeedError("the feed is expired or its validity interval is invalid")
+    plugins = doc["plugins"]
+    if not isinstance(plugins, list) or len(plugins) > MAX_PLUGINS:
+        raise FeedError("invalid plugin list")
+    entries = tuple(entry(p, signed=True) for p in plugins)
+    if len({e.manifest.id for e in entries}) != len(entries):
+        raise FeedError("duplicate plugin identity")
+    return Feed(doc["sequence"], issued, expires, entries, hashlib.sha256(data).hexdigest())
+
+
+def _lists_a_key(path: Path) -> bool:
+    """Whether an allowed_signers file holds any entry. A client from before the catalog key
+    shipped (#2082) has an empty or missing `catalog-signers`; its catalog check is skipped
+    rather than spawned to fail."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return False
+    return any(line.strip() and not line.lstrip().startswith("#") for line in lines)
+
+
+def _signed_by(signers: Path, principal: str, sig: Path, data: bytes) -> bool:
+    result = runner.run(
+        [
+            "/usr/bin/ssh-keygen",
+            "-Y",
+            "verify",
+            "-f",
+            str(signers),
+            "-I",
+            principal,
+            "-n",
+            NAMESPACE,
+            "-s",
+            str(sig),
+        ],
+        data=data,
+        timeout=10,
+        max_output=16384,
+        env={"PATH": "/usr/bin:/bin", "LANG": "C"},
+    )
+    return result.code == 0
+
+
+def verify(data: bytes, signature: bytes) -> str:
+    """The release key, else (#2082) the agents-only catalog key; each only under its own
+    principal and file. Returns the principal that verified; the refusal reads the same whichever
+    was tried."""
+    if not data or len(data) > MAX_BYTES or not 0 < len(signature) <= 16384:
+        raise FeedError("invalid signature or feed size")
+    with tempfile.TemporaryDirectory(prefix="battlelab-feed-") as temporary:
+        sig = Path(temporary) / "feed.sig"
+        sig.write_bytes(signature)
+        if _signed_by(SIGNERS, PRINCIPAL, sig, data):
+            return PRINCIPAL
+        if _lists_a_key(CATALOG_SIGNERS) and _signed_by(
+            CATALOG_SIGNERS, CATALOG_PRINCIPAL, sig, data
+        ):
+            return CATALOG_PRINCIPAL
+    raise FeedError("the feed signature is not from a trusted plugin-feed signer")
+
+
+def accept(
+    data: bytes,
+    signature: bytes,
+    *,
+    statement: tuple[bytes, bytes, dict] | None = None,
+    now: int | None = None,
+) -> Feed:
+    """Accept a signed cut (`verify`), and with it (#1730) the freshness statement that keeps a long
+    cut usable: `(statement bytes, signature, the pointer that selected it)`. A long cut is
+    refused without a statement naming exactly it; a statement naming another cut (the pointer
+    moved before the cut did) refuses a long cut and is ignored for a short one. Nothing accepted
+    earlier is replaced on any refusal."""
+    from . import freshness, storage
+
+    signer = verify(data, signature)
+    snapshot = parse(data, now=now)
+    vouched = None
+    if statement is not None:
+        stmt_data, stmt_sig, selected = statement
+        try:
+            candidate = freshness.checked(
+                stmt_data, stmt_sig, feed_name="agents", selected=selected, now=now
+            )
+            freshness.covers(
+                candidate,
+                content_sequence=snapshot.sequence,
+                content_digest=snapshot.digest,
+                content_issued_at=snapshot.issued_at,
+                content_expires_at=snapshot.expires_at,
+            )
+            vouched = (candidate, stmt_data, stmt_sig)
+        except freshness.FreshnessError as exc:
+            if freshness.is_long(snapshot.issued_at, snapshot.expires_at):
+                raise FeedError(f"the long-lived catalog is not current: {exc}") from None
+    if vouched is None and freshness.is_long(snapshot.issued_at, snapshot.expires_at):
+        raise FeedError("the long-lived catalog has no current freshness statement")
+    with storage.locked("feed.json") as path:
+        old = storage.read(path)
+        floor = _floor(path)
+        if old is None and floor is not None:
+            raise FeedError("the accepted catalog is missing; restore its trust records")
+        if old is not None:
+            # An expired but intact old feed may advance. Corruption may not be repaired by
+            # replacing the evidence with a newer feed, even if that new feed is valid.
+            _stored(old, historical=True)
+            if snapshot.sequence < old["sequence"]:
+                raise FeedError("the feed sequence would go backwards")
+            if snapshot.sequence == old["sequence"] and snapshot.digest != old["digest"]:
+                raise FeedError("this sequence already identifies different feed bytes")
+        if floor is not None:
+            _above(snapshot, floor)
+        if signer == CATALOG_PRINCIPAL:
+            # Bounded against the effective floor (#2082); release-signed cuts stay unbounded.
+            accepted = max(old["sequence"] if old else 0, floor["sequence"] if floor else 0)
+            if snapshot.sequence > accepted + CATALOG_MAX_STEP:
+                raise FeedError("the catalog-signed feed sequence advances too far at once")
+        evidence = _evidence(path)
+        if vouched is not None:
+            # Rollback, equivocation and damaged records refuse the WHOLE admission of a long
+            # cut, before anything is written; a short cut needs no statement and ignores one it
+            # can't use. Then the statement is stored FIRST, under the cut it names: a later
+            # failed write can't leave the previously usable cut without its own.
+            try:
+                evidence.admit(vouched[0])
+            except (freshness.FreshnessError, FeedError):
+                if freshness.is_long(snapshot.issued_at, snapshot.expires_at):
+                    raise
+                vouched = None
+        if vouched is not None:
+            evidence.stage(*vouched)
+        # Persist the independent floor first. An interrupted second write cannot make an older
+        # catalog authoritative again; retrying this cut (or a newer one) completes acceptance.
+        storage.write(path.with_name("feed-floor.json"), _mark(snapshot))
+        storage.write(
+            path,
+            {
+                "sequence": snapshot.sequence,
+                "digest": snapshot.digest,
+                "data": data.decode("ascii"),
+                "signature": signature.decode("ascii"),
+            },
+        )
+        if vouched is not None:
+            # The statement floor is written last: until then the staged record sits above it.
+            evidence.commit(vouched[0], keep=snapshot.digest)
+    return snapshot
+
+
+#: Records are `feed-freshness-{content digest}.json`; the floor is `feed-freshness-floor.json`.
+STATEMENT = "feed-freshness"
+
+
+def _evidence(path: Path):
+    from . import freshness_store, storage
+
+    return freshness_store.Evidence(
+        path.parent,
+        prefix=STATEMENT,
+        feed_name="agents",
+        # A record holds the statement (<= 1 KiB) and a signature `verify` admits (<= 16 KiB).
+        read=lambda p: storage.read(p, max_bytes=32768),
+        write=storage.write,
+        error=FeedError,
+    )
+
+
+def statement_expiry(snapshot: Feed, *, now: int | None = None) -> int | None:
+    """When the statement keeping this long cut usable expires; None if no current one makes it
+    fresh (#1730 publisher alerts). A malformed or unsafe floor raises, as for `fresh`."""
+    from . import storage
+
+    with storage.locked("feed.json") as path:
+        statement = _evidence(path).current(
+            content_sequence=snapshot.sequence,
+            content_digest=snapshot.digest,
+            content_issued_at=snapshot.issued_at,
+            content_expires_at=snapshot.expires_at,
+            now=now,
+        )
+    return statement.expires_at if statement else None
+
+
+def fresh(snapshot: Feed, *, now: int | None = None) -> bool:
+    """The one usability rule (#1730). A short cut is fresh inside its own window. A long cut is
+    fresh only while a stored, verified freshness statement names exactly it, is unexpired, and
+    sits at the durable statement floor."""
+    from . import freshness, storage
+
+    now = int(time.time()) if now is None else now
+    if snapshot.issued_at > now + CLOCK_SKEW or snapshot.expires_at <= now:
+        return False
+    if not freshness.is_long(snapshot.issued_at, snapshot.expires_at):
+        return True
+    with storage.locked("feed.json") as path:
+        return _evidence(path).fresh(
+            content_sequence=snapshot.sequence,
+            content_digest=snapshot.digest,
+            content_issued_at=snapshot.issued_at,
+            content_expires_at=snapshot.expires_at,
+            now=now,
+        )
+
+
+def _stored(record: dict, *, now: int | None = None, historical: bool = False) -> Feed:
+    try:
+        if (
+            set(record) != {"sequence", "digest", "data", "signature"}
+            or type(record["sequence"]) is not int
+        ):
+            raise FeedError("the stored feed is malformed; left untouched")
+        data, signature = record["data"].encode("ascii"), record["signature"].encode("ascii")
+        # Already admitted: re-verified, never re-bounded against the floor it set.
+        verify(data, signature)
+        snapshot = parse(data, now=now, _historical=historical)
+        if snapshot.sequence != record["sequence"] or snapshot.digest != record["digest"]:
+            raise FeedError("the stored feed does not match its high-water mark; left untouched")
+        return snapshot
+    except (KeyError, AttributeError, UnicodeError, TypeError):
+        raise FeedError("the stored feed is malformed; left untouched") from None
+
+
+def current(*, now: int | None = None) -> Feed | None:
+    snapshot = historical()
+    if snapshot is not None and not fresh(snapshot, now=now):
+        raise FeedError("the feed is expired or its validity interval is invalid")
+    return snapshot
+
+
+def _mark(snapshot: Feed) -> dict:
+    return {"sequence": snapshot.sequence, "digest": snapshot.digest}
+
+
+def _floor(path: Path) -> dict | None:
+    from . import storage
+
+    mark = storage.read(path.with_name("feed-floor.json"), max_bytes=1024)
+    if mark is not None and (
+        set(mark) != {"sequence", "digest"}
+        or type(mark["sequence"]) is not int
+        or mark["sequence"] <= 0
+        or not isinstance(mark["digest"], str)
+        or not _SHA.fullmatch(mark["digest"])
+    ):
+        raise FeedError("the catalog trust record is malformed; left untouched")
+    return mark
+
+
+def _above(snapshot: Feed, floor: dict) -> None:
+    if snapshot.sequence < floor["sequence"]:
+        raise FeedError("the feed sequence would go backwards")
+    if snapshot.sequence == floor["sequence"] and snapshot.digest != floor["digest"]:
+        raise FeedError("this sequence already identifies different feed bytes")
+
+
+def historical() -> Feed | None:
+    """Read verified accepted evidence, including expired cuts, without resetting its floor."""
+    from . import storage
+
+    with storage.locked("feed.json") as path:
+        record = storage.read(path)
+        floor = _floor(path)
+        if record is None:
+            if floor is not None:
+                raise FeedError("the accepted catalog is missing; restore its trust records")
+            return None
+        snapshot = _stored(record, historical=True)
+        if floor is not None:
+            _above(snapshot, floor)
+        # Legacy clients may have accepted a newer signed cut without knowing the floor file.
+        # Only intact signed evidence can backfill or advance that marker.
+        if floor != _mark(snapshot):
+            storage.write(path.with_name("feed-floor.json"), _mark(snapshot))
+        return snapshot

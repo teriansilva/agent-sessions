@@ -1,0 +1,1491 @@
+/** Export… / Import… for the Library sections (#1714: skills and playbooks P1, specialists P2,
+ *  prompt templates and variables P3; project memory P4; boards in the issue).
+ *
+ *  Export: pick items; whatever a chosen item needs is shown as included and can't be unticked on
+ *  its own; the server writes one `.battlelab` file. Import: choose a file → the server verifies
+ *  it and answers a preview (renames, refusals, every file's text) → the operator confirms a
+ *  subset → one result per item. Nothing changes before the confirm, and nothing imported is
+ *  activated, deployed, launched or made a default. */
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
+import { Link } from "react-router-dom";
+import {
+  AlertTriangle,
+  ArrowRight,
+  Ban,
+  Check,
+  ChevronRight,
+  Download,
+  FileText,
+  Lock,
+  RefreshCw,
+  Upload,
+  X,
+} from "lucide-react";
+import { api, ApiError } from "../../lib/api";
+import { countsText } from "../missionPlans/planRules";
+import {
+  MEMORY_PATH,
+  missionPlanPath,
+  playbookPath,
+  SKILLS_PATH,
+  specialistPath,
+  TEMPLATES_PATH,
+} from "../../lib/routes";
+import type {
+  ShareCatalog,
+  ShareChoice,
+  ShareKind,
+  SharePreview,
+  SharePreviewItem,
+  ShareResult,
+  ShareResultItem,
+} from "../../types/share";
+import { ShareNotes, ShareNotesOutcome } from "./ShareNotes";
+import buttons from "../ui/actionButton.module.css";
+import hud from "../HudDialog.module.css";
+import {
+  asCatalog,
+  asPreview,
+  closure,
+  initialSelection,
+  keyOf,
+  MAX_BUNDLE_BYTES,
+  previewStates,
+  sizeText,
+} from "./shareRules";
+import { sharedImportMemory, unshown, variableLink, type ImportMemory } from "./shareRules";
+import { choiceProblem, NO_CHOICE } from "./shareRules";
+import { CONTAINERS, isContainer, leftOutText, memoryCountsText, notesRule, type NotesInto } from "./shareRules";
+import { SettleFields } from "./SettleFields";
+import { eligibleFor, useEngineRoster } from "../../app/engineRoster";
+import styles from "./share.module.css";
+
+const KIND_LABEL: Record<string, string> = {
+  skill: "Skill",
+  playbook: "Playbook",
+  specialist: "Specialist",
+  template: "Template",
+  variable: "Variable",
+  memory: "Memory",
+  notebook: "Notes",
+  "mission-plan": "Mission plan",
+};
+const GROUP_LABEL: Record<string, string> = {
+  skill: "Skills",
+  playbook: "Playbooks",
+  specialist: "Specialists",
+  template: "Templates",
+  variable: "Variables",
+  memory: "Project memory",
+  notebook: "Specialist notes",
+  "mission-plan": "Mission plans",
+};
+/** The picker's group order for each Library section: its own kind first, then what it needs. */
+const ORDER: Record<string, string[]> = {
+  skill: ["skill", "playbook", "specialist", "template", "variable"],
+  playbook: ["playbook", "skill", "specialist", "template", "variable"],
+  specialist: ["specialist", "skill", "playbook", "template", "variable"],
+  template: ["template", "variable", "skill", "playbook", "specialist"],
+  variable: ["variable", "template", "skill", "playbook", "specialist"],
+  // #1714 P4: a project's notes, its specialists' notebooks, and what a notebook brings along.
+  memory: ["memory", "notebook", "specialist", "skill"],
+  // #1924: a mission plan carries its procedures as snapshots; it needs nothing else in the file.
+  "mission-plan": ["mission-plan"],
+};
+/** A row's kind badge: a variable whose value never travels reads "Secret" (#1714 P3). */
+const badge = (kind: string, secret = false) => (kind === "variable" && secret ? "Secret" : KIND_LABEL[kind] ?? kind);
+/** "needs 2 skills", "pins 1 skill", "uses 2 variables": what an item depends on, in words. */
+function needsText(item: { kind: string; depends_on: string[] }): string {
+  const n = item.depends_on.length;
+  if (!n) return "";
+  const variables = item.depends_on.every((d) => d.startsWith("variable:"));
+  if (item.kind === "notebook") return ` · needs specialist ${item.depends_on[0].slice(item.depends_on[0].indexOf(":") + 1)}`;
+  const verb = item.kind === "specialist" ? "pins" : variables ? "uses" : "needs";
+  const noun = variables ? "variable" : "skill";
+  return ` · ${verb} ${n} ${noun}${n === 1 ? "" : "s"}`;
+}
+
+function errorText(e: unknown): string {
+  return e instanceof Error && e.message ? e.message : "Something went wrong.";
+}
+
+/** The shared shell: a native modal <dialog> on THE dialog chrome, a scrolling body and a
+ *  footer that stays in view. */
+function Shell({
+  title,
+  testId,
+  busy,
+  onClose,
+  children,
+  foot,
+}: {
+  title: string;
+  testId: string;
+  busy: boolean;
+  onClose: () => void;
+  children: ReactNode;
+  foot: ReactNode;
+}) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
+  useEffect(() => {
+    const node = dialog.current!;
+    const opener = document.activeElement as HTMLElement | null;
+    if (typeof node.showModal === "function") node.showModal();
+    else node.setAttribute("open", "");
+    return () => {
+      if (typeof node.close === "function") node.close();
+      if (opener?.isConnected) opener.focus();
+    };
+  }, []);
+  return createPortal(
+    <dialog
+      ref={dialog}
+      className={`${hud.dialog} ${styles.dialog}`}
+      aria-labelledby={titleId}
+      aria-busy={busy || undefined}
+      data-testid={testId}
+      onCancel={(e) => {
+        e.preventDefault();
+        if (!busy) onClose();
+      }}
+    >
+      <div className={hud.head}>
+        <h2 id={titleId} className={hud.tag}>
+          {title}
+        </h2>
+        <button className={hud.close} aria-label="Close" disabled={busy} onClick={onClose}>
+          <X size={16} aria-hidden />
+        </button>
+      </div>
+      <div className={styles.body}>{children}</div>
+      <div className={styles.foot}>{foot}</div>
+    </dialog>,
+    document.body,
+  );
+}
+
+function Banner({
+  tone = "warn",
+  icon,
+  title,
+  children,
+}: {
+  tone?: "warn" | "down" | "info";
+  icon: ReactNode;
+  title: string;
+  children?: ReactNode;
+}) {
+  return (
+    <div
+      className={`${styles.banner} ${tone === "down" ? styles.bannerDown : tone === "info" ? styles.bannerInfo : ""}`}
+      role={tone === "down" ? "alert" : undefined}
+    >
+      {icon}
+      <div>
+        <strong>{title}</strong>
+        {children && <p>{children}</p>}
+      </div>
+    </div>
+  );
+}
+
+// ---- export -------------------------------------------------------------------------------------
+
+function ExportDialog({
+  kind,
+  onClose,
+  memory,
+  preselect,
+}: {
+  kind: ShareKind;
+  onClose: () => void;
+  /** An item key (`kind:id`) to start chosen, when the dialog is opened from that item's card. */
+  preselect?: string;
+  /** Library → Memory (#1714 P4): the project open on the page; only its memory is offered. */
+  memory?: NotesInto;
+}) {
+  const [catalog, setCatalog] = useState<ShareCatalog | null>(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [chosen, setChosen] = useState<Set<string>>(new Set());
+  const [filter, setFilter] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState("");
+  const live = useRef(true);
+  useEffect(() => () => void (live.current = false), []);
+  const fetchCatalog = useCallback(
+    () =>
+      Promise.resolve()
+        .then(() => api.shareCatalog())
+        .then((value) => {
+          if (!live.current) return;
+          const parsed = asCatalog(value);
+          if (!parsed) setError("The list of exportable items could not be read.");
+          setCatalog(parsed);
+          // On Library → Memory, the open project's notes start chosen (#1714 P4 board A).
+          const own = parsed?.items.find((i) => i.kind === "memory" && i.id === memory?.id && i.exportable);
+          if (own) setChosen(new Set([keyOf(own)]));
+          const card = parsed?.items.find((i) => keyOf(i) === preselect && i.exportable);
+          if (card) setChosen(new Set([keyOf(card)]));
+        })
+        .catch((e: unknown) => live.current && setError(errorText(e)))
+        .finally(() => live.current && setLoading(false)),
+    [memory?.id, preselect],
+  );
+  useEffect(() => {
+    void fetchCatalog();
+  }, [fetchCatalog]);
+  const load = () => {
+    setLoading(true);
+    setError("");
+    void fetchCatalog();
+  };
+  // A file carries one project's memory: Library → Memory offers the open project's only, and no
+  // other section offers memory at all (its ORDER has no memory groups).
+  const items = useMemo(
+    () => (catalog?.items ?? []).filter((i) => !CONTAINERS.has(i.kind) || (!!memory && i.project?.id === memory.id)),
+    [catalog, memory],
+  );
+  const hasMemory = items.some((i) => CONTAINERS.has(i.kind));
+  const included = useMemo(() => closure(items, chosen), [items, chosen]);
+  // On Library → Memory a row of another kind shows only when a chosen notebook brings it along
+  // (its specialist, that specialist's skills): the picker is the project's memory, never the
+  // whole library (#1714 P4 board A).
+  const offered = useCallback(
+    (i: (typeof items)[number]) => !memory || CONTAINERS.has(i.kind) || included.has(keyOf(i)),
+    [memory, included],
+  );
+  const needle = filter.trim().toLowerCase();
+  const order = ORDER[kind] ?? ORDER.skill;
+  const hasSpecialists = items.some((i) => i.kind === "specialist" && offered(i));
+  const hasTexts = items.some((i) => (i.kind === "template" || i.kind === "variable") && offered(i));
+  const hasPlans = items.some((i) => i.kind === "mission-plan" && offered(i));
+  const total = chosen.size + included.size;
+  const toggle = (key: string) =>
+    setChosen((old) => {
+      const next = new Set(old);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  const download = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const keys = [...chosen];
+      let leftOut: { withheld: number; quarantined: number } | null = null;
+      const wanted = keys.map((k) => ({ kind: k.split(":")[0], id: k.slice(k.indexOf(":") + 1) }));
+      // Only an export that carries memory asks for what it left out (#1714 P4).
+      const blob = wanted.some(isContainer)
+        ? await api.shareExport(wanted, (counts) => void (leftOut = counts))
+        : await api.shareExport(wanted);
+      const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "").replace("T", "-");
+      const name = `battlelab-${stamp}.battlelab`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      if (live.current)
+        setDone(`Downloaded ${name} with ${total} item${total === 1 ? "" : "s"}.${leftOut ? leftOutText(leftOut) : ""}`);
+    } catch (e) {
+      if (live.current) setError(errorText(e));
+    } finally {
+      if (live.current) setBusy(false);
+    }
+  };
+  return (
+    <Shell
+      title="Export to a file"
+      testId="share-export"
+      busy={busy}
+      onClose={onClose}
+      foot={
+        <>
+          <p className={styles.sum} data-testid="share-export-summary">
+            <b>{total} item{total === 1 ? "" : "s"}</b> · {chosen.size} chosen · {included.size} included
+          </p>
+          <button className={buttons.ghost} disabled={busy} onClick={onClose}>
+            {done ? "Close" : "Cancel"}
+          </button>
+          <button className={buttons.primary} disabled={busy || !chosen.size} onClick={() => void download()}>
+            <Download size={16} aria-hidden />
+            Download bundle
+          </button>
+        </>
+      }
+    >
+      <p className={styles.prose}>
+        Choose what to share. Anything a chosen item needs comes along and is shown as <b>included</b>.
+        The file holds the chosen items exactly as written; no settings, deployment files or values
+        of your secret variables are added to it.
+      </p>
+      {error && (
+        <Banner tone="down" icon={<Ban size={16} aria-hidden />} title="Export failed.">
+          {error}{" "}
+          {!catalog && (
+            <button className={buttons.ghost} onClick={load}>
+              Try again
+            </button>
+          )}
+        </Banner>
+      )}
+      {done && (
+        <p role="status" className={`${styles.prose} ${styles.ok}`}>
+          {done}
+        </p>
+      )}
+      {loading && !catalog && <p role="status" className={styles.prose}>Loading your library…</p>}
+      {catalog && !items.some(offered) && (
+        <div className={styles.drop}>
+          <FileText size={28} aria-hidden />
+          <b>Nothing to export yet</b>
+          <span>
+            {memory
+              ? `${memory.name} has no notes to export yet. Notes agents leave here will be listed.`
+              : "Create a skill, a playbook, a specialist, a prompt template or a variable, or add one from the gallery; it will be listed here."}
+          </span>
+        </div>
+      )}
+      {items.some(offered) && (
+        <input
+          className={styles.filter}
+          type="search"
+          aria-label="Filter by name or ID"
+          placeholder="Filter by name or ID"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+        />
+      )}
+      {order.map((k) => {
+        const rows = items.filter(
+          (i) =>
+            i.kind === k &&
+            offered(i) &&
+            (!needle || `${i.title} ${i.id}`.toLowerCase().includes(needle) || included.has(keyOf(i)) || chosen.has(keyOf(i))),
+        );
+        if (!rows.length) return null;
+        const picked = rows.filter((i) => chosen.has(keyOf(i))).length;
+        const pulled = rows.filter((i) => included.has(keyOf(i))).length;
+        return (
+          <section key={k} aria-label={GROUP_LABEL[k]}>
+            <h3 className={styles.group}>
+              {GROUP_LABEL[k]}{" "}
+              <span>
+                // {picked} chosen{pulled ? ` · ${pulled} included` : ""}
+              </span>
+            </h3>
+            <ul className={styles.list}>
+              {rows.map((i) => {
+                const key = keyOf(i);
+                const by = included.get(key);
+                const isChosen = chosen.has(key);
+                const locked = !!by && !isChosen;
+                const inputId = `share-x-${key}`;
+                return (
+                  <li key={key} className={`${styles.row} ${locked ? styles.included : ""}`} data-testid={`share-export-row-${key}`}>
+                    <label className={styles.check} htmlFor={inputId}>
+                      <input
+                        id={inputId}
+                        type="checkbox"
+                        checked={isChosen || locked}
+                        disabled={busy || locked || !i.exportable}
+                        aria-label={`${badge(i.kind, i.secret)} ${i.title}${locked ? " (included)" : ""}`}
+                        onChange={() => toggle(key)}
+                      />
+                    </label>
+                    <div className={styles.name}>
+                      <span className={styles.title}>
+                        <span className={styles.kind}>{badge(i.kind, i.secret)}</span>
+                        {i.title}
+                      </span>
+                      <span className={styles.line}>
+                        {locked
+                          ? `Included — ${by!.every((b) => b.startsWith("specialist:")) ? "pinned" : "needed"} by ${by!.map((b) => (b.startsWith("notebook:") ? "its notes" : b.slice(b.indexOf(":") + 1))).join(", ")}`
+                          : CONTAINERS.has(i.kind)
+                            ? `${i.memory ? memoryCountsText(i.memory) : "Can't be counted now"}${needsText(i)}`
+                            : `${i.id}${i.source !== "local" ? ` · ${i.source}` : ""}${needsText(i)}`}
+                      </span>
+                      {i.exportable && i.note && (
+                        <span className={styles.why} data-testid="share-export-note">
+                          {i.note}
+                        </span>
+                      )}
+                      {!i.exportable && <span className={`${styles.why} ${styles.down}`}>{i.reason ?? "Can't be exported."}</span>}
+                    </div>
+                    <div className={styles.state}>
+                      {locked ? (
+                        <span className={`${styles.stamp} ${styles.lock}`}>
+                          <Lock size={12} aria-hidden />
+                          Included
+                        </span>
+                      ) : isChosen ? <span className={styles.stamp}>Chosen</span> : null}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        );
+      })}
+      {hasMemory && (
+        <Banner icon={<FileText size={16} aria-hidden />} title="What memory carries.">
+          Each note's name, description, type and text — not the project's name or ID, and not who
+          wrote it. A note that holds one of your stored secrets or looks like a credential stays
+          here, and so does every quarantined item: they are only counted, never named.
+        </Banner>
+      )}
+      {memory && (
+        // The read view as Markdown files, as the bar's Export link was: there whatever the share
+        // catalog answers.
+        <p className={styles.prose}>
+          Or{" "}
+          <a className={styles.open} href={api.memoryExportUrl(memory.id)} download data-testid="share-memory-zip">
+            download {memory.name}'s notes as Markdown (.zip)
+          </a>
+          , the read view as files.
+        </p>
+      )}
+      {hasSpecialists && (
+        <Banner icon={<FileText size={16} aria-hidden />} title="What a specialist carries.">
+          The job: its title, summary, capacity and pinned skills, exactly at the versions it pins.
+          Its agent, model and effort go only as a suggestion; whoever imports it chooses what runs
+          it. Its notes, sessions, grade and project names stay here.
+        </Banner>
+      )}
+      {hasTexts && (
+        <Banner icon={<FileText size={16} aria-hidden />} title="What templates and variables carry.">
+          A template takes its text, fields and reference images, and the variables its fields
+          use. A variable takes its definition (type, label, description, default) and, for text,
+          its value. A secret takes its definition only: the export never adds its stored value.
+          Every template and variable text is checked for your stored secrets and for keys, tokens
+          and passwords; one that holds any stays here.
+        </Banner>
+      )}
+      {hasPlans && (
+        <Banner icon={<FileText size={16} aria-hidden />} title="What a mission plan carries.">
+          Its document: slots, objectives and their order, the procedures they follow, and the names
+          of their inputs. Its title, summary and slot labels are checked for your stored secrets
+          first. The procedures travel exactly as written, like a playbook, and are not checked.
+          No project, input value or mission travels with it.
+        </Banner>
+      )}
+      {items.some(offered) && (
+        <Banner tone="warn" icon={<AlertTriangle size={16} aria-hidden />} title="Check the text for secrets before you share it.">
+          Specialists, skills, playbooks and mission plans' procedures travel exactly as written. A token, password or key
+          pasted into one of their files goes into the bundle with it, even when it is the value of
+          one of your secret variables. A secret variable itself travels as its definition only: the
+          export never adds its stored value.
+        </Banner>
+      )}
+    </Shell>
+  );
+}
+
+// ---- import -------------------------------------------------------------------------------------
+
+type Phase =
+  | { at: "pick"; error?: string; busy?: boolean }
+  | { at: "checking" }
+  | { at: "preview"; preview: SharePreview; stale?: string; frozen?: "unclear" | "selection" }
+  | { at: "confirming"; preview: SharePreview; frozen?: "unclear" | "selection" }
+  | { at: "result"; preview: SharePreview; result: ShareResult };
+
+const STALE: Record<string, string> = {
+  expired: "This preview expired. Previews last 15 minutes; preview the file again to continue.",
+  changed: "Your library changed since this preview, so its plan is out of date. Nothing was imported. Preview the file again before confirming.",
+  missing: "This preview is gone. Preview the file again.",
+  evicted:
+    "This preview's file was cleared to make room for other imports. Nothing was imported. Preview the file again to continue.",
+};
+
+/** Who in this file uses skill (or variable) `key` under a new name: "playbooks",
+ *  "specialists", "templates", "items" (several), or null — so a rename note names what actually
+ *  follows it. */
+function usersOf(preview: SharePreview, key: string): string | null {
+  const id = key.slice(key.indexOf(":") + 1);
+  const kinds = new Set(
+    preview.items.filter((o) => o.depends_on.includes(key) && o.uses.some((u) => u.from === id)).map((o) => o.kind),
+  );
+  if (!kinds.size) return null;
+  if (kinds.size > 1) return "items";
+  return kinds.has("specialist") ? "specialists" : kinds.has("template") ? "templates" : "playbooks";
+}
+
+function linkTo(item: { kind: string; dest: string | null }): string | null {
+  if (!item.dest) return null;
+  if (item.kind === "skill") return `${SKILLS_PATH}/${encodeURIComponent(item.dest)}`;
+  if (item.kind === "playbook") return playbookPath(item.dest);
+  if (item.kind === "specialist") return specialistPath(item.dest);
+  if (item.kind === "template") return `${TEMPLATES_PATH}/${encodeURIComponent(item.dest)}`;
+  if (item.kind === "variable") return variableLink(item.dest);
+  if (CONTAINERS.has(item.kind)) return `${MEMORY_PATH}?project=${encodeURIComponent(item.dest)}`;
+  if (item.kind === "mission-plan") return missionPlanPath(item.dest);
+  return null;
+}
+
+function Files({ item }: { item: SharePreviewItem }) {
+  const rewritten = item.kind === "playbook" && (item.dest !== item.id || item.uses.length > 0);
+  const followed = item.kind === "template" && item.uses.length > 0;
+  return (
+    <details className={styles.files}>
+      <summary>
+        Review {item.files.length} file{item.files.length === 1 ? "" : "s"}
+      </summary>
+      {rewritten && (
+        <span className={styles.why}>
+          These are the files as sent. On import,{" "}
+          {[
+            item.dest !== item.id ? `playbook.toml's ID becomes ${item.dest}` : "",
+            item.uses.length
+              ? `its flows' role skills become ${item.uses.map((u) => u.to).join(", ")}`
+              : "",
+          ]
+            .filter(Boolean)
+            .join(" and ")}
+          ; each rewritten TOML file is saved without its comments or original layout.
+        </span>
+      )}
+      {followed && (
+        <span className={styles.why}>
+          These are the files as sent. On import,{" "}
+          {item.uses.map((u) => `its field ${u.from} and every {{${u.from}}} become ${u.to}`).join("; ")}.
+        </span>
+      )}
+      {item.files.map((f) => (
+        <div key={f.path}>
+          <span className={styles.fileName}>
+            {f.path} · {sizeText(f.size)}
+          </span>
+          {typeof f.text === "string" ? (
+            <pre>{f.text}</pre>
+          ) : f.withheld ? (
+            <span className={styles.why} data-testid="share-file-withheld">
+              Held back or refused: it is never imported, and its text isn't shown.
+            </span>
+          ) : (
+            <span className={styles.why}>
+              {f.binary
+                ? "Binary file: it can't be shown here."
+                : "Too large to show here, so it can't be reviewed before you import it."}
+            </span>
+          )}
+        </div>
+      ))}
+    </details>
+  );
+}
+
+function PreviewRow({
+  item,
+  state,
+  checked,
+  disabled,
+  onToggle,
+  already,
+  usedBy = null,
+  settle,
+  needsChoice = false,
+  into,
+}: {
+  /** A memory container (#1714 P4): where its notes go, in words ("Alpha", "implementer-2's
+   *  notebook in Alpha"). */
+  into?: string;
+  already?: string;
+  /** A specialist's agent/model/effort fields (#1714 P2), shown while it is to be imported. */
+  settle?: ReactNode;
+  /** A specialist to be imported that has no agent it can run on yet. */
+  needsChoice?: boolean;
+  /** Who in this file uses this skill ("playbooks", "specialists", "items"): they follow its rename. */
+  usedBy?: string | null;
+  item: SharePreviewItem;
+  state: ReturnType<typeof previewStates> extends Map<string, infer S> ? S : never;
+  checked: boolean;
+  disabled: boolean;
+  onToggle: () => void;
+}) {
+  const inputId = `share-i-${item.key}`;
+  const serverRefused = item.status === "refused";
+  const reused = state.state === "reused";
+  const secret = !!item.variable && item.variable.kind !== "text";
+  const empty = !!item.variable?.arrives_empty && !serverRefused;
+  const stamp = reused ? (
+    <span className={styles.stamp}>Reused</span>
+  ) :
+    state.state === "refused" ? (
+      <span className={`${styles.stamp} ${styles.down}`}>Refused</span>
+    ) : state.state === "deselected" ? (
+      <span className={styles.stamp}>Deselected</span>
+    ) : needsChoice ? (
+      <span className={`${styles.stamp} ${styles.warn}`}>Choose agent</span>
+    ) : item.status === "renamed" ? (
+      <span className={`${styles.stamp} ${styles.warn}`}>Renamed</span>
+    ) : isContainer(item) ? (
+      <span className={`${styles.stamp} ${styles.ok}`}>Notes</span>
+    ) : (
+      <span className={`${styles.stamp} ${styles.ok}`}>New copy</span>
+    );
+  const notes = item.memory ?? item.notebook;
+  const emptyStamp =
+    empty && state.state === "import" ? (
+      <span className={`${styles.stamp} ${styles.warn}`} data-testid="share-arrives-empty">
+        Arrives empty
+      </span>
+    ) : null;
+  return (
+    <li className={styles.row} data-testid={`share-preview-row-${item.key}`} data-state={state.state}>
+      {reused ? (
+        <span className={`${styles.check} ${styles.reusedMark}`} aria-hidden>
+          <Lock size={14} />
+        </span>
+      ) : (
+        <label className={styles.check} htmlFor={inputId}>
+          <input
+            id={inputId}
+            type="checkbox"
+            checked={checked && !serverRefused}
+            disabled={disabled || serverRefused}
+            aria-label={`Import ${badge(item.kind, secret)} ${item.title}`}
+            onChange={onToggle}
+          />
+        </label>
+      )}
+      <div className={styles.name}>
+        <span className={styles.title}>
+          <span className={styles.kind}>{badge(item.kind, secret)}</span>
+          {item.title}
+        </span>
+        <span className={styles.line}>
+          {notes ? (
+            <>
+              {notes.counts.new} new
+              {notes.counts.held ? ` · ${notes.counts.held} held back` : ""}
+              {notes.counts.refused ? ` · ${notes.counts.refused} refused` : ""}
+              {into ? (
+                <>
+                  {" → into "}
+                  <b>{into}</b>
+                </>
+              ) : null}
+            </>
+          ) : (
+          <b>{item.id}</b>
+          )}
+          {notes ? null : reused ? (
+            <>
+              {" → already here as "}
+              <b>{item.dest}</b>
+            </>
+          ) : item.dest && item.dest !== item.id ? (
+            <>
+              {" → "}
+              <b>{item.dest}</b>
+            </>
+          ) : item.dest ? (
+            " → new copy"
+          ) : null}
+          {item["mission-plan"]
+            ? ` · ${countsText(item["mission-plan"])} · runs nothing`
+            : null}
+          {item.specialist
+            ? ` · version 1 · capacity ${item.specialist.capacity}${
+                item.specialist.skills.length
+                  ? ` · pins ${item.specialist.skills.map((sk) => item.uses.find((u) => u.from === sk)?.to ?? sk).join(", ")}`
+                  : ""
+              }`
+            : item.template
+              ? ` · ${item.template.fields} field${item.template.fields === 1 ? "" : "s"}${
+                  item.template.images ? ` · ${item.template.images} image${item.template.images === 1 ? "" : "s"}` : ""
+                }${item.template.variables.length ? ` · uses ${item.template.variables.join(", ")}` : ""}`
+              : item.variable
+                ? ` · ${item.variable.kind === "secret_file" ? "secret file" : item.variable.kind === "secret" ? "secret" : item.variable.value_type}`
+                : item.uses.length
+                  ? ` · uses ${item.uses.map((u) => u.to).join(", ")}`
+                  : ""}
+        </span>
+        {empty && state.state === "import" && (
+          <span className={styles.why}>
+            {secret
+              ? "The file carries no value for a secret. It arrives empty: set it on the Variables page before you send a template that uses it."
+              : "The file carries no value for it. It arrives as a definition: set its value on the Variables page."}
+          </span>
+        )}
+        {reused && (
+          <span className={styles.why} data-testid="share-reused">
+            Your {item.dest} was imported from a file with this same version and hasn't changed
+            since. Nothing is copied: items in this file that need it use your {item.dest}.
+          </span>
+        )}
+        {state.state === "refused" && <span className={`${styles.why} ${styles.down}`}>{state.reason}</span>}
+        {state.state !== "refused" && item.status === "renamed" && (
+          <span className={`${styles.why} ${styles.warn}`}>
+            {item.kind === "variable"
+              ? `A variable named ${item.id} already exists here, or a template or project here already uses that name.`
+              : `A ${item.kind} named ${item.id} already exists here.`}{" "}
+            Yours stays untouched; this copy is {item.dest}
+            {item.uses.length && item.kind === "specialist"
+              ? ", pinned to the renamed skills"
+              : item.uses.length
+              ? ", and its references are rewritten to match"
+              : usedBy
+                ? `, and ${usedBy} in this file that use it are pointed at ${item.dest}`
+                : ""}
+            .
+          </span>
+        )}
+        {already && !serverRefused && (
+          <span className={`${styles.why} ${styles.warn}`} data-testid="already-imported">
+            Already imported from this file as {already}. Ticking it imports a second copy.
+          </span>
+        )}
+        {state.state === "import" && settle}
+        {notes && !serverRefused && <ShareNotes view={notes} label={`Notes in ${item.title}`} />}
+        {notes && !serverRefused && state.state === "import" && (
+          <span className={styles.why}>
+            Each note is added beside your own: one with the same name as yours gets <code>-2</code>, and
+            one identical to a note here is left as it is. Nothing is overwritten or merged.
+          </span>
+        )}
+        {!serverRefused && !reused && <Files item={item} />}
+      </div>
+      <div className={styles.state}>
+        {stamp}
+        {emptyStamp}
+      </div>
+    </li>
+  );
+}
+
+const OUTCOME: Record<string, { word: string; tone: string; icon: ReactNode }> = {
+  created: { word: "Created", tone: styles.ok, icon: <Check size={16} aria-hidden /> },
+  reused: { word: "Reused", tone: styles.muted, icon: <Check size={16} aria-hidden /> },
+  refused: { word: "Refused", tone: styles.down, icon: <Ban size={16} aria-hidden /> },
+  failed: { word: "Failed", tone: styles.down, icon: <X size={16} aria-hidden /> },
+  skipped: { word: "Skipped", tone: styles.muted, icon: <ArrowRight size={16} aria-hidden /> },
+  not_selected: { word: "Not selected", tone: styles.muted, icon: <span aria-hidden /> },
+  stale: { word: "Preview again", tone: styles.warn, icon: <RefreshCw size={16} aria-hidden /> },
+};
+
+function ResultRow({
+  item,
+  onOpen,
+  empty = false,
+  secret = false,
+  notes,
+}: {
+  item: ShareResultItem;
+  onOpen: () => void;
+  /** The preview's view of a memory container, to name its notes (#1714 P4). */
+  notes?: SharePreviewItem["memory"];
+  /** A variable created without a value (a secret always): its link says to set it. */
+  empty?: boolean;
+  secret?: boolean;
+}) {
+  const o = OUTCOME[item.status] ?? OUTCOME.failed;
+  const tally = item.memory;
+  const href =
+    item.status === "created" || (tally && tally.counts.created + tally.counts.already > 0)
+      ? linkTo({ kind: item.kind, dest: item.dest ?? tally?.scope ?? null })
+      : null;
+  const fill = empty && item.status === "created";
+  return (
+    <li className={styles.row} data-testid={`share-result-row-${item.key}`} data-status={item.status}>
+      <span className={`${styles.mark} ${o.tone}`}>{o.icon}</span>
+      <div className={styles.name}>
+        <span className={styles.title}>
+          <span className={styles.kind}>{badge(item.kind, secret)}</span>
+          {item.title}
+        </span>
+        <span className={styles.line}>
+          {tally ? (
+            <ShareNotesOutcome tally={tally} view={notes} />
+          ) : (
+            <>
+          {item.dest ?? item.id}
+          {fill ? " · not set" : ""}
+          {item.status === "reused"
+            ? " (yours, reused)"
+            : item.dest && item.dest !== item.id
+              ? ` (renamed from ${item.id})`
+              : ""}
+            </>
+          )}
+        </span>
+        {item.reason && <span className={`${styles.why} ${o.tone}`}>{item.reason}</span>}
+        {fill && (
+          <span className={styles.why}>It arrived empty. Set its value before you send a template that uses it.</span>
+        )}
+      </div>
+      <div className={styles.state}>
+        <span className={`${styles.stamp} ${o.tone}`}>{o.word}</span>
+        {href && (
+          <Link className={styles.open} to={href} onClick={onOpen}>
+            {fill ? "Set value" : "Open"}
+            <ChevronRight size={14} aria-hidden />
+          </Link>
+        )}
+      </div>
+    </li>
+  );
+}
+
+/** How many copies the library says came from this bundle (GET /api/share/imports: each entry's
+ *  `bundle` is the digest). Anything but a well-formed list (a failed read, the server's 503 for
+ *  an unreadable record, a stub `{}`) is `null`: unknown, so the preview holds everything
+ *  unticked rather than failing open. */
+async function copiesFrom(digest: string): Promise<number | null> {
+  try {
+    const value = await Promise.resolve().then(() => api.shareImports());
+    const imports = value && typeof value === "object" ? (value as { imports?: unknown }).imports : null;
+    if (!imports || typeof imports !== "object" || Array.isArray(imports)) return null;
+    return Object.values(imports as Record<string, unknown>).filter(
+      (v) => !!v && typeof v === "object" && (v as { bundle?: unknown }).bundle === digest,
+    ).length;
+  } catch {
+    return null;
+  }
+}
+
+/** Where a container's notes go, in words: the project, or the notebook there of the specialist
+ *  this import creates. */
+function intoText(preview: SharePreview, item: SharePreviewItem, into: NotesInto): string {
+  if (item.kind !== "notebook") return into.name;
+  const spec = preview.items.find((i) => i.key === item.depends_on[0]);
+  return `${spec?.dest ?? item.id}'s notebook in ${into.name}`;
+}
+
+function asResult(value: unknown): ShareResult | null {
+  if (!value || typeof value !== "object") return null;
+  const r = value as { items?: unknown; token?: unknown };
+  if (typeof r.token !== "string" || !Array.isArray(r.items)) return null;
+  return value as ShareResult;
+}
+
+function ImportDialog({
+  onClose,
+  onImported,
+  memory,
+  notesInto,
+}: {
+  onClose: () => void;
+  onImported: () => void;
+  memory: ImportMemory;
+  /** Library → Memory (#1714 P4): the project a file's notes go into. Without it (any other
+   *  section), a file's notes can't be imported here, and say where they can. */
+  notesInto?: NotesInto;
+}) {
+  const [phase, setPhase] = useState<Phase>({ at: "pick" });
+  const [file, setFile] = useState<File | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [over, setOver] = useState(false);
+  const [error, setError] = useState("");
+  const input = useRef<HTMLInputElement>(null);
+  const live = useRef(true);
+  const created = useRef(false);
+  // What earlier confirms of THIS bundle created (by digest, from the page-level memory): a fresh
+  // preview of the same file starts with them unticked and labelled, never ticked again.
+  const [alreadyView, setAlreadyView] = useState<ReadonlyMap<string, { dest: string; token: string }>>(
+    new Map(),
+  );
+  // Copies the library says came from this bundle, and whether nothing starts ticked because what
+  // was applied isn't known item by item (a reload, another tab, an unclear confirm).
+  const [fromLibrary, setFromLibrary] = useState<number | null>(0);
+  // Files this preview couldn't show: importing them needs an explicit acknowledgement.
+  const [ack, setAck] = useState(false);
+  const [held, setHeld] = useState(false);
+  // What each imported specialist runs on (#1714 P2): the server-settled suggestion, else nothing
+  // chosen yet; and the server's reason for a choice it refused (a 422 `settle`).
+  const [choices, setChoices] = useState<Map<string, ShareChoice>>(new Map());
+  const [problems, setProblems] = useState<Record<string, string>>({});
+  const roster = useEngineRoster();
+  const done = useRef<HTMLButtonElement>(null);
+  const settle = useRef<HTMLButtonElement>(null);
+  const frozenNow = phase.at === "preview" || phase.at === "confirming" ? phase.frozen : undefined;
+  useEffect(() => () => void (live.current = false), []);
+  useEffect(() => {
+    if (phase.at === "result") done.current?.focus();
+  }, [phase.at]);
+  useEffect(() => {
+    if (frozenNow && phase.at === "preview") settle.current?.focus();
+  }, [frozenNow, phase.at]);
+  const busy = phase.at === "checking" || phase.at === "confirming";
+  const close = () => {
+    if (created.current) onImported();
+    onClose();
+  };
+  const check = async (f: File) => {
+    setFile(f);
+    setError("");
+    if (f.size > MAX_BUNDLE_BYTES) {
+      setPhase({ at: "pick", error: `${f.name} is larger than ${sizeText(MAX_BUNDLE_BYTES)}; a bundle is at most that size.` });
+      return;
+    }
+    setPhase({ at: "checking" });
+    try {
+      const answered = asPreview(await api.sharePreview(f));
+      if (!live.current) return;
+      if (!answered) throw new Error("The preview could not be read.");
+      // Notes need a project whose memory is on: without one they are refused here, with where to
+      // import them instead (the server would refuse them at confirm anyway).
+      const preview = notesRule(answered, notesInto);
+      const digest = preview.bundle.digest;
+      const known = new Map(memory.created.get(digest) ?? []);
+      const library = await copiesFrom(digest);
+      if (!live.current) return;
+      // Nothing starts ticked when copies of this bundle may exist that this page can't name.
+      const hold =
+        memory.unclear.has(digest) || library === null || (library > known.size && library > 0);
+      const labelled = new Map([...known].filter(([, v]) => v.token !== preview.token));
+      setAlreadyView(labelled);
+      setFromLibrary(library);
+      setHeld(hold);
+      setAck(false);
+      setProblems({});
+      setChoices(
+        new Map(
+          preview.items
+            .filter((i) => i.kind === "specialist" && i.specialist)
+            .map((i) => [i.key, i.specialist!.settled ?? NO_CHOICE]),
+        ),
+      );
+      setSelected(
+        hold
+          ? new Set()
+          : initialSelection(preview, new Map([...labelled].map(([k, v]) => [k, v.dest]))),
+      );
+      setPhase({ at: "preview", preview });
+    } catch (e) {
+      // A 503 is the server being full or busy (staging_full), not this file being refused.
+      if (live.current)
+        setPhase({ at: "pick", error: errorText(e), busy: e instanceof ApiError && e.status === 503 });
+    }
+  };
+  const confirm = async (preview: SharePreview, frozen?: "unclear" | "selection") => {
+    setPhase({ at: "confirming", preview, frozen });
+    setError("");
+    try {
+      const chosen = settleFor(preview);
+      const notes = !!notesInto && preview.items.some((i) => isContainer(i) && selected.has(i.key));
+      const result = asResult(
+        notes
+          ? await api.shareConfirm(preview.token, [...selected], chosen, notesInto!.id)
+          : chosen
+            ? await api.shareConfirm(preview.token, [...selected], chosen)
+            : await api.shareConfirm(preview.token, [...selected]),
+      );
+      if (!live.current) return;
+      if (!result) throw new Error("The import answer could not be read.");
+      const digest = preview.bundle.digest;
+      const record = memory.created.get(digest) ?? new Map();
+      // Notes aren't copies: importing them again only adds what isn't already here, so they are
+      // never held back as "already imported".
+      for (const item of result.items)
+        if (item.status === "created" && item.dest && !isContainer(item))
+          record.set(item.key, { dest: item.dest, token: preview.token });
+      memory.created.set(digest, record);
+      if (result.items.some((i) => i.status === "created" || (i.memory?.counts.created ?? 0) > 0))
+        created.current = true;
+      // A failed item may still have been published (the server couldn't tell): a fresh preview of
+      // this bundle starts with nothing ticked.
+      // (A notes item's failure isn't: importing notes again only adds what isn't already here.)
+      if (result.items.some((i) => i.status === "failed" && !isContainer(i))) memory.unclear.add(digest);
+      setPhase({ at: "result", preview, result });
+    } catch (e) {
+      if (!live.current) return;
+      const status = e instanceof ApiError ? e.status : 0;
+      const reason = e instanceof ApiError ? (e.record as { reason?: string } | undefined)?.reason : undefined;
+      if (reason === "settle" && frozen !== "unclear") {
+        // Refused before anything was written (#1714 P2): say which choice, keep it editable.
+        const items = (e as ApiError).record as { items?: unknown } | undefined;
+        setProblems(
+          items?.items && typeof items.items === "object" ? (items.items as Record<string, string>) : {},
+        );
+        setError(errorText(e));
+        setPhase({ at: "preview", preview });
+      } else if (reason && STALE[reason]) setPhase({ at: "preview", preview, stale: reason });
+      else if (frozen === "unclear" && reason !== "selection") {
+        // Still unclear: a refusal of the retry doesn't prove the first confirm didn't land.
+        setError(
+          reason === "settle"
+            ? "The retry was refused: what a specialist runs on doesn't work here now."
+            : errorText(e),
+        );
+        setPhase({ at: "preview", preview, frozen: "unclear" });
+      } else if (reason === "selection") {
+        memory.unclear.add(preview.bundle.digest);
+        // The server already holds a confirm of this preview: items may exist. Nothing here may
+        // be re-selected or re-previewed blindly; the library is re-read on close.
+        created.current = true;
+        setPhase({ at: "preview", preview, frozen: "selection" });
+      } else if (status >= 400 && status < 500) {
+        // A refusal before anything was applied (422, 404): the preview stays editable.
+        setError(errorText(e));
+        setPhase({ at: "preview", preview });
+      } else {
+        // A lost response or a server/storage error: the confirm may have landed. Only the same
+        // selection may be sent again (a retry never makes a second copy).
+        memory.unclear.add(preview.bundle.digest);
+        created.current = true;
+        setError(errorText(e));
+        setPhase({ at: "preview", preview, frozen: "unclear" });
+      }
+    }
+  };
+  const again = () => file && void check(file);
+  const agentFacts = (id: string) => {
+    const e = roster.engines.find((x) => x.id === id);
+    return e && { starts: e.kind === "agent" && eligibleFor(e, "new"), skills: !!e.tools?.mcp };
+  };
+  /** The specialists this confirm would create that still need a valid choice. */
+  const unsettled = (preview: SharePreview, states: ReturnType<typeof previewStates>) =>
+    preview.items.filter(
+      (i) =>
+        i.kind === "specialist" &&
+        i.specialist &&
+        states.get(i.key)?.state === "import" &&
+        (choiceProblem(i, choices.get(i.key) ?? NO_CHOICE, agentFacts) !== null || !!problems[i.key]),
+    );
+  /** `settle` for the confirm: each selected specialist's choice, or undefined without any. */
+  function settleFor(preview: SharePreview): Record<string, ShareChoice> | undefined {
+    const out: Record<string, ShareChoice> = {};
+    for (const i of preview.items)
+      if (i.kind === "specialist" && i.status !== "refused" && selected.has(i.key) && choices.get(i.key)?.engine)
+        out[i.key] = choices.get(i.key)!;
+    return Object.keys(out).length ? out : undefined;
+  }
+
+  let body: ReactNode;
+  let foot: ReactNode;
+  if (phase.at === "pick" || phase.at === "checking") {
+    body = (
+      <>
+        {phase.at === "pick" && phase.error && (
+          <Banner
+            tone={phase.busy ? "warn" : "down"}
+            icon={phase.busy ? <RefreshCw size={16} aria-hidden /> : <Ban size={16} aria-hidden />}
+            title={phase.busy ? "Imports can't be previewed right now." : "This file can't be imported."}
+          >
+            {phase.error} Nothing was read into your library.
+          </Banner>
+        )}
+        {phase.at === "checking" ? (
+          <div className={styles.drop} role="status">
+            <RefreshCw size={28} aria-hidden />
+            <b>Checking {file?.name}…</b>
+            <span>Every file's digest is verified before anything is shown.</span>
+          </div>
+        ) : (
+          <div
+            className={`${styles.drop} ${over ? styles.dropActive : ""}`}
+            data-testid="share-drop"
+            onDragOver={(e) => {
+              e.preventDefault();
+              setOver(true);
+            }}
+            onDragLeave={() => setOver(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setOver(false);
+              const f = e.dataTransfer.files[0];
+              if (f) void check(f);
+            }}
+          >
+            <Upload size={28} aria-hidden />
+            <b>Choose a .battlelab file</b>
+            <span>or drop it here · at most {sizeText(MAX_BUNDLE_BYTES)} · nothing changes until you confirm</span>
+            <input
+              ref={input}
+              className={styles.hiddenInput}
+              type="file"
+              accept=".battlelab,application/x-tar"
+              aria-label="Bundle file"
+              data-testid="share-file"
+              tabIndex={-1}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                e.target.value = "";
+                if (f) void check(f);
+              }}
+            />
+            <button className={buttons.ghost} onClick={() => input.current?.click()}>
+              {phase.error ? "Choose another file…" : "Choose file…"}
+            </button>
+          </div>
+        )}
+      </>
+    );
+    foot = (
+      <>
+        <span className={styles.sum} />
+        <button className={buttons.ghost} disabled={busy} onClick={close}>
+          Cancel
+        </button>
+      </>
+    );
+  } else if (phase.at === "preview" || phase.at === "confirming") {
+    const { preview } = phase;
+    const labelled = new Map(
+      [...alreadyView].filter(([, v]) => v.token !== preview.token).map(([k, v]) => [k, v.dest]),
+    );
+    const states = previewStates(preview.items, selected, labelled);
+    const frozen = phase.frozen;
+    const will = preview.items.filter((i) => states.get(i.key)?.state === "import");
+    const reusedItems = preview.items.filter((i) => states.get(i.key)?.state === "reused");
+    const wont = preview.items.filter((i) => !["import", "reused"].includes(states.get(i.key)?.state ?? ""));
+    const renamed = will.filter((i) => i.status === "renamed").length;
+    const refused = wont.filter((i) => states.get(i.key)?.state === "refused").length;
+    // Files the operator is about to import without having been able to read them here.
+    const blind = will.reduce((n, i) => n + unshown(i), 0);
+    const waiting = unsettled(preview, states);
+    const empties = will.filter((i) => i.variable?.arrives_empty).length;
+    const notesNew = will.reduce((n, i) => n + ((i.memory ?? i.notebook)?.counts.new ?? 0), 0);
+    const notesHeld = will.reduce((n, i) => n + ((i.memory ?? i.notebook)?.counts.held ?? 0), 0);
+    const stale = phase.at === "preview" ? phase.stale : undefined;
+    const toggle = (key: string) => {
+      setAck(false);
+      setSelected((old) => {
+        const next = new Set(old);
+        if (next.has(key)) next.delete(key);
+        else next.add(key);
+        return next;
+      });
+    };
+    const rows = (list: SharePreviewItem[]) => (
+      <ul className={styles.list}>
+        {list.map((item) => (
+          <PreviewRow
+            key={item.key}
+            into={isContainer(item) && notesInto ? intoText(preview, item, notesInto) : undefined}
+            item={item}
+            state={states.get(item.key)!}
+            checked={selected.has(item.key)}
+            disabled={busy || !!stale || !!frozen}
+            onToggle={() => toggle(item.key)}
+            already={labelled.get(item.key)}
+            usedBy={item.kind === "skill" || item.kind === "variable" ? usersOf(preview, item.key) : null}
+            needsChoice={waiting.some((w) => w.key === item.key)}
+            settle={
+              item.specialist ? (
+                <SettleFields
+                  item={item}
+                  choice={choices.get(item.key) ?? NO_CHOICE}
+                  disabled={busy || !!stale || !!frozen}
+                  problem={problems[item.key]}
+                  focusProblem={item.key === preview.items.find((i) => problems[i.key])?.key}
+                  onChange={(next) => {
+                    setChoices((old) => new Map(old).set(item.key, next));
+                    const rest = Object.fromEntries(Object.entries(problems).filter(([k]) => k !== item.key));
+                    setProblems(rest);
+                    // The refusal was about the choices: once none is left, its banner goes too.
+                    if (problems[item.key] && !Object.keys(rest).length) setError("");
+                  }}
+                />
+              ) : undefined
+            }
+          />
+        ))}
+      </ul>
+    );
+    body = (
+      <>
+        {stale && (
+          <Banner icon={<RefreshCw size={16} aria-hidden />} title={stale === "expired" ? "This preview expired." : "Preview again."}>
+            {STALE[stale]}
+          </Banner>
+        )}
+        {fromLibrary === null && !frozen && (
+          <Banner icon={<AlertTriangle size={16} aria-hidden />} title="Couldn't check whether this file was imported before.">
+            Nothing is ticked: check your library, then tick only what you want to import. Each item
+            you tick becomes a copy.
+          </Banner>
+        )}
+        {fromLibrary !== null && fromLibrary > 0 && !frozen && (
+          <Banner icon={<AlertTriangle size={16} aria-hidden />} title={`${fromLibrary} cop${fromLibrary === 1 ? "y was" : "ies were"} imported from this file before.`}>
+            {held
+              ? "Nothing is ticked: tick only what you want to import again. Each item you tick becomes another copy."
+              : "The items this dialog already imported are unticked. Ticking an item imports another copy."}
+          </Banner>
+        )}
+        {fromLibrary === 0 && held && !frozen && (
+          <Banner icon={<AlertTriangle size={16} aria-hidden />} title="An earlier import of this file may have been applied.">
+            Nothing is ticked: check your library, then tick only what you want to import. Each item you
+            tick becomes a copy.
+          </Banner>
+        )}
+        {frozen === "unclear" && (
+          <Banner tone="down" icon={<AlertTriangle size={16} aria-hidden />} title="The import may have been applied.">
+            {error ? `${error} ` : ""}Its answer didn't arrive, so some items may already be in your
+            library. Try again with the same selection: that never makes a second copy. The
+            selection can't be changed now.
+          </Banner>
+        )}
+        {frozen === "selection" && (
+          <Banner tone="down" icon={<AlertTriangle size={16} aria-hidden />} title="This preview was already confirmed.">
+            Some of its items may already be in your library. Close this dialog and check your library
+            before importing this file again; importing it again creates second copies.
+          </Banner>
+        )}
+        {error && !frozen && (
+          <Banner tone="down" icon={<Ban size={16} aria-hidden />} title="Import failed.">
+            {error}
+          </Banner>
+        )}
+        <Banner icon={<AlertTriangle size={16} aria-hidden />} title="Not signed — imported from a file.">
+          Specialists, skills, playbooks and templates are instructions your agents will read.
+          Review them before you import. Nothing is activated, deployed, launched, sent or made a
+          default.
+        </Banner>
+        {notesInto && preview.items.some(isContainer) && (
+          <dl className={styles.dest} data-testid="share-notes-into">
+            <dt>Notes go into</dt>
+            <dd>
+              <b>{notesInto.name}</b>
+              <span className={notesInto.enabled ? styles.ok : styles.why}>
+                memory {notesInto.enabled ? "on" : "off"}
+              </span>
+            </dd>
+          </dl>
+        )}
+        <dl className={styles.meta} data-testid="share-bundle-meta">
+          <dt>File</dt>
+          <dd>
+            {file?.name ?? "bundle"} · {sizeText(preview.bundle.size)}
+          </dd>
+          <dt>Made</dt>
+          <dd>
+            {preview.bundle.created_at} · BattleLab {preview.bundle.app_version}
+            {preview.bundle.source ? ` · “${preview.bundle.source}”` : ""}
+          </dd>
+          <dt>Digest</dt>
+          <dd>
+            sha256 {preview.bundle.digest.slice(0, 4)}…{preview.bundle.digest.slice(-4)} · verified,{" "}
+            {preview.bundle.items} items, {preview.bundle.files} files
+          </dd>
+        </dl>
+        {!will.length && !wont.some((i) => states.get(i.key)?.state === "deselected") && (
+          <Banner tone="down" icon={<Ban size={16} aria-hidden />} title="Nothing in this file can be imported.">
+            Every item was refused. The reasons are listed on each item.
+          </Banner>
+        )}
+        {!!reusedItems.length && (
+          <section aria-label="Already here">
+            <h3 className={styles.group}>
+              Already here <span>// {reusedItems.length} reused, not copied</span>
+            </h3>
+            {rows(reusedItems)}
+          </section>
+        )}
+        {!!will.length && (
+          <section aria-label="Will import">
+            <h3 className={styles.group}>
+              Will import <span>// {will.length} of {preview.items.length - reusedItems.length} selected</span>
+            </h3>
+            {rows(will)}
+          </section>
+        )}
+        {!!wont.length && (
+          <section aria-label="Won't import">
+            <h3 className={styles.group}>
+              Won't import <span>// {wont.length}</span>
+            </h3>
+            {rows(wont)}
+          </section>
+        )}
+        {blind > 0 && !frozen && (
+          <label className={styles.ack} data-testid="share-blind-ack">
+            <input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} />
+            <span>
+              {blind} file{blind === 1 ? "" : "s"} you chose to import couldn't be shown here (too
+              large or not text). Agents may read {blind === 1 ? "it" : "them"} as instructions.
+              Import {blind === 1 ? "it" : "them"} without review anyway.
+            </span>
+          </label>
+        )}
+      </>
+    );
+    foot = (
+      <>
+        <p className={styles.sum} data-testid="share-preview-summary">
+          <b>{will.length} to import</b>
+          {reusedItems.length ? ` · ${reusedItems.length} reused` : ""}
+          {renamed ? ` · ${renamed} renamed` : ""}
+          {refused ? ` · ${refused} refused` : ""}
+          {waiting.length ? ` · ${waiting.length} need${waiting.length === 1 ? "s" : ""} an agent` : ""}
+          {notesNew ? ` · ${notesNew} note${notesNew === 1 ? "" : "s"} new` : ""}
+          {notesHeld ? ` · ${notesHeld} held back` : ""}
+          {empties ? ` · ${empties} arrive${empties === 1 ? "s" : ""} empty` : ""}
+          {blind > 0 && !ack ? ` · ${blind} unreviewed file${blind === 1 ? "" : "s"} need${blind === 1 ? "s" : ""} your OK` : ""}{" "}
+          · nothing changes until you confirm
+        </p>
+        {frozen ? (
+          <button
+            ref={frozen === "selection" ? settle : undefined}
+            className={buttons.ghost}
+            disabled={busy}
+            onClick={close}
+          >
+            Close
+          </button>
+        ) : (
+          <button className={buttons.ghost} disabled={busy} onClick={() => setPhase({ at: "pick" })}>
+            Back
+          </button>
+        )}
+        {frozen === "selection" ? null : frozen === "unclear" ? (
+          <button ref={settle} className={buttons.primary} disabled={busy} onClick={() => void confirm(preview, "unclear")}>
+            <RefreshCw size={16} aria-hidden />
+            {phase.at === "confirming" ? "Trying again…" : "Try again (same selection)"}
+          </button>
+        ) : stale ? (
+          <button className={buttons.primary} disabled={busy || !file} onClick={again}>
+            <RefreshCw size={16} aria-hidden />
+            Preview again
+          </button>
+        ) : (
+          <button
+            className={buttons.primary}
+            disabled={busy || !will.length || (blind > 0 && !ack) || waiting.length > 0}
+            onClick={() => void confirm(preview)}
+          >
+            {phase.at === "confirming" ? "Importing…" : `Import ${will.length} item${will.length === 1 ? "" : "s"}`}
+          </button>
+        )}
+      </>
+    );
+  } else {
+    const { result } = phase;
+    const byKey = new Map(phase.preview.items.map((i) => [i.key, i]));
+    const shown = result.items.filter((i) => i.status !== "not_selected");
+    const count = (s: string) => shown.filter((i) => i.status === s).length;
+    const terminal = shown.filter((i) => i.status === "failed" && i.retry === false).length;
+    const retriable = count("failed") - terminal;
+    // What the operator chose and BattleLab attempted: refusals were never going to be created.
+    const chosen = shown.filter((i) => i.status !== "refused" && i.status !== "reused").length;
+    body = (
+      <>
+        {result.repreview && (
+          <Banner icon={<RefreshCw size={16} aria-hidden />} title="Some items need a new preview.">
+            {STALE[result.repreview]} Items already imported stay imported.
+          </Banner>
+        )}
+        <p className={styles.prose} role="status">
+          {count("created")} of the {chosen} item{chosen === 1 ? "" : "s"} you chose{" "}
+          {chosen === 1 ? "was" : "were"} imported. Each is a new local copy marked{" "}
+          <b>Imported from a file</b>; nothing that was here changed.
+          {shown.some(isContainer)
+            ? " Notes are added beside yours, written by “imported from a file”; memory's switch wasn't touched."
+            : ""}
+        </p>
+        <ul className={styles.list}>
+          {shown.map((item) => (
+            <ResultRow
+              key={item.key}
+              item={item}
+              onOpen={close}
+              empty={!!byKey.get(item.key)?.variable?.arrives_empty}
+              secret={!!byKey.get(item.key)?.variable && byKey.get(item.key)!.variable!.kind !== "text"}
+              notes={byKey.get(item.key)?.memory ?? byKey.get(item.key)?.notebook}
+            />
+          ))}
+        </ul>
+      </>
+    );
+    foot = (
+      <>
+        <p className={styles.sum}>
+          <b>{count("created")} created</b>
+          {count("reused") ? ` · ${count("reused")} reused` : ""}
+          {count("failed") ? ` · ${count("failed")} failed` : ""}
+          {count("skipped") ? ` · ${count("skipped")} skipped` : ""}
+          {count("refused") ? ` · ${count("refused")} refused` : ""}
+        </p>
+        {/* A failure recorded for good (taken, a pinned skill that moved) only clears with a new
+            preview; a retriable one is retried under this same preview, never re-imported. */}
+        {(result.repreview || terminal > 0) && (
+          <button className={buttons.ghost} onClick={again} disabled={!file}>
+            <RefreshCw size={16} aria-hidden />
+            Preview again
+          </button>
+        )}
+        {!result.repreview && retriable > 0 && (
+          <button className={buttons.ghost} onClick={() => void confirm(phase.preview)}>
+            <RefreshCw size={16} aria-hidden />
+            Retry failed items
+          </button>
+        )}
+        <button ref={done} className={buttons.primary} onClick={close}>
+          Done
+        </button>
+      </>
+    );
+  }
+  return (
+    <Shell title={phase.at === "result" ? "Import result" : "Import from a file"} testId="share-import" busy={busy} onClose={close} foot={foot}>
+      {body}
+    </Shell>
+  );
+}
+
+/** The Import… / Export… pair a Library section's header carries. */
+export function ShareActions({
+  kind,
+  onImported,
+  children,
+  memory: notesInto,
+}: {
+  kind: ShareKind;
+  onImported: () => void;
+  /** Library → Memory (#1714 P4): the project open on the page, where notes are exported from
+   *  and imported into. */
+  memory?: NotesInto;
+  /** The section's own primary action, kept beside the pair. */
+  children?: ReactNode;
+}) {
+  const [open, setOpen] = useState<"export" | "import" | null>(null);
+  // Outlives each dialog: reopening Import… remembers what earlier imports of a file created.
+  const memory = sharedImportMemory;
+  return (
+    <div className={styles.actions}>
+      <button className={buttons.ghost} onClick={() => setOpen("import")}>
+        <Upload size={16} aria-hidden />
+        Import…
+      </button>
+      <button className={buttons.ghost} onClick={() => setOpen("export")}>
+        <Download size={16} aria-hidden />
+        Export…
+      </button>
+      {children}
+      {open === "export" && <ExportDialog kind={kind} memory={notesInto} onClose={() => setOpen(null)} />}
+      {open === "import" && (
+        <ImportDialog onClose={() => setOpen(null)} onImported={onImported} memory={memory} notesInto={notesInto} />
+      )}
+    </div>
+  );
+}
+
+/** The export dialog on its own, for a card's Export (#1924): the card's item starts chosen. */
+export function ShareExportDialog(props: { kind: ShareKind; onClose: () => void; preselect?: string }) {
+  return <ExportDialog {...props} />;
+}
+
+/** The import dialog on its own, for the Library's Import from file tile and a detail's Import…
+ *  (#2144): the same wiring as the header's Import… — the page-level memory of what earlier
+ *  imports of a file created, and `onImported` when results that created something are closed. */
+export function ShareImportDialog(props: { onClose: () => void; onImported: () => void }) {
+  return <ImportDialog {...props} memory={sharedImportMemory} />;
+}
+
+/** The *imported from a file* mark on a Library card. */
+export function ImportedMark() {
+  return (
+    <span className={styles.imported} data-testid="imported-from-file">
+      <FileText size={12} aria-hidden />
+      Imported from a file
+    </span>
+  );
+}

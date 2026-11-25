@@ -1,0 +1,81 @@
+<!doctype html>
+<html data-theme="dark"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>#1950 · team states</title>
+<link rel="stylesheet" href="base.css">
+<body>
+<h1>#1950 · unassigned, no longer qualifies, empty pool, no HQ</h1>
+<p class="sub">Frames 4–6. Assembly never relaxes a constraint to fill a role, and a grade is derived on every read, never cached.</p>
+<div class="board">
+
+<div><div class="label">4 · AN UNASSIGNED STEP — NO CONSTRAINT RELAXED</div>
+<section class="frame">
+ <div class="mhead"><b>Apply: Data analyst, Example GmbH</b><span class="mstate">PLANNED</span></div>
+ <div class="team">
+  <div class="thead"><span class="ttl">Team</span><span class="rev">revision 5 · assembled</span><div class="tacts"><button class="nj-plate btn primary">Assemble</button></div></div>
+  <ul class="steps">
+   <li class="step"><div class="sline"><span class="stitle">Cover letter</span><span class="sid">o1.cover_letter</span><span class="skill">cv-writing</span><span class="grade">min Specialist</span></div>
+    <div class="side"><button class="nj-plate btn ghost">Change</button></div>
+    <div class="who"><span class="spec">cv-writer</span><span class="ver">v3</span><span class="runs">claude-api · sonnet</span><span class="grade">Specialist</span></div>
+    <p class="why">Only specialist with <b>cv-writing</b>; Specialist ≥ Specialist.</p></li>
+   <li class="step warn"><div class="sline"><span class="stitle">Review the application</span><span class="sid">o1.review</span><span class="skill">application-review</span><span class="grade">min Senior</span><span class="actor">distinct from cv, cover_letter</span></div>
+    <div class="side"><button class="nj-plate btn ghost">Change</button></div>
+    <p class="gone"><b>UNASSIGNED</b>No qualifying specialist: needs Senior + application-review, distinct from cv-writer.</p>
+    <details class="alt" open><summary>Why each one was refused (2)</summary><ol>
+     <li><b>application-reviewer</b> — archived. <span class="rev">specialist_archived</span></li>
+     <li><b>cv-writer</b> — no application-review skill; Specialist is below Senior; already holds cv and cover_letter. <span class="rev">skill_missing · grade_below_min · not_distinct</span></li></ol></details>
+   </li>
+  </ul>
+  <p class="ann" style="margin:0">Unarchive application-reviewer, or add a Senior specialist with application-review, then Assemble again. cv-writer is never put on the review to fill the gap.</p>
+ </div>
+</section></div>
+
+<div><div class="label">5 · NO LONGER QUALIFIES — AFTER A GRADE REMAP IN SETTINGS</div>
+<section class="frame">
+ <div class="mhead"><b>Apply: Data analyst, Example GmbH</b><span class="mstate">PLANNED</span></div>
+ <div class="team">
+  <ul class="steps">
+   <li class="step warn"><div class="sline"><span class="stitle">Tailor the CV</span><span class="sid">o1.cv</span><span class="skill">cv-writing</span><span class="grade">min Specialist</span></div>
+    <div class="side"><button class="nj-plate btn ghost">Change</button></div>
+    <div class="who"><span class="spec">cv-writer</span><span class="ver">v3</span><span class="runs">claude-api · sonnet</span><span class="grade">Intern</span></div>
+    <p class="gone"><b>NO LONGER QUALIFIES</b>sonnet is Intern, below Specialist, which cv-writing needs. Approval will refuse this step until you change it. <span class="rev">grade_below_min</span></p>
+    <p class="why">Picked at revision 4: only specialist with <b>cv-writing</b>; Specialist ≥ Specialist.</p></li>
+   <li class="step warn"><div class="sline"><span class="stitle">Review the application</span><span class="sid">o1.review</span><span class="skill">application-review</span><span class="grade">min Senior</span></div>
+    <div class="side"><button class="nj-plate btn ghost">Change</button></div>
+    <div class="who"><span class="spec">application-reviewer</span><span class="ver">v1</span><span class="runs">claude-api · opus</span><span class="ungraded">Ungraded</span></div>
+    <p class="gone"><b>NO LONGER QUALIFIES</b>opus is ungraded on claude-api; an ungraded model meets no minimum grade (grade it in Settings → Agents). <span class="rev">ungraded</span></p></li>
+  </ul>
+  <p class="ann" style="margin:0">Checked on every read: the stored revision never changes, and no grade is kept on it. Grading the model again in Settings → Agents clears the warning.</p>
+ </div>
+</section></div>
+
+<div><div class="label">6a · AN EMPTY POOL</div>
+<section class="frame">
+ <div class="mhead"><b>Apply: Data analyst, Example GmbH</b><span class="mstate">DRAFT</span></div>
+ <div class="team">
+  <div class="thead"><span class="ttl">Team</span><div class="tacts"><button class="nj-plate btn primary" disabled>Assemble</button></div></div>
+  <div class="empty" style="padding:0">
+   <p><b>No specialists in your pool yet.</b> 7 steps need one: career-archive, cv-writing and application-review.</p>
+   <p>Add a specialist with those skills, graded at least as each step needs, then Assemble.</p>
+   <a class="nj-plate btn ghost" href="#" style="align-self:flex-start">Open Specialists</a>
+  </div>
+ </div>
+</section></div>
+
+<div><div class="label">6b · NO HQ — YOU CAN STILL ASSEMBLE BY HAND</div>
+<section class="frame">
+ <div class="mhead"><b>Apply: Data analyst, Example GmbH</b><span class="mstate">PLANNED</span></div>
+ <div class="team">
+  <div class="thead"><span class="ttl">Team</span><span class="rev">revision 2 · assembled · by you</span>
+   <div class="tacts"><button class="nj-plate btn ghost" disabled title="HQ has no AI endpoint">Ask HQ</button><button class="nj-plate btn primary">Assemble</button></div></div>
+  <p class="tsum">HQ is not set up: it has no AI endpoint (Settings → HQ). Assemble, Change and the model list work without it: the team is chosen by the server, not by a model.</p>
+  <ul class="steps">
+   <li class="step"><div class="sline"><span class="stitle">Tailor the CV</span><span class="sid">o1.cv</span><span class="skill">cv-writing</span><span class="grade">min Specialist</span></div>
+    <div class="side"><button class="nj-plate btn ghost">Change</button></div>
+    <div class="who"><span class="spec">cv-writer</span><span class="ver">v3</span><span class="runs">claude-api · sonnet</span><span class="grade">Specialist</span></div>
+    <p class="why">Only specialist with <b>cv-writing</b>; Specialist ≥ Specialist.</p></li>
+  </ul>
+ </div>
+</section></div>
+
+</div>
+<script src="head.js"></script>
+</body></html>

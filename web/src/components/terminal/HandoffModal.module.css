@@ -1,0 +1,283 @@
+/* Hand-off modal (#597), on THE dialog (components/HudDialog.module.css, NIGHTJAR #1531): its
+ * frame, head, from line, labels, actions and buttons are composed from there, so this dialog —
+ * the reference e2e/dialog-hand-off-parity.spec.ts holds the others to — and the others cannot
+ * drift. What is its own: the engine / mode tiles, the preview, the degrade notice and the footer.
+ * Tokens only; ≥44px touch targets; a bottom sheet at ≤800px. */
+
+.backdrop {
+  composes: backdrop from "../HudDialog.module.css";
+}
+.dialog {
+  composes: dialog from "../HudDialog.module.css";
+}
+.head {
+  composes: head from "../HudDialog.module.css";
+}
+.tag {
+  composes: tag from "../HudDialog.module.css";
+}
+.close {
+  composes: close from "../HudDialog.module.css";
+}
+.from {
+  composes: from from "../HudDialog.module.css";
+}
+.fromLabel {
+  composes: fromLabel from "../HudDialog.module.css";
+}
+.fromTitle {
+  composes: fromTitle from "../HudDialog.module.css";
+}
+.label {
+  composes: label from "../HudDialog.module.css";
+}
+.muted {
+  composes: muted from "../HudDialog.module.css";
+}
+.error {
+  composes: error from "../HudDialog.module.css";
+  margin: 0 0 var(--sp-3);
+}
+.cancel {
+  composes: cancel from "../HudDialog.module.css";
+}
+.go {
+  composes: go from "../HudDialog.module.css";
+}
+
+.section {
+  margin-bottom: var(--sp-3);
+}
+
+/* Engine / mode tiles: chamfered plates, 44px targets; the chosen tile carries the HUD tint and a
+ * lit edge; an engine that can't be a target is dashed with its reason. */
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: var(--sp-2);
+}
+.tile {
+  composes: nj-plate from global;
+  --nj-face: var(--bg-2);
+  --nj-edge: var(--border);
+  min-height: 44px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 2px;
+  padding: var(--sp-1) var(--sp-3);
+  border: 1px solid transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  text-align: left;
+}
+.tile:hover:not(:disabled):not(.tileOn),
+.tile:focus-visible:not(:disabled) {
+  --nj-edge: var(--hud-dim);
+}
+.tile:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.tileOn {
+  --nj-face: color-mix(in srgb, var(--hud) 14%, var(--bg-2));
+  --nj-edge: var(--hud);
+  color: var(--text-1);
+}
+.tile:disabled {
+  --nj-edge: transparent;
+  border: 1px dashed var(--border);
+  opacity: 0.6;
+  cursor: default;
+}
+.tileName {
+  font-family: var(--font-display);
+  font-size: var(--fs-meta);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.tileWhy {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.hint {
+  margin: var(--sp-1) 0 0;
+  font-size: var(--fs-label);
+  color: var(--text-3);
+}
+
+.previewHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+.previewMeta {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.08em;
+  color: var(--text-3);
+}
+.preview:disabled {
+  opacity: 0.6;
+}
+.preview {
+  width: 100%;
+  height: 160px;
+  resize: vertical;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface-3);
+  color: var(--text-2);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  line-height: 1.45;
+}
+.preview:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+/* Degrade notice (#597 Phase 2): AI mode fell back to the local quick tail. Advisory, not an
+ * error — the brand tint, never a status colour. */
+.notice {
+  margin: var(--sp-1) 0 0;
+  padding: var(--sp-1) var(--sp-2);
+  font-size: var(--fs-label);
+  line-height: 1.35;
+  color: var(--badge-fg);
+  background: var(--badge-bg);
+  border-left: 3px solid var(--hud);
+}
+
+.actions {
+  composes: actions from "../HudDialog.module.css";
+  justify-content: space-between;
+}
+.foot {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.1em;
+  color: var(--text-3);
+}
+.buttons {
+  display: flex;
+  gap: var(--sp-2);
+  flex: 0 0 auto;
+}
+
+/* Mobile (≤800px): the sheet comes from the shared dialog; the tiles go two up and the buttons
+ * stack full width with the primary on top. */
+@media (max-width: 800px) {
+  .tiles {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .actions {
+    align-items: stretch;
+  }
+  .buttons {
+    flex-direction: column-reverse;
+  }
+  .foot {
+    text-align: center;
+  }
+}
+
+/* Over-cap readout: the byte counter turns to the failure tone when the edited brief exceeds the
+ * server's cap — this IS an error state. */
+.previewOver {
+  color: var(--danger-text);
+  font-weight: 600;
+}
+
+/* Discard-confirm strip (#703 review): a target/mode switch would rebuild the seed and throw away
+ * typed prose, so it asks first. */
+.confirm {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  margin: 0 0 var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-meta);
+  color: var(--text-1);
+  background: var(--bg-2);
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--hud);
+}
+.confirmBtns {
+  display: flex;
+  gap: var(--sp-2);
+  flex: 0 0 auto;
+}
+.discard {
+  composes: primary from "../ui/actionButton.module.css";
+}
+
+/* Inline Retry for a failed prepare/renewal (#703 review follow-up), next to the error. */
+.retry {
+  composes: primary from "../ui/actionButton.module.css";
+  margin-left: var(--sp-2);
+}
+
+/* Source reference (#716) and archive options: one chamfered checkbox row each, the tile's
+ * language (≥44px target); checked carries the HUD tint. */
+.optRow {
+  composes: nj-plate from global;
+  --nj-face: var(--bg-2);
+  --nj-edge: var(--border);
+  min-height: 44px;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+.optRow:hover,
+.optRow:focus-within {
+  --nj-edge: var(--hud-dim);
+}
+.optRowOn {
+  --nj-face: color-mix(in srgb, var(--hud) 9%, var(--bg-2));
+  --nj-edge: var(--hud);
+}
+/* A row whose control is unavailable (#1274): dimmed as a whole, so it reads as unavailable. */
+.optRowOff {
+  opacity: 0.5;
+  cursor: default;
+}
+.optBox {
+  width: 17px;
+  height: 17px;
+  flex: none;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.optText {
+  font-size: var(--fs-meta);
+  color: var(--text-1);
+  line-height: 1.4;
+}
+.optHint {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--fs-label);
+  color: var(--text-3);
+  line-height: 1.4;
+}
+/* The extra disclosure that exists only while the option is on — a heads-up, never the accent. */
+.privacyMore {
+  display: block;
+  margin-top: var(--sp-1);
+  padding-left: var(--sp-2);
+  border-left: 2px solid var(--status-degraded);
+  color: var(--text-2);
+}

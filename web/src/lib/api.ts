@@ -1,0 +1,3629 @@
+import type { MissionApproval } from "../types/missionApproval";
+import type { MissionBudget, MissionSteps, StepRun } from "../types/missionSteps";
+import type { MissionTeam, TeamChoices, TeamOp } from "../types/missionTeam";
+import { appUrl } from "./appBase";
+import { getRelaySnapshot, relayEnd, relaySignOut } from "../homefree/relayStatus";
+import type {
+  SpecialistDetail,
+  SpecialistDraft,
+  SpecialistList,
+} from "../types/specialists";
+import type {
+  MissionPlanDetail,
+  MissionPlanRevision,
+  MissionPlanRow,
+} from "../types/missionPlans";
+import type { ApiLook } from "../theme/apiLook";
+import type {
+  Debrief,
+  ShelfDiffFile,
+  ShelfItem,
+  ShelfManifest,
+  ShelfVerdict,
+} from "../types/shelf";
+import type { ShareCatalog, ShareChoice, ShareImports, SharePreview, ShareResult } from "../types/share";
+import type { GalleryIndex, GalleryInspection, GalleryOperation, GalleryKind, GalleryComparison, GalleryFiles, LocalSkill } from "../types/gallery";
+import type { McpCheckRow, McpOperation, McpResolution, McpReviewFacts, McpServerDetail, McpServerInput, McpServerSummary, McpServerUpdate } from "../types/mcp";
+import type { CollectionInput, SecretAccessEntry, SharedVariable, SharedVariableInput, SharedVariableUpdate, SharedVariablesResponse, VariableCollection } from "../types/variables";
+import type { SessionCapacity, Resources, ResourceSettings, ResourceValues } from "../types/resources";
+import type {
+  CreatedReplyShare,
+  CreatedShare,
+  ReplyExpiry,
+  ReplyShare,
+  ShareList,
+  ShareMode,
+} from "./shareFormat";
+import type {
+  CreatedInvite,
+  FederationGrant,
+  FederationGrantList,
+  OperationStatus,
+  OwnSuggestion,
+  FederationPairing,
+  FederationState,
+  RemoteEventPage,
+  RemoteHistoryPage,
+  RemoteShare,
+  RemoteSnapshot,
+} from "./federation";
+import type { PeerSuggestion } from "./federationInput";
+import type { RemoteFrameAnswer } from "./federationScreen";
+import type { ConnectorCatalog, ConnectorDelivery, ConnectorInstance, ConnectorTestResult, NotifyBody, RecipientCandidate } from "./connectors";
+import type { DeploymentReceipt, DeploymentRemoval, DeploymentReview, DeploymentStatus, PlaybookInputs } from "../types/playbookDeployment";
+// Typed client for the FastAPI `/api/*` surface. Same-origin; cookie session auth.
+// Mutations (later) attach the CSRF token + are origin-checked server-side.
+import type { AuthoringSchema, DirectPrompt, Files, PromptComparison, Variable } from "../components/playbooks/playbookDraft";
+import type { PluginCatalog, PluginReview, PluginOperation, PluginAction, PluginActivation, PluginActivationPreview } from "../types/plugins";
+import type { ImportPreview, ImportResult, MemoryProject, MemoryView, NoteEdit } from "../types/memory";
+import type {
+  ActivationScope,
+  Artifact,
+  ArtifactActivation,
+  ArtifactDetail,
+  ArtifactMode,
+  ArtifactPage,
+  ArtifactQuery,
+  ArtifactSettings,
+  ArtifactShareOptions,
+  ArtifactRepo,
+  ArtifactRepoItem,
+  ArtifactRepoItemPage,
+  ArtifactRepoList,
+} from "../types/artifacts";
+import type { PlaybookDetail, PlaybookFleet, PlaybookFleetResult, PlaybookFleetReview, PlaybookList, PlaybookVerify, PlaybookWriteResult } from "../types/playbooks";
+import {
+  ACTION_SCRIPTS_API,
+  ACTIONS_API,
+  AUTOMATION_ORIGINS_API,
+  AUTOMATIONS_API,
+  DIRECTION_PREVIEW_PATH,
+  WEBHOOKS_API,
+  webhookApiPath,
+  askStopTurnPath,
+  askWithdrawTurnPath,
+  HQ_TASKS_API,
+  HQ_TASKS_STOP_ALL_API,
+  mcpInstallPath,
+  mcpOperationPath,
+  mcpOperationStopPath,
+  MCP_RESOLVE_LINK_API,
+  mcpReviewPath,
+} from "./apiPaths";
+import type {
+  Automation,
+  AutomationConfig,
+  AutomationDeleted,
+  AutomationList,
+  AutomationOrigin,
+  AutomationRun,
+  DestinationState,
+} from "../types/automations";
+import type { ActionGallery, ActionScripts } from "../types/actions";
+import type {
+  Webhook,
+  WebhookCreated,
+  WebhookDetail,
+  WebhookList,
+  WebhookRotated,
+} from "../types/webhooks";
+import { uploadStoredName } from "./templateMessage";
+import { projectPickerStore, type ProjectPickerEntity } from "./projectPickerStore";
+import type {
+  AgentEndpoint,
+  AgentEndpointPatch,
+  ChatSession,
+  Containment,
+  StructuredEventPage,
+  StructuredHistoryPage,
+  StructuredModelList,
+  StructuredSnapshot,
+  ChatTurn,
+  DashboardSessions,
+  AgentBudgets,
+  AgentDefaults,
+  AgentDefaultsPatch,
+  AgentUsageResponse,
+  AiActivity,
+  AnalyticsState,
+  AppConfig,
+  AutomationScope,
+  AutomationPolicy,
+  AutoSortReport,
+  ClusterDetail,
+  ClustersList,
+  ReclusterReport,
+  SessionClusterRef,
+  DirectionPreview,
+  DraftAttachment,
+  EngineDetail,
+  EnginesResponse,
+  Evidence,
+  MissionScreenApi,
+  EvidenceKind,
+  FileCapabilities,
+  FileContent,
+  FileListing,
+  FileWriteResult,
+  Folder,
+  FsDir,
+  GitBranches,
+  GitDiff,
+  GitLog,
+  GitPushTarget,
+  GitStatus,
+  GitWriteResult,
+  HandoffCommitted,
+  HandoffMode,
+  HandoffPrepared,
+  HistoryPage,
+  HqDispatch,
+  HqDispatchList,
+  HqTaskList,
+  Mission,
+  MissionContext,
+  MissionNow,
+  MissionList,
+  MissionObjective,
+  MissionTurn,
+  MissionTurnEvent,
+  NotificationList,
+  OrchestratorAction,
+  NeedsYouDetails,
+  NeedsYouPayload,
+  RecentWorkPayload,
+  OrchestratorState_,
+  ProjectArchiveReport,
+  LaunchDefaults,
+  ProjectEntity,
+  PromptEntry,
+  AskConversation,
+  AskSessionDecision,
+  AskLibraryContent,
+  AskOperationDecision,
+  AskMessageDecision,
+  AskStepList,
+  AskConversationSummary,
+  AskConversationTurn,
+  AskAttachment,
+  AskTurnEvent,
+  PulseOverview,
+  PushSubscriptionInfo,
+  Session,
+  SessionLineagePage,
+  ArchiveSubagentResult,
+  SessionDraft,
+  SessionsPage,
+  SessionsQuery,
+  SystemInfo,
+  Telemetry,
+  Template,
+  TemplateInput,
+  TemplatesResponse,
+  TemplateSendResult,
+  TemplateSuggestionsResponse,
+  TemplateDraft,
+  TemplateSuggestionsResult,
+  TemplateVariable,
+  TemplateVariablesResponse,
+  TwoFactorEnrollment,
+  UpdateInfo,
+  UpdateProgress,
+  UpdateSettings,
+  UploadBatch,
+  UploadResult,
+  AiProvider,
+} from "../types/api";
+import { clearSent } from "./sentHistory";
+import type {
+  ConformanceReport,
+  VoiceCall,
+  VoiceCapabilities,
+  VoiceLists,
+  VoiceLocal,
+  VoiceLocalUse,
+  VoiceSettings,
+  VoiceSettingsPatch,
+  SpeechSidePatch,
+} from "../types/voice";
+import { announceActionResolved } from "./actionEvents";
+
+/** OpenCode maintenance keeps unknown measurements distinct from zero. */
+export interface CompactMeasurement {
+  available: boolean;
+  db_bytes: number | null;
+  wal_bytes: number | null;
+  reclaimable_bytes: number | null;
+  holders: { pids: number[]; unknown: boolean } | null;
+  disk: {
+    shared_filesystem: boolean;
+    database_required: number;
+    database_free: number;
+    temp_required: number;
+    temp_free: number;
+  } | null;
+  blockers: { code: string; detail: string }[];
+}
+export interface CompactJob {
+  id: string;
+  /** The engine whose store this job compacts (#853 P4). Absent from an older server. */
+  engine?: string;
+  state:
+    | "checking"
+    | "vacuum"
+    | "checkpoint"
+    | "done"
+    | "refused"
+    | "interrupted"
+    | "failed";
+  started_at: number;
+  finished_at: number | null;
+  result: {
+    vacuum: "done" | "rolled_back" | "not_started" | "unknown";
+    checkpoint: "done" | "deferred" | "failed" | "not_started";
+    checkpoint_result: number[] | null;
+    bytes_freed: number | null;
+    blockers: { code: string; detail: string }[];
+  } | null;
+}
+export interface CompactInfo {
+  compact: CompactMeasurement;
+  /** Every engine whose store can be compacted (#853 P4). Absent from an older server. */
+  targets?: string[];
+  job: CompactJob | null;
+  runner: { job: string; started_at: number | null } | null;
+}
+
+/** One account in an agent's pool (#1820). `problems` names entries of its home that make it
+ *  unusable; empty means sound. */
+export interface AgentAccount {
+  id: string;
+  label: string;
+  created_at?: number | null;
+  problems?: string[];
+}
+export interface AgentAccountPool {
+  engine: string;
+  /** "default" (the login the CLI already has) or an account id. */
+  new_sessions?: string;
+  max_accounts?: number;
+  accounts: AgentAccount[];
+  /** Set when the account store could not be read; nothing else is then known. */
+  error?: string;
+}
+
+export class ApiError extends Error {
+  readonly status: number;
+  /** The parsed response body, when the server sent one.
+   *
+   *  A 409 from compare-and-execute carries the SETTLED record — the server has already moved
+   *  the action to stale/expired. Reducing the response to a message threw that away, so the
+   *  client kept showing the row as actionable and every retry 409'd again until a refresh. */
+  readonly record?: unknown;
+  constructor(status: number, message: string, record?: unknown) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.record = record;
+  }
+}
+
+// The fetch used for every `/api` call. Same-origin `globalThis.fetch` by default;
+// Home Free's connect page (#579 P3) injects a mux-backed `tunnelFetch` so the SPA's
+// private traffic rides the blind relay instead of hitting the network directly. The
+// seam is behaviour-neutral when unset — the app can't tell it's tunneled.
+export type ApiFetch = (input: string, init?: RequestInit) => Promise<Response>;
+const defaultFetch: ApiFetch = (input, init) => fetch(input, init);
+let apiFetch: ApiFetch = defaultFetch;
+/** Route every `/api` call through `fn` (Home Free tunnel), or back to same-origin fetch with `null`. */
+export function setApiFetch(fn: ApiFetch | null): void {
+  apiFetch = fn ?? defaultFetch;
+}
+
+/** Whether `/api` traffic rides the Home Free tunnel (#1530). A native-origin `src`/`href` would
+ *  bypass the tunnel and ask the RELAY for the URL — a 404 that also puts the path in the relay's
+ *  request log — so anything that would hand an `/api` URL to the browser must branch on this. */
+export function isApiTunneled(): boolean {
+  return apiFetch !== defaultFetch;
+}
+
+/** Where to send an unauthenticated user: the server login form, carrying the
+ *  current location so it can bounce back after sign-in (server open-redirect guards). */
+export function loginRedirectUrl(
+  loc: { pathname: string; search: string } = location,
+): string {
+  // The `next` path is the location as the browser shows it (base included): the login page sends
+  // the operator straight back to it. The login page itself sits under the same base (#1735).
+  return `${appUrl("/login")}?next=${encodeURIComponent(loc.pathname + loc.search)}`;
+}
+
+// One-shot guard: several /api calls can 401 at once (config + sessions on load); we
+// only want a single navigation.
+let redirecting = false;
+function gotoLogin(): void {
+  // Through the relay the box's login page is not reachable (#1735): end the relay session and
+  // say why on the connect page, instead of navigating to a page that is not there.
+  if (relayEnd(RELAY_SIGN_IN_NEEDED)) return;
+  if (redirecting) return;
+  redirecting = true;
+  location.assign(loginRedirectUrl());
+}
+
+/** Shown on the connect page when the box answers the streamed app with "sign in" (#1735). */
+export const RELAY_SIGN_IN_NEEDED =
+  "the box asked you to sign in — sign in on the box's own address, then connect again";
+/** Shown on the connect page when the box requires its first password change (#1735). */
+export const RELAY_PASSWORD_CHANGE_NEEDED =
+  "the box needs its password changed first — change it on the box's own address, then connect again";
+
+/** First-run forced password change → the server-rendered /change-password (the SPA has
+ *  no change screen; this route is on the SW navigateFallbackDenylist). */
+export function gotoChangePassword(): void {
+  if (relayEnd(RELAY_PASSWORD_CHANGE_NEEDED)) return;
+  if (redirecting) return;
+  redirecting = true;
+  location.assign(appUrl("/change-password"));
+}
+
+/** Handle a 401/403 on an /api call (always throws). 401 = not signed in → /login.
+ *  403 = bad CSRF/origin (surfaced) UNLESS the body says a password change is required,
+ *  in which case route to /change-password (belt-and-suspenders alongside the config gate). */
+async function authGate(r: Response): Promise<never> {
+  if (r.status === 401) {
+    gotoLogin();
+    throw new ApiError(401, "unauthorized");
+  }
+  let detail = "";
+  try {
+    detail = ((await r.json()) as { detail?: string })?.detail ?? "";
+  } catch {
+    /* non-JSON body */
+  }
+  if (/password change required/i.test(detail)) {
+    gotoChangePassword();
+    throw new ApiError(403, "password change required");
+  }
+  throw new ApiError(403, "forbidden");
+}
+
+async function getJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const r = await apiFetch(path, { credentials: "same-origin", ...init });
+  if (r.status === 401 || r.status === 403) await authGate(r);
+  if (!r.ok) throw new ApiError(r.status, `GET ${path} → ${r.status}`);
+  return (await r.json()) as T;
+}
+
+/** A GET whose failures carry the server's `detail` string, the read-side twin of
+ *  `mutateJson` (#834). Scoped to the endpoints whose error text IS the answer — the
+ *  /models proxy relays the gateway's own message (#382), and "GET /api/ai-review/models
+ *  → 502" in its place tells the operator nothing about why their endpoint was rejected.
+ *  Plain `getJson` stays the default: most GETs have no useful `detail` to surface. */
+async function getJsonWithDetail<T>(
+  path: string,
+  signal?: AbortSignal,
+  init: RequestInit = {},
+): Promise<T> {
+  const r = await apiFetch(path, {
+    credentials: "same-origin",
+    ...init,
+    ...(signal ? { signal } : {}),
+  });
+  if (r.status === 401 || r.status === 403) await authGate(r);
+  if (!r.ok) {
+    let detail = "";
+    let body: unknown;
+    try {
+      body = await r.json();
+      detail = (body as { detail?: string })?.detail ?? "";
+    } catch {
+      /* non-JSON body */
+    }
+    // The parsed body rides along as `record`: a caller whose answer depends on the server's
+    // `code` (a frame read tells "the screen can't be read" from "the peer is offline", both
+    // 503) reads it there.
+    throw new ApiError(r.status, detail || `GET ${path} → ${r.status}`, body);
+  }
+  return (await r.json()) as T;
+}
+
+// CSRF token for mutations, fetched once via /api/config and cached. The browser
+// adds the Origin header on same-origin POSTs; the server checks both.
+let csrfToken = "";
+let csrfLoaded: () => void = () => {};
+const csrfKnown = new Promise<void>((resolve) => {
+  csrfLoaded = resolve;
+});
+export function setCsrfToken(token: string): void {
+  csrfToken = token;
+  if (token) csrfLoaded();
+}
+/** Resolves once the first CSRF token is known. A POST a page issues by itself on mount (the
+ *  gallery's automatic check, #1440) waits for it rather than racing ConfigProvider's first read
+ *  and being refused as forbidden. */
+export function csrfReady(): Promise<void> {
+  return csrfKnown;
+}
+
+async function postJson<T>(path: string, body?: unknown): Promise<T> {
+  const r = await apiFetch(path, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (r.status === 401 || r.status === 403) await authGate(r);
+  if (!r.ok) throw new ApiError(r.status, `POST ${path} → ${r.status}`);
+  return (await r.json()) as T;
+}
+
+/** A CSRF-guarded JSON mutation that surfaces the server's `detail` string in the thrown
+ *  ApiError (#361): folder-adoption conflicts (409) carry an explanation the Projects
+ *  manager shows inline — the generic "PATCH … → 409" would tell the user nothing. */
+/** A CSRF-guarded multipart mutation.
+ *
+ *  `Content-Type` is deliberately NOT set: the browser derives it from the `FormData`, boundary
+ *  included, and setting it by hand produces a header whose boundary does not match the body.
+ *  Through the Home Free tunnel this still works because `tunnel.fetch` normalizes the body via a
+ *  `Request` and sends `await req.arrayBuffer()`, which preserves that generated header. */
+async function postForm<T>(path: string, form: FormData, method: "POST" | "PUT" = "POST"): Promise<T> {
+  const r = await apiFetch(path, {
+    method,
+    credentials: "same-origin",
+    headers: { "X-CSRF-Token": csrfToken },
+    body: form,
+  });
+  if (r.status === 401 || r.status === 403) await authGate(r);
+  if (!r.ok) {
+    let detail = `${method} ${path} → ${r.status}`;
+    try {
+      const body = (await r.json()) as { detail?: string };
+      if (body?.detail) detail = body.detail;
+    } catch {
+      /* a non-JSON error body: keep the generic message */
+    }
+    throw new ApiError(r.status, detail);
+  }
+  return (await r.json()) as T;
+}
+
+async function mutateJson<T>(
+  method: "POST" | "PUT" | "PATCH" | "DELETE",
+  path: string,
+  body?: unknown,
+  signal?: AbortSignal,
+): Promise<T> {
+  const r = await apiFetch(path, {
+    method,
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+    body: body === undefined ? undefined : JSON.stringify(body),
+    ...(signal ? { signal } : {}),
+  });
+  if (r.status === 401 || r.status === 403) await authGate(r);
+  if (!r.ok) {
+    let detail = "";
+    let parsed: unknown;
+    try {
+      parsed = await r.json();
+      detail = (parsed as { detail?: string })?.detail ?? "";
+    } catch {
+      /* non-JSON body */
+    }
+    // Carry the whole body, not just `detail`. A compare-and-execute 409 ships the SETTLED
+    // record alongside its explanation, and a caller that can fold that back in place saves
+    // the operator a refresh (#726).
+    throw new ApiError(
+      r.status,
+      detail || `${method} ${path} → ${r.status}`,
+      parsed,
+    );
+  }
+  return (await r.json()) as T;
+}
+
+/** `POST /api/profile/avatar` (#1931): the image as a multipart `file` part — the shape every
+ *  upload here uses. A raw `image/*` body was refused by an edge WAF (OWASP CRS 920420) before it
+ *  reached the app; multipart passes, and goes through the Home Free tunnel like any upload. */
+async function uploadAvatar(image: Blob): Promise<{ version: string }> {
+  // Settings › Profile can be on screen before ConfigProvider's first read lands (a deep link, a
+  // fresh Home Free connect): a file picked in that window would go out with no CSRF token and be
+  // refused "bad csrf". Wait for the token, as the gallery's mount-time POST does (#1440).
+  await csrfReady();
+  const form = new FormData();
+  // A name for the part only (the server sniffs the bytes and ignores both name and type).
+  const ext = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp" }[image.type] ?? "bin";
+  form.append("file", image, `avatar.${ext}`);
+  return postForm<{ version: string }>("/api/profile/avatar", form);
+}
+
+/** Hand each NDJSON line of `r` to `emit` as it arrives — or all at once, when the body cannot be
+ *  read as a stream (the Home Free tunnel may buffer it). Shared by the streamed chats. */
+async function readLines(r: Response, emit: (line: string) => void): Promise<void> {
+  const reader = r.body?.getReader();
+  if (!reader) {
+    for (const line of (await r.text()).split("\n")) emit(line);
+    return;
+  }
+  const decoder = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let nl = buf.indexOf("\n");
+    while (nl >= 0) {
+      emit(buf.slice(0, nl));
+      buf = buf.slice(nl + 1);
+      nl = buf.indexOf("\n");
+    }
+  }
+  emit(buf + decoder.decode());
+}
+
+/** `POST /api/missions/{id}/message/stream`, read line by line (#1224). Resolves with the turn —
+ *  the same `MissionTurn` `/message` answers — and hands every line before it to `onEvent`.
+ *
+ *  A refusal before the stream is an `ApiError` with its status, exactly as `missionMessage`'s;
+ *  an `error` line is one too. A stream that ends WITHOUT its `turn` line (a dropped connection,
+ *  a proxy cutting it) is a failure, never a turn left spinning — and not a statement about the
+ *  turn: it is durable, and sending the same `turn_id` again finds it. */
+async function streamMissionMessage(
+  id: string,
+  body: { message: string; turnId: string },
+  onEvent: (ev: MissionTurnEvent) => void,
+): Promise<MissionTurn> {
+  const path = `/api/missions/${encodeURIComponent(id)}/message/stream`;
+  const r = await apiFetch(path, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+    body: JSON.stringify({ message: body.message, turn_id: body.turnId }),
+  });
+  if (r.status === 401 || r.status === 403) await authGate(r);
+  if (!r.ok) {
+    let parsed: unknown;
+    try {
+      parsed = await r.json();
+    } catch {
+      /* non-JSON body */
+    }
+    const detail = (parsed as { detail?: string } | undefined)?.detail ?? "";
+    throw new ApiError(r.status, detail || `POST ${path} → ${r.status}`, parsed);
+  }
+  let turn: MissionTurn | null = null;
+  const cut = () =>
+    new ApiError(502, "The connection dropped before the turn finished.");
+  await readLines(r, (line) => {
+    if (!line.trim()) return;
+    let ev: MissionTurnEvent;
+    try {
+      ev = JSON.parse(line) as MissionTurnEvent;
+    } catch {
+      throw cut();
+    }
+    if (ev.type === "error") throw new ApiError(ev.status, ev.detail);
+    if (ev.type === "turn") {
+      turn = ev.turn;
+      return;
+    }
+    onEvent(ev);
+  });
+  if (!turn) throw cut();
+  return turn;
+}
+
+/** `POST /api/ask/conversations/{id}/message/stream`, read line by line (#1443). Resolves with the
+ *  settled turn and hands every progress line to `onEvent`. A refusal before the stream (404 / 409 /
+ *  422 / 503) is an `ApiError` with its status; an `error` line is one too. A stream that ends
+ *  without its `turn` line is a failure of the CONNECTION, not of the turn: the turn is the
+ *  server's and settles anyway, and reading the conversation again finds it. Aborting `signal`
+ *  stops watching; it never cancels the turn. */
+async function streamAskTurn(
+  id: string,
+  body: {
+    turnId: string;
+    text: string;
+    answers?: string;
+    option?: number;
+    contact?: string;
+    /** Staged attachment ids (#1707) — claimed server-side under the turn lock. */
+    attachments?: string[];
+    /** Plan with HQ (#2152): the draft mission this conversation plans. */
+    mission?: string;
+  },
+  onEvent: (ev: AskTurnEvent) => void,
+  signal?: AbortSignal,
+): Promise<AskConversationTurn> {
+  const path = `/api/ask/conversations/${encodeURIComponent(id)}/message/stream`;
+  const r = await apiFetch(path, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+    body: JSON.stringify({
+      turn_id: body.turnId,
+      text: body.text,
+      ...(body.answers ? { answers: body.answers } : {}),
+      ...(body.option !== undefined ? { option: body.option } : {}),
+      // Who answers (#1525): the client's resolved contact. The server validates it.
+      ...(body.contact ? { contact: body.contact } : {}),
+      ...(body.attachments?.length ? { attachments: body.attachments } : {}),
+      ...(body.mission ? { mission: body.mission } : {}),
+    }),
+    ...(signal ? { signal } : {}),
+  });
+  if (r.status === 401 || r.status === 403) await authGate(r);
+  if (!r.ok) {
+    let parsed: unknown;
+    try {
+      parsed = await r.json();
+    } catch {
+      /* non-JSON body */
+    }
+    const detail = (parsed as { detail?: string } | undefined)?.detail ?? "";
+    throw new ApiError(r.status, detail || `POST ${path} → ${r.status}`, parsed);
+  }
+  let turn: AskConversationTurn | null = null;
+  const cut = () => new ApiError(502, "The connection dropped before the answer finished.");
+  await readLines(r, (line) => {
+    if (!line.trim()) return;
+    let ev: AskTurnEvent;
+    try {
+      ev = JSON.parse(line) as AskTurnEvent;
+    } catch {
+      throw cut();
+    }
+    if (ev.type === "error") throw new ApiError(ev.status, ev.detail);
+    if (ev.type === "turn") {
+      turn = ev.turn;
+      return;
+    }
+    onEvent(ev);
+  });
+  if (!turn) throw cut();
+  return turn;
+}
+
+const patchJson = <T>(path: string, body?: unknown): Promise<T> =>
+  mutateJson<T>("PATCH", path, body);
+
+const putJson = <T>(path: string, body?: unknown): Promise<T> =>
+  mutateJson<T>("PUT", path, body);
+
+const deleteJson = <T>(path: string): Promise<T> =>
+  mutateJson<T>("DELETE", path);
+
+/** DELETE a CSRF-guarded resource that answers 204 (no body). Like `mutateJson`, a failure
+ *  carries the server's `detail` and the whole parsed body as `record` — a template DELETE
+ *  409s with the `current` record, which the gallery folds back in (#905). */
+async function deleteVoid(path: string, body?: unknown): Promise<void> {
+  const r = await apiFetch(path, {
+    method: "DELETE",
+    credentials: "same-origin",
+    headers: { "X-CSRF-Token": csrfToken, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (r.status === 401 || r.status === 403) await authGate(r);
+  if (!r.ok) {
+    let detail = "";
+    let parsed: unknown;
+    try {
+      parsed = await r.json();
+      detail = (parsed as { detail?: string })?.detail ?? "";
+    } catch {
+      /* non-JSON body */
+    }
+    throw new ApiError(
+      r.status,
+      detail || `DELETE ${path} → ${r.status}`,
+      parsed,
+    );
+  }
+}
+
+/** POST a CSRF-guarded mutation that returns 204 (no body) — e.g. confirm/disable 2FA. */
+async function postVoid(path: string, body?: unknown): Promise<void> {
+  const r = await apiFetch(path, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (r.status === 401 || r.status === 403) await authGate(r);
+  if (!r.ok) throw new ApiError(r.status, `POST ${path} → ${r.status}`);
+}
+
+export function sessionsUrl(q: SessionsQuery = {}): string {
+  const p = new URLSearchParams();
+  p.set("limit", String(q.limit ?? 20));
+  p.set("offset", String(q.offset ?? 0));
+  p.set("archived", q.archived ? "1" : "0");
+  if (q.q?.trim()) p.set("q", q.q.trim());
+  if (q.project) p.set("project", q.project);
+  if (q.engine) p.set("engine", q.engine);
+  if (q.mission) p.set("mission", q.mission);
+  if (q.cluster) p.set("cluster", q.cluster);
+  if (q.tag?.trim()) p.set("tag", q.tag.trim());
+  if (q.snapshot) p.set("snapshot", q.snapshot);
+  return `/api/sessions?${p.toString()}`;
+}
+
+function lineageQuery(q: { offset?: number; limit?: number; archived?: boolean }): string {
+  const p = new URLSearchParams();
+  p.set("offset", String(q.offset ?? 0));
+  p.set("limit", String(q.limit ?? 50));
+  p.set("archived", q.archived ? "1" : "0");
+  return p.toString();
+}
+
+const enc = encodeURIComponent;
+/** A read whose answer must never be kept by the browser: a peer's content (#2055). */
+const NO_STORE: RequestInit = { cache: "no-store" };
+
+/** `?project=&session=&…` for `GET /api/artifacts`, empty filters left out. */
+export function artifactQueryString(q: ArtifactQuery): string {
+  const p = new URLSearchParams();
+  for (const k of ["project", "session", "mission", "kind", "visibility", "q", "cursor"] as const) {
+    const v = q[k];
+    if (typeof v === "string" && v.trim()) p.set(k, k === "q" ? v.trim() : v);
+  }
+  const s = p.toString();
+  return s ? `?${s}` : "";
+}
+
+/** The read-back URL for an upload path's image (#905): `GET /api/uploads/{stored}`, keyed by
+ *  the STORED basename — `<stamp>-<safe>`, the last component of the path the server returned.
+ *  Never by the response's `name`, which is the sanitized original and names no file. */
+export function uploadUrl(path: string): string {
+  return `/api/uploads/${enc(uploadStoredName(path))}`;
+}
+
+/** The bytes of an upload's image, through the injectable fetch seam (#905). In Home Free app
+ *  mode private HTTP reaches the box only via the tunnel `setApiFetch` installs; a native-origin
+ *  `<img src>` would hit the relay instead (a 404, and the stored name in its logs). Callers turn
+ *  the blob into an object URL and revoke it (`components/templates/UploadImage.tsx`). */
+/** Raw bytes of a file under the panel's root (#1530): the `src` of a native media element or the
+ *  `href` of a Download, on a DIRECT connection only (`isApiTunneled()` is false). `attempt`
+ *  re-requests after a busy refusal. */
+export function filesRawUrl(path: string, download = false, attempt = 0): string {
+  return (
+    `/api/files/raw?path=${enc(path)}` +
+    (download ? "&download=1" : "") +
+    (attempt > 0 ? `&attempt=${attempt}` : "")
+  );
+}
+
+/** What Home Free app mode may carry through the tunnel (#1530): the uploads cap. The tunnel
+ *  buffers a response and its proxy times out (#1177), so larger media is refused up front. */
+export const FILE_BLOB_CAP = 25 * 1024 * 1024;
+
+async function errorDetail(r: Response): Promise<string> {
+  try {
+    return ((await r.json()) as { detail?: string })?.detail ?? "";
+  } catch {
+    return "";
+  }
+}
+
+/** A file's raw bytes THROUGH the fetch seam (#1530) — how app mode previews and downloads,
+ *  bounded by `FILE_BLOB_CAP` whether or not the server sent a length. A refusal is an `ApiError`
+ *  whose `record` carries `{ retryAfter }` on a 503. */
+async function fileBlob(
+  path: string,
+  opts: { signal?: AbortSignal; download?: boolean } = {},
+): Promise<Blob> {
+  // `max`: the server refuses anything bigger BEFORE sending a byte, judged on the size at open —
+  // so a file that grew since the viewer's /read cannot fill the tunnel (Hermes, PR #1533).
+  return rawBlob(`${filesRawUrl(path, opts.download)}&max=${FILE_BLOB_CAP}`, opts.signal);
+}
+
+/** A raw-bytes URL's body as a Blob through the fetch seam, capped at `FILE_BLOB_CAP` whether or
+ *  not the server sent a length (#1530; shared with the mission shelf's read path, #1740). */
+async function rawBlob(url: string, signal?: AbortSignal): Promise<Blob> {
+  const r = await apiFetch(url, {
+    credentials: "same-origin",
+    signal,
+  });
+  if (r.status === 401) await authGate(r);
+  if (!r.ok) {
+    const retryAfter = Number(r.headers.get("retry-after")) || null;
+    throw new ApiError(r.status, (await errorDetail(r)) || `raw read → ${r.status}`, { retryAfter });
+  }
+  const declared = Number(r.headers.get("content-length"));
+  if (declared > FILE_BLOB_CAP) {
+    void r.body?.cancel();
+    throw new ApiError(413, "too large to bring through Home Free");
+  }
+  const type = r.headers.get("content-type") ?? "";
+  if (!r.body) return new Blob([await r.arrayBuffer()], { type });
+  const reader = r.body.getReader();
+  const parts: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > FILE_BLOB_CAP) {
+      void reader.cancel();
+      throw new ApiError(413, "too large to bring through Home Free");
+    }
+    parts.push(value);
+  }
+  return new Blob(parts as BlobPart[], { type });
+}
+
+/** The mission shelf's read path (#1740): mission-bound, and it takes NO path — the server
+ *  resolves the file from the item and re-proves the mission's folders on every read. The `src`
+ *  of a native media element or a Download's `href`, on a DIRECT connection only. */
+export function missionShelfRawUrl(
+  missionId: string,
+  itemId: string,
+  download = false,
+  attempt = 0,
+): string {
+  return (
+    `/api/missions/${enc(missionId)}/shelf/${enc(itemId)}/raw` +
+    (download ? "?download=1" : "") +
+    (attempt > 0 ? `${download ? "&" : "?"}attempt=${attempt}` : "")
+  );
+}
+
+/** A shelf item's bytes THROUGH the fetch seam (app mode previews and downloads, and every text
+ *  document), capped at `FILE_BLOB_CAP` and asked with `max` so the server refuses first. */
+function missionShelfBlob(
+  missionId: string,
+  itemId: string,
+  opts: { signal?: AbortSignal; download?: boolean } = {},
+): Promise<Blob> {
+  const url = missionShelfRawUrl(missionId, itemId, opts.download);
+  return rawBlob(`${url}${url.includes("?") ? "&" : "?"}max=${FILE_BLOB_CAP}`, opts.signal);
+}
+
+/** Why a shelf media element failed: one byte through the same transport (#1530's probe). */
+async function missionShelfProbe(
+  missionId: string,
+  itemId: string,
+  signal?: AbortSignal,
+): Promise<{ status: number; retryAfter: number | null; detail: string }> {
+  const r = await apiFetch(missionShelfRawUrl(missionId, itemId), {
+    credentials: "same-origin",
+    headers: { Range: "bytes=0-0" },
+    signal,
+  });
+  if (r.status === 401) await authGate(r);
+  const retryAfter = Number(r.headers.get("retry-after")) || null;
+  const detail = r.ok ? "" : await errorDetail(r);
+  if (r.ok) void r.body?.cancel();
+  return { status: r.status, retryAfter, detail };
+}
+
+/** Why a media element failed (#1530): its `error` event cannot see the HTTP status, so ask with
+ *  one byte through the SAME transport the element used. */
+async function filesRawProbe(
+  path: string,
+  signal?: AbortSignal,
+): Promise<{ status: number; retryAfter: number | null; detail: string }> {
+  const r = await apiFetch(filesRawUrl(path), {
+    credentials: "same-origin",
+    headers: { Range: "bytes=0-0" },
+    signal,
+  });
+  if (r.status === 401) await authGate(r);
+  const retryAfter = Number(r.headers.get("retry-after")) || null;
+  const detail = r.ok ? "" : await errorDetail(r);
+  if (r.ok) void r.body?.cancel();
+  return { status: r.status, retryAfter, detail };
+}
+
+async function uploadBlob(path: string, signal?: AbortSignal): Promise<Blob> {
+  const r = await apiFetch(uploadUrl(path), {
+    credentials: "same-origin",
+    signal,
+  });
+  if (r.status === 401 || r.status === 403) await authGate(r);
+  if (!r.ok) throw new ApiError(r.status, `upload read-back → ${r.status}`);
+  return await r.blob();
+}
+
+/** Any authenticated GET's bytes as a Blob, through the app's fetch seam (#1707: a shared file's
+ *  bytes). A 404 is an `ApiError` with status 404 — the UI distinguishes *gone* from a preview
+ *  that merely failed to decode by this status, never by guesswork. */
+async function fetchBlob(path: string, signal?: AbortSignal): Promise<Blob> {
+  const r = await apiFetch(path, {
+    credentials: "same-origin",
+    signal,
+  });
+  if (r.status === 401 || r.status === 403) await authGate(r);
+  if (!r.ok) throw new ApiError(r.status, `GET ${path} → ${r.status}`);
+  return await r.blob();
+}
+
+/** Upload a file (image/context) → server saves it under ~/.agent-sessions/uploads/
+ *  and returns a path the agent can read. Multipart, CSRF-guarded (not JSON). `stored` is the
+ *  basename actually written (absent on servers before #905). */
+async function upload(
+  file: File,
+): Promise<{ path: string; name: string; stored?: string }> {
+  const fd = new FormData();
+  fd.append("file", file, file.name || "pasted");
+  const r = await apiFetch("/api/upload", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "X-CSRF-Token": csrfToken },
+    body: fd,
+  });
+  if (r.status === 401 || r.status === 403) await authGate(r);
+  if (!r.ok) throw new ApiError(r.status, `upload → ${r.status}`);
+  return (await r.json()) as { path: string; name: string; stored?: string };
+}
+
+/** A session key's URL segment (`engine:native`). */
+const chatPath = (sid: string) => `/api/chat/${encodeURIComponent(sid)}`;
+const structuredPath = (key: string) => `/api/structured/sessions/${encodeURIComponent(key)}`;
+
+/** One automation's URL (#1201). */
+const autoPath = (id: string) => `${AUTOMATIONS_API}/${encodeURIComponent(id)}`;
+
+async function pluginCatalog(path: string, refresh = false): Promise<PluginCatalog> {
+  const value = await (refresh ? pluginPost<PluginCatalog>(path, {}) : getJsonWithDetail<PluginCatalog>(path));
+  if (!value?.feed || !Array.isArray(value.catalog) || !Array.isArray(value.plugins) || !Array.isArray(value.operations)) {
+    throw new Error("The installer catalog is unavailable. Existing agents remain listed below.");
+  }
+  return value;
+}
+
+/** A loopback sign-in callback was delivered (#2106): only the listener's HTTP status comes back. */
+export interface SignInCallback {
+  delivered: true;
+  status: number;
+}
+
+function pluginPost<T>(path: string, body: unknown): Promise<T> {
+  return mutateJson<T>("POST", path, body);
+}
+
+/** A project mutation settled (#1436): the launch picker's cached list may be stale now, so tell it
+ *  to refetch. On failure too — a partial archive can still have changed what is listed. */
+function announceProjects<T>(p: Promise<T>): Promise<T> {
+  return p.finally(() => projectPickerStore.invalidate());
+}
+
+/** POST a JSON body and get the answer as raw bytes (a WAV preview, #1397). Errors carry the
+ *  server's `detail` like `mutateJson`. */
+async function postForBlob(
+  path: string,
+  body: unknown,
+  /** Read the answer's headers (a share export's counts, #1714 P4). */
+  onResponse?: (r: Response) => void,
+): Promise<Blob> {
+  const r = await apiFetch(path, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+    body: JSON.stringify(body),
+  });
+  if (r.status === 401 || r.status === 403) await authGate(r);
+  if (!r.ok) {
+    let detail = "";
+    try {
+      detail = ((await r.json()) as { detail?: string })?.detail ?? "";
+    } catch {
+      /* non-JSON body */
+    }
+    throw new ApiError(r.status, detail || `POST ${path} → ${r.status}`);
+  }
+  onResponse?.(r);
+  return await r.blob();
+}
+
+/** POST raw bytes (a share bundle, #1714) and read JSON. Errors carry the server's `detail` and
+ *  the whole body (its `reason`) like `mutateJson`. */
+async function postBytes<T>(path: string, body: Blob): Promise<T> {
+  const r = await apiFetch(path, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/octet-stream", "X-CSRF-Token": csrfToken },
+    body,
+  });
+  if (r.status === 401 || r.status === 403) await authGate(r);
+  if (!r.ok) {
+    let parsed: unknown;
+    let detail = "";
+    try {
+      parsed = await r.json();
+      detail = (parsed as { detail?: string })?.detail ?? "";
+    } catch {
+      /* non-JSON body */
+    }
+    throw new ApiError(r.status, detail || `POST ${path} → ${r.status}`, parsed);
+  }
+  return (await r.json()) as T;
+}
+
+/** The CSRF token the call socket proves itself with in its first message (#1397): a WebSocket
+ *  carries no custom headers, so it is sent in-band. */
+export function currentCsrfToken(): string {
+  return csrfToken;
+}
+
+export const api = {
+  /** The operator's avatar (#1931). */
+  uploadAvatar,
+  /** The avatar's bytes through the fetch seam (the Home Free tunnel in app mode), never an
+   *  `<img src>` on the page's own origin — which over the relay is the relay's. */
+  avatarBlob: (version: string, signal?: AbortSignal) =>
+    fetchBlob(`/api/profile/avatar?v=${enc(version)}`, signal),
+  deleteAvatar: async () => {
+    await csrfReady(); // the same window as `uploadAvatar`
+    return deleteJson<{ version: null }>("/api/profile/avatar");
+  },
+  // Calling HQ (#1397 P1). Speech endpoints are configured like the AI endpoint: tokens never
+  // come back (`api_key_set`), a blank keeps the stored one and `null` removes it.
+  voiceSettings: () => getJson<VoiceSettings>("/api/voice/settings"),
+  saveVoiceSettings: (patch: VoiceSettingsPatch) =>
+    mutateJson<VoiceSettings>("POST", "/api/voice/settings", patch),
+  /** The compatibility check against a DRAFT pair of endpoints; nothing is saved. */
+  testVoice: (body: { stt: SpeechSidePatch; tts: SpeechSidePatch; voice: string }) =>
+    mutateJson<ConformanceReport>("POST", "/api/voice/test", body),
+  /** A draft endpoint's model (and, for TTS, voice) lists; `null` = enter it by hand. */
+  voiceLists: (side: "stt" | "tts", endpoint: SpeechSidePatch) =>
+    mutateJson<VoiceLists>("POST", "/api/voice/voices", { side, endpoint }),
+  /** One fixed line in a voice, as a WAV the page plays. */
+  voicePreview: (group: "woman" | "man", voice?: string) =>
+    postForBlob("/api/voice/preview", voice ? { group, voice } : { group }),
+  /** A General's own line in their profile (#1397 P3); `voice` previews another voice for them. */
+  /** A General's fixed preview line — in `language` when given (a voice per language). */
+  voicePreviewContact: (contact: string, voice?: string, language?: string) =>
+    postForBlob("/api/voice/preview", {
+      contact,
+      ...(voice ? { voice } : {}),
+      ...(language ? { language } : {}),
+    }),
+  /** Speech on this machine (#1397 P4). */
+  voiceLocal: () => getJson<VoiceLocal>("/api/voice/local"),
+  /** Point both speech sides at this machine's server, server-side (the token never comes back).
+   *  A 409 carries `{detail, code}`; a 502 carries `{detail, report}` on the ApiError's record. */
+  useLocalVoice: () => mutateJson<VoiceLocalUse>("POST", "/api/voice/local/use"),
+  voiceCapabilities: () => getJson<VoiceCapabilities>("/api/voice/capabilities"),
+  /** Admit a call into an HQ conversation (a new one unless `conversation_id`). 409 while another
+   *  call runs, or when calls are not available (`detail` says why). */
+  startCall: (body: { contact?: string; conversation_id?: string | null }) =>
+    mutateJson<VoiceCall>("POST", "/api/voice/calls", body),
+  endCall: (id: string) => mutateJson<VoiceCall>("DELETE", `/api/voice/calls/${enc(id)}`),
+  // Public share links (#1404 P4). `createShare` is the ONLY call whose answer carries a link's
+  // URL — the server keeps its digest, so it is shown once. A `send` link needs `accept_risk`.
+  shares: (session?: string) =>
+    getJsonWithDetail<ShareList>(
+      session ? `/api/shares?session=${encodeURIComponent(session)}` : "/api/shares",
+    ),
+  createShare: (body: {
+    session: string;
+    mode: ShareMode;
+    title: string;
+    password?: string;
+    expires_at?: number | null;
+    accept_risk?: true;
+  }) => mutateJson<CreatedShare>("POST", "/api/shares", body),
+  revokeShare: (shareId: string) =>
+    mutateJson<{ revoked: boolean }>("DELETE", `/api/shares/${encodeURIComponent(shareId)}`),
+  revokeAllShares: () => mutateJson<{ revoked: number }>("POST", "/api/shares/revoke-all"),
+  // Federation (#1246 P2): pairing this instance with another BattleLab. A refused write carries
+  // `{detail, code}`: the detail is the message, the code (`not_owner`, …) is on `record`.
+  // `createFederationInvite` is the ONLY answer that carries the invite string; it is shown once.
+  federation: () => getJsonWithDetail<FederationState>("/api/federation"),
+  createFederationInvite: () => mutateJson<CreatedInvite>("POST", "/api/federation/invites"),
+  withdrawFederationInvite: (inviteId: string) =>
+    mutateJson<FederationState>("DELETE", `/api/federation/invites/${encodeURIComponent(inviteId)}`),
+  acceptFederationInvite: (invite: string) =>
+    mutateJson<FederationPairing>("POST", "/api/federation/pairings", { invite }),
+  confirmFederationPairing: (pairingId: string) =>
+    mutateJson<FederationPairing>(
+      "POST",
+      `/api/federation/pairings/${encodeURIComponent(pairingId)}/confirm`,
+    ),
+  denyFederationPairing: (pairingId: string) =>
+    mutateJson<FederationPairing>(
+      "POST",
+      `/api/federation/pairings/${encodeURIComponent(pairingId)}/deny`,
+    ),
+  renameFederationPeer: (peerId: string, name: string) =>
+    mutateJson<FederationState>("PATCH", `/api/federation/peers/${encodeURIComponent(peerId)}`, {
+      name,
+    }),
+  revokeFederationPeer: (peerId: string) =>
+    mutateJson<FederationState>(
+      "POST",
+      `/api/federation/peers/${encodeURIComponent(peerId)}/revoke`,
+    ),
+  // Sharing a session with a peer (#2054, #2055). The owner's side: grants. A refused write
+  // carries the server's `detail` as the error's message.
+  federationGrants: (session: string) =>
+    getJsonWithDetail<FederationGrantList>(`/api/federation/grants?session=${enc(session)}`),
+  /** The live grants to ONE peer, each with its session's title (Settings → Peers). */
+  federationGrantsToPeer: (peerId: string) =>
+    getJsonWithDetail<FederationGrantList>(`/api/federation/grants?peer=${enc(peerId)}`),
+  createFederationGrant: (body: { session_key: string; peer_id: string; expires_in: number }) =>
+    mutateJson<{ grant: FederationGrant; generation: number }>("POST", "/api/federation/grants", {
+      level: "view",
+      ...body,
+    }),
+  /** A new expiry (counted from now) and level. `revision` is the grant's current one (409 when
+   *  it moved). `accept_risk` as for a creation: a grant that ends up at `send` needs it. */
+  changeFederationGrant: (
+    grantId: string,
+    body: { expires_in: number; revision: number; level?: string; accept_risk?: true },
+  ) =>
+    mutateJson<{ grant: FederationGrant; generation: number }>(
+      "PATCH",
+      `/api/federation/grants/${enc(grantId)}`,
+      body,
+    ),
+  // What a peer suggests for a session of this instance (#2057, #2061). The list carries the
+  // suggested text: it is shown to the operator as plain text and goes nowhere else.
+  federationSuggestions: (session: string, signal?: AbortSignal) =>
+    getJsonWithDetail<{ suggestions: PeerSuggestion[] }>(
+      `/api/federation/suggestions?session=${enc(session)}`,
+      signal,
+    ),
+  /** THE approval: one suggestion, on the operator's tap. `text` only when they edited it. */
+  approveFederationSuggestion: (suggestionId: string, text?: string) =>
+    mutateJson<{ suggestion: PeerSuggestion }>(
+      "POST",
+      `/api/federation/suggestions/${enc(suggestionId)}/approve`,
+      text === undefined ? {} : { text },
+    ),
+  rejectFederationSuggestion: (suggestionId: string) =>
+    mutateJson<{ suggestion: PeerSuggestion }>(
+      "POST",
+      `/api/federation/suggestions/${enc(suggestionId)}/reject`,
+    ),
+  revokeFederationGrant: (grantId: string) =>
+    mutateJson<{ grant: FederationGrant; generation: number }>(
+      "POST",
+      `/api/federation/grants/${enc(grantId)}/revoke`,
+    ),
+  // The receiving side: reads only. Each read is answered by the owning instance for that call;
+  // 503 = it is not connected, 404 = the share ended. Nothing here is cached by this client.
+  // Writing to a session a peer shares (#2057, #2061). `client_key` is this browser's retry key
+  // for ONE message; the owner decides on every call. These are never retried by this client.
+  federationRemoteSuggest: (peerId: string, grantId: string, body: { client_key: string; text: string }) =>
+    mutateJson<{ suggestion_id: string; state: string }>(
+      "POST",
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/suggest`,
+      body,
+    ),
+  federationRemoteSend: (peerId: string, grantId: string, body: { client_key: string; text: string }) =>
+    mutateJson<{ operation_id_known: boolean; handoff: string | null }>(
+      "POST",
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/turns`,
+      body,
+    ),
+  federationRemoteSuggestions: (peerId: string, grantId: string, signal?: AbortSignal) =>
+    getJsonWithDetail<{ suggestions: OwnSuggestion[] }>(
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/suggestions`,
+      signal,
+      NO_STORE,
+    ),
+  federationRemoteWithdraw: (peerId: string, grantId: string, suggestionId: string) =>
+    mutateJson<{ suggestion_id: string; state: string }>(
+      "POST",
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/suggestions/${enc(suggestionId)}/withdraw`,
+    ),
+  /** What became of one message this browser submitted, by its retry key: a read, no text. */
+  /** Leave ONE share a peer makes with this instance (#2201). Sent once by the server; only a
+   *  200 proves the share ended. `revision` is the one the list showed when Leave was pressed. */
+  federationRemoteLeave: (peerId: string, grantId: string, revision: number) =>
+    mutateJson<{ left: boolean }>(
+      "POST",
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/leave`,
+      { revision },
+    ),
+  federationRemoteOperation: (peerId: string, grantId: string, clientKey: string, signal?: AbortSignal) =>
+    getJsonWithDetail<OperationStatus>(
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/operations/${enc(clientKey)}`,
+      signal,
+      NO_STORE,
+    ),
+  // Working together on a shared session (#2059, #2062). The owner's side: what peers ask for,
+  // and the notes of one grant. A note and a request's note are text another operator wrote:
+  // shown as plain text, kept in component state, never written to storage.
+  federationAccessRequests: (session: string, signal?: AbortSignal) =>
+    getJsonWithDetail<{ access_requests: unknown[] }>(
+      `/api/federation/access-requests?session=${enc(session)}`,
+      signal,
+      NO_STORE,
+    ),
+  declineFederationAccess: (requestId: string) =>
+    mutateJson<{ access_request: unknown }>(
+      "POST",
+      `/api/federation/access-requests/${enc(requestId)}/decline`,
+    ),
+  federationNotes: (grantId: string, signal?: AbortSignal) =>
+    getJsonWithDetail<{ notes: unknown[]; ended: boolean; seq: number; unread: number }>(
+      `/api/federation/grants/${enc(grantId)}/notes`,
+      signal,
+      NO_STORE,
+    ),
+  addFederationNote: (grantId: string, body: { client_key: string; text: string }) =>
+    mutateJson<{ note: unknown }>("POST", `/api/federation/grants/${enc(grantId)}/notes`, body),
+  editFederationNote: (grantId: string, noteId: string, text: string) =>
+    mutateJson<{ note: unknown }>(
+      "PATCH",
+      `/api/federation/grants/${enc(grantId)}/notes/${enc(noteId)}`,
+      { text },
+    ),
+  deleteFederationNote: (grantId: string, noteId: string) =>
+    mutateJson<{ note: unknown }>(
+      "DELETE",
+      `/api/federation/grants/${enc(grantId)}/notes/${enc(noteId)}`,
+    ),
+  hideFederationNote: (grantId: string, noteId: string) =>
+    mutateJson<{ note: unknown }>(
+      "POST",
+      `/api/federation/grants/${enc(grantId)}/notes/${enc(noteId)}/hide`,
+    ),
+  readFederationNotes: (grantId: string, seq: number) =>
+    mutateJson<{ unread: number }>("POST", `/api/federation/grants/${enc(grantId)}/notes/read`, {
+      seq,
+    }),
+  // The receiving side. Every call is answered by the owning instance; none is retried here.
+  federationRemoteAccess: (peerId: string, grantId: string, signal?: AbortSignal) =>
+    getJsonWithDetail<unknown>(
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/access`,
+      signal,
+      NO_STORE,
+    ),
+  askFederationRemoteAccess: (peerId: string, grantId: string, body: { level: string; note?: string }) =>
+    mutateJson<unknown>("POST", `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/access`, body),
+  withdrawFederationRemoteAccess: (peerId: string, grantId: string) =>
+    mutateJson<unknown>(
+      "POST",
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/access/withdraw`,
+    ),
+  /** Answer ONE pending request of a shared session. `offer` is the snapshot's `offer` of that
+   *  same request, sent back unchanged (the owner requires it: it binds the answer to that exact
+   *  request). `choice` is a decision KIND and `options` are option INDEXES: no label and no text
+   *  is sent. */
+  federationRemoteDecide: (
+    peerId: string,
+    grantId: string,
+    body: { request_id: string; offer: string; choice: string; options?: number[][]; client_key: string },
+  ) =>
+    mutateJson<unknown>(
+      "POST",
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/decisions`,
+      body,
+    ),
+  federationRemoteNotes: (
+    peerId: string,
+    grantId: string,
+    after: number,
+    cursor?: string | null,
+    signal?: AbortSignal,
+  ) =>
+    getJsonWithDetail<unknown>(
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/notes?after=${after}${cursor ? `&cursor=${enc(cursor)}` : ""}`,
+      signal,
+      NO_STORE,
+    ),
+  addFederationRemoteNote: (peerId: string, grantId: string, body: { client_key: string; text: string }) =>
+    mutateJson<{ note: unknown; seq?: number }>(
+      "POST",
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/notes`,
+      body,
+    ),
+  editFederationRemoteNote: (peerId: string, grantId: string, noteId: string, text: string) =>
+    mutateJson<{ note: unknown }>(
+      "PATCH",
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/notes/${enc(noteId)}`,
+      { text },
+    ),
+  deleteFederationRemoteNote: (peerId: string, grantId: string, noteId: string) =>
+    mutateJson<{ note: unknown }>(
+      "DELETE",
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/notes/${enc(noteId)}`,
+    ),
+  readFederationRemoteNotes: (peerId: string, grantId: string, seq: number) =>
+    mutateJson<{ unread: number }>(
+      "POST",
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/notes/read`,
+      { seq },
+    ),
+  /** Continue here: prepare a brief (creates nothing), then create from its handle. */
+  prepareFederationContinue: (
+    peerId: string,
+    grantId: string,
+    body: { target_engine: string; mode: "quick" | "ai" },
+    signal?: AbortSignal,
+  ) =>
+    mutateJson<unknown>(
+      "POST",
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/continue`,
+      body,
+      signal,
+    ),
+  /** An API agent's session answers as the handoff commit does (`delivery`, `detail`); when its
+   *  first turn was not taken yet it also carries `retry_handle`, the handoff's own handle, to
+   *  commit again with `commitHandoff` (the same brief, the same session). */
+  createFederationContinue: (peerId: string, grantId: string, handle: string, cwd: string) =>
+    mutateJson<HandoffCommitted & { retry_handle?: string }>(
+      "POST",
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/continue/${enc(handle)}/create`,
+      { cwd },
+    ),
+  federationRemote: (signal?: AbortSignal) =>
+    getJsonWithDetail<{ remote: RemoteShare[] }>("/api/federation/remote", signal),
+  federationRemoteSnapshot: (peerId: string, grantId: string, signal?: AbortSignal) =>
+    getJsonWithDetail<RemoteSnapshot>(
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/snapshot`,
+      signal,
+      NO_STORE,
+    ),
+  federationRemoteEvents: (
+    peerId: string,
+    grantId: string,
+    after: number,
+    wait: number,
+    signal?: AbortSignal,
+  ) =>
+    getJsonWithDetail<RemoteEventPage>(
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/events?after=${after}&wait=${wait}`,
+      signal,
+      NO_STORE,
+    ),
+  federationRemoteHistory: (
+    peerId: string,
+    grantId: string,
+    before: string,
+    signal?: AbortSignal,
+  ) =>
+    getJsonWithDetail<RemoteHistoryPage>(
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/history?before=${enc(before)}`,
+      signal,
+      NO_STORE,
+    ),
+  /** A shared terminal's screen (#2060). `have` is the fingerprint of the frame on screen, or
+   *  `null` with nothing on screen: then the key is not sent at all, and the owner answers with
+   *  the current frame. A refusal is an `ApiError` whose `record` carries the server's `code`. */
+  federationRemoteFrame: (
+    peerId: string,
+    grantId: string,
+    have: string | null,
+    wait: number,
+    signal?: AbortSignal,
+  ) =>
+    getJsonWithDetail<RemoteFrameAnswer>(
+      `/api/federation/remote/${enc(peerId)}/${enc(grantId)}/frame?wait=${wait}` +
+        (have ? `&have=${enc(have)}` : ""),
+      signal,
+      NO_STORE,
+    ),
+  // Reply links (#1956): one finished reply, sealed. `createReplyShare` is the only answer that
+  // carries the key, so the link is shown once.
+  replyShares: (session?: string) =>
+    getJsonWithDetail<{ available: boolean; shares: ReplyShare[] }>(
+      session ? `/api/reply-shares?session=${encodeURIComponent(session)}` : "/api/reply-shares",
+    ),
+  createReplyShare: async (body: {
+    session: string;
+    turn_id: string;
+    expires_in: ReplyExpiry;
+    password?: string;
+  }) => {
+    await csrfReady();
+    return mutateJson<CreatedReplyShare>("POST", "/api/reply-shares", body);
+  },
+  revokeReplyShare: (shareId: string) =>
+    mutateJson<{ revoked: boolean }>("DELETE", `/api/reply-shares/${encodeURIComponent(shareId)}`),
+  revokeAllReplyShares: () =>
+    mutateJson<{ revoked: number }>("POST", "/api/reply-shares/revoke-all"),
+  // HQ connectors (#1746). The token goes up in `updateConnector` and never comes back: an
+  // instance carries `token_set` only. Every mutation answers the instance as the store now holds it.
+  connectors: () => getJsonWithDetail<ConnectorCatalog>("/api/connectors"),
+  addConnector: (manifestId: string) =>
+    mutateJson<ConnectorInstance>("POST", "/api/connectors/instances", { manifest_id: manifestId }),
+  updateConnector: (
+    id: string,
+    body: { origin?: string; token?: string | null; account?: string; sender?: string },
+  ) =>
+    mutateJson<ConnectorInstance>("PATCH", `/api/connectors/instances/${enc(id)}`, body),
+  testConnector: (id: string) =>
+    mutateJson<ConnectorTestResult>("POST", `/api/connectors/instances/${enc(id)}/test`),
+  setConnectorRead: (id: string, read: boolean) =>
+    mutateJson<ConnectorInstance>("POST", `/api/connectors/instances/${enc(id)}/capabilities`, { read }),
+  // A messenger's recipients and send switch (#1832): ids only; the server lists, labels and binds.
+  connectorCandidates: (id: string) =>
+    getJsonWithDetail<{ candidates: RecipientCandidate[] }>(
+      `/api/connectors/instances/${enc(id)}/recipients/candidates`,
+    ),
+  setConnectorRecipients: (id: string, ids: string[]) =>
+    mutateJson<ConnectorInstance>("PUT", `/api/connectors/instances/${enc(id)}/recipients`, { ids }),
+  // An email connector's allowlist (#1836): addresses the Commander typed, each checked by the
+  // server; `generation` is the one the page showed, so a save after a change elsewhere is refused.
+  setConnectorAddresses: (
+    id: string,
+    addresses: { address: string; label: string }[],
+    generation: number,
+  ) =>
+    mutateJson<ConnectorInstance>("PUT", `/api/connectors/instances/${enc(id)}/recipients`, {
+      addresses,
+      generation,
+    }),
+  setConnectorSend: (id: string, send: boolean) =>
+    mutateJson<ConnectorInstance>("POST", `/api/connectors/instances/${enc(id)}/capabilities`, { send }),
+  // A messenger's notify route (#1841): every field validated by the server, refusals in words.
+  setConnectorNotify: (id: string, body: NotifyBody) =>
+    mutateJson<ConnectorInstance>("POST", `/api/connectors/instances/${enc(id)}/notify`, body),
+  connectorDeliveries: (id: string) =>
+    getJsonWithDetail<{ deliveries: ConnectorDelivery[] }>(
+      `/api/connectors/instances/${enc(id)}/deliveries`,
+    ),
+  removeConnector: (id: string) =>
+    mutateJson<{ removed: string }>("DELETE", `/api/connectors/instances/${enc(id)}`),
+  publicGallery: () => getJsonWithDetail<GalleryIndex>("/api/gallery"),
+  refreshGallery: () => mutateJson<GalleryIndex>("POST", "/api/gallery/refresh"),
+  inspectGallery: (digest: string, localId: string) => getJsonWithDetail<GalleryInspection>(`/api/gallery/content/${encodeURIComponent(digest)}?local_id=${encodeURIComponent(localId)}`),
+  importGallery: (kind: GalleryKind, id: string, digest: string, operation: string) => mutateJson<GalleryOperation>("POST", "/api/gallery/import", { kind, id, digest, operation, acknowledge: true }),
+  galleryOperation: (operation: string) => getJsonWithDetail<GalleryOperation>(`/api/gallery/operations/${encodeURIComponent(operation)}`),
+  compareGallery: (kind: GalleryKind, id: string, digest: string) => mutateJson<GalleryComparison>("POST", "/api/gallery/compare", { kind, id, digest }),
+  updateGallery: (kind: GalleryKind, id: string, newId: string, digest: string, comparison: string, files: GalleryFiles, operation: string) => mutateJson<GalleryOperation>("POST", "/api/gallery/update", { kind, id, new_id: newId, digest, comparison, files, operation, acknowledge: true }),
+  localSkills: () => getJsonWithDetail<{ skills: LocalSkill[] }>("/api/library/skills"),
+  shareCatalog: () => getJsonWithDetail<ShareCatalog>("/api/share/catalog"),
+  shareImports: () => getJsonWithDetail<{ imports: ShareImports }>("/api/share/imports"),
+  /** `onLeftOut` (#1714 P4): how many notes the export held back and how many quarantined items
+   *  stayed, from the answer's headers; called only when the file carries memory. */
+  shareExport: (items: { kind: string; id: string }[], onLeftOut?: (counts: { withheld: number; quarantined: number }) => void) =>
+    postForBlob("/api/share/export", { items }, (r) => {
+      const withheld = r.headers.get("X-Share-Withheld-Notes");
+      const quarantined = r.headers.get("X-Share-Quarantined-Notes");
+      if (onLeftOut && withheld !== null && quarantined !== null)
+        onLeftOut({ withheld: Number(withheld) || 0, quarantined: Number(quarantined) || 0 });
+    }),
+  sharePreview: (file: Blob) => postBytes<SharePreview>("/api/share/import/preview", file),
+  /** `settle` (#1714 P2): what each imported specialist runs on, by item key; sent only when the
+   *  file holds specialists, so a skills-and-playbooks import is the request it always was. */
+  shareConfirm: (token: string, selection: string[], settle?: Record<string, ShareChoice>, memoryProject?: string) =>
+    mutateJson<ShareResult>("POST", "/api/share/import", {
+      token,
+      selection,
+      ...(settle ? { settle } : {}),
+      // #1714 P4: the project a file's notes go into, sent only when notes are imported.
+      ...(memoryProject ? { memory_project: memoryProject } : {}),
+    }),
+  localSkill: (id: string) => getJsonWithDetail<LocalSkill>(`/api/library/skills/${encodeURIComponent(id)}`),
+  saveLocalSkill: (id: string, newId: string, revision: string, origin: string | null, files: Record<string, string>, operation: string) => mutateJson<GalleryOperation>("POST", `/api/library/skills/${encodeURIComponent(id)}/copies`, { new_id: newId, revision, origin, files, operation }),
+  plugins: () => pluginCatalog("/api/plugins"),
+  pluginRefresh: () => pluginCatalog("/api/plugins/feed/refresh", true),
+  pluginReview: (body: { plugin_id?: string; local?: unknown; adopted_path?: string }) =>
+    pluginPost<PluginReview>("/api/plugins/review", body),
+  pluginInstall: (body: { request_id: string; review_id: string; digest: string; confirm_local: boolean; confirm_adopted: boolean }) =>
+    pluginPost<PluginOperation>("/api/plugins/install", body),
+  pluginOperation: (id: string) => getJsonWithDetail<PluginOperation>(`/api/plugins/operations/${enc(id)}`),
+  pluginCancel: (id: string) => pluginPost<PluginOperation>(`/api/plugins/operations/${enc(id)}/cancel`, {}),
+  /** #2106: the address a loopback sign-in left the browser on, delivered from the BattleLab host. */
+  pluginSigninCallback: (id: string, url: string) =>
+    pluginPost<SignInCallback>(`/api/plugins/operations/${enc(id)}/signin/callback`, { url }),
+  pluginRecover: () => pluginPost<PluginCatalog>("/api/plugins/recover", {}),
+  pluginSignin: (body: PluginAction) => pluginPost<PluginOperation>("/api/plugins/signin", body),
+  pluginVerify: (body: PluginAction) => pluginPost<PluginOperation>("/api/plugins/verify", { ...body, confirm_effects: true }),
+  pluginActivationPreview: (id: string, generation: string) => getJsonWithDetail<PluginActivationPreview>(`/api/plugins/${enc(id)}/generations/${enc(generation)}/activation`),
+  pluginActivate: (body: PluginActivation) => pluginPost<PluginOperation>("/api/plugins/activate", body),
+  pluginDisable: (body: { request_id: string; plugin_id: string; expected_active: string | null; expected_revision: string | null }) => pluginPost<PluginOperation>("/api/plugins/disable", body),
+  pluginRemove: (body: { request_id: string; plugin_id: string; expected_active: string | null; expected_revision: string | null }) => pluginPost<PluginOperation>("/api/plugins/remove", body),
+  pluginReload: () => pluginPost<{ generation: number }>("/api/plugins/reload", {}),
+  pluginEndpoint: (id: string, generation: string) => getJsonWithDetail<AgentEndpoint>(`/api/plugins/${enc(id)}/generations/${enc(generation)}/endpoint`),
+  pluginEndpointSet: (id: string, generation: string, patch: AgentEndpointPatch) => mutateJson<AgentEndpoint>("PATCH", `/api/plugins/${enc(id)}/generations/${enc(generation)}/endpoint`, patch),
+  pluginEndpointTest: (id: string, generation: string, draft: { base_url: string; api_key?: string }) => pluginPost<{ models: string[]; listing: "ok" | "unsupported" }>(`/api/plugins/${enc(id)}/generations/${enc(generation)}/endpoint/test`, draft),
+
+  // ---- Structured sessions (#1311): native API clients ---------------------------------------------
+  /** Create; an exact repeat of `operation_id` returns the same session (never a second one). */
+  /** The models the client's own CLI reports (#1313). */
+  structuredModels: (engine: string) =>
+    getJsonWithDetail<StructuredModelList>(`/api/structured/clients/${enc(engine)}/models`),
+  /** `model` omitted = the client's default; otherwise one its CLI lists (#1313). `bypass` (#1339)
+   *  is fixed for the session; sent only when set, so a guarded create is the same request it
+   *  always was. */
+  structuredCreate: (
+    engine: string,
+    cwd: string,
+    operation_id: string,
+    model?: string,
+    bypass = false,
+    effort?: string,
+    specialist?: { id: string; version: number },
+    choice?: "automatic" | "explicit",
+  ) =>
+    mutateJson<StructuredSnapshot>("POST", "/api/structured/sessions", {
+      engine,
+      cwd,
+      operation_id,
+      // API first (#1728): whether `engine` is its family's automatic default (refused with the
+      // new default if that moved) or the operator's explicit choice. Absent: the create as before.
+      ...(choice ? { choice } : {}),
+      ...(model && model !== "default" ? { model } : {}),
+      // A level (#1407) only beside a model, and only when chosen: otherwise the request is the
+      // one it always was.
+      ...(model && model !== "default" && effort && effort !== "default" ? { effort } : {}),
+      ...(bypass ? { bypass: true } : {}),
+      // Started from a specialist (#1693): re-validated and reserved by the server.
+      ...(specialist ? { specialist: { id: specialist.id, version: specialist.version } } : {}),
+    }),
+  structuredSnapshot: (key: string) =>
+    getJsonWithDetail<StructuredSnapshot>(structuredPath(key)),
+  /** Older turns for scrolling up (#1504): the page just before `before`, a turn id. */
+  structuredHistory: (key: string, before: string, limit = 50) =>
+    getJsonWithDetail<StructuredHistoryPage>(
+      `${structuredPath(key)}/history?before=${encodeURIComponent(before)}&limit=${limit}`,
+    ),
+  /** `wait` (#1727): the server holds a read with nothing past `after` until the journal moves,
+   *  at most 3 s whatever is asked; over its waiter caps (or on an older server) it answers at
+   *  once, exactly as without it. */
+  structuredEvents: (key: string, after: number, limit = 100, wait = 0, signal?: AbortSignal) =>
+    getJsonWithDetail<StructuredEventPage>(
+      `${structuredPath(key)}/events?after=${after}&limit=${limit}${wait > 0 ? `&wait=${wait}` : ""}`,
+      signal,
+    ),
+  /** Idempotent on `operation_id`: a repeat observes the recorded turn, never a second write. */
+  structuredSubmit: (
+    key: string,
+    operation_id: string,
+    text: string,
+    expected_revision: number | undefined,
+    attachments: string[] = [],
+    /** The async question this message answers (#1463); the server admits it only while that
+     *  question is still open. Omitted otherwise, so an ordinary turn's body is unchanged. */
+    reply_to?: string,
+  ) =>
+    // The 2xx answer is the recorded turn plus the journal `revision` read after recording it.
+    mutateJson<{ state?: string; revision?: number; turn_id?: string }>("POST", `${structuredPath(key)}/turns`, {
+      operation_id,
+      text,
+      expected_revision,
+      // Upload names (#1332 Phase 3); omitted when none, so a text turn's body is unchanged.
+      ...(attachments.length ? { attachments } : {}),
+      ...(reply_to ? { reply_to } : {}),
+    }),
+  structuredDecide: (
+    key: string,
+    body: {
+      decision_id: string;
+      turn_id: string;
+      request_id: string;
+      decision: string;
+      /** Only with `decision: "always"` (#1339): one offered grant id. */
+      grant?: string;
+      /** Only with `decision: "answer"` (#1463): one answer per question, in order. */
+      answers?: ({ selected: string[] } | { other: string })[];
+    },
+  ) => mutateJson<unknown>("POST", `${structuredPath(key)}/decisions`, body),
+  structuredInterrupt: (key: string, operation_id: string, turn_id: string) =>
+    mutateJson<unknown>("POST", `${structuredPath(key)}/interrupt`, { operation_id, turn_id }),
+  /** `stop_all` (#1644): the operator confirmed ending exactly these background tasks of this
+   *  worker if only a Stop can cut the turn. The worker checks it again; a change answers 409
+   *  with `reason: "inventory_changed"`. */
+  structuredSendNow: (
+    key: string,
+    operation_id: string,
+    turn_id: string,
+    queued_turn_id: string,
+    stop_all?: { worker: string; task_ids: string[] },
+  ) =>
+    mutateJson<unknown>("POST", `${structuredPath(key)}/send-now`, {
+      operation_id,
+      turn_id,
+      queued_turn_id,
+      ...(stop_all ? { stop_all } : {}),
+    }),
+  /** Remove one still-queued message before it is sent (#1447). Replays by operation id. */
+  structuredWithdraw: (key: string, operation_id: string, queued_turn_id: string) =>
+    mutateJson<unknown>("POST", `${structuredPath(key)}/withdraw`, { operation_id, queued_turn_id }),
+  /** Launch a skip-permissions creation the operator has seen succeed (#1339). Idempotent. */
+  structuredStart: (key: string) =>
+    mutateJson<StructuredSnapshot>("POST", `${structuredPath(key)}/start`),
+  structuredEnableBypass: (key: string, operation_id: string) =>
+    mutateJson<StructuredSnapshot>("POST", `${structuredPath(key)}/skip-permissions`, { operation_id }),
+  /** `confirm` (#1724): the `native.stop_inventory` the operator was shown. The worker rechecks
+   *  it against a fresh scan; a changed set answers 409 `reason: "inventory_changed"` with the
+   *  current `inventory`, and nothing is stopped. Without it, Stop confirms that nothing runs.
+   *  An exact Stop also ends anything those jobs start while it runs (the dialog says so; the
+   *  settlement lists them as started while stopping).
+   *  `{ worker, everything: true }`: Stop everything of exactly that generation, the disclosed
+   *  second kind (a changed list, one over the display limits, an unreadable scan, or a worker
+   *  that can't be reached — a 503 `reason: "worker_unreachable"`). */
+  structuredStop: (
+    key: string,
+    confirm?: { worker: string; digest: string } | { worker: string; everything: true },
+  ) =>
+    mutateJson<{ containment: Containment }>("POST", `${structuredPath(key)}/stop`, confirm),
+  structuredContainment: (key: string) =>
+    getJsonWithDetail<{ containment: Containment }>(`${structuredPath(key)}/containment`),
+
+  // ---- API agents (#1209) ------------------------------------------------------------------------
+  /** Start a chat-runtime conversation; resolves to its session key (`engine:uuid`). */
+  chatNew: (engine: string, cwd: string) =>
+    mutateJson<{ id: string }>("POST", "/api/chat/new", { engine, cwd }),
+  chatGet: (sid: string) => getJsonWithDetail<ChatSession>(chatPath(sid)),
+  /** Idempotent on `turn_id` (client-minted): a repeat never appends. */
+  chatSend: (sid: string, turn_id: string, text: string) =>
+    mutateJson<{ turn: Partial<ChatTurn> & { turn_id: string; status: string } }>(
+      "POST",
+      `${chatPath(sid)}/messages`,
+      { turn_id, text },
+    ),
+  chatRetry: (sid: string, turn_id: string) =>
+    mutateJson<{ turn: { turn_id: string; status: string } }>(
+      "POST",
+      `${chatPath(sid)}/turns/${encodeURIComponent(turn_id)}/retry`,
+    ),
+  agentEndpoint: (engine: string) =>
+    getJsonWithDetail<AgentEndpoint>(`/api/agents/${encodeURIComponent(engine)}/endpoint`),
+  chatDecide: (sid: string, turnId: string, proposalId: string, decision: "approve" | "reject") =>
+    mutateJson("POST", `${chatPath(sid)}/turns/${encodeURIComponent(turnId)}/proposals/${encodeURIComponent(proposalId)}/decide`, { decision }),
+  setAgentEndpoint: (engine: string, patch: AgentEndpointPatch) =>
+    mutateJson<AgentEndpoint>(
+      "PATCH",
+      `/api/agents/${encodeURIComponent(engine)}/endpoint`,
+      patch,
+    ),
+  /** Checks a DRAFT; saves nothing. */
+  testAgentEndpoint: (engine: string, draft: { base_url: string; api_key?: string }) =>
+    mutateJson<{ models: string[]; listing: "ok" | "unsupported" }>(
+      "POST",
+      `/api/agents/${encodeURIComponent(engine)}/endpoint/test`,
+      draft,
+    ),
+
+  config: () => getJson<AppConfig>("/api/config"),
+  version: () => getJson<{ version: string }>("/api/version"),
+  /** The dashboard's live + recent sessions (#1123), one scoped read with its own read health. */
+  dashboardSessions: (liveLimit = 5, recentLimit = 6) =>
+    getJson<DashboardSessions>(
+      `/api/dashboard/sessions?live_limit=${liveLimit}&recent_limit=${recentLimit}`,
+    ),
+  /** The drill-down behind a live/working count: the session list filtered to running agents. */
+  runningSessions: (which: "live" | "working", limit = 200, offset = 0) =>
+    getJson<SessionsPage>(`/api/sessions?running=${which}&limit=${limit}&offset=${offset}`),
+  /** Discovery: every known engine provider with presence / new-session / bin path. */
+  engines: () => getJson<EnginesResponse>("/api/engines"),
+  /** One engine's manifest detail (#853 P4) — the Agents page. A 404 means no such agent. */
+  engineDetail: (id: string) =>
+    getJson<EngineDetail>(`/api/engines/${encodeURIComponent(id)}`),
+  /** Save a PARTIAL `agent_defaults` block (#1128). Send only the fields that changed: the
+   *  server merges, so a bypass-only save leaves the stored default engine exactly as it is. */
+  setAgentDefaults: (patch: AgentDefaultsPatch) =>
+    mutateJson<{ agent_defaults: AgentDefaults }>("POST", "/api/prefs", {
+      agent_defaults: patch,
+    }),
+
+  /** Per-agent usage + budgets (#839). The GET never probes — it serves the last answers,
+   *  each labelled with when it was taken. */
+  agentUsage: () => getJson<AgentUsageResponse>("/api/agents/usage"),
+  /** Ask the agents now. `mutateJson` so the 409 ("a refresh is already running") reaches
+   *  the operator as itself rather than as a bare status code (#834). */
+  agentUsageRefresh: () =>
+    mutateJson<AgentUsageResponse>("POST", "/api/agents/usage/refresh"),
+  setAgentBudgets: (patch: Partial<AgentBudgets>) =>
+    patchJson<AgentUsageResponse>("/api/agents/budgets", patch),
+  /** Agent accounts (#1820): every agent that holds several logins, with its pool. Labels, ids
+   *  and health only, never a path or anything a vendor CLI wrote. */
+  agentAccounts: () => getJson<{ agents?: AgentAccountPool[] }>("/api/agent-accounts"),
+  addAgentAccount: (engine: string, label: string) =>
+    mutateJson<AgentAccount>("POST", `/api/agent-accounts/${enc(engine)}`, { label }),
+  renameAgentAccount: (engine: string, account: string, label: string) =>
+    mutateJson<AgentAccountPool>("PATCH", `/api/agent-accounts/${enc(engine)}/${enc(account)}`, { label }),
+  removeAgentAccount: (engine: string, account: string) =>
+    mutateJson<AgentAccountPool>("DELETE", `/api/agent-accounts/${enc(engine)}/${enc(account)}`),
+  reorderAgentAccounts: (engine: string, order: string[]) =>
+    mutateJson<AgentAccountPool>("PUT", `/api/agent-accounts/${enc(engine)}/order`, { order }),
+  /** What NEW sessions of this agent start on: an account id, or "default". */
+  setAgentAccountForNew: (engine: string, account: string) =>
+    mutateJson<AgentAccountPool>("PUT", `/api/agent-accounts/${enc(engine)}/new-sessions`, { account }),
+  /** Asks the vendor's own status command (a subprocess): true, false, or null for unknown. */
+  agentAccountStatus: (engine: string, account: string) =>
+    mutateJson<{ signed_in: boolean | null }>("POST", `/api/agent-accounts/${enc(engine)}/${enc(account)}/status`),
+  cancelAgentAccountSignin: (engine: string, account: string) =>
+    mutateJson<{ closed: boolean }>("POST", `/api/agent-accounts/${enc(engine)}/${enc(account)}/signin/cancel`),
+  agentAccountSigninCallback: (engine: string, account: string, url: string) =>
+    mutateJson<SignInCallback>("POST", `/api/agent-accounts/${enc(engine)}/${enc(account)}/signin/callback`, { url }),
+  /** Cross-engine handoff prepare (#597): build the seed for a source session in `mode`
+   *  and return {handle, preview, meta}. Side-effect-free — cancel by letting the
+   *  short-TTL handle expire. An "ai" request degrades to the quick tail server-side when
+   *  the endpoint is unconfigured/failing (`meta.notice` explains). 409 = empty source
+   *  transcript; 422 = unsupported target/mode — `mutateJson` surfaces the server detail
+   *  either way. CSRF-guarded. */
+  prepareHandoff: (
+    sourceId: string,
+    targetEngine: string,
+    mode: HandoffMode = "quick",
+    includeSourceRef = false,
+  ) =>
+    mutateJson<HandoffPrepared>("POST", "/api/handoff/prepare", {
+      source_id: sourceId,
+      target_engine: targetEngine,
+      mode,
+      // #716: opt-in pointer to where the source transcript lives, so the target agent can
+      // read past the seed cap. Default false — following it costs tokens.
+      include_source_ref: includeSourceRef,
+    }),
+  /** Cross-engine handoff commit (#597): bind the prepared handle to a freshly minted
+   *  target session id. `seed` carries the user's EDITED preview (Phase 2) — the server
+   *  re-sanitizes it. The caller then navigates to /s/{engine}/{native} (fresh launch) and
+   *  the server redeems the seed at spawn time — never through the URL. 404/409 = the
+   *  handle expired or was already committed; the modal re-prepares. */
+  /** `apiTarget` (#2141): only for an API target — its permission mode and whether the server
+   *  archives the source once the brief is accepted. Omitted for a console target, whose body is
+   *  what it always was. */
+  commitHandoff: (
+    handle: string,
+    seed?: string,
+    apiTarget?: { bypass: boolean; archive_source: boolean },
+  ) =>
+    mutateJson<HandoffCommitted>("POST", "/api/handoff", {
+      handle,
+      ...(seed === undefined ? {} : { seed }),
+      ...(apiTarget ?? {}),
+    }),
+  /** Host/system info for the Settings → System card (fail-soft fields). */
+  system: () => getJson<SystemInfo>("/api/system"),
+  /** The NIGHTJAR footer's live readout (#1531): host CPU / RAM and HQ's token use. */
+  telemetry: () => getJson<Telemetry>("/api/telemetry"),
+  resources: () => getJson<Pick<Resources, "settings">>("/api/system/resources?usage=false"),
+  setResources: (body: Partial<ResourceValues>) => mutateJson<{ settings: ResourceSettings }>("POST", "/api/system/resources", body),
+  /** The session limit, the count and what runs (#1819): the limit dialog's list. */
+  sessionCapacity: () => getJson<SessionCapacity>("/api/sessions/capacity"),
+  /** Self-update: compare the running version to the channel's latest. */
+  updateCheck: () => getJson<UpdateInfo>("/api/update/check"),
+  /** Apply the channel's latest (re-runs the installer detached). CSRF-guarded; 202. */
+  updateApply: () => postJson<{ status: string }>("/api/update/apply"),
+  /** The running (or last) self-update's progress (#1085). */
+  updateProgress: () => getJson<UpdateProgress>("/api/update/progress"),
+  /** Cheap read (no remote hit) of the persisted update settings for the card mount (#538). */
+  updateSettings: () => getJson<UpdateSettings>("/api/update/settings"),
+  /** Persist the auto-update opt-in and/or release channel (#538). CSRF-guarded. */
+  setUpdateSettings: (body: { auto_update?: boolean; channel?: string }) =>
+    postJson<UpdateSettings>("/api/update/settings", body),
+  /** The AI prompt catalog (#824). Off /api/config on purpose: ~11 prompts x (value +
+   *  default) is boot-path weight for data only Settings reads. */
+  prompts: () => getJson<{ prompts: PromptEntry[] }>("/api/prompts"),
+  /** Save one prompt by id, or restore its shipped default. The server resolves the id to
+   *  its storage binding; the client never sends one. CSRF-guarded. */
+  savePrompt: (id: string, value: string) =>
+    mutateJson<PromptEntry>("PATCH", `/api/prompts/${encodeURIComponent(id)}`, {
+      value,
+    }),
+  resetPrompt: (id: string) =>
+    mutateJson<PromptEntry>("PATCH", `/api/prompts/${encodeURIComponent(id)}`, {
+      reset: true,
+    }),
+  /** Persist the UI theme server-side (per-user, across devices). CSRF-guarded. */
+  setTheme: (theme: string) =>
+    postJson<{ theme: string }>("/api/prefs", { theme }),
+  /** Persist the brand accent (#rrggbb) server-side, per-user (#211 Phase 2). CSRF-guarded. */
+  setAccent: (accent: string) =>
+    postJson<{ accent: string }>("/api/prefs", { accent }),
+  /** Persist the terminal font size in px (#859). CSRF-guarded. The server is STRICT here —
+   *  a non-integer or out-of-range value is a 422, not a clamp — so callers send an
+   *  already-coerced value from `coerceTermFontSize`. */
+  setTermFontSize: (size: number) =>
+    postJson<{ term_font_size: number }>("/api/prefs", {
+      term_font_size: size,
+    }),
+  /** Persist the terminal font stack (#866). CSRF-guarded. Strict on the server — a stack with
+   *  a forbidden character or an empty comma segment is a 422, not a silent fallback — so
+   *  callers send an already-coerced value from `coerceTermFontFamily`. */
+  setTermFontFamily: (family: string) =>
+    postJson<{ term_font_family: string }>("/api/prefs", {
+      term_font_family: family,
+    }),
+  /** Persist the terminal colour scheme id (#1494 P2). CSRF-guarded; an unknown id is a 422,
+   *  so callers send a value from `coerceTermScheme`. */
+  setTermScheme: (scheme: string) =>
+    postJson<{ term_scheme: string }>("/api/prefs", { term_scheme: scheme }),
+  /** Persist the API-session look (#1494 P3). CSRF-guarded; the server validates every field
+   *  strictly (422), so callers send a value from `coerceApiLook`. */
+  setApiLook: (look: ApiLook) =>
+    postJson<{ api_look: ApiLook }>("/api/prefs", { api_look: look }),
+  /** Persist a partial set of UI preferences (e.g. overview lists, #144). CSRF-guarded. */
+  /** `mutateJson`, not `postJson`, so a rejection carries the server's `detail` (#834):
+   *  /api/prefs is the one mutation whose 422 text is a real answer — "ai_review.base_url
+   *  must be an http(s) URL" tells the operator what to change, where "POST /api/prefs →
+   *  422" tells them nothing. The AI endpoint form renders it verbatim. */
+  setPrefs: (partial: Record<string, unknown>) =>
+    mutateJson<Record<string, unknown>>("POST", "/api/prefs", partial),
+  /** A grant is saved only against its own accepted revision (#2037). Never fall back to the
+   * legacy orchestrator write: it cannot express two different scope policies. */
+  setAutomationPolicy: (scope: AutomationScope, revision: string, policy: Record<string, unknown>) =>
+    mutateJson<{ version: 1; scope: AutomationScope; policy: AutomationPolicy }>(
+      "PATCH", `/api/automation/${scope}`, { revision, policy },
+    ),
+  /** The operator's display name (#1942): what share-link visitors see instead of "Operator".
+   *  `""` clears it. A refusal carries the server's reason (the cleaning rules). */
+  setOperatorName: async (name: string) => {
+    await csrfReady();
+    return mutateJson<{ operator_name: string | null }>("POST", "/api/prefs", {
+      operator_name: name,
+    });
+  },
+  /** First-run onboarding (#463): mark the wizard complete (or skipped) so it never shows
+   *  again. Persists `onboarded: true` via the prefs store. CSRF-guarded. */
+  completeOnboarding: (whatsNewSeen?: string) =>
+    postJson<Record<string, unknown>>(
+      "/api/prefs",
+      whatsNewSeen ? { onboarded: true, whats_new_seen: whatsNewSeen } : { onboarded: true },
+    ),
+  /** Usage analytics (#1009): record the operator's decision. The response is the stored state. */
+  setAnalyticsConsent: (value: boolean) =>
+    postJson<{ analytics: AnalyticsState }>("/api/prefs", {
+      analytics_consent: value,
+    }),
+  /** What's new (#971): record the release whose notes were dismissed. `onboarded: true` rides along
+   *  because the server only stores the key beside it; the dialog only ever shows once onboarding
+   *  resolves true, so it states nothing new. The response carries the value the server KEPT. */
+  dismissWhatsNew: (version: string) =>
+    mutateJson<{ onboarded: boolean; whats_new_seen: string }>("POST", "/api/prefs", {
+      onboarded: true,
+      whats_new_seen: version,
+    }),
+  /** Optional TOTP 2FA (#116). All CSRF-guarded. */
+  /** Change the operator's own password (current + new, new ≥ 12 chars). 204 on success; 403
+   *  when the current password is wrong, 422 when the new one is too short. */
+  changePassword: (currentPassword: string, newPassword: string) =>
+    postVoid("/api/password", {
+      current_password: currentPassword,
+      new_password: newPassword,
+    }),
+  enroll2fa: () => postJson<TwoFactorEnrollment>("/api/2fa/enroll"),
+  confirm2fa: (code: string) => postVoid("/api/2fa/confirm", { code }),
+  /** Disable 2FA — needs a fresh proof (current code OR password). */
+  disable2fa: (proof: { code?: string; password?: string }) =>
+    postVoid("/api/2fa/disable", proof),
+  /** Regenerate recovery codes — same fresh-proof requirement; returns the new set once. */
+  regenerate2fa: (proof: { code?: string; password?: string }) =>
+    postJson<{ recovery_codes: string[] }>("/api/2fa/recovery-codes", proof),
+  upload,
+  uploadBlob,
+  fileBlob,
+  filesRawProbe,
+  missionShelfBlob,
+  missionShelfProbe,
+  /** Instruction templates (#905): the operator's library of reusable messages. Its own
+   *  route, off /api/config. Reads need a session; every mutation is CSRF-guarded. A stale
+   *  PATCH/DELETE (the record moved since `expectedUpdatedAt`) is a 409 whose `record.current`
+   *  is what is stored now. */
+  templates: () => getJsonWithDetail<TemplatesResponse>("/api/templates"),
+  createTemplate: (input: TemplateInput) =>
+    mutateJson<Template>("POST", "/api/templates", input),
+  updateTemplate: (
+    id: string,
+    input: TemplateInput,
+    expectedUpdatedAt: number,
+  ) =>
+    mutateJson<Template>("PATCH", `/api/templates/${enc(id)}`, {
+      ...input,
+      expected_updated_at: expectedUpdatedAt,
+    }),
+  deleteTemplate: (id: string, expectedUpdatedAt: number) =>
+    deleteVoid(
+      `/api/templates/${enc(id)}?expected_updated_at=${enc(String(expectedUpdatedAt))}`,
+    ),
+  /** A send happened — bumps the usage counters, never `updated_at`. */
+  markTemplateUsed: (id: string) =>
+    mutateJson<Template>("POST", `/api/templates/${enc(id)}/used`),
+  /** Render + deliver a template SERVER-SIDE (#1090 Phase 2) — the only path for a template
+   *  with a secret field. Only the masked text comes back; the server bumps the usage counter. */
+  sendTemplate: (
+    id: string,
+    session: string,
+    values: Record<string, string>,
+    expectedUpdatedAt: number,
+  ) =>
+    mutateJson<TemplateSendResult>("POST", `/api/templates/${enc(id)}/send`, {
+      session,
+      values,
+      expected_updated_at: expectedUpdatedAt,
+    }),
+  /** AI-suggested templates (#1090 Phase 3). Analysis runs ONLY on this request — never in the
+   *  background. `signal` lets the page stop waiting; the server may still finish and store it. */
+  templateSuggestions: () =>
+    getJsonWithDetail<TemplateSuggestionsResponse>("/api/templates/suggestions"),
+  suggestTemplates: (signal?: AbortSignal) =>
+    mutateJson<TemplateSuggestionsResult>("POST", "/api/templates/suggest", undefined, signal),
+  dismissSuggestion: (id: string) => postVoid(`/api/templates/suggestions/${enc(id)}/dismiss`),
+  writeTemplate: (request: string, signal?: AbortSignal) =>
+    mutateJson<{ template: TemplateDraft }>("POST", "/api/templates/write", { request }, signal),
+  /** Artifacts (#1932): files and static sites agents host on BattleLab. Every mutation is
+   *  CSRF-guarded; sharing answers 409 `{detail: "public_off", reason}` without a login. */
+  artifacts: (query: ArtifactQuery = {}, signal?: AbortSignal) =>
+    getJsonWithDetail<ArtifactPage>("/api/artifacts" + artifactQueryString(query), signal),
+  artifact: (id: string) => getJsonWithDetail<ArtifactDetail>(`/api/artifacts/${enc(id)}`),
+  deleteArtifact: (id: string) => mutateJson<{ deleted: string }>("DELETE", `/api/artifacts/${enc(id)}`),
+  shareArtifact: (id: string, options?: ArtifactShareOptions) =>
+    mutateJson<Artifact>("POST", `/api/artifacts/${enc(id)}/share`, options),
+  revokeArtifact: (id: string) => mutateJson<Artifact>("DELETE", `/api/artifacts/${enc(id)}/share`),
+  artifactSettings: () => getJsonWithDetail<ArtifactSettings>("/api/artifacts/settings"),
+  setArtifactsEnabled: (enabled: boolean) =>
+    mutateJson<{ enabled: boolean }>("PUT", "/api/artifacts/settings", { enabled }),
+  artifactActivation: (scope: ActivationScope, id: string, cwd?: string) =>
+    getJsonWithDetail<ArtifactActivation>(
+      `/api/artifacts/activation?${new URLSearchParams({ scope, id, ...(cwd ? { cwd } : {}) })}`,
+    ),
+  /** `mode: null` clears the scope's own setting, so it inherits again. */
+  setArtifactActivation: (scope: ActivationScope, id: string, mode: ArtifactMode | null) =>
+    mutateJson<{ scope: string; id: string; mode: ArtifactMode | null }>(
+      "PUT",
+      "/api/artifacts/activation",
+      { scope, id, mode },
+    ),
+  /** Shared artifact repositories (#2347 P1) hosted on this BattleLab. A refusal is
+   *  `{detail: <words>, code}`, so the dialog shows the server's own words. */
+  artifactRepos: () => getJsonWithDetail<ArtifactRepoList>("/api/repos"),
+  artifactRepo: (id: string) => getJsonWithDetail<ArtifactRepo>(`/api/repos/${enc(id)}`),
+  createArtifactRepo: (name: string, description: string) =>
+    mutateJson<ArtifactRepo>("POST", "/api/repos", { name, description }),
+  deleteArtifactRepo: (id: string) =>
+    mutateJson<{ deleted: string }>("DELETE", `/api/repos/${enc(id)}`),
+  artifactRepoItems: (id: string, cursor?: string) =>
+    getJsonWithDetail<ArtifactRepoItemPage>(
+      `/api/repos/${enc(id)}/items${cursor ? `?cursor=${enc(cursor)}` : ""}`,
+    ),
+  /** An existing artifact (its latest revision) as a new item, or a new revision of `itemId`. */
+  addToArtifactRepo: (id: string, artifactId: string, itemId?: string) =>
+    mutateJson<ArtifactRepoItem>("POST", `/api/repos/${enc(id)}/items`, {
+      artifact_id: artifactId,
+      ...(itemId ? { item_id: itemId } : {}),
+    }),
+  removeFromArtifactRepo: (id: string, itemId: string) =>
+    mutateJson<{ removed: string }>("DELETE", `/api/repos/${enc(id)}/items/${enc(itemId)}`),
+  /** Shared project memory (#1441): one notebook per project, read and added to by its agents. */
+  memoryProjects: () => getJsonWithDetail<{ projects: MemoryProject[] }>("/api/memory"),
+  memory: (pid: string) => getJsonWithDetail<MemoryView>(`/api/memory/${enc(pid)}`),
+  // The pass's counts, plus the fresh view when the server sends it (#1501); an older server sends counts only.
+  ingestMemory: (pid: string) => mutateJson<Record<string, unknown> & { view?: MemoryView }>("POST", `/api/memory/${enc(pid)}/ingest`, {}),
+  setMemoryEnabled: (pid: string, enabled: boolean) =>
+    mutateJson<{ enabled: boolean }>("PUT", `/api/memory/${enc(pid)}/enabled`, { enabled }),
+  editMemoryNote: (pid: string, slug: string, edit: NoteEdit) =>
+    mutateJson<{ slug: string }>("PATCH", `/api/memory/${enc(pid)}/notes/${enc(slug)}`, edit),
+  deleteMemoryNote: (pid: string, slug: string, revision?: number) => deleteVoid(`/api/memory/${enc(pid)}/notes/${enc(slug)}`, revision === undefined ? undefined : { revision }),
+  setMemoryCapture: (enabled: boolean) => mutateJson<import("../types/memory").MemoryCapture>("PUT", "/api/memory/_hq/capture", { enabled }),
+  searchMemory: (query: string, scopes?: string[]) => mutateJson<import("../types/memory").MemorySearchResult>("POST", "/api/memory-search", { query, scopes, limit: 10 }),
+  memorySearchSettings: () => getJsonWithDetail<import("../types/memory").MemorySearchSettings>("/api/memory-search/settings"),
+  setMemorySearchSettings: (body: { base_url: string; model: string; api_key?: string | null }) => mutateJson<import("../types/memory").MemorySearchSettings>("PATCH", "/api/memory-search/settings", body),
+  testMemorySearch: (body: { base_url: string; model: string; api_key?: string | null }) => mutateJson<{ ok: boolean; dimensions?: number; detail: string; code?: string }>("POST", "/api/memory-search/test", body),
+  memorySearchStatus: () => getJsonWithDetail<{ state: string; notes: number; purge_pending?: boolean; purge_overdue?: boolean }>("/api/memory-search/status"),
+  clearMemory: (pid: string) => postVoid(`/api/memory/${enc(pid)}/clear`),
+  releaseQuarantined: (pid: string, id: number, text: string) =>
+    mutateJson<{ slug: string }>("PATCH", `/api/memory/${enc(pid)}/quarantine/${id}`, { text }),
+  dropQuarantined: (pid: string, id: number) => deleteVoid(`/api/memory/${enc(pid)}/quarantine/${id}`),
+  memoryExportUrl: (pid: string) => `/api/memory/${enc(pid)}/export`,
+  /** The agent memory stores found for a project's folders, the last import, and what it held
+   *  back (#1471). Read only. */
+  memoryImportPreview: (pid: string) => getJsonWithDetail<ImportPreview>(`/api/memory/${enc(pid)}/import`),
+  /** Import the chosen sources — by their opaque ids from a fresh preview, never a path. */
+  importMemory: (pid: string, sources: string[]) =>
+    mutateJson<ImportResult>("POST", `/api/memory/${enc(pid)}/import`, { sources }),
+  /** Shared Library (#1390): metadata and scoped values remain in the existing store. */
+  variables: () => getJsonWithDetail<SharedVariablesResponse>("/api/variables"),
+  /** Library → MCP servers (#2163). Every mutation carries the CSRF header (`mutateJson`); no
+   *  answer ever holds a credential value. */
+  /** With `project`, each server also carries that project's status row (a project page's read). */
+  mcpServers: (project?: string) =>
+    getJsonWithDetail<{ servers: McpServerSummary[] }>(
+      project === undefined ? "/api/mcp/servers" : `/api/mcp/servers?project=${enc(project)}`,
+    ),
+  mcpServer: (id: string) => getJsonWithDetail<McpServerDetail>(`/api/mcp/servers/${enc(id)}`),
+  createMcpServer: (input: McpServerInput) =>
+    mutateJson<McpServerSummary>("POST", "/api/mcp/servers", input),
+  updateMcpServer: (id: string, input: McpServerUpdate, expected: number) =>
+    mutateJson<McpServerSummary>("PATCH", `/api/mcp/servers/${enc(id)}`, { ...input, expected_updated_at: expected }),
+  deleteMcpServer: (id: string, expected: number) =>
+    deleteVoid(`/api/mcp/servers/${enc(id)}?expected_updated_at=${enc(String(expected))}`),
+  setMcpProjects: (id: string, projects: "all" | string[], expected: number) =>
+    mutateJson<McpServerSummary>("PUT", `/api/mcp/servers/${enc(id)}/projects`, { projects, expected_updated_at: expected }),
+  /** `scope` is `"shared"` (the library values) or a project id. */
+  checkMcpServer: (id: string, scope: string) =>
+    mutateJson<McpCheckRow>("POST", `/api/mcp/servers/${enc(id)}/check`, { scope }),
+  /** Start (or, with the same `requestId`, rejoin) resolving a package into a lock: 202 with an
+   *  operation whose result is the review facts. Poll it with `mcpOperation`. */
+  reviewMcpServer: (id: string, requestId: string) =>
+    mutateJson<McpOperation<McpReviewFacts>>("POST", mcpReviewPath(id), { request_id: requestId }),
+  /** Start (or rejoin) installing exactly the reviewed lock: 202 with an operation whose result is
+   *  the server's summary. */
+  installMcpServer: (id: string, reviewId: string, requestId: string) =>
+    mutateJson<McpOperation<McpServerSummary>>("POST", mcpInstallPath(id), { request_id: requestId, review_id: reviewId }),
+  /** A review or install operation; 404 once the app restarted and forgot it. */
+  /** Start reading a repository link (#2353): an operation with no server whose result is the
+   *  draft source, origin, facts and P1b's review. */
+  resolveMcpLink: (url: string, requestId: string) =>
+    mutateJson<McpOperation<McpResolution>>("POST", MCP_RESOLVE_LINK_API, { url, request_id: requestId }),
+  stopMcpOperation: (requestId: string) => mutateJson<McpOperation>("POST", mcpOperationStopPath(requestId), {}),
+  mcpOperation: <T>(requestId: string) => getJsonWithDetail<McpOperation<T>>(mcpOperationPath(requestId)),
+  /** A project's OWN credential values for this server (write-only; only variables it names). */
+  setMcpOwnCredentials: (id: string, projectId: string, values: Record<string, string>) =>
+    mutateJson<McpServerDetail>("PUT", `/api/mcp/servers/${enc(id)}/projects/${enc(projectId)}/credentials`, { values }),
+  enableSharedVariables: () => mutateJson<Pick<SharedVariablesResponse, "variables" | "collections">>("POST", "/api/variables/migrate", {}),
+  createVariable: (input: SharedVariableInput) => mutateJson<SharedVariable>("POST", "/api/variables", input),
+  updateVariable: (id: string, input: SharedVariableUpdate, expected: number) =>
+    mutateJson<SharedVariable>("PATCH", `/api/variables/${enc(id)}`, { ...input, expected_updated_at: expected }),
+  /** A secret file's content (#1786): multipart, replace semantics; the answer is the masked row. */
+  putVariableFile: (id: string, file: Blob, fileName: string, expected: number) => {
+    const form = new FormData();
+    form.append("file", file, fileName);
+    return postForm<SharedVariable>(`/api/variables/${enc(id)}/file?expected_updated_at=${enc(String(expected))}`, form, "PUT");
+  },
+  /** Bind a secret to exactly these projects (#1786): whose agents it may reach. */
+  setVariableProjects: (id: string, projectIds: string[], expected: number) =>
+    mutateJson<SharedVariable>("PUT", `/api/variables/${enc(id)}/projects`, { project_ids: projectIds, expected_updated_at: expected }),
+  /** The newest agent requests for one secret (#1786). */
+  variableAccessLog: (id: string) => getJsonWithDetail<{ entries: SecretAccessEntry[] }>(`/api/variables/${enc(id)}/access-log`),
+  deleteVariable: (id: string, expected: number) =>
+    deleteVoid(`/api/variables/${enc(id)}?expected_updated_at=${enc(String(expected))}`),
+  createVariableCollection: (input: CollectionInput) =>
+    mutateJson<VariableCollection>("POST", "/api/variable-collections", input),
+  updateVariableCollection: (id: string, input: CollectionInput, expected: number) =>
+    mutateJson<VariableCollection>("PATCH", `/api/variable-collections/${enc(id)}`, { ...input, expected_updated_at: expected }),
+  deleteVariableCollection: (id: string, expected: number) =>
+    deleteVoid(`/api/variable-collections/${enc(id)}?expected_updated_at=${enc(String(expected))}`),
+  /** The template variables library (#1090): values a `source: "library"` field takes by name.
+   *  Same fencing as a template; the name is the identity (no rename). A DELETE refused because
+   *  templates still use the variable is a 409 whose `record.dependants` lists them. */
+  templateVariables: () =>
+    getJsonWithDetail<TemplateVariablesResponse>("/api/template-variables"),
+  createTemplateVariable: (input: { name: string; value: string; kind?: "text" | "secret" }) =>
+    mutateJson<TemplateVariable>("POST", "/api/template-variables", input),
+  updateTemplateVariable: (name: string, value: string, expectedUpdatedAt: number) =>
+    mutateJson<TemplateVariable>("PATCH", `/api/template-variables/${enc(name)}`, {
+      value,
+      expected_updated_at: expectedUpdatedAt,
+    }),
+  deleteTemplateVariable: (name: string, expectedUpdatedAt: number) =>
+    deleteVoid(
+      `/api/template-variables/${enc(name)}?expected_updated_at=${enc(String(expectedUpdatedAt))}`,
+    ),
+  /** Launch-folder list (#361: behaviour-preserving rename of the old /api/projects).
+   *  `visible: true` applies the mode-aware visibility filter (#335) — the new-session
+   *  picker uses it so the dropdown mirrors the curated sidebar; Settings omits it to
+   *  get the full discovered set for curation. */
+  folders: (opts?: { visible?: boolean }) =>
+    getJson<{ folders: Folder[] }>(
+      `/api/folders${opts?.visible ? "?visible=1" : ""}`,
+    ),
+  /** Create a new project directory under a configured base root (#335 Phase 3). CSRF-guarded;
+   *  returns the new absolute cwd. 404 if the feature is disabled, 403/422 on a rejected
+   *  root/name. */
+  mkdir: (root: string, name: string) =>
+    postJson<{ cwd: string }>("/api/folders/mkdir", { root, name }),
+  /** Project ENTITIES (#361): what sessions BELONG to (folders above stay where they
+   *  LAUNCH). Archived entities are hidden unless `includeArchived` (Settings opts in). */
+  projectEntities: (opts?: { includeArchived?: boolean }) =>
+    getJson<{ projects: ProjectEntity[] }>(
+      `/api/projects${opts?.includeArchived ? "?include_archived=1" : ""}`,
+    ),
+  /** The launch picker's projects (#1436): the same entities WITHOUT `session_count`, so the
+   *  server skips its session walk. Only the New session form reads this — see
+   *  `projectPickerStore` for why the type is separate. */
+  projectPickerEntities: () =>
+    getJson<{ projects: ProjectPickerEntity[] }>("/api/projects?counts=0"),
+  /** Create an entity (#361). "From a folder" is just `folders: [cwd]`; adopting a folder
+   *  (or one nested under/above) already owned by another project is a 409 whose detail
+   *  string names the conflict. CSRF-guarded. */
+  createProject: (body: {
+    name: string;
+    color?: string;
+    folders?: string[];
+    default_folder?: string;
+    launch_defaults?: LaunchDefaults;
+  }) =>
+    announceProjects(
+      mutateJson<Omit<ProjectEntity, "session_count">>(
+        "POST",
+        "/api/projects",
+        body,
+      ).then((created) => {
+        projectPickerStore.add(created);
+        return created;
+      }),
+    ),
+  /** On-demand AI auto-sort (#424 Phase 6): one bounded pass assigning unassigned sessions to
+   *  existing projects. 409 unless auto_sort is enabled AND the reused ai_review endpoint is
+   *  configured. CSRF-guarded. */
+  autoSortNow: () =>
+    mutateJson<AutoSortReport>("POST", "/api/projects/auto-sort"),
+  /** Session clusters (#1997): one project's clusters (or all), with summaries and last sweeps. */
+  clusters: (project?: string) =>
+    getJson<ClustersList>(
+      `/api/clusters${project ? `?project=${enc(project)}` : ""}`,
+    ),
+  createCluster: (projectId: string, title: string) =>
+    mutateJson<ClusterDetail>("POST", "/api/clusters", { project_id: projectId, title }),
+  /** `title` renames (and keeps); `keep` keeps the title shown now, or hands it back to HQ. */
+  patchCluster: (id: string, patch: { title: string } | { keep: boolean }) =>
+    mutateJson<SessionClusterRef>("PATCH", `/api/clusters/${enc(id)}`, patch),
+  mergeCluster: (id: string, into: string) =>
+    mutateJson<SessionClusterRef>("POST", `/api/clusters/${enc(id)}/merge`, { into }),
+  dissolveCluster: (id: string) =>
+    mutateJson<{ ok: true }>("DELETE", `/api/clusters/${enc(id)}`),
+  /** Put a session into a cluster of its project, or `null`: back to HQ's choice. */
+  placeSession: (sid: string, clusterId: string | null) =>
+    mutateJson<{ id: string; cluster: SessionClusterRef | null }>(
+      "PUT",
+      `/api/sessions/${enc(sid)}/cluster`,
+      { cluster_id: clusterId },
+    ),
+  recluster: (projectId?: string) =>
+    mutateJson<ReclusterReport>(
+      "POST",
+      "/api/clusters/recluster",
+      projectId ? { project_id: projectId } : {},
+    ),
+  /** Rename / recolor / adopt+release folders (#361). Omitted fields stay unchanged;
+   *  `color: ""` clears. Archiving is NOT patchable — use archive/unarchive below. */
+  patchProject: (
+    id: string,
+    body: {
+      name?: string;
+      color?: string;
+      folders?: string[];
+      default_folder?: string;
+      /** Replaces the whole block (#1508); `{}` clears it. */
+      launch_defaults?: LaunchDefaults;
+    },
+  ) =>
+    announceProjects(
+      patchJson<Omit<ProjectEntity, "session_count">>(
+        `/api/projects/${enc(id)}`,
+        body,
+      ),
+    ),
+  /** Folder picker (#448): immediate subdirectories of `path` (default ~), bounded to ~/.
+   *  Returns the resolved path, the home root, and the child dirs. */
+  fsDirs: (path?: string) =>
+    getJson<{ path: string; home: string; dirs: FsDir[] }>(
+      `/api/fs/dirs${path ? `?path=${encodeURIComponent(path)}` : ""}`,
+    ),
+  /** Create a folder under a browsed parent (#448), bounded to ~/. Idempotent; returns the path.
+   *  A refusal carries the server's reason (bad name, outside home) — the New project wizard
+   *  shows it verbatim (#1187). */
+  fsMkdir: (parent: string, name: string) =>
+    mutateJson<{ path: string }>("POST", "/api/fs/mkdir", { parent, name }),
+  /** File panel (#783): one directory, bounded by an entry cap AND a wall-clock budget. */
+  filesList: (path?: string, init?: RequestInit) =>
+    getJson<FileListing>(
+      `/api/files/list${path ? `?path=${encodeURIComponent(path)}` : ""}`,
+      init,
+    ),
+  /** File panel (#783): one regular file, capped while reading. Binary returns metadata only. */
+  filesRead: (path: string, init?: RequestInit) =>
+    getJson<FileContent>(
+      `/api/files/read?path=${encodeURIComponent(path)}`,
+      init,
+    ),
+  /** File viewer (#950): save edited text, bound to the version it was loaded at. A refusal is a
+   *  409 whose body (`FileWriteRefusal`) rides on `ApiError.record` — `mutateJson`, not
+   *  `postJson`, precisely so that body survives. */
+  filesWrite: (path: string, content: string, expect: string) =>
+    mutateJson<FileWriteResult>("POST", "/api/files/write", { path, content, expect }),
+  /** File panel (#783): platform support for the containment contract. Fails closed. */
+  filesCapabilities: () => getJson<FileCapabilities>("/api/files/capabilities"),
+  /** GIT tab (#784): repository state for the panel's current root. */
+  gitStatus: (path?: string, init?: RequestInit) =>
+    getJson<GitStatus>(
+      `/api/git/status${path ? `?path=${encodeURIComponent(path)}` : ""}`,
+      init,
+    ),
+  /** GIT tab (#784): a unified diff for one path, assembled server-side from blobs. */
+  gitDiff: (path: string, staged: boolean, init?: RequestInit) =>
+    getJson<GitDiff>(
+      `/api/git/diff?path=${encodeURIComponent(path)}&staged=${staged ? 1 : 0}`,
+      init,
+    ),
+  /** GIT tab (#806): local + remote-tracking refs for the branch menu. Read-only. */
+  gitBranches: (path?: string, init?: RequestInit) =>
+    getJson<GitBranches>(
+      `/api/git/branches${path ? `?path=${encodeURIComponent(path)}` : ""}`,
+      init,
+    ),
+  /** GIT tab (#806): which remote a push WOULD go to, resolved server-side. A read — it resolves
+   *  and reports, and changes nothing, so the control can render `PUSH -> origin` truthfully. */
+  /** RECENT COMMITS (#950): the branch's first-parent history. Read-only. */
+  gitLog: (path: string, init?: RequestInit) =>
+    getJson<GitLog>(`/api/git/log?path=${encodeURIComponent(path)}`, init),
+  gitPushTarget: (path: string, remote?: string, init?: RequestInit) =>
+    getJson<GitPushTarget>(
+      `/api/git/push-target?path=${encodeURIComponent(path)}${remote ? `&remote=${encodeURIComponent(remote)}` : ""}`,
+      init,
+    ),
+  // --- the write side (#806). Every one is POST + CSRF + Origin-checked; none has a force
+  // variant, and each surfaces the server's own refusal text, because the refusal IS the feature:
+  // "409 dirty tree" and "423 the agent is running git" are different facts and read as such.
+  gitFetch: (path: string, remote?: string) =>
+    mutateJson<GitWriteResult>("POST", "/api/git/fetch", { path, remote }),
+  /** Fast-forward only. A diverged branch comes back 409 with the numbers, never a merge. */
+  gitPull: (path: string) =>
+    mutateJson<GitWriteResult>("POST", "/api/git/pull", { path }),
+  /** Refuses a dirty tree — `git switch` silently carries uncommitted work across (measured). */
+  gitSwitch: (
+    path: string,
+    branch: string,
+    create = false,
+    start?: string,
+    expect?: string,
+  ) =>
+    // `expect` is the `dirty_fp` the panel last displayed. `switch` CARRIES uncommitted work
+    // across, so a tree that went dirty after the menu opened would drag those edits onto the
+    // other branch; the server re-checks inside its lock and refuses.
+    mutateJson<GitWriteResult>("POST", "/api/git/switch", {
+      path,
+      branch,
+      create,
+      start,
+      expect,
+    }),
+  /** `git branch -d` only: an unmerged branch is refused, and no force variant exists. */
+  gitBranchDelete: (path: string, branch: string) =>
+    mutateJson<GitWriteResult>("POST", "/api/git/branch/delete", {
+      path,
+      branch,
+    }),
+  /** Whole files, either direction. Never by hunk. */
+  gitStage: (
+    path: string,
+    paths: string[],
+    staged: boolean,
+    expect?: Record<string, string>,
+  ) =>
+    mutateJson<GitWriteResult>("POST", "/api/git/stage", {
+      path,
+      paths,
+      staged,
+      expect,
+    }),
+  /** The one destructive call. `expect` carries the `fp` of each row the confirmation showed,
+   *  and the server re-reads inside its lock: a file the session agent edited while the dialog
+   *  was open no longer matches, so the confirmed bytes are what gets discarded — or nothing is.
+   *  Binding to the pathname alone meant "discard whatever is there when the command runs". */
+  gitDiscard: (
+    path: string,
+    paths: string[],
+    expect?: Record<string, string>,
+    /** #950: "head" is REVERT FILE — index and worktree back to `head`. Default restores from the
+     *  index, as before. */
+    from?: "index" | "head",
+    head?: string,
+  ) =>
+    mutateJson<GitWriteResult>("POST", "/api/git/discard", {
+      path,
+      paths,
+      expect,
+      from,
+      head,
+    }),
+  /** `expect` is the whole staged SET (`staged_fp`), not the listed rows: `git commit` records
+   *  the index, so a file staged after the panel read it would otherwise ride along unseen. */
+  gitCommit: (path: string, message: string, expect?: string) =>
+    mutateJson<GitWriteResult>("POST", "/api/git/commit", {
+      path,
+      message,
+      expect,
+    }),
+  /** COMMIT SELECTED / ALL (#950): exactly `paths` as they are now, bound to their row
+   *  fingerprints and to the commit the panel showed. The rest of the index is left alone. */
+  gitCommitPaths: (
+    path: string,
+    message: string,
+    paths: string[],
+    expect: Record<string, string>,
+    head: string,
+  ) =>
+    mutateJson<GitWriteResult>("POST", "/api/git/commit-paths", {
+      path,
+      message,
+      paths,
+      expect,
+      head,
+    }),
+  /** SETTLE (#950): bring the index up to `commit` (which must still be HEAD) where it still holds
+   *  the parent's entries. Idempotent; never consumes newer staging. */
+  gitSettle: (path: string, commit: string) =>
+    mutateJson<GitWriteResult>("POST", "/api/git/settle", { path, commit }),
+  /** REVERT A COMMIT (#950): a new commit undoing `commit`, bound to the `head` the panel showed.
+   *  Never `git revert`: computed without touching the tree, published by compare-and-swap. */
+  gitRevert: (path: string, commit: string, head: string, branch: string) =>
+    mutateJson<GitWriteResult>("POST", "/api/git/revert", { path, commit, head, branch }),
+  /** Current branch to a server-resolved target; never --force, never a client refspec. */
+  gitPush: (path: string, remote?: string, expect?: string) =>
+    // `expect` is the target the panel DISPLAYED. The server refuses if it has since resolved
+    // elsewhere, so a config change between the preflight and the click cannot silently redirect
+    // the push somewhere the operator was never shown.
+    mutateJson<GitWriteResult>("POST", "/api/git/push", {
+      path,
+      remote,
+      expect,
+    }),
+  /** FILES panel (#807): mint a batch reservation from a manifest, so an over-budget folder drop
+   *  fails before a single byte moves. */
+  filesUploadBatch: (files: { relpath: string; size: number }[]) =>
+    // `mutateJson`, not `postJson`: the server names the limit it refused on ("that drop is
+    // 310 MB — the limit is 250 MB") and the generic wrapper replaced it with
+    // `POST /api/files/upload/batch → 413`, which tells the operator nothing.
+    mutateJson<UploadBatch>("POST", "/api/files/upload/batch", { files }),
+  /** FILES panel (#807): the operator chose Skip on a collision. Terminal, so the server can
+   *  settle that manifest entry — going quiet left the batch holding its slot for the whole TTL. */
+  filesUploadSkip: (batchId: string, relpath: string) =>
+    mutateJson<{ skipped: boolean }>("POST", "/api/files/upload/skip", {
+      batch_id: batchId,
+      relpath,
+    }),
+  /** FILES panel (#807): one file into the browsed directory. One file per REQUEST — the relay
+   *  buffers a whole body in browser and agent memory, so a folder is many bounded requests. */
+  filesUpload: (
+    dir: string,
+    relpath: string,
+    file: File,
+    opts: {
+      onCollision?: "fail" | "keep_both" | "replace";
+      batchId?: string;
+    } = {},
+  ) => {
+    const form = new FormData();
+    // Order matters and is part of the route's contract: the server opens the destination when
+    // the FILE part starts, so `dir`/`relpath` must already have been parsed by then.
+    form.append("dir", dir);
+    form.append("relpath", relpath);
+    form.append("on_collision", opts.onCollision ?? "fail");
+    if (opts.batchId) form.append("batch_id", opts.batchId);
+    form.append("file", file, relpath.split("/").pop() || "upload");
+    return postForm<UploadResult>("/api/files/upload", form);
+  },
+  /** Remove the ENTITY only (#361): members revert to folder grouping on the next
+   *  resolve — session files are never touched. CSRF-guarded. */
+  deleteProject: (id: string) =>
+    announceProjects(
+      deleteJson<{ deleted: boolean; id: string }>(`/api/projects/${enc(id)}`),
+    ),
+  /** Bulk archive/unarchive every member session (#361 Phase 2). Idempotent + blindly
+   *  retryable — after a partial failure, re-calling retries only the failed set. */
+  archiveProject: (id: string) =>
+    announceProjects(
+      mutateJson<ProjectArchiveReport>(
+        "POST",
+        `/api/projects/${enc(id)}/archive`,
+      ),
+    ),
+  unarchiveProject: (id: string) =>
+    announceProjects(
+      mutateJson<ProjectArchiveReport>(
+        "POST",
+        `/api/projects/${enc(id)}/unarchive`,
+      ),
+    ),
+  /** Session → project assignment (#361): one sidecar metadata write. `null`/"" clears;
+   *  an unknown project id is a 422. Engine stores stay read-only. */
+  setSessionProject: (sid: string, projectId: string | null) =>
+    patchJson<{ id: string; project_id: string }>(
+      `/api/sessions/${enc(sid)}/metadata`,
+      {
+        project_id: projectId,
+      },
+    ),
+  /** One page of the session listing. `init.signal` cancels the request (#1007 Phase 2: the map
+   *  aborts its paging sequence when the route unmounts), the same seam `filesRead`/`gitDiff` use.
+   *  It reaches whichever fetch is bound AT CALL TIME — `getJson` reads the `apiFetch` binding per
+   *  request, so a `setApiFetch` swap to the Home Free tunnel is honoured. Omitted, the request is
+   *  exactly what it was before: the sidebar's `useSessionsList` passes nothing. An abort stops the
+   *  browser waiting; it cannot stop a server scan already running in a worker thread. */
+  sessions: (q?: SessionsQuery, init?: RequestInit) =>
+    getJson<SessionsPage>(sessionsUrl(q), init),
+  /** ONE session row by id (#867) — what the session pane reads when the sidebar's page
+   *  doesn't hold it. Unlike `sessions()` this is a lookup, not a listing: it ignores the
+   *  list's pagination, filters, archived tab and visibility scope, so a deep-linked or
+   *  hidden session can still name its project and folder. 404 when nothing has that id. */
+  session: (id: string) => getJson<Session>(`/api/sessions/${enc(id)}`),
+  /** One level of a main session's subagents, lazily, paged (#2325). */
+  sessionChildren: (
+    id: string,
+    q: { offset?: number; limit?: number; archived?: boolean } = {},
+  ) =>
+    getJson<SessionLineagePage>(
+      `/api/sessions/${enc(id)}/children?${lineageQuery(q)}`,
+    ),
+  /** Every descendant that needs the operator, any depth, each with its `path` (#2325). */
+  sessionAttention: (
+    id: string,
+    q: { offset?: number; limit?: number; archived?: boolean } = {},
+  ) =>
+    getJson<SessionLineagePage>(
+      `/api/sessions/${enc(id)}/attention?${lineageQuery(q)}`,
+    ),
+  /** Archive a main session, then the subagents the operator confirmed (#2325). CSRF-guarded;
+   *  per-key results, never a partial raise. */
+  archiveWithSubagents: (id: string, subagents: string[]) =>
+    mutateJson<{ id: string; results: ArchiveSubagentResult[] }>(
+      "POST",
+      `/api/sessions/${enc(id)}/archive-with-subagents`,
+      { subagents },
+    ),
+  rename: (id: string, title: string) =>
+    mutateJson<{ id: string; title: string }>("POST", `/api/sessions/${enc(id)}/rename`, {
+      title,
+    }),
+  /** Set (or clear, with "") a session's custom tag (#551): a short label shown before the
+   *  AI summary in the sidebar row. Trimmed + length-capped server-side. */
+  setTag: (id: string, tag: string) =>
+    mutateJson<{ id: string; tag: string }>("POST", `/api/sessions/${enc(id)}/tag`, {
+      tag,
+    }),
+  /** Favorite/unfavorite a session (#122): flips the sidecar `sticky` flag so the row
+   *  pins to the top of the sidebar. Engine-agnostic; CSRF-guarded. Returns `{id, sticky}`. */
+  favorite: (id: string) =>
+    mutateJson<{ id: string; sticky: boolean }>("POST",
+      `/api/sessions/${enc(id)}/favorite`,
+    ),
+  unfavorite: (id: string) =>
+    mutateJson<{ id: string; sticky: boolean }>("POST",
+      `/api/sessions/${enc(id)}/unfavorite`,
+    ),
+  /** Compose draft (#477): fetch the saved draft (text + attachment pills) to restore the
+   *  box when a session is reopened. Returns an empty draft when there is none. */
+  getDraft: (id: string) =>
+    getJson<SessionDraft>(`/api/sessions/${enc(id)}/draft`),
+  /** Save (or clear) the compose draft for a session (#477). Empty text + no attachments
+   *  clears it. CSRF-guarded sidecar write; returns whether a draft now exists (the dot). */
+  saveDraft: (
+    id: string,
+    draft: { text: string; attachments: DraftAttachment[] },
+  ) =>
+    putJson<{ id: string; has_draft: boolean }>(
+      `/api/sessions/${enc(id)}/draft`,
+      draft,
+    ),
+  archive: (id: string) =>
+    mutateJson<{ id: string; archived: boolean }>("POST",
+      `/api/sessions/${enc(id)}/archive`,
+    ),
+  unarchive: (id: string) =>
+    mutateJson<{ id: string; archived: boolean }>("POST",
+      `/api/sessions/${enc(id)}/unarchive`,
+    ),
+  /** Bulk-archive every non-archived session older than `hours` (#142). CSRF-guarded. */
+  archiveOlder: (hours: number) =>
+    postJson<{ archived: number; skipped: number }>(
+      "/api/sessions/archive-older",
+      { hours },
+    ),
+  /** One page of older transcript history for scroll-up lazy-load (#348 Phase 3). GET —
+   *  no CSRF. `before` is the exact turn boundary: seeded from the attach's {"t":"hist"}
+   *  frame for the first page, then the returned `cursor` for each next-older page.
+   *  Omitting it (no hist frame received) gets the server's width-independent
+   *  APPROXIMATE fallback — everything older than the newest page-sized turn window. */
+  history: (
+    id: string,
+    q: { before?: number; lines?: number; cols?: number } = {},
+  ) => {
+    const p = new URLSearchParams();
+    if (q.before !== undefined) p.set("before", String(q.before));
+    if (q.lines !== undefined) p.set("lines", String(q.lines));
+    if (q.cols !== undefined) p.set("cols", String(q.cols));
+    const qs = p.toString();
+    return getJson<HistoryPage>(
+      `/api/sessions/${enc(id)}/history${qs ? `?${qs}` : ""}`,
+    );
+  },
+  /** AI review (#356): server-proxied model listing from the configured endpoint — the
+   *  API key never reaches the browser. 400 = not configured, 502 = endpoint can't list
+   *  (the Settings dropdown falls back to free-text entry). */
+  /** The endpoint-validation probe (#394): `getJsonWithDetail` so a 502 arrives as the
+   *  gateway's own message — the panel renders it verbatim (#382, #834). */
+  /** The static provider table the Settings picker renders (#1657). */
+  aiProviders: () =>
+    getJsonWithDetail<{ providers: AiProvider[] }>("/api/ai-review/providers"),
+  aiReviewModels: (opts?: { refresh?: boolean }) =>
+    getJsonWithDetail<{ models: string[] }>(
+      `/api/ai-review/models${opts?.refresh ? "?refresh=1" : ""}`,
+    ),
+  /** Check a DRAFT AI connection without saving it (#956). CSRF-guarded. The stored key is used
+   *  only when `base_url` is on the origin it was saved for; any other origin needs `api_key`
+   *  (422 otherwise, with no request made). `listing: "unsupported"` = the endpoint answered but
+   *  can't list models; a 502 carries the gateway's own (key-redacted) reason. */
+  testAiEndpoint: (body: {
+    base_url: string;
+    api_key?: string;
+    /** #1657: the draft's provider row; a hosted row's URL must be the table's. */
+    provider?: string;
+    /** #1671: the operator ticked the egress acknowledgement for THIS draft's recipient. */
+    egress_acknowledged?: boolean;
+  }) =>
+    mutateJson<{ models: string[]; listing: "ok" | "unsupported" }>(
+      "POST",
+      "/api/ai-review/endpoint/test",
+      body,
+    ),
+  /** AI review (#356): manual "Review now" for one session. CSRF-guarded. 409 when the
+   *  endpoint isn't configured; 502 when the review failed (last good result stays).
+   *  `mutateJson` so the server's error `detail` (gateway timeout, endpoint HTTP status)
+   *  reaches the outcome toast (#392) instead of a generic "POST … → 502". */
+  reviewNow: (id: string) =>
+    mutateJson<{
+      id: string;
+      /** The row's resolved display title (#1510); null when the server could not resolve it —
+       *  the row keeps the title it has. */
+      title: string | null;
+      ai_summary: string;
+      ai_title: string;
+      intervention_required: boolean;
+      intervention_reason: string;
+      reviewed_at: number | null;
+      review_excluded: boolean;
+      /** #481: chronological whole-session recap, refreshed by this review. */
+      ai_recap: string;
+      recap_fingerprint: string;
+    }>("POST", `/api/sessions/${enc(id)}/review`),
+  /** AI review (#356): set (or toggle, when `excluded` is omitted) the per-session
+   *  exclude-from-review flag. CSRF-guarded. */
+  reviewExclude: (id: string, excluded?: boolean) =>
+    mutateJson<{ id: string; review_excluded: boolean }>("POST",
+      `/api/sessions/${enc(id)}/review-exclude`,
+      excluded === undefined ? undefined : { excluded },
+    ),
+  /** Pulse recent-work cards (#441): the in-window sessions, built live per request with the
+   *  ledger overlay on top (#2179 — the scan, its cache and Scan now are gone). Never a model call. */
+  pulse: () => getJson<PulseOverview>("/api/pulse"),
+  /** Ask's durable conversations (#1443): the switcher's list, latest first. */
+  askConversations: () =>
+    getJson<{ conversations: AskConversationSummary[]; configured: boolean }>(
+      "/api/ask/conversations",
+    ),
+  askConversation: (id: string) =>
+    getJson<AskConversation>(`/api/ask/conversations/${enc(id)}`),
+  /** A new, empty conversation. Never deletes anything. */
+  askNewConversation: () =>
+    mutateJson<AskConversation>("POST", "/api/ask/conversations", {}),
+  /** Delete one conversation and everything kept for it. 409 while HQ is still answering in it
+   *  or a session from it is still starting. */
+  askDeleteConversation: (id: string) =>
+    mutateJson<{ deleted: boolean; id: string }>("DELETE", `/api/ask/conversations/${enc(id)}`),
+  askMessageStream: streamAskTurn,
+  /** Stop one running HQ turn (#2076). Answers the turn as it is now: `stopped` once it has
+   *  settled, unchanged if it had already ended. It can only ever end the turn it names. */
+  askStopTurn: (id: string, turnId: string) =>
+    mutateJson<{ turn: AskConversationTurn; running: boolean }>(
+      "POST",
+      askStopTurnPath(id, turnId),
+      {},
+    ),
+  /** Take back one queued HQ question (#2103). Answers the turn as it is now: `withdrawn`, or
+   *  unchanged if it had already started or settled. */
+  askWithdrawTurn: (id: string, turnId: string) =>
+    mutateJson<{ turn: AskConversationTurn; withdrawn: boolean; running: boolean }>(
+      "POST",
+      askWithdrawTurnPath(id, turnId),
+      {},
+    ),
+  /** HQ's tasks (#2103): running, queued, parked on a question, and the last settled ones. */
+  hqTasks: () => getJson<HqTaskList>(HQ_TASKS_API),
+  /** Stop every running HQ turn and withdraw every queued question (#2103). */
+  hqStopAllTasks: () =>
+    mutateJson<HqTaskList & { stopped: number; withdrawn: number }>(
+      "POST",
+      HQ_TASKS_STOP_ALL_API,
+      {},
+    ),
+  /** Share one file in the conversation (#1707): one file per request, the kind is decided
+   *  server-side from the bytes. Answers the descriptor the message will carry. */
+  askUploadAttachment: (id: string, file: File, secret = false) => {
+    const fd = new FormData();
+    // The field comes first: the server reads it before the file part (#1786).
+    fd.append("secret", secret ? "1" : "0");
+    fd.append("file", file, file.name || "pasted");
+    return postForm<{ attachment: AskAttachment }>(
+      `/api/ask/conversations/${enc(id)}/attachments`,
+      fd,
+    );
+  },
+  /** A shared file's bytes (#1707), through the app's fetch seam — never a native `/api/…` URL
+   *  (the Home Free tunnel rule, `lib/uploadObjectUrl.ts`). */
+  askAttachmentBlob: (id: string, aid: string, signal?: AbortSignal) =>
+    fetchBlob(`/api/ask/conversations/${enc(id)}/attachments/${enc(aid)}`, signal),
+  /** Take back a staged file no message claimed (#1720 review): Remove on a pill, or an upload
+   *  whose pill went away. Frees the server's staged quota at once. */
+  askDiscardAttachment: (id: string, aid: string) =>
+    mutateJson<{ discarded: boolean }>(
+      "DELETE",
+      `/api/ask/conversations/${enc(id)}/attachments/${enc(aid)}`,
+    ),
+  /** A shared file's tiny absence probe (#1707): the descriptor or 404, no bytes — so every kind
+   *  can reach the *gone* state (and drop its Download) without a large download. */
+  askAttachmentMeta: (id: string, aid: string, signal?: AbortSignal) =>
+    getJson<{ attachment: AskAttachment }>(
+      `/api/ask/conversations/${enc(id)}/attachments/${enc(aid)}?meta=1`,
+      signal ? { signal } : undefined,
+    ),
+  /** Whether any conversation has an unseen update from a followed session (#1443 Phase 4). */
+  askUnread: () =>
+    getJson<{ unread: boolean; conversations: number }>("/api/ask/unread"),
+  /** Updates up to `through` (the newest one this page has SHOWN) have been seen; the answer says
+   *  whether a newer one is still unseen. */
+  askSeen: (id: string, through: number) =>
+    mutateJson<{ unread: boolean }>("POST", `/api/ask/conversations/${enc(id)}/seen`, {
+      through,
+    }),
+  /** Stop following a session from this conversation. */
+  askUnfollow: (id: string, key: string) =>
+    mutateJson<{ following: boolean }>(
+      "DELETE",
+      `/api/ask/conversations/${enc(id)}/follow/${enc(key)}`,
+    ),
+  /** Start or dismiss a session Ask proposed (#1443 Phase 3a). The body names the decision and
+   *  the bypass value the operator saw — never what to start; 202 while it launches. */
+  /** Confirm or dismiss an operation HQ proposed (#1559). The body is the decision and what the
+   *  card asked the operator for (a picked folder) — never what to run; 202 while it runs. */
+  decideAskOperation: (
+    id: string,
+    decision: "confirm" | "dismiss",
+    inputs?: { folder?: string; value?: string; file?: File },
+  ) => {
+    if (decision === "confirm" && inputs?.file) {
+      // A file chosen on a create card (#1786): one multipart part, the confirm in the query.
+      const fd = new FormData();
+      fd.append("file", inputs.file, inputs.file.name || "file");
+      return postForm<{ proposal: AskOperationDecision }>(
+        `/api/ask/proposals/${enc(id)}/decide?decision=confirm`,
+        fd,
+      );
+    }
+    return mutateJson<{ proposal: AskOperationDecision }>(
+      "POST",
+      `/api/ask/proposals/${enc(id)}/decide`,
+      inputs ? { decision, inputs } : { decision },
+    );
+  },
+  /** A Library card's draft (#1611): the files, the diff or the automation's scope lines. 409 when
+   *  the draft no longer matches its card. */
+  askProposalContent: (id: string) =>
+    getJsonWithDetail<AskLibraryContent>(`/api/ask/proposals/${enc(id)}/content`),
+  /** A message card (#1833): exactly `{decision}` — the server sends its stored entry, so
+   *  nothing else is ever carried. */
+  decideAskMessage: (id: string, decision: "send" | "dismiss") =>
+    mutateJson<{ proposal: AskMessageDecision }>(
+      "POST",
+      `/api/ask/proposals/${enc(id)}/decide`,
+      { decision },
+    ),
+  /** End steps (#2251): dismisses the open list's waiting card and ends the list. 409 when a card
+   *  of it is running, or the list changed. */
+  askEndSteps: (cid: string, listId: string) =>
+    mutateJson<{ steps: AskStepList }>(
+      "POST",
+      `/api/ask/conversations/${enc(cid)}/steps/end`,
+      { list_id: listId },
+    ),
+  decideAskProposal: (id: string, decision: "start" | "dismiss", bypass = false) =>
+    mutateJson<{ proposal: AskSessionDecision }>(
+      "POST",
+      `/api/ask/proposals/${enc(id)}/decide`,
+      { decision, bypass },
+    ),
+  /** Pulse orchestrator state (#726): config + pending actions + the activity feed. A read: like
+   *  `pulse()` it never runs a pass or calls a model. */
+  orchestrator: () => getJson<OrchestratorState_>("/api/pulse/orchestrator"),
+  /** Run one orchestrator pass now (#726). 409 = unconfigured endpoint or a pass already
+   *  running; 502 = endpoint failure. A decision has no useful non-LLM fallback, so it says so
+   *  rather than returning an empty action list that reads as "nothing needs you". CSRF-guarded. */
+  orchestrate: () =>
+    mutateJson<OrchestratorState_ & { assessment: string }>(
+      "POST",
+      "/api/pulse/orchestrate",
+      {},
+    ),
+  /** Approve one orchestrator action and deliver it (#726 Phase 2). Compare-and-execute: the
+   *  server re-verifies the screen immediately before writing, so a session that moved on comes
+   *  back 409 rather than receiving input meant for a different prompt. CSRF-guarded. */
+  approveAction: (id: string, text?: string) =>
+    mutateJson<OrchestratorAction>(
+      "POST",
+      `/api/pulse/actions/${enc(id)}/approve`,
+      // #1086: the operator's EDITED text for a standalone answer/continue. The server turns it
+      // into an operator-authored `relay`; omitted, the approve is exactly what it always was.
+      text === undefined ? {} : { text },
+    ).then(announceActionResolved),
+  /** The Ask page's NEEDS YOU list (#1086): sessions no mission holds that need the operator. */
+  needsYou: (params: { window_days?: number; engine?: string; project?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (params.window_days !== undefined) q.set("window_days", String(params.window_days));
+    if (params.engine) q.set("engine", params.engine);
+    if (params.project) q.set("project", params.project);
+    const qs = q.toString();
+    return getJsonWithDetail<NeedsYouPayload>(`/api/pulse/needs-you${qs ? `?${qs}` : ""}`);
+  },
+  /** Details for one NEEDS YOU row — read-only, and no viewer is attached (#1086). */
+  needsYouDetails: (sessionId: string) =>
+    getJsonWithDetail<NeedsYouDetails>(`/api/pulse/needs-you/${enc(sessionId)}/details`),
+  /** Hide a row until its screen changes; reject `actionId` too when given (#1086). The
+   *  dismissal covers only what the row SHOWED (#1882): `shown.actionIds` / `shown.reportId` —
+   *  a decision or report that arrived after the operator looked stays visible. */
+  needsYouDismiss: (
+    sessionId: string,
+    actionId?: string,
+    shown?: { actionIds?: string[]; reportId?: string | null },
+  ) =>
+    mutateJson<{ dismissed: boolean; rejected: boolean }>(
+      "POST",
+      `/api/pulse/needs-you/${enc(sessionId)}/dismiss`,
+      {
+        ...(actionId ? { action_id: actionId } : {}),
+        ...(shown?.actionIds?.length ? { shown_action_ids: shown.actionIds } : {}),
+        ...(shown?.reportId ? { shown_report_id: shown.reportId } : {}),
+      },
+    ),
+  /** Answer an agent's `needs_decision` report with option `option` (1-based) of report
+   *  `reportId` (#1882). The tap IS the approval: the server types `Decision: <option>` through
+   *  the approve path, or refuses (409) when the report or its launch moved on. A 200 names its
+   *  `outcome`: `delivered`, `uncertain` (attempted, unconfirmed) or `stale` (nothing typed). */
+  answerReport: (sessionId: string, reportId: string, option: number) =>
+    mutateJson<OrchestratorAction & { outcome?: "delivered" | "uncertain" | "stale" }>(
+      "POST",
+      `/api/needs-you/${enc(sessionId)}/report/answer`,
+      { report_id: reportId, option },
+    ).then(announceActionResolved),
+  /** End an agent's report without sending anything (#1882). */
+  dismissReport: (sessionId: string, reportId: string) =>
+    mutateJson<{ dismissed: boolean }>(
+      "POST",
+      `/api/needs-you/${enc(sessionId)}/report/dismiss`,
+      { report_id: reportId },
+    ),
+  /** RECENT WORK above Ask (#1086). Never calls the model. */
+  recentWork: (windowDays?: number) =>
+    getJsonWithDetail<RecentWorkPayload>(
+      `/api/pulse/recap${windowDays !== undefined ? `?window_days=${windowDays}` : ""}`,
+    ),
+  /** Write a fresh RECENT WORK summary (one completion; a no-op when nothing changed). */
+  refreshRecentWork: (windowDays?: number) =>
+    mutateJson<RecentWorkPayload>(
+      "POST",
+      "/api/pulse/recap",
+      windowDays !== undefined ? { window_days: windowDays } : {},
+    ),
+  /** Answer an escalated menu with option `n` (#1060 Phase 3). `label` is the text the card showed
+   *  for it; the server refuses unless both still match the live screen. Returns the settled
+   *  escalation, with the delivered choice under `choice`. */
+  chooseAction: (id: string, option: number, label: string) =>
+    mutateJson<OrchestratorAction>(
+      "POST",
+      `/api/pulse/actions/${enc(id)}/choose`,
+      { option, label },
+    ).then(announceActionResolved),
+  /** Decline an action (#726 Phase 2). Terminal — the ledger keeps it as history. */
+  rejectAction: (id: string) =>
+    mutateJson<OrchestratorAction>(
+      "POST",
+      `/api/pulse/actions/${enc(id)}/reject`,
+      {},
+    ).then(announceActionResolved),
+  /** HQ's Dispatches (#1837): the newest written dispatches (newest first) and "N new". */
+  hqDispatches: () => getJson<HqDispatchList>("/api/hq/dispatches"),
+  /** One written dispatch; a 404 for an unknown, pruned or unwritten id. */
+  hqDispatch: (id: string) =>
+    getJson<{ dispatch: HqDispatch; new: number }>(`/api/hq/dispatches/${enc(id)}`),
+  /** Opening the view: the newest dispatch it received has been seen (clamped by the server). */
+  hqDispatchesSeen: (through: string) =>
+    mutateJson<{ moved: boolean; new: number }>("POST", "/api/hq/dispatches/seen", { through }),
+  /** In-app notifications (#726 Phase 3) — the channel that always works, regardless of push
+   *  permission or platform. */
+  notifications: () => getJson<NotificationList>("/api/pulse/notifications"),
+  /** Mark notifications read; omit `ids` to mark all. CSRF-guarded. */
+  markNotificationsRead: (ids?: string[]) =>
+    mutateJson<NotificationList & { marked: number }>(
+      "POST",
+      "/api/pulse/notifications/read",
+      ids ? { ids } : {},
+    ),
+  /** Remove notifications: the given ids, or every one with `all`. CSRF-guarded.
+   *
+   *  Fails CLOSED server-side, unlike `/read` — a malformed body is a 422 rather than being
+   *  read as "everything" (#752). So the all-scope has to be asked for in as many words; there
+   *  is deliberately no `dismissNotifications()` shorthand that clears the bell by accident. */
+  dismissNotifications: (arg: { ids: string[] } | { all: true }) =>
+    mutateJson<NotificationList & { dismissed: number }>(
+      "POST",
+      "/api/pulse/notifications/dismiss",
+      arg,
+    ),
+  /** The VAPID PUBLIC key + registered devices. The private half never leaves the server, and
+   *  a device is identified by an opaque id + origin — never its endpoint URL, which is a
+   *  capability anyone holding it could push with. */
+  pushKey: () =>
+    getJson<{ public_key: string; subscriptions: PushSubscriptionInfo[] }>(
+      "/api/pulse/push/key",
+    ),
+  pushSubscribe: (subscription: unknown) =>
+    mutateJson<PushSubscriptionInfo>("POST", "/api/pulse/push/subscribe", {
+      subscription,
+    }),
+  pushUnsubscribe: (id: string) =>
+    mutateJson<{ removed: boolean; subscriptions: PushSubscriptionInfo[] }>(
+      "POST",
+      "/api/pulse/push/unsubscribe",
+      { id },
+    ),
+  /** Server-pulled evidence for one session (#726). Fetched at render time, never cached and
+   *  never stored in the ledger, so the operator always reads the CURRENT screen. */
+  evidence: (sessionId: string, kind: EvidenceKind) =>
+    getJson<Evidence>(
+      `/api/pulse/evidence/${enc(sessionId)}?kind=${encodeURIComponent(kind)}`,
+      {
+        // "Live" must mean live: never let the HTTP cache answer this one.
+        cache: "no-store",
+      },
+    ),
+  /** The live screen of a session a MISSION holds (#903 review 3, finding 1).
+   *
+   *  Not `evidence(key, "screen")`, and the difference is the whole point: that route is
+   *  mission-agnostic, so an already-open block for mission A goes on rendering the same key
+   *  after the session has been detached and adopted into B — B's live output, under A's
+   *  heading. Membership is a row another tab can change, so it is checked SERVER-SIDE at
+   *  request time and a session the mission no longer holds is a 409. */
+  missionScreen: (missionId: string, sessionKey: string) =>
+    // A held API session answers `{api: true, pane}` instead (#1900): it has no screen to read.
+    getJson<Evidence | MissionScreenApi>(
+      `/api/missions/${enc(missionId)}/screen/${enc(sessionKey)}`,
+      { cache: "no-store" },
+    ),
+
+  /** One page of a mission's shelf (#1740): counts and file checks for the whole shelf, items in
+   *  their stable order. Never cached: file states are re-checked on every read. */
+  missionShelf: (missionId: string, cursor?: string | null, signal?: AbortSignal) =>
+    getJsonWithDetail<ShelfManifest>(
+      `/api/missions/${enc(missionId)}/shelf${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,
+      signal,
+      NO_STORE,
+    ),
+  /** The mission debrief (#1740 P2): the facts from the records now, and the stored summary
+   *  with whether it still describes them. Never cached. */
+  missionDebrief: (missionId: string, signal?: AbortSignal) =>
+    getJsonWithDetail<Debrief>(`/api/missions/${enc(missionId)}/debrief`, signal, {
+      cache: "no-store",
+    }),
+  /** Regenerate: the summary is written from the records now, then the debrief is returned. */
+  regenerateDebrief: (missionId: string) =>
+    mutateJson<Debrief>("POST", `/api/missions/${enc(missionId)}/debrief`),
+  /** A found code change's files and patches (#1740 P1b): mission-bound, by item id only. */
+  missionShelfDiff: (missionId: string, itemId: string) =>
+    getJsonWithDetail<{ id: string; files: ShelfDiffFile[]; files_more: number }>(
+      `/api/missions/${enc(missionId)}/shelf/${enc(itemId)}/diff`,
+      undefined,
+      { cache: "no-store" },
+    ),
+  /** The operator's verdict on one shelf item, made against the revision the page read. A shelf
+   *  that moved meanwhile is a 409 whose `record.revision` is the current one. */
+  setShelfVerdict: (
+    missionId: string,
+    itemId: string,
+    body: { expected_revision: number; verdict: ShelfVerdict | null; note: string },
+  ) =>
+    mutateJson<{ revision: number; item: ShelfItem }>(
+      "PATCH",
+      `/api/missions/${enc(missionId)}/shelf/${enc(itemId)}`,
+      body,
+    ),
+
+  /** Per-session Pulse-orchestration opt-out (#726). Managed-by-default; this withdraws (or
+   *  restores) agency for ONE session without touching its AI review. CSRF-guarded. */
+  setOrchestratorExcluded: (id: string, excluded?: boolean) =>
+    mutateJson<{ id: string; orchestrator_excluded: boolean }>(
+      "POST",
+      `/api/sessions/${enc(id)}/orchestrator-exclude`,
+      excluded === undefined ? undefined : { excluded },
+    ),
+  /** Shared AI-activity surface (#441): AI tasks running now + the last run per kind. The
+   *  Settings panel polls it; read-only, no CSRF. */
+  aiActivity: () => getJson<AiActivity>("/api/ai/activity"),
+  /** Persisted-scrollback cache size, for the Settings cache panel (#206). */
+  scrollbackInfo: () =>
+    getJson<{ bytes: number; files: number }>("/api/scrollback"),
+  /** Clear the persisted-scrollback cache — scope "all" or "archived" (#206). CSRF-guarded. */
+  clearScrollback: (scope: "all" | "archived") =>
+    postJson<{ scope: string; removed: number; bytes_freed: number }>(
+      "/api/scrollback/clear",
+      {
+        scope,
+      },
+    ),
+  // Settings → Maintenance (#993). Dry runs are plain GETs; mutations are CSRF-guarded
+  // and share one server-side runner, so a submission while any maintenance job runs is a 409
+  // (`ApiError.status`) whose body names the running job — refused, not queued.
+  /** Poll a known job, or discover the latest. Unknown/replaced/restarted ids return 404. */
+  // `engine` names WHICH store to compact (#853 P3/P4: every engine whose manifest selects the
+  // sqlite-vacuum kind is a target); omitted, the server uses its default target.
+  compactInfo: (jobId?: string, engine?: string) => {
+    const q = new URLSearchParams();
+    if (jobId) q.set("job_id", jobId);
+    if (engine) q.set("engine", engine);
+    const qs = q.toString();
+    return getJson<CompactInfo>(`/api/maintenance/compact${qs ? `?${qs}` : ""}`);
+  },
+  compact: (engine?: string) =>
+    mutateJson<Pick<CompactInfo, "job" | "runner">>(
+      "POST",
+      "/api/maintenance/compact",
+      engine ? { confirm: true, engine } : { confirm: true },
+    ),
+  /** What a cache prune would remove now, per category, plus the runner's busy state. */
+  pruneInfo: () =>
+    getJson<{
+      categories: Record<
+        "stale_sockets" | "archived_scrollback",
+        { items: number; bytes: number; error?: string }
+      >;
+      runner: { job: string; started_at: number | null } | null;
+    }>("/api/maintenance/prune"),
+  /** Remove the selected cache categories. Session history is never touched. */
+  prune: (categories: ("stale_sockets" | "archived_scrollback")[]) =>
+    mutateJson<{
+      removed: number;
+      bytes_freed: number;
+      skipped: { category: string; reason: string; count: number }[];
+      failed: { category: string; item: string; reason: string }[];
+      failed_total: number;
+    }>("POST", "/api/maintenance/prune", { categories }),
+  /** What "Archive old missions" would do for missions older than `days`. */
+  archiveOldMissionsInfo: (days: number) =>
+    getJson<{
+      eligible: number;
+      sessions: number;
+      live_sessions: number;
+      unresolved: string[];
+      runner: { job: string; started_at: number | null } | null;
+    }>(`/api/missions/archive-older?older_than_days=${encodeURIComponent(String(days))}`),
+  /** Archive every finished mission older than `days` — never abandons a live one. */
+  archiveOldMissions: (days: number) =>
+    mutateJson<{
+      archived: number;
+      sessions_archived: number;
+      terminals_stopped: number;
+      skipped: { mission_id: string; reason: string }[];
+      failed: { mission_id: string; session_key: string | null; reason: string }[];
+    }>("POST", "/api/missions/archive-older", { older_than_days: days }),
+  // -------------------------------------------------------------------------------------------
+  // Missions (#846 / #862). Every route is `logged_in`; the mutating ones are CSRF-guarded.
+  // -------------------------------------------------------------------------------------------
+
+  /** The rail's list. `archived` scopes it; `q` / `project` / `state` filter the FULL set before
+   *  the page window, so `total` and the facets describe the filtered result (#840). */
+  missions: (opts?: {
+    q?: string;
+    project?: string;
+    state?: string;
+    archived?: boolean;
+    limit?: number;
+    offset?: number;
+  }) => {
+    const p = new URLSearchParams();
+    if (opts?.q) p.set("q", opts.q);
+    if (opts?.project) p.set("project", opts.project);
+    if (opts?.state) p.set("state", opts.state);
+    if (opts?.archived) p.set("archived", "1");
+    if (opts?.limit != null) p.set("limit", String(opts.limit));
+    if (opts?.offset != null) p.set("offset", String(opts.offset));
+    const q = p.toString();
+    return getJson<MissionList>(`/api/missions${q ? `?${q}` : ""}`);
+  },
+
+  /** One mission with a page of its timeline. `before` is the cursor from a previous page's
+   *  `events_next_seq` — older events, never a page offset, so a new event arriving between
+   *  pages cannot shift the window and duplicate or skip a row. */
+  mission: (
+    id: string,
+    opts?: { eventsLimit?: number; before?: number | null },
+  ) => {
+    const p = new URLSearchParams();
+    if (opts?.eventsLimit != null)
+      p.set("events_limit", String(opts.eventsLimit));
+    if (opts?.before != null) p.set("events_before_seq", String(opts.before));
+    const q = p.toString();
+    return getJson<Mission>(
+      `/api/missions/${encodeURIComponent(id)}${q ? `?${q}` : ""}`,
+    );
+  },
+
+  /** Folder, git summary and session roster. Sends NO path — the server resolves the mission's
+   *  own cwd, which is the property that makes it traversal-proof. */
+  missionContext: (id: string) =>
+    getJson<MissionContext>(`/api/missions/${encodeURIComponent(id)}/context`),
+
+  /** What each held session is doing right now (#1064): derived status only, no screen text. */
+  missionNow: (id: string) =>
+    getJson<MissionNow>(`/api/missions/${encodeURIComponent(id)}/now`),
+
+  missionObjectives: (id: string) =>
+    getJson<{ objectives: MissionObjective[] }>(
+      `/api/missions/${encodeURIComponent(id)}/objectives`,
+    ),
+
+  /** Operator edits only — add / drop / retitle / waive / reorder. `state` and `met_at` are not
+   *  writable on this route at all, so an edit can never retroactively mark an objective met. */
+  patchMissionObjectives: (id: string, ops: Record<string, unknown>[]) =>
+    patchJson<{ objectives: MissionObjective[] }>(
+      `/api/missions/${encodeURIComponent(id)}/objectives`,
+      { ops },
+    ),
+
+  /** The three DIRECTION ops (#983), one objective each, on the same guarded objectives route. Only
+   *  the operator writes a direction; an unknown placeholder is a 422 in the server's words. */
+  setObjectiveDirection: (id: string, key: string, direction: string) =>
+    patchJson<{ objectives: MissionObjective[] }>(
+      `/api/missions/${encodeURIComponent(id)}/objectives`,
+      { ops: [{ op: "set_direction", key, direction }] },
+    ),
+  /** No direction: a nudge for this objective types the default nudge. */
+  clearObjectiveDirection: (id: string, key: string) =>
+    patchJson<{ objectives: MissionObjective[] }>(
+      `/api/missions/${encodeURIComponent(id)}/objectives`,
+      { ops: [{ op: "clear_direction", key }] },
+    ),
+
+  /** What a direction would type for a `probe` objective, filled with EXAMPLE facts by the server's
+   *  one renderer (#983 P2). Read-only; refuses an unknown placeholder with the save's 422 words. */
+  previewDirection: (direction: string, probe: string) =>
+    mutateJson<DirectionPreview>("POST", DIRECTION_PREVIEW_PATH, { direction, probe }),
+
+  /** Type the operator's OWN words into one of a mission's sessions (#894).
+   *
+   *  Not a second path to a PTY: the server builds a ledger action and hands it to the actuator,
+   *  so the write takes the single-writer lock, the liveness check at the write boundary, the
+   *  viewer-busy precondition and the mission fence — the same door every other write uses.
+   *
+   *  `mutateJson` because the refusals are the interesting part and each has a different fix:
+   *  "this mission does not hold that session", "session is not live", "a viewer is attached".
+   */
+  relayToSession: (
+    id: string,
+    sessionKey: string,
+    text: string,
+    /** #983 P3: the AI-drafted direction this relay replaces. The server closes the draft BEFORE
+     *  it records the relay, and a draft that is no longer waiting is a 409 with nothing sent. */
+    replacesDraft?: string,
+  ) =>
+    mutateJson<{
+      action_id: string;
+      state: string;
+      detail?: string;
+      session_key: string;
+      /** Present whenever `replacesDraft` was sent and the server got as far as the draft. */
+      draft_replaced?: boolean;
+      replaced_draft?: string;
+    }>("POST", `/api/missions/${encodeURIComponent(id)}/relay`, {
+      session_key: sessionKey,
+      text,
+      ...(replacesDraft ? { replaces_draft: replacesDraft } : {}),
+    }),
+  /** One durable operator turn on a mission (#871, wired in #890).
+   *
+   *  **`turnId` is minted once per send and REUSED on every retry**, which is what makes the
+   *  route's idempotency real rather than decorative: one model execution per id, across crashes
+   *  and retries, with each produced action delivered at most once. A fresh id per attempt would
+   *  make every retry a new execution — precisely the double-instruct the route was built to
+   *  prevent — so it is the caller's job to keep it stable, and the caller here is the composer.
+   *
+   *  `mutateJson` so the server's own `detail` survives: "turn_id was already used for a
+   *  different message" and "a question is already running" are different problems with
+   *  different fixes, and a flattened failure tells the operator neither (#834). */
+  missionMessage: (id: string, body: { message: string; turnId: string }) =>
+    mutateJson<MissionTurn>(
+      "POST",
+      `/api/missions/${encodeURIComponent(id)}/message`,
+      { message: body.message, turn_id: body.turnId },
+    ),
+
+  /** `missionMessage`, streamed (#1224) — what the composer sends. The steps and a find turn's
+   *  provisional answer arrive through `onEvent` while it runs; resolves with the same
+   *  `MissionTurn`. `missionMessage` stays the plain route's client. */
+  missionMessageStream: streamMissionMessage,
+
+  /** Dismiss an AMBIGUOUS turn. Only `indeterminate` is dismissible — the server cannot resolve
+   *  it, so "I have seen this" has to be durable or the banner returns on every reload (#890). */
+  ackMissionTurn: (id: string, turnId: string) =>
+    mutateJson<{ turn_id: string; acked: boolean }>(
+      "POST",
+      `/api/missions/${encodeURIComponent(id)}/turns/${encodeURIComponent(turnId)}/ack`,
+      {},
+    ),
+  /** Answer the mission's open question (#892).
+   *
+   *  **The INDEX, never the label.** The option's label is display text the model wrote; the
+   *  action it maps to lives in the server's closed set and is looked up there. Sending the
+   *  label back would be the one thing the whole design refuses — model text deciding what runs.
+   *
+   *  `seq` names WHICH question is being answered, so a stale console answering a superseded
+   *  question is a 409 rather than a second application of an action. `mutateJson` so the
+   *  server's `detail` — "that question is no longer the open one" — reaches the operator (#834).
+   */
+  answerMissionQuestion: (
+    id: string,
+    seq: number,
+    answer: { optionIndex?: number; text?: string },
+  ) =>
+    mutateJson<{
+      action: string;
+      objective: string;
+      answer: string;
+      applied: string;
+      /** Whether the chosen EFFECT happened. Not derivable from `applied`, which is prose. */
+      applied_ok: boolean;
+    }>("POST", `/api/missions/${encodeURIComponent(id)}/answer`, {
+      seq,
+      ...(answer.optionIndex != null
+        ? { option_index: answer.optionIndex }
+        : {}),
+      ...(answer.text ? { text: answer.text } : {}),
+    }),
+
+  /** Take a live session into a mission. Membership is exclusive: a session already held by
+   *  another mission comes back 409 NAMING the holder, so the operator is told where it went
+   *  rather than being told "no". `mutateJson` so that detail survives (#834). */
+
+  /** RUN the proposal. The highest-privilege call the client can make: it starts an agent with
+   *  nobody watching it, so it names the plan it is dispatching and the server refuses any other
+   *  (`claim_plan`'s compare-and-set). A stale id is a 409 that says to read the plan again. */
+  /** Start a bounded, approval-gated SUB-AGENT alongside one of this mission's sessions (#894).
+   *
+   *  `engine` is a REQUEST, not a choice: the server checks it against the same capability
+   *  allowlist the plan picker is built from, so `shell` and the mint-own-id engines are refused
+   *  there rather than trusted here. There is no `cwd` argument at all — the server resolves it
+   *  from the project entity, which is why a client cannot say where an agent runs. */
+  /** `expectCwd` is the directory the panel SHOWED, asserted back so the approval binds to it.
+   *  It is a comparand the server compares and discards — never a launch argument, and never a
+   *  path this client gets to choose. A mismatch is a 409, not a silent relocation. */
+  spawnSubAgent: (
+    id: string,
+    parentKey: string,
+    brief: string,
+    engine: string,
+    expectCwd: string,
+  ) =>
+    mutateJson<{
+      state: string;
+      /** The ATTEMPT's verdict — `started` / `failed` / `refused`. The mission's `state` answers a
+       *  different question and is deliberately `running` even when the child failed. */
+      outcome?: "started" | "failed" | "refused";
+      reason: string;
+      session_key: string | null;
+      refusal?: string;
+    }>(
+      "POST",
+      `/api/missions/${encodeURIComponent(id)}/spawn`,
+      { parent_key: parentKey, brief, engine, expect_cwd: expectCwd },
+    ),
+
+  dispatchMission: (
+    id: string,
+    planId: string,
+    expectCwd: string,
+    expectObjectives: string,
+  ) =>
+    mutateJson<{ state: string; reason: string; session_key: string | null; refusal?: string }>(
+      "POST",
+      `/api/missions/${encodeURIComponent(id)}/dispatch`,
+      // `expect_cwd` is a COMPARAND, never a launch argument: the server resolves the path from
+      // the project entity and refuses if what it resolves is not what the operator confirmed
+      // (#904 review 2, finding 6). The client still cannot choose where an agent runs.
+      // …and `expect_objectives` is the same kind of assertion about WHAT DONE MEANS: the
+      // checklist the card showed, digested, so "settled" and "the one you read" are one check
+      // (#904 review 3, finding 5).
+      {
+        plan_id: planId,
+        expect_cwd: expectCwd,
+        expect_objectives: expectObjectives,
+      },
+    ),
+
+  adoptMissionSession: (id: string, sessionKey: string) =>
+    mutateJson<Mission>(
+      "POST",
+      `/api/missions/${encodeURIComponent(id)}/adopt`,
+      {
+        session_key: sessionKey,
+      },
+    ),
+
+  /** Start a mission from an instruction. #889.
+   *
+   *  **`cwd` is never sent and the route refuses it outright (422).** The server resolves the
+   *  working directory from `project_id`, which is what keeps a mission's cwd out of the
+   *  client's hands — a field the server must author cannot also be one the client may supply.
+   *
+   *  Returns 201 immediately: the objective list is produced by a background task, so the
+   *  response carries `objectives_state: "pending"` and the pane says so rather than rendering
+   *  an empty checklist as "no objectives". */
+  createMission: (body: {
+    instruction: string;
+    title?: string;
+    project_id?: string | null;
+    playbook_id?: string | null;
+  }) => mutateJson<Mission>("POST", "/api/missions", body),
+
+  /** The mission's opt-in to autonomous menu answers (#1060 Phase 4). Operator-only on the server;
+   *  turning it off always succeeds and withdraws any answer still in flight. */
+  setMissionAutoChoose: (id: string, on: boolean) =>
+    mutateJson<{ id: string; auto_choose: boolean }>(
+      "PATCH",
+      `/api/missions/${encodeURIComponent(id)}/autonomy`,
+      { auto_choose: on },
+    ),
+
+  /** Compare-and-set the lifecycle state. #889.
+   *
+   *  `from` is REQUIRED and is the state the client believes the mission is in — the server
+   *  compares it rather than re-reading, because a state read before an await cannot be trusted
+   *  after it. A lost race is a **409**, never a silent retry, and the caller's job is to re-read
+   *  and render what the mission actually is rather than what was asked for. */
+  setMissionState: (
+    id: string,
+    body: { from: string; to: string; outcome?: string; detail?: string },
+  ) =>
+    mutateJson<Mission>(
+      "POST",
+      `/api/missions/${encodeURIComponent(id)}/state`,
+      body,
+    ),
+
+  /** Archive the mission AND tear down its sessions' runtime. #889.
+   *
+   *  Terminal-state-only: a live mission is a 409, not a prompt. `abandon: true` is the explicit
+   *  two-transition path and is only sent after the operator has been told plainly that it stops
+   *  the agents. A real boolean, because the route type-checks it — `"false"` is truthy and this
+   *  is the flag that authorises terminating agents. */
+  archiveMission: (id: string, opts?: { abandon?: boolean }) =>
+    mutateJson<{ mission: Mission; sessions?: unknown[] }>(
+      "POST",
+      `/api/missions/${encodeURIComponent(id)}/archive`,
+      { abandon: opts?.abandon === true },
+    ),
+
+  /** Reverse an archive. `sessions: false` restores the mission row without unarchiving its
+   *  sessions — the default is to bring them back with it. */
+  unarchiveMission: (id: string, opts?: { sessions?: boolean }) =>
+    mutateJson<{ mission: Mission; sessions?: unknown[] }>(
+      "POST",
+      `/api/missions/${encodeURIComponent(id)}/unarchive`,
+      { sessions: opts?.sessions !== false },
+    ),
+
+  /** Release one session from a mission. Fenced server-side: an in-flight nudge either lands
+   *  first or sees the new epoch, so a detached session can never still be typed into. */
+  detachMissionSession: (id: string, sessionKey: string) =>
+    mutateJson<Mission>(
+      "POST",
+      `/api/missions/${encodeURIComponent(id)}/detach`,
+      {
+        session_key: sessionKey,
+      },
+    ),
+
+  /** "Stop telling me about this one", for the EPISODE the operator was looking at (#885).
+   *
+   *  The episode is required and is the one the board was RENDERED at — not "whatever is current".
+   *  If the objective has moved since, the tap is about a situation that no longer exists, and the
+   *  server answers 409 with the current episode so the console can re-render instead of silently
+   *  silencing a report nobody has seen.
+   *
+   *  It silences; it does not settle. The objective stays visibly unmet. */
+  standDownObjective: (id: string, objectiveKey: string, episode: number) =>
+    mutateJson<{ episode: number; stood_down: boolean }>(
+      "POST",
+      `/api/missions/${encodeURIComponent(id)}/objectives/${encodeURIComponent(objectiveKey)}/stand-down`,
+      { episode },
+    ),
+
+  // Bundles (#1192). Every mutation uses the loaded revision and the shared CSRF transport.
+  playbookAuthoring: () => getJsonWithDetail<AuthoringSchema>("/api/playbooks/authoring/schema"),
+  importStepPrompt: (template_id: string, expected_updated_at: number, bindings: Record<string, string>, variables: Variable[]) =>
+    mutateJson<{ prompt: DirectPrompt }>("POST", "/api/playbooks/authoring/prompts/import", { template_id, expected_updated_at, bindings, variables }),
+  compareStepPrompt: (prompt: DirectPrompt, variables: Variable[]) =>
+    mutateJson<PromptComparison>("POST", "/api/playbooks/authoring/prompts/compare", { prompt, variables }),
+  createPlaybook: (files: Files) => mutateJson<PlaybookDetail & PlaybookWriteResult>("POST", "/api/playbooks", { files }),
+  savePlaybook: (id: string, revision: string, files: Files) => mutateJson<PlaybookDetail & PlaybookWriteResult>("PUT", `/api/playbooks/${encodeURIComponent(id)}`, { revision, files }),
+  copyPlaybookDraft: (files: Files) => mutateJson<PlaybookDetail & PlaybookWriteResult>("POST", "/api/playbooks/authoring/copy", { files }),
+  /** The specialist pool (#1693). Writes are revision-fenced; an edit creates a new version. */
+  specialists: () => getJsonWithDetail<SpecialistList>("/api/specialists"),
+  specialist: (id: string) =>
+    getJsonWithDetail<SpecialistDetail>(`/api/specialists/${encodeURIComponent(id)}`),
+  createSpecialist: (draft: SpecialistDraft) =>
+    mutateJson<SpecialistDetail>("POST", "/api/specialists", draft),
+  updateSpecialist: (id: string, revision: number, draft: SpecialistDraft) =>
+    mutateJson<SpecialistDetail>("PATCH", `/api/specialists/${encodeURIComponent(id)}`, {
+      revision,
+      draft,
+    }),
+  /** Free a HELD slot: `rev` is the held state as listed, so a slot that changed since (a new
+   *  launch, its session found live) is never released (#1693 S4). */
+  releaseSpecialistSlot: (reservationId: string, rev: number) =>
+    mutateJson<{ released: boolean }>(
+      "POST",
+      `/api/specialists/reservations/${encodeURIComponent(reservationId)}/release`,
+      { rev },
+    ),
+  archiveSpecialist: (id: string, revision: number, archived: boolean) =>
+    mutateJson<SpecialistDetail>(
+      "POST",
+      `/api/specialists/${encodeURIComponent(id)}/${archived ? "archive" : "unarchive"}`,
+      { revision },
+    ),
+  /** Mission plans in the Library (#1924): read, archive (revision-fenced), save from a mission. */
+  missionPlans: (archived = false) =>
+    getJsonWithDetail<{ plans: MissionPlanRow[] }>(`/api/mission-plans${archived ? "?archived=1" : ""}`),
+  missionPlan: (id: string) =>
+    getJsonWithDetail<MissionPlanDetail>(`/api/mission-plans/${encodeURIComponent(id)}`),
+  archiveMissionPlan: (id: string, archived: boolean, expect_revision: number) =>
+    mutateJson<MissionPlanDetail>("POST", `/api/mission-plans/${encodeURIComponent(id)}/archive`, {
+      archived,
+      expect_revision,
+    }),
+  /** The mission's team (#1950): re-derived on every read; the per-step lists; one operation. */
+  missionTeam: (missionId: string) =>
+    getJsonWithDetail<MissionTeam>(`/api/missions/${encodeURIComponent(missionId)}/plan/team`),
+  missionTeamChoices: (missionId: string, step: string) =>
+    getJsonWithDetail<TeamChoices>(
+      `/api/missions/${encodeURIComponent(missionId)}/plan/team/choices?step=${encodeURIComponent(step)}`,
+    ),
+  missionTeamOp: (
+    missionId: string,
+    body: TeamOp & { operation_id: string; expected_revision: number; reason: string },
+  ) =>
+    mutateJson<{ revision: number; replayed: boolean }>(
+      "POST",
+      `/api/missions/${encodeURIComponent(missionId)}/plan/ops`,
+      body,
+    ),
+  /** Plan approval (#1951): the card re-derived on every read; the Commander's taps. */
+  missionApproval: (missionId: string) =>
+    getJsonWithDetail<MissionApproval>(
+      `/api/missions/${encodeURIComponent(missionId)}/plan/approval`,
+    ),
+  approvePlan: (
+    missionId: string,
+    body: { revision: number; digest: string; operation_id: string },
+  ) =>
+    mutateJson<{ id: string; revision: number; digest: string; replayed: boolean }>(
+      "POST",
+      `/api/missions/${encodeURIComponent(missionId)}/plan/approve`,
+      body,
+    ),
+  revokeApproval: (missionId: string, approval_id: string) =>
+    mutateJson<{ id: string; revoked_at: number }>(
+      "POST",
+      `/api/missions/${encodeURIComponent(missionId)}/plan/approval/revoke`,
+      { approval_id },
+    ),
+  giveConsent: (
+    missionId: string,
+    body: { approval_id: string; scope_digest: string; days: number; operation_id: string },
+  ) =>
+    mutateJson<{ id: string; expires_at: number; replayed: boolean }>(
+      "POST",
+      `/api/missions/${encodeURIComponent(missionId)}/plan/consent`,
+      body,
+    ),
+  revokeConsent: (missionId: string, consent_id: string) =>
+    mutateJson<{ id: string; revoked_at: number }>(
+      "POST",
+      `/api/missions/${encodeURIComponent(missionId)}/plan/consent/revoke`,
+      { consent_id },
+    ),
+  /** One API session per agent step (#1581): the board, the operator's Start and Stop, the budget. */
+  missionSteps: (missionId: string) =>
+    getJsonWithDetail<MissionSteps>(`/api/missions/${encodeURIComponent(missionId)}/steps`),
+  startStep: (
+    missionId: string,
+    stepId: string,
+    body: { revision: number; expect_cwd: string; alternate?: number },
+  ) =>
+    mutateJson<{
+      outcome: string;
+      reason: string;
+      state: string;
+      session_key: string | null;
+      run: StepRun | null;
+    }>(
+      "POST",
+      `/api/missions/${encodeURIComponent(missionId)}/steps/${encodeURIComponent(stepId)}/start`,
+      body,
+    ),
+  /** "Ask me before this step starts" (#1951 slice B): the operator's own hold on one step. */
+  holdStep: (missionId: string, stepId: string, hold: boolean) =>
+    mutateJson<{ step_id: string; held: boolean }>(
+      "POST",
+      `/api/missions/${encodeURIComponent(missionId)}/steps/${encodeURIComponent(stepId)}/hold`,
+      { hold },
+    ),
+  stopStep: (missionId: string, stepId: string, episode: number) =>
+    mutateJson<{ run: StepRun }>(
+      "POST",
+      `/api/missions/${encodeURIComponent(missionId)}/steps/${encodeURIComponent(stepId)}/stop`,
+      { episode },
+    ),
+  pauseSteps: (missionId: string, interrupt: boolean) =>
+    mutateJson<{ budget: MissionBudget; interrupted: string[]; not_interrupted: string[] }>(
+      "POST",
+      `/api/missions/${encodeURIComponent(missionId)}/steps/pause`,
+      { interrupt },
+    ),
+  continueSteps: (missionId: string) =>
+    mutateJson<{ budget: MissionBudget }>(
+      "POST",
+      `/api/missions/${encodeURIComponent(missionId)}/steps/continue`,
+      {},
+    ),
+  stopAllSteps: (missionId: string) =>
+    mutateJson<{ stopped: StepRun[]; pending: StepRun[] }>(
+      "POST",
+      `/api/missions/${encodeURIComponent(missionId)}/steps/stop-all`,
+      {},
+    ),
+  setMissionBudget: (
+    missionId: string,
+    body: { turns_cap: number; seconds_cap: number; expect_revision: number },
+  ) =>
+    mutateJson<{ budget: MissionBudget }>(
+      "POST",
+      `/api/missions/${encodeURIComponent(missionId)}/budget`,
+      body,
+    ),
+  missionPlanRevision: (missionId: string) =>
+    getJsonWithDetail<MissionPlanRevision>(
+      `/api/missions/${encodeURIComponent(missionId)}/plan/revisions/latest`,
+    ),
+  saveMissionAsPlan: (
+    missionId: string,
+    body: { revision: number; title: string; summary: string; slot_labels: string[] },
+  ) =>
+    mutateJson<{ id: string; version: number }>(
+      "POST",
+      `/api/missions/${encodeURIComponent(missionId)}/plan/save-as-plan`,
+      body,
+    ),
+  playbooks: () => getJsonWithDetail<PlaybookList>("/api/playbooks"),
+  playbook: (id: string) => getJsonWithDetail<PlaybookDetail>(`/api/playbooks/${encodeURIComponent(id)}`),
+  duplicatePlaybook: (id: string, revision: string) =>
+    mutateJson<PlaybookDetail & PlaybookWriteResult>("POST", `/api/playbooks/${encodeURIComponent(id)}/duplicate`, { revision }),
+  /** #1654: undo an explicit format 5 upgrade from the retained format ≤4 copy (revision-fenced). */
+  revertPlaybookFormat: (id: string, revision: string) =>
+    mutateJson<PlaybookDetail & PlaybookWriteResult & { reverted_from?: string }>("POST", `/api/playbooks/${encodeURIComponent(id)}/revert-format`, { revision }),
+  deletePlaybook: (id: string, revision: string) =>
+    mutateJson<PlaybookWriteResult>("DELETE", `/api/playbooks/${encodeURIComponent(id)}?revision=${encodeURIComponent(revision)}`),
+  setDefaultPlaybook: (id: string, revision: string, expectDefault: string | null) =>
+    mutateJson<PlaybookWriteResult>("PUT", `/api/playbooks/${encodeURIComponent(id)}/default`, { revision, expect_default: expectDefault }),
+  clearDefaultPlaybook: (id: string) =>
+    mutateJson<PlaybookWriteResult>("DELETE", `/api/playbooks/${encodeURIComponent(id)}/default`),
+  playbookProjects: (id: string) => getJsonWithDetail<PlaybookFleet>(`/api/playbooks/${encodeURIComponent(id)}/projects`),
+  verifyPlaybook: (project: string) => getJsonWithDetail<PlaybookVerify>(`/api/projects/${encodeURIComponent(project)}/playbook/verify`),
+  reviewPlaybook: (id: string, inputs: PlaybookInputs) => mutateJson<DeploymentReview>("POST", `/api/playbooks/${encodeURIComponent(id)}/review`, inputs),
+  confirmPlaybook: (id: string, inputs: PlaybookInputs, digest: string, targets: string[]) => mutateJson<DeploymentReceipt>("POST", `/api/playbooks/${encodeURIComponent(id)}/review/confirm`, { inputs, digest, targets }),
+  createPlaybookTarget: (id: string, inputs: PlaybookInputs, receipt: string) => mutateJson<{ path: string; device: number; inode: number; review_digest: string }>("POST", `/api/playbooks/${encodeURIComponent(id)}/review/create-target`, { inputs, receipt }),
+  bindPlaybook: (project: string, id: string, inputs: PlaybookInputs, receipt: string, operationId: string) => mutateJson<DeploymentReceipt>("POST", `/api/projects/${encodeURIComponent(project)}/playbook/bind`, { playbook_id: id, inputs, receipt, operation_id: operationId }),
+  applyPlaybook: (project: string, receipt: string, operationId: string) => mutateJson<DeploymentStatus>("POST", `/api/projects/${encodeURIComponent(project)}/playbook/apply`, { receipt, operation_id: operationId }),
+  playbookDeployment: (project: string) => getJsonWithDetail<DeploymentStatus>(`/api/projects/${encodeURIComponent(project)}/playbook`),
+  reviewPlaybookRemoval: (project: string) => mutateJson<DeploymentRemoval>("POST", `/api/projects/${encodeURIComponent(project)}/playbook/remove/plan`, {}),
+  removePlaybookDeployment: (project: string, digest: string, operationId: string) => mutateJson<DeploymentStatus>("POST", `/api/projects/${encodeURIComponent(project)}/playbook/remove`, { digest, operation_id: operationId }),
+  /** Resume an interrupted bind, apply or removal by its recorded id alone (#2263): the server finishes
+   *  that one operation from its own journal (or answers a finished one's result), never starts one.
+   *  A resumed bind stops at bound and answers its receipt; applying is a separate request. */
+  resumePlaybookOperation: <T extends "bind" | "apply" | "remove">(project: string, operation: T, operationId: string) => {
+    const p = encodeURIComponent(project);
+    const path = {
+      bind: `/api/projects/${p}/playbook/bind`,
+      apply: `/api/projects/${p}/playbook/apply`,
+      remove: `/api/projects/${p}/playbook/remove`,
+    }[operation];
+    return mutateJson<T extends "bind" ? DeploymentReceipt : DeploymentStatus>("POST", path, { operation_id: operationId });
+  },
+  reviewPlaybookFleet: (id: string) => mutateJson<PlaybookFleetReview>("POST", `/api/playbooks/${encodeURIComponent(id)}/fleet/review`, {}),
+  updatePlaybookFleet: (id: string, digest: string, operationId: string) =>
+    mutateJson<PlaybookFleetResult>("POST", `/api/playbooks/${encodeURIComponent(id)}/fleet/update`, { digest, operation_id: operationId }),
+  playbookFleetOperation: (id: string, operationId: string) =>
+    getJsonWithDetail<PlaybookFleetResult>(`/api/playbooks/${encodeURIComponent(id)}/fleet/${encodeURIComponent(operationId)}`),
+
+  // ---- automations (#1201) -----------------------------------------------------------------------
+  automations: () => getJsonWithDetail<AutomationList>(AUTOMATIONS_API),
+  automation: (id: string) => getJsonWithDetail<Automation>(autoPath(id)),
+  /** Always created OFF: enabling is a separate, consented step. */
+  createAutomation: (config: AutomationConfig) =>
+    mutateJson<Automation>("POST", AUTOMATIONS_API, config),
+  /** Fenced by `revision`. A widening of an enabled automation is a 422 whose body
+   *  (`ApiError.record`) is a `ConsentRequired`; resend with `consent` + that `scope_digest`. */
+  patchAutomation: (
+    id: string,
+    body: Partial<AutomationConfig> & {
+      revision: number;
+      consent?: boolean;
+      scope_digest?: string;
+    },
+  ) => mutateJson<Automation>("PATCH", autoPath(id), body),
+  deleteAutomation: (id: string, revision: number) =>
+    mutateJson<AutomationDeleted>(
+      "DELETE",
+      `${autoPath(id)}?revision=${encodeURIComponent(String(revision))}`,
+    ),
+  enableAutomation: (
+    id: string,
+    body: { revision: number; consent: boolean; scope_digest?: string },
+  ) => mutateJson<Automation>("POST", `${autoPath(id)}/enable`, body),
+  automationVerb: (id: string, verb: "disable" | "pause" | "resume") =>
+    mutateJson<Automation>("POST", `${autoPath(id)}/${verb}`),
+  /** "Call a webhook" (#2248 P2): a NEW signing secret for its destination, in THIS answer only;
+   *  the previous one stops signing at once. Never cached, never re-read. */
+  newDestinationSecret: (id: string) =>
+    mutateJson<{ secret: string; destination: DestinationState }>(
+      "POST",
+      `${autoPath(id)}/destination-secret`,
+    ),
+  // ---- actions (#2248 P1) ------------------------------------------------------------------------
+  /** The action gallery: manifest facts, requirements now and use. Read-only. */
+  actions: () => getJsonWithDetail<ActionGallery>(ACTIONS_API),
+  /** The `#!` files a "Run a script" action could pick in a project's folder (#2248 P3). */
+  actionScripts: (projectId: string) =>
+    getJsonWithDetail<ActionScripts>(
+      `${ACTION_SCRIPTS_API}?project_id=${encodeURIComponent(projectId)}`,
+    ),
+  // ---- webhooks (#2221) --------------------------------------------------------------------------
+  webhooks: () => getJsonWithDetail<WebhookList>(WEBHOOKS_API),
+  /** The webhook and its last delivery's SHAPE (field names + types). Never a secret. */
+  webhook: (id: string) => getJsonWithDetail<WebhookDetail>(webhookApiPath(id)),
+  /** A name only. The answer carries the secret, this once: never cached, never re-read. */
+  createWebhook: (name: string) =>
+    mutateJson<WebhookCreated>("POST", WEBHOOKS_API, { name }),
+  /** A new secret, this once; the old one keeps verifying for 24 h. */
+  rotateWebhook: (id: string) =>
+    mutateJson<WebhookRotated>("POST", `${webhookApiPath(id)}/rotate`),
+  /** Fenced by `revision`: a stale one is a 409. */
+  renameWebhook: (id: string, name: string, revision: number) =>
+    mutateJson<Webhook>("PATCH", webhookApiPath(id), { name, revision }),
+  /** A 409 while an automation uses it. */
+  deleteWebhook: (id: string) =>
+    mutateJson<{ deleted: string }>("DELETE", webhookApiPath(id)),
+  /** Run now. 202 with the run; a 409 `detail` says why it was refused. */
+  runAutomation: (id: string) =>
+    mutateJson<AutomationRun>("POST", `${autoPath(id)}/run`),
+  automationRuns: (id: string, limit = 50, offset = 0) =>
+    getJsonWithDetail<{ runs: AutomationRun[]; total: number }>(
+      `${autoPath(id)}/runs?limit=${limit}&offset=${offset}`,
+    ),
+  automationRun: (runId: string) =>
+    getJsonWithDetail<AutomationRun>(
+      `${AUTOMATIONS_API}/runs/${encodeURIComponent(runId)}`,
+    ),
+  automationOrigins: () =>
+    getJson<{ origins: Record<string, AutomationOrigin> }>(AUTOMATION_ORIGINS_API),
+
+  /** Hide the settled rows the client DISPLAYED — never "the current window" (#862). Passing
+   *  what was on screen is what stops a decision that settled between the render and the click
+   *  from being hidden without ever being seen. */
+  clearSettledNotifications: (ids: string[]) =>
+    postJson<{ cleared: number }>("/api/pulse/notifications/clear-settled", {
+      ids,
+    }),
+
+  /** Sign out: clear the session server-side, then hard-navigate to the login page (#141). */
+  logout,
+};
+
+async function logout(): Promise<void> {
+  const r = await apiFetch("/logout", {
+    method: "POST", // CSRF POST; the server clears the cookie + 303s to /login
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+  });
+  // A direct fetch follows that 303 to /login (200). Through the relay the tunnel follows no
+  // redirect and hands back the 303 itself (#1735). Both confirm the box ended the session;
+  // anything else is a failed sign-out and changes nothing here.
+  if (!(r.ok || r.status === 303)) {
+    if (r.status === 401 || r.status === 403) await authGate(r);
+    throw new ApiError(r.status, `POST /logout → ${r.status}`);
+  }
+  clearSent(); // #619: sent prompt text must not outlive the session on a shared device
+  // Through the relay, signing out of the app ends the relay session too (#1735): the box's login
+  // page is not reachable from here, and the connect page is where the next sign-in starts.
+  if (getRelaySnapshot()) {
+    relaySignOut();
+    return;
+  }
+  window.location.assign(appUrl("/login"));
+}

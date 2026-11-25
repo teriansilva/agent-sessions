@@ -1,0 +1,1364 @@
+/** The cards inside an Ask turn (#1443 Phase 2, the mockup's `.card`).
+ *
+ *  **Question** — Ask stopped to ask one thing. Each option is a reply the SERVER stored with the
+ *  question; tapping one sends its index, never words of the client's own. Free text is offered
+ *  only when the question allows it. An unanswered question never blocks the box.
+ *
+ *  **Nudge** — a message Ask proposed for a session no mission holds. The exact text sits in a mono
+ *  well, verbatim. The one filled control names its effect ("Send to …"); it and Dismiss post to
+ *  the SAME approve / reject routes every other decision uses, so the delivery fence (screen
+ *  re-checked before the first byte) is the existing one. Once decided, the controls give way to
+ *  an outcome row — an LED plus a WORD, never colour alone — and the words are honest: "Delivered"
+ *  means the terminal accepted the text, not that the agent did anything with it.
+ *
+ *  **Session** (#1443 Phase 3a) — a session Ask proposed to start: the project, the agent and the
+ *  brief, verbatim. Permission bypass is a control ON the card, starting from the new-session
+ *  form's default; the tap carries what it shows. "Started" means the agent's own store has the
+ *  session and it received the brief; anything less proved says so, and nothing is retried.
+ */
+import { Eye, FolderOpen, Play, Send } from "lucide-react";
+import { openSessionLimit } from "../../lib/sessionLimit";
+import { type ReactNode, useCallback, useId, useRef, useState } from "react";
+
+import type { AskCardChange, AskMessageCard } from "../../types/api";
+import type {
+  AskTeamRow,
+  AskNudgeCard,
+  AskOperationCard,
+  AskQuestionCard,
+  AskSessionCard,
+  AskUpdate,
+} from "../../types/api";
+
+import { FolderPickerModal } from "../FolderPickerModal";
+import { LibraryContent, OpenInLibrary } from "./LibraryContent";
+import { FoldRow } from "./SpecialistContent";
+import { Link } from "react-router-dom";
+import { MISSION_ID_RE, missionLink } from "../../lib/missionLink";
+import { Led, type LedTone, Stamp } from "../hud/Meters";
+import c from "./AskCards.module.css";
+import type { FollowRow } from "./askUpdates";
+import { relTime } from "../../lib/format";
+
+export function QuestionCard({
+  ask,
+  disabled,
+  onAnswer,
+}: {
+  ask: AskQuestionCard;
+  disabled: boolean;
+  onAnswer: (reply: { option: number } | { text: string }) => void;
+}) {
+  const [text, setText] = useState("");
+  const off = disabled || ask.answered;
+  // The draft is never cleared on send: a failed answer keeps it to retry, and once the question
+  // is ANSWERED (settled) the box is not rendered at all.
+  return (
+    <div className={c.card} data-testid="ask-question">
+      <div className={c.head}>
+        <span className={c.k}>Question</span>
+        <span className={c.st}>{ask.answered ? "Answered" : "Waiting for you"}</span>
+      </div>
+      <div className={c.body}>
+        <p className={c.lead}>{ask.question}</p>
+        {ask.options.length > 0 ? (
+          <div className={c.opts} role="group" aria-label="Answers">
+            {ask.options.map((o, i) => (
+              <button
+                key={i}
+                type="button"
+                className={c.opt}
+                disabled={off}
+                onClick={() => onAnswer({ option: i })}
+                data-testid="ask-question-option"
+              >
+                {o}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        {ask.allow_text && !ask.answered ? (
+          <form
+            className={c.freeRow}
+            onSubmit={(e) => {
+              e.preventDefault();
+              const t = text.trim();
+              if (!t || off) return;
+              onAnswer({ text: t });
+            }}
+          >
+            <input
+              aria-label="Your own answer"
+              placeholder="Or type your own answer…"
+              value={text}
+              disabled={off}
+              onChange={(e) => setText(e.target.value)}
+              data-testid="ask-question-text"
+            />
+            <button type="submit" className={c.ghost} disabled={off || !text.trim()}>
+              Answer
+            </button>
+          </form>
+        ) : null}
+        {!ask.answered ? (
+          <div className={c.note}>
+            You can also just send a new message; this question does not block the box.
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+type Tone = "ok" | "warn" | "bad" | "neutral";
+/** An outcome's LED (#1531): the status tone it carries; it flashes once when the tone changes. */
+const LED: Record<Tone, LedTone> = { ok: "up", warn: "att", bad: "down", neutral: "idle" };
+
+/** The outcome words for a settled or in-flight proposal — from the ledger's own state. */
+function outcome(p: AskNudgeCard): { word: string; tone: Tone; detail: string } | null {
+  if (p.projection === "actionable") return null;
+  if (p.projection === "unknown")
+    return {
+      word: "Status unavailable",
+      tone: "warn",
+      detail: "The decision log could not be read just now; this updates on its own.",
+    };
+  if (p.projection === "historical")
+    return { word: "No longer tracked", tone: "neutral", detail: "This decision has left the log." };
+  if (p.projection === "in_flight_revocable")
+    return {
+      word: "Queued",
+      tone: "neutral",
+      detail: "Approved and waiting to be typed. You can still dismiss it until it starts.",
+    };
+  if (p.projection === "in_flight_locked")
+    return { word: "Sending", tone: "neutral", detail: "Being typed into the session now." };
+  switch (p.state) {
+    case "delivered":
+      return {
+        word: "Delivered",
+        tone: "ok",
+        detail: "The terminal accepted the text. That is not the agent having done it.",
+      };
+    case "stale":
+      return {
+        word: "Out of date",
+        tone: "warn",
+        detail: "The screen moved on; nothing was sent. Ask again if it still applies.",
+      };
+    case "expired":
+      return { word: "Expired", tone: "warn", detail: "Nobody approved it in time; nothing was sent." };
+    case "rejected":
+      return { word: "Dismissed", tone: "neutral", detail: "Nothing was sent." };
+    case "indeterminate":
+      return {
+        word: "Uncertain",
+        tone: "bad",
+        detail: "It may or may not have been typed — check the session. It is not retried.",
+      };
+    default:
+      return {
+        word: "Failed",
+        tone: "bad",
+        detail: p.detail || "Nothing was confirmed sent.",
+      };
+  }
+}
+
+export function NudgeCard({
+  p,
+  deciding,
+  error = null,
+  onApprove,
+  onDismiss,
+}: {
+  p: AskNudgeCard;
+  deciding: boolean;
+  /** Why the last Send/Dismiss was refused (shown on the card, as the other cards do). */
+  error?: string | null;
+  onApprove: () => void;
+  onDismiss: () => void;
+}) {
+  const out = outcome(p);
+  const edge =
+    out?.tone === "warn" ? c.edgeWarn : out?.tone === "bad" ? c.edgeBad : "";
+  return (
+    <div className={`${c.card} ${edge}`} data-testid="ask-nudge" data-state={p.state ?? p.projection}>
+      <div className={c.head}>
+        <span className={c.k}>Proposal</span>
+        Nudge
+        <span className={c.st}>{out ? out.word : "Waiting for you"}</span>
+      </div>
+      <div className={`${c.body} ${out ? c.muted : ""}`}>
+        <dl className={c.kv}>
+          <dt>Session</dt>
+          <dd>{p.title || p.key}</dd>
+          {p.interrupt ? (
+            <>
+              <dt>Interrupt</dt>
+              <dd data-testid="ask-nudge-interrupt">
+                {p.text ? "Stops its running turn first" : "Stops its running turn"}
+              </dd>
+            </>
+          ) : null}
+        </dl>
+        {p.text ? (
+          <>
+            <div className={c.blockLabel}>Text to send, verbatim</div>
+            <div className={c.verbatim} data-testid="ask-nudge-text">
+              {p.text}
+            </div>
+          </>
+        ) : null}
+        {error ? (
+          <div className={c.note} role="alert" data-testid="ask-nudge-error">
+            <span>{error}</span>
+          </div>
+        ) : null}
+        {!out ? (
+          <div className={c.note}>
+            <Eye size={14} aria-hidden="true" />
+            <span>
+              Sent only if the screen still shows the same prompt. Checked again before the
+              first byte; if it moved on, nothing is sent.
+            </span>
+          </div>
+        ) : null}
+      </div>
+      {!out ? (
+        <div className={c.actions}>
+          <button
+            type="button"
+            className={c.cta}
+            disabled={deciding || !p.can_approve}
+            onClick={onApprove}
+            data-testid="ask-nudge-send"
+          >
+            <Send size={15} aria-hidden="true" />
+            Send to {p.title || "this session"}
+          </button>
+          <button
+            type="button"
+            className={c.ghost}
+            disabled={deciding || !p.can_reject}
+            onClick={onDismiss}
+            data-testid="ask-nudge-dismiss"
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : (
+        <>
+          <div className={c.outcome} role="status" data-testid="ask-nudge-outcome">
+            <Led tone={LED[out.tone]} />
+            <span className={`${c.ow} ${c[`ow_${out.tone}`]}`}>{out.word}</span>
+            <span className={c.od}>{out.detail}</span>
+          </div>
+          {p.can_reject ? (
+            // Whatever the server projection permits stays on offer — an approved message that
+            // has not been claimed yet can still be revoked.
+            <div className={c.actions}>
+              <button
+                type="button"
+                className={c.ghost}
+                disabled={deciding}
+                onClick={onDismiss}
+                data-testid="ask-nudge-dismiss"
+              >
+                Dismiss
+              </button>
+            </div>
+          ) : null}
+        </>
+      )}
+    </div>
+  );
+}
+
+/** The names the Changed line uses for a card's fields (#2251); anything else as the server says. */
+const CHANGE_FIELD: Record<string, string> = {
+  name: "Name",
+  project: "Project",
+  folder: "Folder",
+  agent: "Agent",
+  brief: "Brief",
+  recipient: "Recipient",
+  text: "Text",
+  action: "Action",
+  target: "Target",
+  content: "Content",
+};
+
+/** What changed against the card HQ replaced (#2251 G5): that card is no longer drawn, so this line
+ *  is its trace on the one that took its place. The values are the server's stored text, drawn as
+ *  text. A long text (a brief, a message) is named, not quoted. */
+export function Changed({ changes, replaces }: { changes?: AskCardChange[]; replaces?: string }) {
+  if (!replaces) return null;
+  const rows = changes ?? [];
+  return (
+    <div className={c.changed} data-testid="ask-card-changed">
+      <b>Changed</b>
+      <span>
+        {rows.length === 0
+          ? "HQ corrected the card it showed before. Nothing of that one ran."
+          : rows.map((x, i) => (
+              <span key={x.field}>
+                {i ? ", " : ""}
+                {CHANGE_FIELD[x.field] ?? x.field}{" "}
+                {x.from || x.to ? (
+                  <>
+                    <s>{x.from || "none"}</s> → {x.to || "none"}
+                  </>
+                ) : (
+                  "changed"
+                )}
+              </span>
+            ))}
+      </span>
+    </div>
+  );
+}
+
+/** The outcome words for a session proposal — from the server's own state. */
+/** A card HQ replaced with a corrected one (#2120): dismissed when the new card was staged, and
+ *  said so — never on a card something else decided first. */
+const REPLACED = {
+  word: "Replaced",
+  tone: "neutral" as Tone,
+  detail: "HQ replaced it with a corrected card. Nothing ran.",
+};
+const isReplaced = (p: { state: string; replaced_by?: string }) =>
+  p.state === "dismissed" && Boolean(p.replaced_by);
+
+function sessionOutcome(p: AskSessionCard): { word: string; tone: Tone; detail: string } | null {
+  switch (p.state) {
+    case "pending":
+      return null;
+    case "deciding":
+      return {
+        word: "Starting",
+        tone: "neutral",
+        detail: "Launching, and waiting for the agent to confirm it started and got the brief.",
+      };
+    case "started":
+      return {
+        word: "Started",
+        tone: "ok",
+        detail: "The agent has the session and received the brief. That is not the work done.",
+      };
+    case "unconfirmed":
+      return { word: "Not confirmed", tone: "bad", detail: p.reason || "Check your sessions." };
+    case "failed":
+      return { word: "Failed", tone: "bad", detail: p.reason || "Nothing was started." };
+    case "stale":
+      return {
+        word: "Out of date",
+        tone: "warn",
+        detail: p.reason ? `${p.reason}. Nothing was started.` : "Nothing was started.",
+      };
+    case "dismissed":
+      return { word: "Dismissed", tone: "neutral", detail: "Nothing was started." };
+    case "interrupted":
+      return { word: "Interrupted", tone: "bad", detail: p.reason || "Check your sessions." };
+    case "unknown":
+      return {
+        word: "Status unavailable",
+        tone: "warn",
+        detail: "This proposal could not be read just now; this updates on its own.",
+      };
+    default:
+      return {
+        word: "No longer tracked",
+        tone: "neutral",
+        detail: "There is no record to decide, so nothing will start.",
+      };
+  }
+}
+
+export function SessionCard({
+  p,
+  deciding,
+  error,
+  onStart,
+  onDismiss,
+  ways,
+}: {
+  p: AskSessionCard;
+  deciding: boolean;
+  /** Why the last tap was refused, when the card itself did not change. */
+  error: string | null;
+  onStart: (bypass: boolean) => void;
+  onDismiss: () => void;
+  /** Open / Open in map, for a started session. */
+  ways?: ReactNode;
+}) {
+  // The control starts from the card's starting value. A NEW starting value (the default changed
+  // and the card asks again) remounts the card — its parent keys it on that value.
+  const [bypass, setBypass] = useState(p.bypass_default);
+  const out = isReplaced(p) ? REPLACED : sessionOutcome(p);
+  const edge = out?.tone === "warn" ? c.edgeWarn : out?.tone === "bad" ? c.edgeBad : "";
+  const name = p.title || "this project";
+  // #2014: an API session HQ starts always asks before it acts, so its card has no switch.
+  const api = p.runtime === "api";
+  const kind = api ? "API session" : p.runtime === "pty" ? "terminal session" : "session";
+  return (
+    <div className={`${c.card} ${edge}`} data-testid="ask-session" data-state={p.state}>
+      <div className={c.head}>
+        <span className={c.k}>Proposal</span>
+        Session
+        <span className={c.st}>{out ? out.word : "Waiting for you"}</span>
+      </div>
+      <Changed changes={p.changes} replaces={p.replaces} />
+      <div className={`${c.body} ${out && p.state !== "deciding" ? c.muted : ""}`}>
+        <dl className={c.kv}>
+          <dt>Project</dt>
+          <dd>{p.title}</dd>
+          <dt>Agent</dt>
+          <dd>{p.agent}</dd>
+          {p.runtime ? (
+            <>
+              <dt>Session</dt>
+              <dd data-testid="ask-session-kind" data-runtime={p.runtime}>
+                {api ? "API session · asks before each request" : "Terminal session"}
+              </dd>
+            </>
+          ) : null}
+          {out && p.bypass !== null ? (
+            <>
+              <dt>Bypass</dt>
+              <dd data-testid="ask-session-bypass-used">
+                {p.bypass ? "On — it does not ask before acting" : "Off — it asks before acting"}
+              </dd>
+            </>
+          ) : null}
+        </dl>
+        <div className={c.blockLabel}>Brief, verbatim</div>
+        <div className={c.verbatim} data-testid="ask-session-brief">
+          {p.text}
+        </div>
+        {!out ? (
+          <>
+            {api ? (
+              <div className={c.note} data-testid="ask-session-asks">
+                <span>
+                  An API session HQ starts always asks before it runs commands or edits files.
+                </span>
+              </div>
+            ) : (
+              <label className={c.switchRow} data-testid="ask-session-bypass">
+                <input
+                  type="checkbox"
+                  role="switch"
+                  checked={bypass}
+                  disabled={deciding || !p.can_start}
+                  onChange={(e) => setBypass(e.target.checked)}
+                  aria-describedby={`bypass-${p.action_id}`}
+                />
+                <span className={c.switchText}>
+                  <span className={c.switchName}>Permission bypass · {bypass ? "On" : "Off"}</span>
+                  <span id={`bypass-${p.action_id}`} className={c.switchRisk}>
+                    {bypass
+                      ? "The agent runs commands and edits files without asking you first."
+                      : "The agent asks you before it runs commands or edits files."}
+                  </span>
+                </span>
+              </label>
+            )}
+            {p.notice === "busy" ? (
+              <div className={c.note} role="status" data-testid="ask-session-notice">
+                <span>
+                  The project was being changed just as this started, so nothing started. Start
+                  it again.
+                </span>
+              </div>
+            ) : null}
+            {p.notice === "session_limit" ? (
+              <div className={c.note} role="status" data-testid="ask-session-notice">
+                <span>The session limit is reached, so nothing started. </span>
+                <button type="button" onClick={() => openSessionLimit()}>
+                  Free a slot
+                </button>
+                <span> and start it again.</span>
+              </div>
+            ) : null}
+            {p.notice === "default_changed" ? (
+              <div className={c.note} role="status" data-testid="ask-session-notice">
+                <span>
+                  Your default for permission bypass changed since this was proposed. Check the
+                  setting above and start again.
+                </span>
+              </div>
+            ) : null}
+            {error ? (
+              <div className={c.note} role="alert" data-testid="ask-session-error">
+                <span>{error}</span>
+              </div>
+            ) : null}
+          </>
+        ) : null}
+      </div>
+      {!out ? (
+        <div className={c.actions}>
+          <button
+            type="button"
+            className={c.cta}
+            disabled={deciding || !p.can_start}
+            onClick={() => onStart(api ? false : bypass)}
+            data-testid="ask-session-start"
+          >
+            <Play size={15} aria-hidden="true" />
+            Start {kind} in {name}
+          </button>
+          <button
+            type="button"
+            className={c.ghost}
+            disabled={deciding || !p.can_dismiss}
+            onClick={onDismiss}
+            data-testid="ask-session-dismiss"
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : (
+        <div className={c.outcome} role="status" data-testid="ask-session-outcome">
+          <Led tone={LED[out.tone]} />
+          <span className={`${c.ow} ${c[`ow_${out.tone}`]}`}>{out.word}</span>
+          <span className={c.od}>{out.detail}</span>
+          {p.state === "started" && ways ? <span className={c.ways}>{ways}</span> : null}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** A followed session's latest state (#1443 Phase 4, #1755): an LED plus a WORD and a short
+ *  detail, authored here from the update's kind, never model text. */
+const UPDATE_WORDS: Record<AskUpdate["kind"], { word: string; tone: Tone; detail: string }> = {
+  finished: { word: "Finished its turn", tone: "neutral", detail: "Stopped working" },
+  needs_you: { word: "Needs you", tone: "warn", detail: "Waiting for your decision" },
+  ended: { word: "No longer followed", tone: "neutral", detail: "Archived or gone" },
+  // #1517: a nudge reached it, but this conversation already follows its limit.
+  not_followed: {
+    word: "Not following",
+    tone: "neutral",
+    detail: "Already following 10 sessions",
+  },
+};
+
+/** Every session the conversation follows, as ONE block at the thread's end (#1755): a row per
+ *  session that changes in place, never a row per change between turns. A row is its title, then
+ *  its newest state — a WORD, the detail, when it changed and how many changes there were — with
+ *  Open and Unfollow. A follow with no change yet is no state, so no LED: the flat accent square
+ *  is the non-status bullet (design.md §3); Unfollow never waits for the first change (Hermes on
+ *  #1500). Rows re-sort, so the block is no live region: one hidden status line says the newest
+ *  change by arrival, with its session's change count, so every update — even a repeat of the
+ *  same word at the same time — changes the text once, and a re-sort changes nothing. */
+export function FollowingBlock({
+  rows,
+  busy,
+  onUnfollow,
+  open,
+}: {
+  rows: FollowRow[];
+  busy: (key: string) => boolean;
+  onUnfollow: (key: string) => void;
+  /** The session's way in (Open). */
+  open: (row: FollowRow) => ReactNode;
+}) {
+  if (!rows.length) return null;
+  const n = rows.filter((r) => r.followed).length;
+  const newest = rows.reduce<FollowRow | null>(
+    (m, r) => (r.latest && r.order > (m?.order ?? -1) ? r : m),
+    null,
+  );
+  return (
+    <section
+      className={`${c.card} ${c.follows}`}
+      aria-label="Sessions this conversation follows"
+      data-testid="ask-following"
+    >
+      <div className={c.head}>
+        <span className={c.k}>Following</span>
+        {n} {n === 1 ? "session" : "sessions"}
+      </div>
+      {rows.map((r) => {
+        const w = r.latest ? UPDATE_WORDS[r.latest.kind] : null;
+        return (
+          <div
+            key={r.key}
+            className={c.follow}
+            data-testid="ask-follow-row"
+            data-kind={r.latest?.kind ?? "following"}
+          >
+            {w ? <Led tone={LED[w.tone]} /> : <span className={c.bullet} aria-hidden="true" />}
+            <span className={c.followBody}>
+              <span className={c.followTitle}>{r.title || "A session you follow"}</span>
+              <span className={c.followMeta}>
+                {w && r.latest ? (
+                  <>
+                    <span className={`${c.ow} ${c[`ow_${w.tone}`]}`}>{w.word}</span>
+                    {` · ${w.detail} · ${relTime(r.latest.ts)}`}
+                    {r.changes > 1 ? ` · ${r.changes} changes` : ""}
+                  </>
+                ) : (
+                  <>
+                    <span className={`${c.ow} ${c.ow_hud}`}>Following</span>
+                    {" · No change yet"}
+                  </>
+                )}
+              </span>
+            </span>
+            <span className={c.ways}>
+              {r.latest?.kind !== "ended" ? open(r) : null}
+              {r.followed ? (
+                <button
+                  type="button"
+                  className={c.ghost}
+                  disabled={busy(r.key)}
+                  onClick={() => onUnfollow(r.key)}
+                  aria-label={`Unfollow ${r.title || "this session"}`}
+                  data-testid="ask-follow-unfollow"
+                >
+                  Unfollow
+                </button>
+              ) : null}
+            </span>
+          </div>
+        );
+      })}
+      <span className="sr-only" role="status" data-testid="ask-follow-status">
+        {newest?.latest
+          ? `${newest.title || "A session you follow"}: ${UPDATE_WORDS[newest.latest.kind].word}` +
+            (newest.changes > 1 ? `, ${newest.changes} changes` : "")
+          : ""}
+      </span>
+    </section>
+  );
+}
+
+/** A change HQ proposed to a session or project (#1559). The wording is the server's: the Action
+ *  row, the Target, and the sentence for what the tap does. The risk is a stamp; a destructive one
+ *  gets the danger CTA and a note naming the loss. A folder is the OPERATOR's pick, made here with
+ *  the shared folder picker — the model never names one — and "New folder" in it creates the
+ *  folder at once, which the card says plainly. Once decided, the controls give way to an LED and
+ *  a WORD; the detail is the route's own sentence. */
+const OPERATION_OUTCOMES: Record<
+  string,
+  { word: string; tone: Tone; detail: (p: AskOperationCard) => string }
+> = {
+  deciding: { word: "Running", tone: "neutral", detail: () => "Running it now." },
+  done: { word: "Done", tone: "ok", detail: (p) => p.summary },
+  partly_done: { word: "Partly done", tone: "warn", detail: (p) => p.summary },
+  failed: { word: "Failed", tone: "bad", detail: (p) => p.summary || "It did not go through." },
+  stale: {
+    word: "Out of date",
+    tone: "warn",
+    detail: (p) => (p.reason ? `${p.reason}.`.replace(/\.\.$/, ".") : "Nothing ran."),
+  },
+  dismissed: { word: "Dismissed", tone: "neutral", detail: () => "Nothing ran." },
+  interrupted: { word: "Interrupted", tone: "warn", detail: (p) => p.reason },
+  unconfirmed: { word: "Ran, unconfirmed", tone: "warn", detail: (p) => p.summary },
+  // A move that committed but did not finish (#1786): Finish runs it again from where it stopped.
+  unsettled: { word: "Not finished", tone: "warn", detail: (p) => p.summary },
+  // Nothing changed: the store refused it (#1938), or a skill import the Library can't store was
+  // staged settled (#2145). A warning, never the red of a failure.
+  refused: { word: "Refused", tone: "warn", detail: (p) => p.summary || "Nothing changed." },
+  unknown: {
+    word: "Status unavailable",
+    tone: "neutral",
+    detail: () => "Its state could not be read just now; it keeps checking.",
+  },
+  gone: { word: "No longer tracked", tone: "neutral", detail: () => "Nothing can be done here." },
+};
+
+/** The card head's noun, by catalog group (`sessions.archive_older` reads Session). */
+const OPERATION_GROUP: Record<string, string> = {
+  project: "Project",
+  playbook: "Playbook",
+  skill: "Skill",
+  automation: "Automation",
+  specialist: "Specialist",
+  secret: "Secret",
+  mission: "Mission",
+  mcp: "MCP server",
+};
+
+/** An automation the tap lets run unattended reads as such, not as a bare "External". */
+const UNATTENDED = new Set(["automation.enable", "automation.widen"]);
+/** The largest secret file the Library takes (`vault_files.MAX_BYTES`). */
+const SECRET_FILE_MAX = 256 * 1024;
+const formatBytes = (n: number) => (n < 1024 ? `${n} B` : `${(n / 1024).toFixed(1)} KB`);
+
+/** Turning a secret's agent access on (#1786) widens what agents can read: said on the stamp. So
+ * do letting projects use a shared secret and turning an MCP server on for projects (#2163). */
+const WIDENS = new Set(["secret.access_on", "secret.bind", "mcp.enable"]);
+/** Installing an MCP server package (#2163) puts third-party code in every session that gets it. */
+const THIRD_PARTY = new Set(["mcp.install"]);
+/** Storing a shared file as a secret (#1786) deletes the chat copy once the Library holds it. */
+const MOVES = new Set(["secret.store_attachment"]);
+
+/** What a specialist card adds under its sentence (#1938), while it waits: what the tap does not
+ *  do. Archiving deletes nothing; unarchiving changes nothing about it. */
+const SPECIALIST_NOTE: Record<string, string> = {
+  "specialist.archive": "Nothing is deleted. Unarchive brings it back as it is.",
+  "specialist.unarchive":
+    "Its agent, model and skills are kept as they were. If one of them no longer fits, edit it " +
+    "afterwards.",
+};
+
+const RISK_STAMP: Record<AskOperationCard["risk"], { label: string; tone?: "down" | "hud" }> = {
+  reversible: { label: "Reversible" },
+  destructive: { label: "Can't be undone", tone: "down" },
+  external: { label: "External", tone: "hud" },
+};
+
+export function OperationCard({
+  p,
+  deciding,
+  error,
+  onConfirm,
+  onDismiss,
+  onAskAgain,
+  watch = "",
+  fold,
+}: {
+  p: AskOperationCard;
+  deciding: boolean;
+  /** Why the last tap was refused, when the card itself did not change. */
+  error: string | null;
+  onConfirm: (inputs?: { folder?: string; value?: string; file?: File }) => void;
+  onDismiss: () => void;
+  /** An out-of-date specialist card (#1938) offers "Ask HQ again": an ordinary follow-up message
+   *  in this conversation. Absent where the card has no conversation to send it in. */
+  onAskAgain?: () => void;
+  /** What a Library card's derived content depends on besides its draft (`LibraryContent`). */
+  watch?: string;
+  /** One of several specialist cards of a turn (#1938): it folds to one row, with this ordinal.
+   *  A folded card shows no Confirm; it opens to the whole card. */
+  fold?: number;
+}) {
+  const [open, setOpen] = useState(false);
+  const bodyId = useId();
+  const folded = fold !== undefined && !open;
+  const isSpecialist = p.op.startsWith("specialist.");
+  const [picked, setFolder] = useState("");
+  // A secret's value (#1786): typed here, sent with the confirm and cleared at once. The field is
+  // uncontrolled — the value lives in the DOM node only, never in React state or a `value`
+  // attribute — and nothing else (a store, a draft, the card the server returns) ever holds it.
+  const valueRef = useRef<HTMLInputElement>(null);
+  const [typed, setTyped] = useState(false);
+  const needsValue = p.needs.includes("value");
+  const valueId = useId();
+  // A secret FILE chosen here (#1786): held by this card until the confirm sends it, never read.
+  const needsFile = p.needs.includes("file");
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [chosen, setChosen] = useState<File | null>(null);
+  const [fileWhy, setFileWhy] = useState("");
+  // A Library card (#1611) offers Confirm only once its content is on screen.
+  const [shown, setShown] = useState(false);
+  const onShown = useCallback((v: boolean) => setShown(v), []);
+  const [picking, setPicking] = useState<HTMLElement | null>(null);
+  const out =
+    p.state === "pending"
+      ? null
+      : isReplaced(p)
+        ? { ...REPLACED, detail: () => REPLACED.detail }
+        : OPERATION_OUTCOMES[p.state];
+  const needsFolder = p.needs.includes("folder");
+  const choices = p.choices?.folder;
+  const fromProject = Array.isArray(choices);
+  // A pick from the project's own folders holds only while the server still offers it: a refresh
+  // that drops the folder clears the pick, never confirms a folder the project no longer has.
+  const folder = fromProject && !choices.includes(picked) ? "" : picked;
+  const stamp = UNATTENDED.has(p.op)
+    ? { label: "Runs agents unattended", tone: "hud" as const }
+    : WIDENS.has(p.op)
+      ? { label: "Widens access", tone: "hud" as const }
+      : THIRD_PARTY.has(p.op)
+        ? { label: "Third-party code", tone: "hud" as const }
+        : MOVES.has(p.op)
+          ? { label: "Moves the chat copy", tone: "hud" as const }
+          : RISK_STAMP[p.risk];
+  const danger = p.risk === "destructive";
+  const ready =
+    (!needsFolder || folder !== "") &&
+    (!needsValue || typed) &&
+    (!needsFile || chosen !== null) &&
+    (!p.content || shown);
+  const off = deciding || !p.can_confirm;
+  const edge = out?.tone === "warn" ? c.edgeWarn : out?.tone === "bad" ? c.edgeBad : "";
+  return (
+    <div
+      className={`${c.card} ${edge} ${fold !== undefined ? c.fold : ""}`}
+      data-testid="ask-operation"
+      data-state={p.state}
+      data-folded={fold === undefined ? undefined : String(folded)}
+    >
+      {fold !== undefined ? (
+        <FoldRow
+          id={p.action_id}
+          ordinal={fold}
+          title={p.title}
+          open={open}
+          onToggle={() => setOpen((v) => !v)}
+          outcome={out ? { word: out.word, led: LED[out.tone], tone: out.tone } : null}
+          controls={bodyId}
+        />
+      ) : (
+        <div className={c.head}>
+          <span className={c.k}>Proposal</span>
+          {OPERATION_GROUP[p.op.split(".")[0]] ?? "Session"}
+          <span className={c.st}>
+            {out ? out.word : <Stamp tone={stamp.tone}>{stamp.label}</Stamp>}
+          </span>
+        </div>
+      )}
+      {folded ? null : (
+      <>
+      <Changed changes={p.changes} replaces={p.replaces} />
+      <div
+        id={bodyId}
+        className={`${c.body} ${out && p.state !== "deciding" ? c.muted : ""}`}
+      >
+        <dl className={c.kv}>
+          <dt>Action</dt>
+          <dd>{p.label}</dd>
+          {p.title ? (
+            <>
+              <dt>Target</dt>
+              <dd>{p.title}</dd>
+            </>
+          ) : null}
+          {needsFolder && !out ? (
+            <>
+              <dt>Folder</dt>
+              <dd data-testid="ask-operation-folder">{folder || "Choose below"}</dd>
+            </>
+          ) : null}
+        </dl>
+        <p className={c.lead} data-testid="ask-operation-text">
+          {p.text}
+        </p>
+        {p.team ? (
+          <TeamRows rows={p.team} stale={p.state === "stale"} revision={p.team_revision ?? null} />
+        ) : null}
+        {p.content ? (
+          <LibraryContent
+            id={p.action_id}
+            onShown={onShown}
+            // A specialist card marks a pin that moved once it is out of date; a playbook card's
+            // list of specialists follows the conversation's other cards.
+            watch={isSpecialist ? p.state : watch}
+            stale={p.state === "stale"}
+          />
+        ) : null}
+        {SPECIALIST_NOTE[p.op] && (p.state === "pending" || p.state === "deciding") ? (
+          <div className={c.quiet} role="note" data-testid="ask-specialist-note">
+            {SPECIALIST_NOTE[p.op]}
+          </div>
+        ) : null}
+        {needsFile && !out ? (
+          <div className={c.secretField}>
+            <span>File</span>
+            <div className={c.secretFile}>
+              <span data-testid="ask-operation-file">
+                {chosen ? `${chosen.name} · ${formatBytes(chosen.size)}` : "No file chosen"}
+              </span>
+              <button
+                type="button"
+                className={c.ghost}
+                disabled={off}
+                onClick={() => fileInput.current?.click()}
+                data-testid="ask-operation-choose"
+              >
+                {chosen ? "Choose another…" : "Choose file…"}
+              </button>
+              <input
+                ref={fileInput}
+                type="file"
+                hidden
+                aria-label="Secret file"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  e.target.value = "";
+                  setFileWhy("");
+                  if (!f) return;
+                  if (f.size === 0 || f.size > SECRET_FILE_MAX) {
+                    setChosen(null);
+                    setFileWhy(
+                      f.size === 0
+                        ? "That file is empty."
+                        : `A secret file can be at most ${formatBytes(SECRET_FILE_MAX)}.`,
+                    );
+                    return;
+                  }
+                  setChosen(f);
+                }}
+              />
+            </div>
+            {fileWhy ? (
+              <span role="alert" data-testid="ask-operation-file-why">
+                {fileWhy}
+              </span>
+            ) : null}
+            <small>Stored encrypted; it is never shown or downloaded again. HQ never sees it.</small>
+          </div>
+        ) : null}
+        {needsValue && !out ? (
+          <div className={c.secretField}>
+            <label htmlFor={valueId}>Value</label>
+            <input
+              ref={valueRef}
+              id={valueId}
+              type="password"
+              // Not the operator's login: a browser must never fill or offer a saved password here.
+              autoComplete="new-password"
+              spellCheck={false}
+              maxLength={2000}
+              disabled={off}
+              onChange={(e) => setTyped(e.target.value !== "")}
+              data-testid="ask-operation-value"
+            />
+            <small>Write-only: it goes straight to the encrypted store. HQ never sees it.</small>
+          </div>
+        ) : null}
+        {danger && !out ? (
+          <div className={c.note} role="note" data-testid="ask-operation-danger">
+            <span>This can&apos;t be undone.</span>
+          </div>
+        ) : null}
+        {needsFolder && !out ? (
+          fromProject ? (
+            <div
+              className={c.opts}
+              role="radiogroup"
+              aria-label="Folder"
+              onKeyDown={(e) => {
+                // WAI-ARIA radio group, as `Seg`: one Tab stop, arrow keys move AND select.
+                const delta =
+                  e.key === "ArrowDown" || e.key === "ArrowRight"
+                    ? 1
+                    : e.key === "ArrowUp" || e.key === "ArrowLeft"
+                      ? -1
+                      : 0;
+                if (!delta || off || choices.length === 0) return;
+                e.preventDefault();
+                const at = choices.indexOf(folder);
+                const next =
+                  choices[
+                    at < 0
+                      ? delta > 0
+                        ? 0
+                        : choices.length - 1
+                      : (at + delta + choices.length) % choices.length
+                  ];
+                setFolder(next);
+                e.currentTarget
+                  .querySelector<HTMLElement>(`[data-value="${CSS.escape(next)}"]`)
+                  ?.focus();
+              }}
+            >
+              {choices.map((f, i) => (
+                <button
+                  key={f}
+                  type="button"
+                  role="radio"
+                  aria-checked={folder === f}
+                  tabIndex={folder === f || (folder === "" && i === 0) ? 0 : -1}
+                  className={c.opt}
+                  disabled={off}
+                  onClick={() => setFolder(f)}
+                  data-value={f}
+                  data-testid="ask-operation-choice"
+                >
+                  {f}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <>
+              <div className={c.opts}>
+                <button
+                  type="button"
+                  className={c.ghost}
+                  disabled={off}
+                  onClick={(e) => setPicking(e.currentTarget)}
+                  data-testid="ask-operation-pick"
+                >
+                  <FolderOpen size={15} aria-hidden="true" />
+                  {folder ? "Choose another folder…" : "Choose folder…"}
+                </button>
+              </div>
+              <div className={c.note} role="note" data-testid="ask-operation-mkdir-note">
+                <span>
+                  New folder in the picker creates the folder now. It stays even if you dismiss
+                  this card or the project isn&apos;t created.
+                </span>
+              </div>
+            </>
+          )
+        ) : null}
+        {error ? (
+          <div className={c.note} role="alert" data-testid="ask-operation-error">
+            <span>{error}</span>
+          </div>
+        ) : null}
+      </div>
+      {!out ? (
+        <div className={c.actions}>
+          <button
+            type="button"
+            className={danger ? c.ctaDanger : c.cta}
+            disabled={off || !ready}
+            onClick={() => {
+              if (needsFile && chosen) {
+                onConfirm({ file: chosen });
+                setChosen(null);
+              } else if (needsValue) {
+                const field = valueRef.current;
+                onConfirm({ value: field?.value ?? "" });
+                if (field) field.value = "";
+                setTyped(false);
+              } else onConfirm(needsFolder ? { folder } : undefined);
+            }}
+            data-testid="ask-operation-confirm"
+          >
+            {p.verb}
+          </button>
+          <button
+            type="button"
+            className={c.ghost}
+            disabled={deciding || !p.can_dismiss}
+            onClick={onDismiss}
+            data-testid="ask-operation-dismiss"
+          >
+            Dismiss
+          </button>
+          <OpenMission card={p} />
+        </div>
+      ) : (
+        <div className={c.outcome} role="status" data-testid="ask-operation-outcome">
+          <Led tone={LED[out.tone]} />
+          <span className={`${c.ow} ${c[`ow_${out.tone}`]}`}>{out.word}</span>
+          <span className={c.od}>{out.detail(p)}</span>
+          {(p.state === "done" || p.state === "unconfirmed") && p.library ? (
+            <OpenInLibrary saved={p.library} />
+          ) : null}
+          <OpenMission card={p} />
+          {p.state === "stale" && isSpecialist && onAskAgain ? (
+            <button
+              type="button"
+              className={`${c.ghost} ${c.askAgain}`}
+              onClick={onAskAgain}
+              data-testid="ask-operation-again"
+            >
+              Ask HQ again
+            </button>
+          ) : null}
+          {p.state === "unsettled" && p.can_confirm ? (
+            <button
+              type="button"
+              className={c.cta}
+              disabled={deciding}
+              onClick={() => onConfirm(undefined)}
+              data-testid="ask-operation-finish"
+            >
+              Finish
+            </button>
+          ) : null}
+        </div>
+      )}
+      </>
+      )}
+      {picking ? (
+        <FolderPickerModal
+          title="Choose the folder"
+          onPick={(path) => {
+            setFolder(path);
+            setPicking(null);
+          }}
+          onCancel={() => setPicking(null)}
+          returnFocusTo={picking}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+
+function messageOutcome(p: AskMessageCard): { word: string; tone: Tone; detail: string } | null {
+  switch (p.state) {
+    case "pending":
+      return null;
+    case "deciding":
+      return { word: "Sending", tone: "neutral", detail: "Being sent now. It is sent once." };
+    case "sent":
+      return { word: "Sent", tone: "ok", detail: `${p.connector} accepted it.` };
+    case "failed":
+      return { word: "Not sent", tone: "bad", detail: p.reason || "Nothing was sent." };
+    case "unconfirmed":
+    case "interrupted":
+      return {
+        word: "May have been sent",
+        tone: "bad",
+        detail:
+          p.reason ||
+          `No clear answer came back after it went out. It is not sent again; check ${
+            p.sender !== undefined ? "your sent mail" : "the chat"
+          }.`,
+      };
+    case "stale":
+      return {
+        word: "Out of date",
+        tone: "warn",
+        detail: p.reason || "Something changed since HQ proposed it; nothing was sent.",
+      };
+    case "dismissed":
+      return { word: "Dismissed", tone: "neutral", detail: "Nothing was sent." };
+    case "unknown":
+      return {
+        word: "Status unavailable",
+        tone: "warn",
+        detail: "It could not be read just now; this updates on its own.",
+      };
+    default:
+      return { word: "No longer here", tone: "neutral", detail: "This card has nothing to decide." };
+  }
+}
+
+/** A message HQ proposed through a messenger connector (#1833). The text block is the EXACT text a
+ *  tap sends — shown as typed, never re-rendered as Markdown. Send and Dismiss carry nothing but
+ *  the decision; the server sends its own stored entry. */
+export function MessageCard({
+  p,
+  deciding,
+  error = null,
+  onSend,
+  onDismiss,
+}: {
+  p: AskMessageCard;
+  deciding: boolean;
+  error?: string | null;
+  onSend: () => void;
+  onDismiss: () => void;
+}) {
+  const out = isReplaced(p) ? REPLACED : messageOutcome(p);
+  const edge = out?.tone === "warn" ? c.edgeWarn : out?.tone === "bad" ? c.edgeBad : "";
+  // An email (#1836): the server's From, To, subject and body, exactly as the transport sends them.
+  const mail = p.sender !== undefined;
+  return (
+    <div className={`${c.card} ${edge}`} data-testid="ask-message" data-state={p.state}>
+      <div className={c.head}>
+        <span className={c.k}>Proposal</span>
+        {mail ? "Email" : "Message"}
+        <span className={c.st}>{out ? out.word : "Waiting for you"}</span>
+      </div>
+      <Changed changes={p.changes} replaces={p.replaces} />
+      <div className={`${c.body} ${out ? c.muted : ""}`}>
+        <dl className={c.kv}>
+          <dt>Through</dt>
+          <dd>{p.connector}</dd>
+          {mail ? (
+            <>
+              <dt>From</dt>
+              <dd data-testid="ask-message-from">{p.sender}</dd>
+              <dt>To</dt>
+              <dd data-testid="ask-message-to">
+                {p.recipient !== p.address ? (
+                  <>
+                    {p.recipient} <span className={c.muted}>· {p.address}</span>
+                  </>
+                ) : (
+                  p.address
+                )}
+              </dd>
+              <dt>Subject</dt>
+              <dd data-testid="ask-message-subject">{p.subject}</dd>
+            </>
+          ) : (
+            <>
+              <dt>To</dt>
+              <dd>
+                {p.recipient}{" "}
+                <span className={c.muted}>
+                  · {p.recipient_kind}
+                  {typeof p.recipient_members === "number"
+                    ? ` · ${p.recipient_members} ${p.recipient_members === 1 ? "person" : "people"}`
+                    : ""}
+                </span>
+              </dd>
+            </>
+          )}
+        </dl>
+        <div className={c.blockLabel}>{mail ? "Message, verbatim" : "Text to send, verbatim"}</div>
+        <div className={c.verbatim} data-testid="ask-message-text">
+          {mail ? p.body : p.text}
+        </div>
+        {error ? (
+          <div className={c.note} role="alert" data-testid="ask-message-error">
+            <span>{error}</span>
+          </div>
+        ) : null}
+        {!out ? (
+          <div className={c.note}>
+            <Eye size={14} aria-hidden="true" />
+            <span>
+              Sent once, only to this recipient, and only if it is still allowed when you tap.
+              Leaves BattleLab for {p.connector}
+              {mail ? ", and mail can’t be taken back once it’s sent." : "."}
+            </span>
+          </div>
+        ) : null}
+      </div>
+      {!out ? (
+        <div className={c.actions}>
+          <button
+            type="button"
+            className={c.cta}
+            disabled={deciding || p.can_send === false}
+            onClick={onSend}
+            data-testid="ask-message-send"
+          >
+            <Send size={15} aria-hidden="true" />
+            Send to {p.recipient}
+          </button>
+          <button
+            type="button"
+            className={c.ghost}
+            disabled={deciding || p.can_dismiss === false}
+            onClick={onDismiss}
+            data-testid="ask-message-dismiss"
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : (
+        <div className={c.outcome} role="status" data-testid="ask-message-outcome">
+          <Led tone={LED[out.tone]} />
+          <span className={`${c.ow} ${c[`ow_${out.tone}`]}`}>{out.word}</span>
+          <span className={c.od}>{out.detail}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const TEAM_WORD: Record<AskTeamRow["state"], string> = {
+  assembled: "Picked",
+  kept: "Kept",
+  unassigned: "Unassigned",
+};
+/** Past this many rows the list scrolls inside the card, so its actions never move down. */
+const TEAM_SCROLL_AT = 8;
+
+/** An `assemble` card's team (#2130): a count line, then one row per eligible step in plan order,
+ *  as the card was STAGED — never today's team. The state is a marker plus a word, never colour
+ *  alone. Rows are text, not controls; a long list scrolls inside one focusable region that wraps
+ *  the list (the list keeps its own semantics). A STALE card says whose rows these are: the team
+ *  it would write changed, so nothing ran and these are the staged picks, not today's. */
+function TeamRows({
+  rows,
+  stale,
+  revision,
+}: {
+  rows: AskTeamRow[];
+  stale: boolean;
+  revision: number | null;
+}) {
+  const count = (s: AskTeamRow["state"]) => rows.filter((r) => r.state === s).length;
+  const scroll = rows.length > TEAM_SCROLL_AT;
+  const label = stale ? "Staged team" : "Team";
+  const list = (
+    <ol className={c.team} data-testid="ask-team-rows">
+      {rows.map((r, i) => (
+        <li key={r.step} className={c.teamRow} data-testid="ask-team-row" data-state={r.state}>
+          <span className={c.teamN}>{String(i + 1).padStart(2, "0")}</span>
+          <span className={`${c.teamState} ${c[`teamS_${r.state}`] ?? ""}`}>
+            {r.state === "unassigned" ? (
+              <Led tone="att" />
+            ) : (
+              <span className={c.teamMk} aria-hidden="true" />
+            )}
+            {TEAM_WORD[r.state]}
+          </span>
+          <span className={c.teamStep}>{r.step}</span>
+          <span className={c.teamPick}>
+            {r.state === "unassigned" ? (
+              <>
+                <span className={c.teamNone}>No specialist</span>
+                <span className={c.teamWhy}>{r.reason}</span>
+              </>
+            ) : (
+              <>
+                <span className={c.teamSpec}>
+                  {r.specialist}
+                  <span className={c.teamVer}>v{r.version}</span>
+                </span>
+                <span className={c.teamModel}>
+                  {r.engine || "unknown"} · {r.model}
+                </span>
+              </>
+            )}
+          </span>
+        </li>
+      ))}
+    </ol>
+  );
+  return (
+    <div data-testid="ask-team">
+      {stale ? (
+        <p className={c.staged} data-testid="ask-team-staged">
+          <b>{revision ? `As staged at plan revision ${revision}. ` : "As staged. "}</b>
+          These are the picks this card was proposed with, kept as they were; today&apos;s team is
+          not shown here. Ask HQ to propose it again.
+        </p>
+      ) : null}
+      <div className={c.teamHead} data-testid="ask-team-counts">
+        <span className={c.teamLbl}>{label}</span>
+        <span className={c.teamCnt}>
+          <b>{rows.length}</b> {rows.length === 1 ? "step" : "steps"}
+        </span>
+        <span className={c.teamCnt}>
+          <b>{count("assembled")}</b> picked
+        </span>
+        <span className={c.teamCnt}>
+          <b>{count("kept")}</b> kept
+        </span>
+        <span className={c.teamCnt}>
+          <b>{count("unassigned")}</b> unassigned
+        </span>
+      </div>
+      {scroll ? (
+        <div
+          className={c.teamScroll}
+          tabIndex={0}
+          role="region"
+          aria-label={`${label}, ${rows.length} steps`}
+          data-testid="ask-team-scroll"
+        >
+          {list}
+        </div>
+      ) : (
+        list
+      )}
+    </div>
+  );
+}
+
+/** The way into the mission a card names (#1950): a team card's mission, or the draft a mission
+ *  card created. Built from the SERVER's id (`card.mission`), shape-checked as the console's deep
+ *  link is — never from the card's text. Nothing to open (no id yet, or a malformed one): nothing. */
+function OpenMission({ card }: { card: AskOperationCard }) {
+  const id = card.mission?.id;
+  if (!id || !MISSION_ID_RE.test(id)) return null;
+  return (
+    <Link
+      className={`${c.libraryLink} ${c.missionLink}`}
+      to={missionLink(id)}
+      aria-label={`Open mission ${card.title}`}
+      data-testid="ask-operation-mission"
+    >
+      Open mission
+    </Link>
+  );
+}

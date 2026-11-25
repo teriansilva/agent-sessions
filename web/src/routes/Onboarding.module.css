@@ -1,0 +1,574 @@
+/* First-run onboarding overlay (#463), NIGHTJAR (#1531): a scrim in the dialog band, the card an
+ * armour frame (`nj-frame`, the hero edge) that deploys in, plates for the agent rows, the shared
+ * action buttons and field look. Tokens only, so theme + custom accent cascade. */
+
+.scrim {
+  composes: nj-scrim from global;
+  position: fixed;
+  inset: 0;
+  /* The dialog band (#1531): it was 60, under every menu and the bell's drawer. */
+  z-index: var(--z-dialog);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-5);
+}
+.card {
+  composes: nj-frame nj-deploy nj-fade-ok from global;
+  --nj-face: var(--bg-1);
+  /* The one hero panel on screen while it is open: the brighter edge. */
+  --nj-edge: color-mix(in srgb, var(--hud) 70%, transparent);
+  width: 100%;
+  max-width: 560px;
+  max-height: calc(100dvh - 40px);
+  display: flex;
+  flex-direction: column;
+  color: var(--text-1);
+}
+.card.wide {
+  max-width: 900px;
+}
+/* The card takes focus on open so keyboard and screen-reader users land inside it (#987); the
+ * frame is the card's own border, so a focus outline around it would only draw a second one. */
+.card:focus {
+  outline: none;
+}
+/* Links inside the wizard's copy (#987) — the docs pointers on Welcome and Launch. The text colour
+ * with a brand underline, as Settings → About's links draw it, not the browser's default blue; the
+ * underline stays on at rest because these sit inside running text. */
+.copy a {
+  color: var(--text);
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-color: var(--brand);
+  text-underline-offset: 3px;
+}
+.copy a:hover {
+  color: var(--brand-soft);
+}
+.copy a:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
+
+/* Title bar — wordmark + step tag + close. */
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: var(--sp-2) var(--sp-3) var(--sp-2) var(--sp-4);
+  border-bottom: 1px solid var(--line);
+}
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-family: var(--font-display);
+  font-size: var(--fs-row);
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--brand-soft);
+}
+.brand b {
+  color: var(--brand);
+  font-weight: 700;
+}
+.barTag {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.14em;
+  color: var(--text-3);
+}
+.x {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.x:hover {
+  color: var(--text-1);
+  border-color: var(--hud-dim);
+}
+.x:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+@media (max-width: 800px), (pointer: coarse) {
+  .x {
+    width: 44px;
+    height: 44px;
+  }
+}
+.cardBody {
+  min-height: 0;
+  overflow: auto;
+}
+.wide .cardBody {
+  display: flex;
+}
+
+/* Step rail (wizard). */
+.rail {
+  flex: 0 0 188px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 16px 0;
+  background: var(--surface-3);
+  border-right: 1px solid var(--line);
+}
+.railHead {
+  padding: 0 16px 10px;
+  font-family: var(--font-display);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  color: var(--text-3);
+}
+.step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 16px;
+  font-size: var(--fs-row);
+  color: var(--text-3);
+}
+.step.done {
+  color: var(--text-1);
+}
+.step.cur {
+  color: var(--text-1);
+  box-shadow: inset 2px 0 0 var(--hud);
+  background: color-mix(in srgb, var(--hud) 10%, transparent);
+}
+.stepDot {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--fs-micro);
+  font-family: var(--font-mono);
+  border: 1px solid var(--line-strong);
+  color: var(--text-3);
+}
+.step.done .stepDot {
+  border-color: var(--hud);
+  color: var(--hud-text);
+}
+.step.cur .stepDot {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 700;
+}
+
+.pane {
+  flex: 1;
+  min-width: 0;
+}
+.stepPane {
+  padding: 20px 22px;
+}
+.h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-h2);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--hud-text);
+}
+.desc {
+  margin: 6px 0 0;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+  line-height: 1.5;
+}
+.copy {
+  margin: 16px 0 0;
+  font-size: var(--fs-row);
+  color: var(--text-2);
+  line-height: 1.55;
+}
+/* A bulleted list in running copy (#1009's "what is sent"): it continues the paragraph above it. */
+.list {
+  margin-top: 4px;
+  padding-left: 18px;
+}
+.stepBody {
+  margin-top: 16px;
+}
+
+/* Agent rows. */
+.rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+/* A plate (the chamfered `nj-frame-sm`), quiet edge. */
+.row {
+  composes: nj-plate from global;
+  --nj-face: var(--bg-2);
+  --nj-edge: var(--line-strong);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+}
+.skeleton {
+  padding: 16px;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+}
+.eng {
+  width: 110px;
+  font-size: var(--fs-row);
+}
+.ok {
+  width: 74px;
+  font-size: var(--fs-meta);
+  color: var(--ok-text);
+}
+.na {
+  width: 74px;
+  font-size: var(--fs-meta);
+  color: var(--text-3);
+}
+.path {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+.badge {
+  flex: none;
+  font-size: var(--fs-micro);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border: 1px solid var(--line-strong);
+  color: var(--text-3);
+}
+.badgeGo {
+  color: var(--ok-text);
+  border-color: color-mix(in srgb, var(--status-up) 45%, transparent);
+}
+
+/* Fields. */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 13px;
+  font-size: var(--fs-label);
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+}
+/* The `nj-field` look on native controls (a descendant selector cannot compose). */
+.field input,
+.field select {
+  --c: var(--cut-sm);
+  background: var(--bg-2);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 9px 11px;
+  font: inherit;
+  font-size: var(--fs-row);
+  color-scheme: inherit;
+  transition: border-color var(--t-fast) var(--ease-out);
+}
+.field input:hover,
+.field select:hover {
+  border-color: var(--hud-dim);
+}
+.field input:focus-visible,
+.field select:focus-visible {
+  border-color: var(--hud);
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.newFolder {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+  margin: -2px 0 8px;
+}
+.newFolder input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-1);
+  color: var(--accent-text);
+  border: 1px dashed var(--line-strong);
+  border-radius: 0;
+  padding: 8px 11px;
+  font: inherit;
+  font-size: var(--fs-meta);
+}
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-row);
+  color: var(--text-1);
+  cursor: pointer;
+}
+.checkbox input {
+  accent-color: var(--accent);
+  width: 15px;
+  height: 15px;
+}
+.err {
+  margin: 4px 0 0;
+  font-size: var(--fs-meta);
+  color: var(--danger-text);
+}
+.note {
+  margin: 4px 0 0;
+  font-size: var(--fs-meta);
+  color: var(--ok-text);
+}
+
+/* Footer button row. */
+.footRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.grow {
+  flex: 1;
+}
+/* The wizard's buttons are THE action buttons (#967, #1531): composed, never restated. `.ghost` is
+ * the quiet one (later / skip): no edge, tertiary ink. The shared definition holds the 44px floor
+ * the real-browser spec for #1009's step measures. */
+.btn {
+  composes: ghost from "../components/ui/actionButton.module.css";
+}
+.pri {
+  composes: primary from "../components/ui/actionButton.module.css";
+}
+.ghost {
+  composes: ghost from "../components/ui/actionButton.module.css";
+}
+/* Doubled: it overrides the composed ghost at a higher specificity, whatever the sheet order. */
+.ghost.ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-3);
+}
+.btn:disabled,
+.pri:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Slideshow tour. */
+.tour {
+  display: flex;
+  flex-direction: column;
+}
+/* The standalone replay (Help → Intro tour) sits straight in the card, which has no padding of its
+ * own; the wizard's Tour step is inside the padded step pane, so only the direct child is padded. */
+.cardBody > .tour {
+  padding: var(--sp-4) var(--sp-5) var(--sp-5);
+}
+/* When the footer wraps, the primary keeps the right edge (the spacer cannot reach a new line). */
+.foot > .pri:last-child {
+  margin-left: auto;
+}
+@media (max-width: 800px) {
+  .cardBody > .tour {
+    padding: var(--sp-3) var(--sp-4) var(--sp-4);
+  }
+}
+.shot {
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--line);
+  display: block;
+}
+.tourTitle {
+  margin: 14px 0 4px;
+  font-family: var(--font-display);
+  font-size: var(--fs-title);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.tourBody {
+  margin: 0;
+  font-size: var(--fs-row);
+  color: var(--text-2);
+  line-height: 1.55;
+}
+/* Position (#971): the shared slideshow's dots (hidden at ≤800px) and its counter. */
+.tourNav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 10px 0 0;
+}
+.foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+@media (max-width: 800px) {
+  .wide .cardBody {
+    flex-direction: column;
+  }
+  .rail {
+    flex: none;
+    flex-direction: row;
+    overflow-x: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    padding: 10px 8px;
+  }
+  .railHead {
+    display: none;
+  }
+  .step {
+    flex: none;
+    padding: 6px 10px;
+    font-size: var(--fs-label);
+  }
+  /* #692: the AI step's footer carries five controls (later / Back / Save & validate /
+     Next + spacer); let them wrap instead of forcing horizontal overflow at ≤800px. */
+  .footRow {
+    flex-wrap: wrap;
+  }
+}
+
+/* 2FA enrollment (Secure your deck step, #675). */
+.qr {
+  flex: none;
+  width: 104px;
+  height: 104px;
+  /* A QR code is content, not chrome: dark modules on a light quiet zone in BOTH themes, or
+   * scanners fail. The token says so. */
+  background: var(--qr-ground);
+  padding: 4px;
+}
+.qr svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.inline {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+/* Launch step (#1739): the clients a first session can use, API first. One radio row per client,
+   the whole row its 44px target; the default is marked by the accent edge, never a status colour. */
+.clients {
+  composes: nj-plate from global;
+  --nj-face: var(--bg-2);
+  --nj-edge: var(--line-strong);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid transparent;
+  margin-bottom: 13px;
+  min-width: 0;
+}
+.clientGroup {
+  padding: 10px 14px 2px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.client {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+  min-width: 0;
+}
+.client:last-child {
+  border-bottom: 0;
+}
+.client input {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}
+.clientOff {
+  cursor: default;
+  color: var(--text-3);
+}
+.clientText {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.clientName {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-display);
+  font-size: var(--fs-row);
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.clientOff .clientName {
+  color: var(--text-2);
+}
+.clientDefault {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.1em;
+  padding: 1px 6px;
+  border: 1px solid var(--accent);
+  color: var(--accent-text);
+}
+.clientSub {
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+/* The skip disclosure on an API launch (#1739): what the choice turns off, beside the choice. */
+.warn {
+  margin: 0 0 13px;
+  padding: 8px 12px;
+  border-left: 2px solid var(--status-degraded);
+  background: var(--bg-2);
+  font-size: var(--fs-meta);
+  color: var(--text-1);
+}
+/* "Your system" (#1819): the limit's field meets the 44 px touch floor on every pointer. */
+.limitField input {
+  min-height: 44px;
+}

@@ -1,0 +1,1305 @@
+/* LIBRARY → AUTOMATIONS (#1201): the list, the editor, run history, the consent dialog and the
+ * origin badge, on NIGHTJAR (#1531 Phase 10, #1574): a page's sections sit on the app's pane, the one
+ * chamfered panel (#2244: no box-in-a-box), and a section after another is set apart by a rule,
+ * the counters are readout tiles, fields are square with the inset ring, section titles carry the
+ * callsign notch, and a selected segment or weekday is lit in the chrome (`--hud`), never the
+ * accent (that marks actions and focus).
+ *
+ * STATUS COLOUR IS ONLY STATE, AND ALWAYS BESIDE ITS WORD (docs/design.md §3, §7): green for
+ * enabled / ok, amber (degraded) for needs-you and paused, red only for an active failure, grey for
+ * off and skipped. The brand accent marks actions and focus, never a state. No radius on boxes (the
+ * LED is the one round thing), no gradients, tokens only (src/theme/cssGuard.test.ts). */
+
+.page {
+  height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  /* The Library's own inset (library.module.css): the pane is the frame, so the page pads itself. */
+  padding: var(--sp-5) var(--sp-5) var(--sp-6);
+  color: var(--text-1);
+}
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  max-width: 1320px;
+}
+
+/* --- sections ---------------------------------------------------------------------------------- */
+/* A section sits ON the app's content pane (`.terminal-pane`), which is already the one chamfered
+ * panel: design.md §5 "the pane *is* the panel", §9 no box-in-a-box. It used to compose
+ * `nj-frame-sm`, which drew a second chamfer inside the pane on every page and wizard step that
+ * uses it (Automations, its runs, the wizard's webhook and scope sections, Webhooks — #2244). A
+ * section that follows another is set apart by a rule, never a frame. */
+.panel {
+  position: relative;
+  min-width: 0;
+}
+.panel:not(:first-child),
+.panel .panel {
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--line);
+}
+/* A panel's callsign: the hazard notch, then the mono title. */
+.panelTitle {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+.panelTitle::before,
+.sectionTitle::before {
+  content: "";
+  flex: none;
+  width: 22px;
+  height: 10px;
+  background: repeating-linear-gradient(-45deg, var(--hud) 0 3px, transparent 3px 6px);
+  opacity: 0.85;
+}
+
+/* --- header ------------------------------------------------------------------------------------ */
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-3) var(--sp-4);
+}
+.headText {
+  min-width: 0;
+  flex: 1 1 420px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+/* The section's breadcrumb, in the Library's voice: `LIBRARY // AUTOMATIONS`. */
+.kicker {
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+/* The page title (`nj-h1`'s voice): display caps in the chrome's ink. */
+.title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-h1);
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--hud-text);
+  overflow-wrap: anywhere;
+}
+.lede {
+  margin: 0;
+  max-width: 78ch;
+  font-size: var(--fs-body);
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.headActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+/* The button classes are the one action-button definition (#967), composed, never restated: the
+ * variant's own type (display caps) stands; a link only loses its underline. */
+.primary {
+  composes: primary from "../ui/actionButton.module.css";
+  text-decoration: none;
+}
+.ghost {
+  composes: ghost from "../ui/actionButton.module.css";
+  text-decoration: none;
+}
+.ghost:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.icon {
+  composes: icon from "../ui/actionButton.module.css";
+}
+.primary:focus-visible,
+.ghost:focus-visible,
+.icon:focus-visible,
+.link:focus-visible,
+.runRow:focus-visible,
+.seg:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+
+/* --- the counters: readout tiles (the dashboard's KPI voice) ----------------------------------- */
+.summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: var(--sp-3);
+  margin-top: var(--sp-4);
+}
+/* A tile: its LED and label on the first line, the number a display readout under them. The
+ * markup is `<led/>Label <b>n</b>`, so the grid places the readout on its own row. */
+.tagItem {
+  composes: nj-frame from global;
+  --nj-edge: var(--hud-dim);
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: var(--sp-2);
+  row-gap: var(--sp-1);
+  min-width: 0;
+  padding: var(--sp-3) var(--sp-3) var(--sp-2);
+  border-top-width: 1px;
+  border-top-color: var(--nj-edge);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+/* The KPI plate's short lit rail (#1574 board A1, the dashboard's tiles). */
+.tagItem::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: calc(var(--cut) + 2px);
+  width: 34%;
+  height: 2px;
+  background: var(--hud);
+  box-shadow: var(--glow-rail);
+  pointer-events: none;
+}
+.tagItem b {
+  grid-column: 1 / -1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-1);
+  font-family: var(--font-display);
+  font-size: var(--fs-readout);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  font-variant-numeric: tabular-nums;
+}
+.led {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--status-unknown);
+}
+.up {
+  background: var(--status-up);
+}
+.degraded {
+  background: var(--status-degraded);
+}
+.down {
+  background: var(--status-down);
+}
+.idle {
+  background: var(--status-unknown);
+}
+/* The words that go with a state: the status hue, lightened where it would miss AA as text. */
+.wordUp {
+  color: var(--ok-text);
+}
+.wordDegraded {
+  color: var(--warn-text);
+}
+.wordDown {
+  color: var(--danger-text);
+}
+.wordIdle {
+  color: var(--text-2);
+}
+.stateWord {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+/* --- notices ----------------------------------------------------------------------------------- */
+.notice {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: var(--sp-3) var(--sp-3);
+  border: 1px solid var(--line-strong);
+  border-left: 2px solid var(--status-unknown);
+  background: var(--bg-1);
+  font-size: var(--fs-row);
+  line-height: 1.45;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.notice strong {
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.noticeWarn {
+  border-left-color: var(--status-degraded);
+  background: color-mix(in srgb, var(--status-degraded) 6%, var(--bg-1));
+}
+.noticeWarn strong {
+  color: var(--warn-text);
+}
+.noticeBad {
+  border-left-color: var(--status-down);
+  background: color-mix(in srgb, var(--status-down) 8%, var(--bg-1));
+}
+.noticeBad strong {
+  color: var(--danger-text);
+}
+.noticeOk {
+  border-left-color: var(--status-up);
+}
+.noticeRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.link {
+  color: var(--accent-text);
+  text-decoration: none;
+}
+.link:hover {
+  text-decoration: underline;
+}
+:global(:root[data-theme="light"]) .link {
+  color: var(--text-1);
+  text-decoration: underline;
+}
+
+/* --- the toolbar ------------------------------------------------------------------------------- */
+.toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 200px) minmax(0, 200px);
+  gap: var(--sp-2);
+  margin-top: var(--sp-4);
+}
+/* The square field (`nj-field`'s look) with the inset ring. */
+.control {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 var(--sp-3);
+  background: var(--bg-2);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  font: inherit;
+  font-size: var(--fs-row);
+  transition: border-color var(--t-fast) var(--ease-out);
+}
+.control:hover {
+  border-color: var(--hud-dim);
+}
+.control:focus-visible {
+  border-color: var(--hud);
+  outline: 2px solid var(--accent-text);
+  outline-offset: -2px;
+}
+textarea.control {
+  min-height: 110px;
+  padding: 10px 12px;
+  resize: vertical;
+  line-height: 1.45;
+}
+.control:disabled {
+  opacity: 0.6;
+}
+
+/* --- the list ---------------------------------------------------------------------------------- */
+.table {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+}
+.tr {
+  display: grid;
+  grid-template-columns:
+    minmax(0, 1.25fr) minmax(0, 1.05fr) minmax(0, 0.95fr) minmax(0, 1.05fr)
+    minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: var(--sp-3) 6px;
+  border-bottom: 1px solid var(--line);
+  border-left: 2px solid transparent;
+}
+/* A row that needs you (its state word in the degraded tone): the degraded edge and a faint wash. */
+.tr:has(.wordDegraded) {
+  border-left-color: var(--status-degraded);
+  background: color-mix(in srgb, var(--status-degraded) 6%, transparent);
+}
+.thead {
+  padding: 6px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.cell {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  font-size: var(--fs-row);
+}
+.cell small,
+.sub {
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.cellLabel {
+  display: none;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.name {
+  font-weight: 600;
+  font-size: var(--fs-body);
+  color: var(--text-1);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.name:hover {
+  text-decoration: underline;
+}
+.name:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
+.mono {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+}
+.faint {
+  color: var(--text-3);
+}
+.lastLine {
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  overflow-wrap: anywhere;
+}
+.rowActs {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+/* The 14-day strip: a square per day, the day's WORST outcome. Words beside it count runs. */
+.strip {
+  display: flex;
+  gap: 2px;
+  flex-wrap: nowrap;
+}
+.day {
+  flex: 0 0 auto;
+  width: 9px;
+  height: 14px;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+}
+.dayOk {
+  background: var(--status-up);
+  border-color: transparent;
+}
+.dayFailed {
+  background: var(--status-down);
+  border-color: transparent;
+}
+.daySkipped {
+  background: var(--status-unknown);
+  border-color: transparent;
+}
+.dayPending {
+  background: var(--surface-3);
+  border-style: dashed;
+}
+.footnote {
+  margin: var(--sp-3) 0 0;
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+/* The row ⋯ menu: THE menu chrome (ui/menu.module.css, #1531), composed; this keeps placement. */
+.menuWrap {
+  position: relative;
+  display: inline-flex;
+}
+.menuPanel {
+  z-index: calc(var(--z-shell) + 10);
+  min-width: 180px;
+  width: max-content;
+  max-width: min(300px, calc(100vw - 16px));
+}
+.menuItems {
+  display: flex;
+  flex-direction: column;
+}
+.menuItems:focus-visible {
+  outline: none;
+}
+.menuItem {
+  composes: item from "../ui/menu.module.css";
+  width: 100%;
+  min-height: 44px;
+  text-align: left;
+}
+.menuItem:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.menuItems .menuDanger,
+.menuItems .menuDanger:hover,
+.menuItems .menuDanger:focus {
+  color: var(--danger-text);
+}
+
+/* --- the two side panels ---------------------------------------------------------------------- */
+.why {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.whyCard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--line-strong);
+  border-left: 2px solid var(--hud-dim);
+  background: var(--bg-1);
+}
+.whyHead {
+  font-family: var(--font-mono);
+  font-size: var(--fs-row);
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.whyText {
+  margin: 0;
+  font-size: var(--fs-row);
+  line-height: 1.45;
+  color: var(--text-2);
+}
+
+/* --- the empty state -------------------------------------------------------------------------- */
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 16px;
+  padding: 18px;
+  border: 1px dashed var(--line-strong);
+}
+.empty strong {
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+/* --- the editor -------------------------------------------------------------------------------- */
+.editorGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+.aside {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+/* The whole form, as one fieldset so a save in flight disables every control at once. */
+.lock {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.lock:disabled {
+  opacity: 0.7;
+}
+.ghost[aria-disabled="true"] {
+  opacity: 0.5;
+  pointer-events: none;
+}
+.section {
+  border: 0;
+  margin: 0;
+  padding: 16px 0 14px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.section:first-of-type {
+  border-top: 0;
+}
+.sectionTitle {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+.sectionNum {
+  color: var(--accent-text);
+  margin-right: 8px;
+}
+:global(:root[data-theme="light"]) .sectionNum {
+  color: var(--brand);
+}
+.fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 14px;
+}
+.fields3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px 14px;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+.full {
+  grid-column: 1 / -1;
+}
+.label {
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.hint {
+  margin: 0;
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+  color: var(--text-2);
+}
+.fieldSource {
+  font-size: var(--fs-label);
+  color: var(--text-3);
+}
+
+/* A segmented choice: one row of equal buttons, the chosen one lit in the chrome (`nj-seg`'s
+ * voice): a selection is state, not an action, so it is never the accent. */
+.segs {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  border: 1px solid var(--border);
+}
+.seg {
+  min-height: 44px;
+  padding: 6px 10px;
+  border: 0;
+  border-left: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--bg-2);
+  color: var(--text-2);
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+.seg:first-child {
+  border-left: 0;
+}
+.seg[aria-pressed="true"] {
+  color: var(--hud-text);
+  background: color-mix(in srgb, var(--hud) 18%, var(--bg-2));
+  box-shadow: inset 0 -2px 0 var(--hud);
+}
+.seg:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.days {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.dayToggle {
+  min-width: 44px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.dayToggle:has(input:checked) {
+  color: var(--hud-text);
+  border-color: var(--hud);
+  background: color-mix(in srgb, var(--hud) 18%, var(--bg-2));
+}
+.dayToggle:has(input:focus-visible) {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.dayToggle input {
+  accent-color: var(--accent);
+}
+.check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  font-size: var(--fs-row);
+}
+.check input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}
+.inline {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+.inline > .control {
+  flex: 1;
+}
+.callout {
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 2px solid var(--hud);
+  background: color-mix(in srgb, var(--hud) 6%, var(--bg-1));
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.formActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.problems {
+  margin: 0;
+  padding: 0 0 0 var(--sp-4);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.error {
+  composes: nj-error from global;
+  padding: var(--sp-2) var(--sp-3);
+  overflow-wrap: anywhere;
+}
+
+/* The scope summary: a key/value grid in the server's words. */
+.kv {
+  margin: 0;
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+  gap: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-row);
+}
+.kv dt {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  padding-top: 2px;
+}
+.kv dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.scopeLines {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  font-size: var(--fs-row);
+  line-height: 1.4;
+}
+.scopeLines li {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+/* --- the consent dialog ------------------------------------------------------------------------ */
+/* The consent dialog's own pieces (#1531): the close is THE dialog's; the title and lede are
+ * display caps and body text on tokens. */
+.dialogClose {
+  composes: close from "../HudDialog.module.css";
+}
+.dialogTitle {
+  margin: 0 0 var(--sp-1);
+  font-family: var(--font-display);
+  font-size: var(--fs-title);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  overflow-wrap: anywhere;
+}
+.dialogLede {
+  margin: 0 0 var(--sp-3);
+  font-size: var(--fs-row);
+  color: var(--text-2);
+}
+.scopeList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.scopeList li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 6px 10px;
+  background: var(--bg-2);
+  border-left: 2px solid transparent;
+  font-size: var(--fs-row);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.scopeList li > span:first-child {
+  min-width: 0;
+}
+/* A scope line can carry a whole message: its own line breaks are kept. */
+.scopeText {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* Widened is a thing that needs you: the degraded tone, and the WORD beside it. */
+.scopeList li.scopeWidened {
+  border-left-color: var(--status-degraded);
+}
+.widenedTag {
+  padding: 1px 6px;
+  border: 1px solid var(--status-degraded);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--warn-text);
+}
+.widerBox {
+  margin-top: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 2px solid var(--status-degraded);
+  background: color-mix(in srgb, var(--status-degraded) 6%, var(--bg-2));
+  font-size: var(--fs-row);
+}
+.widerBox ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+.widerTag {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--warn-text);
+}
+.agree {
+  composes: nj-plate from global;
+  --nj-face: var(--bg-2);
+  --nj-edge: var(--line-strong);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-height: 44px;
+  margin-top: var(--sp-3);
+  padding: var(--sp-1) var(--sp-3);
+  border: 1px solid transparent;
+  font-size: var(--fs-row);
+  cursor: pointer;
+}
+.agree input {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}
+
+/* --- origin badge ------------------------------------------------------------------------------ */
+/* Membership, not a status: the mission tag's accent vocabulary. */
+.originBadge {
+  flex: 0 1 auto;
+  min-width: 40px;
+  max-width: 160px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 4px;
+  border: 1px solid var(--accent-soft);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  line-height: 15px;
+  text-transform: uppercase;
+  color: var(--accent-text);
+  overflow: hidden;
+}
+:global(:root[data-theme="light"]) .originBadge {
+  color: var(--brand);
+}
+.originText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- run history ------------------------------------------------------------------------------- */
+.runsGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+.runList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.runRow {
+  width: 100%;
+  min-height: 56px;
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 8px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-left: 2px solid transparent;
+  background: transparent;
+  color: var(--text-1);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.runRow:hover {
+  background: var(--row-hover);
+}
+.runRow[aria-current="true"] {
+  background: color-mix(in srgb, var(--hud) 8%, var(--bg-2));
+  border-left-color: var(--hud);
+}
+.runNo {
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  color: var(--text-3);
+}
+.runMain {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.runMain > span:first-child {
+  font-size: var(--fs-body);
+  overflow-wrap: anywhere;
+}
+.runOutcome {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  text-align: right;
+}
+.timeline {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.timeline li {
+  display: grid;
+  grid-template-columns: 12px 72px minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+  font-size: var(--fs-row);
+}
+.timeline time {
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.timeline .led {
+  align-self: center;
+}
+.stepText {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.inputs {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.more {
+  margin-top: 10px;
+}
+
+/* --- ≤800px: one column, the rows become cards ------------------------------------------------- */
+@media (max-width: 800px) {
+  .page {
+    padding: var(--sp-4) var(--sp-3) var(--sp-6);
+  }
+  .title {
+    font-size: var(--fs-h2);
+  }
+  .summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--sp-2);
+  }
+  .head .primary,
+  .headActions {
+    width: 100%;
+  }
+  .headActions > * {
+    flex: 1 1 0;
+  }
+  .toolbar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .thead {
+    display: none;
+  }
+  .tr {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+    padding: 14px 2px;
+  }
+  .cellLabel {
+    display: block;
+  }
+  /* A card's name and the breadcrumb are touch targets on a phone: the §8 floor. */
+  .name,
+  .kicker .link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+  .rowActs {
+    justify-content: stretch;
+  }
+  .rowActs > :first-child {
+    flex: 1;
+  }
+  .editorGrid,
+  .runsGrid,
+  .fields,
+  .fields3 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .aside {
+    position: static;
+  }
+  .segs {
+    grid-auto-flow: row;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .seg {
+    border-left: 0;
+    border-top: 1px solid var(--border);
+  }
+  .formActions > * {
+    flex: 1 1 auto;
+  }
+}
+
+/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
+:root:not([data-motion="full"]) .runRow,
+:root:not([data-motion="full"]) .seg {
+  transition: none;
+}
+
+/* --- API first (#1728 Phase 2) ----------------------------------------------------------------- */
+/* "Terminal — unreliable unattended": a NEUTRAL stamp (text-2, the HUD stamp voice). It classifies
+ * what the action targets, never a live state, so it is not a status colour: the automation's own
+ * state keeps its LED and word. */
+.legacyStamp {
+  composes: nj-stamp from global;
+  align-self: flex-start;
+  padding: 2px 6px;
+  font-family: var(--font-mono);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.switchWrap {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+.switchFacts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--sp-1) var(--sp-3);
+  margin: var(--sp-3) 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+}
+.switchFacts dt {
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+.switchFacts dd {
+  margin: 0;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.switchFacts s {
+  color: var(--text-3);
+}
+
+/* --- a webhook's panel (#2202, #2221) ---------------------------------------------------------- */
+/* The address and secret are mono values that wrap anywhere (a 64-hex secret on a 390px phone must
+ * never push the page sideways); the tag beside the title is a neutral stamp, and only the last
+ * delivery's LED carries a state. */
+.hookHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-3);
+}
+.hookHead .panelTitle {
+  margin: 0;
+}
+.hookTag {
+  composes: nj-stamp from global;
+  padding: 2px 6px;
+  font-family: var(--font-mono);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.hookValue,
+.hookSecret {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  user-select: all;
+}
+.hookSecret {
+  display: block;
+  padding: var(--sp-2);
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+}
+.hookSub {
+  margin-bottom: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.hookLast {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 6px 0 0;
+  font-size: var(--fs-row);
+  line-height: 1.45;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.hookLast .led {
+  align-self: flex-start;
+  margin-top: 0.55em;
+}
+/* --- Library → Webhooks (#2221) ---------------------------------------------------------------- */
+/* A simple list (frame 1): each row is ONE link — name, the last delivery's LED and time, then a
+ * mono meta line. Only the LED carries a state; refused unsigned deliveries tint their line amber.
+ * The same row shape lists a webhook's automations on its page. */
+.hookStack {
+  max-width: 920px;
+}
+.hookList {
+  list-style: none;
+  margin: var(--sp-3) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.hookRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 4px var(--sp-3);
+  align-items: center;
+  min-height: 44px;
+  min-width: 0;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  color: var(--text-1);
+  text-decoration: none;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+.hookRow:hover {
+  background: var(--row-hover);
+}
+.hookRow:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.hookName {
+  min-width: 0;
+  font-size: var(--fs-row);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.hookWhen {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.hookMeta {
+  grid-column: 1 / 3;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+.hookChev {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+  color: var(--text-3);
+}
+/* The last delivery's shape: a field's path, then its type, quieter. Names and types only. */
+.hookShape {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line);
+  background: var(--surface-3);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+}
+.hookShape li {
+  min-width: 0;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.hookType {
+  color: var(--text-3);
+}
+@media (max-width: 800px) {
+  .hookRow {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .hookWhen {
+    grid-column: 1;
+    grid-row: 2;
+  }
+  .hookMeta {
+    grid-column: 1;
+    grid-row: 3;
+  }
+  .hookChev {
+    grid-column: 2;
+    grid-row: 1 / span 3;
+  }
+}

@@ -1,0 +1,1041 @@
+import { expect, test, type Page } from "@playwright/test";
+import { mockRoster } from "./roster";
+import type { PluginCatalog, PluginGeneration, PluginOperation, PluginReview } from "../src/types/plugins";
+import { TOUCH_FLOOR } from "./touchTarget";
+
+const PATH = "/settings/agents/setup/new";
+const GEN = "c0ef9b0a-322c-49c2-843e-d8c7564918c2";
+const REVIEW: PluginReview = {
+  id: "e51cddbe-23e6-42bf-a994-51e08e9b087f", plugin_id: "sample-agent", source: "local", sequence: null,
+  digest: "a".repeat(64), recipe_digest: "b".repeat(64), adopted_path: null, adopted_sha256: null,
+  expires_at: 2_000_000_000,
+  entry: { manifest: { identity: { id: "sample-agent", label: "Sample agent", version: "1.2.3", publisher: "Local publisher" },
+    runtime: { kind: "pty" }, install: { kind: "tarball" }, signin: { kind: "cli-subcommand", subcommand: "login" } },
+    recipe: { artifacts: [{ url: `https://github.com/example/sample/releases/download/v1.2.3/${"long-name-".repeat(10)}.tar.gz`, sha256: "c".repeat(64), destination: "." }] } },
+};
+function generation(): PluginGeneration {
+  return { id: GEN, review: structuredClone(REVIEW), required_checks: ["binary", "version", "new", "resume", "transcript", "usage"], verification: null };
+}
+
+async function fixture(page: Page, staged = false) {
+  const gen = generation();
+  const data: PluginCatalog = { feed: { state: "ready", sequence: 9, error: null },
+    catalog: [{ manifest: REVIEW.entry.manifest, digest: REVIEW.digest }],
+    plugins: staged ? [{ id: REVIEW.plugin_id, active: null, candidate: GEN, enabled: false, generations: [gen] }] : [],
+    operations: [], roster_generation: 1, roster_revision: null };
+  const writes: { path: string; body: Record<string, unknown> }[] = [];
+  const sockets: string[] = [];
+  const sent: string[] = [];
+  let verifyPass = true;
+  let installState: PluginOperation["state"] = "installed";
+  let loseResponse = false;
+  const rejected = new Map<string, string>();
+  const lost = new Set<string>();
+  const neverReceived = new Set<string>();
+  const op = (id: string, kind: PluginOperation["kind"], state: PluginOperation["state"]): PluginOperation => ({
+    id, plugin_id: REVIEW.plugin_id, kind, state, created_at: 1, updated_at: 1,
+    generation_id: kind === "install" ? id : GEN, review: kind === "install" ? gen.review : null,
+    review_digest: gen.review.digest, error: null,
+  });
+  await page.route("**/api/**", r => r.fulfill({ json: {} }));
+  await page.route("**/api/config", r => r.fulfill({ json: {
+    csrf: "test-csrf", new_session_engines: [], terminal_backend: "ws", auth_mode: "none",
+    agent_defaults: { default_engine: "missing-saved-default", bypass: false },
+  } }));
+  await mockRoster(page);
+  await page.route("**/api/sessions**", r => r.fulfill({ json: { sessions: [], next_offset: null, total: 0, facets: { projects: [], engines: [] } } }));
+  await page.route(/\/api\/projects(\?.*)?$/, r => r.fulfill({ json: { projects: [] } }));
+  await page.route(/\/api\/folders(\?.*)?$/, r => r.fulfill({ json: { folders: [] } }));
+  await page.route("**/api/missions**", r => r.fulfill({ json: { missions: [], total: 0, next_offset: null, facets: { projects: [], states: [] } } }));
+  await page.route("**/api/pulse/notifications**", r => r.fulfill({ json: { notifications: [], unread: 0, uncertain: 0, settled: [] } }));
+
+  await page.route("**/api/agents/usage", r => r.fulfill({ json: { budgets: { threshold_pct: 90, notify: true, engines: {} }, agents: [] } }));
+  await page.route("**/api/plugins**", async r => {
+    const path = new URL(r.request().url()).pathname;
+    if (r.request().method() === "GET") {
+      if (path === "/api/plugins") return r.fulfill({ json: data });
+      // #1852: what Enable would change — read before Enable is offered.
+      if (path.endsWith("/activation")) return r.fulfill({ json: { current: null, next: null, older: false, refusals: [] } });
+      const found = data.operations.find(o => path.endsWith(o.id));
+      return r.fulfill({ status: found ? 200 : 409, json: found ?? { detail: "plugin operation not found" } });
+    }
+    const body = r.request().postDataJSON() as Record<string, unknown>;
+    writes.push({ path, body });
+    if (path.endsWith("/review")) return r.fulfill({ json: { ...gen.review, source: body.local ? "local" : "signed" } });
+    if (path.endsWith("/refresh")) return r.fulfill({ json: data });
+    if (path.endsWith("/reload")) return r.fulfill({ json: { generation: 2 } });
+    if (path.endsWith("/cancel")) {
+      const found = data.operations.find(o => path.includes(o.id))!; found.state = "interrupted";
+      return r.fulfill({ json: found });
+    }
+    const kind = path.split("/").at(-1) as PluginOperation["kind"];
+    if (neverReceived.delete(kind)) return r.abort();
+    if (rejected.has(kind)) {
+      const detail = rejected.get(kind); rejected.delete(kind);
+      return r.fulfill({ status: 409, json: { detail } });
+    }
+    if (["disable", "remove"].includes(kind) && body.expected_revision !== data.roster_revision)
+      return r.fulfill({ status: 409, json: { detail: "the agent roster changed; refresh and confirm again" } });
+    const id = body.request_id as string;
+    const result = op(id, kind, kind === "install" ? installState : kind === "signin" ? "ready" : kind === "verify" ? verifyPass ? "verified" : "failed" : "complete");
+    if (kind === "install") {
+      gen.id = id; result.generation_id = id;
+      data.plugins = [{ id: REVIEW.plugin_id, active: null, candidate: id, enabled: false, generations: [gen] }];
+    } else result.generation_id = body.generation_id as string;
+    if (kind === "verify") gen.verification = { digest: gen.review.digest, checked_at: 2,
+      results: gen.required_checks.map(check => ({ check, passed: verifyPass || check !== "resume", detail: verifyPass ? "Real check passed." : "Vendor account is unavailable." })) };
+    if (kind === "activate") { data.plugins[0].enabled = true; data.plugins[0].active = gen.id; }
+    if (kind === "remove" || kind === "disable") data.plugins[0].enabled = false;
+    if (["activate", "disable", "remove"].includes(kind)) data.roster_revision = id;
+    data.operations.push(result);
+    if (kind === "install" && loseResponse || lost.delete(kind)) return r.abort();
+    return r.fulfill({ json: result });
+  });
+  await page.routeWebSocket(/\/ws\/plugins\/signin\//, ws => {
+    sockets.push(ws.url());
+    const current = data.operations.find(o => ws.url().endsWith(o.id))!;
+    current.state = "running";
+    ws.send(Buffer.from("Sign in: ephemeral-secret-marker\r\n"));
+    ws.onMessage(msg => sent.push(typeof msg === "string" ? msg : new TextDecoder().decode(msg as ArrayBuffer)));
+    ws.onClose(() => { current.state = "interrupted"; });
+  });
+  page.on("dialog", dialog => void dialog.accept());
+  return { data, gen, writes, sockets, sent, dropNext: (kind: string) => neverReceived.add(kind), rejectNext: (kind: string, detail: string) => rejected.set(kind, detail), loseNext: (kind: string) => lost.add(kind), setVerify: (value: boolean) => { verifyPass = value; },
+    setInstall: (value: PluginOperation["state"], lost = false) => { installState = value; loseResponse = lost; } };
+}
+const posts = (m: Awaited<ReturnType<typeof fixture>>, suffix: string) => m.writes.filter(w => w.path.endsWith(suffix));
+async function localReview(page: Page) {
+  await page.goto(PATH);
+  await page.getByRole("button", { name: "Local manifest", exact: true }).click();
+  await page.getByLabel("Manifest and recipe JSON").fill(JSON.stringify(REVIEW.entry));
+  await page.getByRole("button", { name: "Review installation" }).click();
+  await expect(page.getByRole("heading", { name: "Review this installation" })).toBeVisible();
+}
+async function noOverflow(page: Page) {
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+}
+/** The sample agent's own page (#1408: disable/remove live in its ⋯ menu). Saved but not in the
+ *  live roster, so its detail is a 404 and the page shows the saved installation. */
+async function gotoAgent(page: Page) {
+  await page.route("**/api/engines/sample-agent", r => r.fulfill({ status: 404, json: { detail: "unknown engine" } }));
+  await page.goto("/settings/agents/sample-agent");
+  await expect(page.getByTestId("agent-menu")).toBeVisible();
+}
+const menuItem = (page: Page, name: string) => page.getByRole("menuitem", { name, exact: true });
+/** Open the ⋯ menu and pick `name` ("Remove…", "Disable…", "Check previous remove", …). */
+async function menu(page: Page, name: string) {
+  await page.getByTestId("agent-menu").click();
+  await menuItem(page, name).click();
+}
+
+test("gallery adds an agent without changing the live roster or defaults", async ({ page }) => {
+  const m = await fixture(page);
+  await page.goto("/settings/agents");
+  // A catalog agent that is not installed is a name on the catalog line, never a roster row.
+  const line = page.getByTestId("catalog-only");
+  await expect(line.getByRole("link", { name: "Set up Sample agent" })).toBeVisible();
+  await page.getByLabel("Search agents").fill("sample");
+  await expect(page.getByText("No agents match these filters.")).toBeVisible();
+  await line.getByRole("link", { name: "Set up Sample agent" }).click();
+  await expect(page.getByRole("combobox", { name: "Agent", exact: true })).toHaveValue("sample-agent");
+  expect(m.writes).toEqual([]);
+  await noOverflow(page);
+});
+
+test("local review needs fresh consent and exact source stays untrusted after verification", async ({ page }) => {
+  const m = await fixture(page);
+  await localReview(page);
+  await expect(page.getByRole("button", { name: "Install", exact: true })).toBeDisabled();
+  await page.getByRole("checkbox", { name: /I trust this exact/ }).check();
+  await page.getByRole("button", { name: "Back", exact: true }).click();
+  await page.getByRole("button", { name: "Review installation" }).click();
+  await expect(page.getByRole("checkbox", { name: /I trust this exact/ })).not.toBeChecked();
+  await page.getByRole("checkbox", { name: /I trust this exact/ }).check();
+  await page.getByRole("button", { name: "Install", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Connect your account" })).toBeVisible();
+  expect(posts(m, "/install")).toHaveLength(1);
+  expect(posts(m, "/install")[0].body).toMatchObject({ digest: REVIEW.digest, confirm_local: true });
+  await page.getByRole("button", { name: "Continue to verification" }).click();
+  await expect(page.getByRole("button", { name: "Enable agent" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Verify installation" }).click();
+  await expect(page.getByText(/Its source remains local and untrusted/)).toBeVisible();
+  expect(posts(m, "/verify")[0].body).toMatchObject({ confirm_effects: true, generation_id: m.gen.id });
+  await page.getByRole("button", { name: "Enable agent" }).click();
+  await expect(page.getByText(/Agent enabled. Your saved defaults/)).toBeVisible();
+  expect(posts(m, "/activate")).toHaveLength(1);
+  expect(posts(m, "/reload")).toHaveLength(1);
+  await noOverflow(page);
+});
+
+for (const source of ["bundled", "signed"] as const) test(`a ${source} catalog entry installs without the local trust tick`, async ({ page }) => {
+  const m = await fixture(page);
+  // The bundled catalog's review comes back `source: "bundled"`; Install stayed disabled for it.
+  await page.route("**/api/plugins/review", r => r.fulfill({ json: { ...m.gen.review, source } }));
+  await page.goto(PATH);
+  await page.getByRole("combobox", { name: "Agent", exact: true }).selectOption("sample-agent");
+  await page.getByRole("button", { name: "Review installation" }).click();
+  await expect(page.getByRole("heading", { name: "Review this installation" })).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: /I trust this exact/ })).toHaveCount(0);
+  await page.getByRole("button", { name: "Install", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Connect your account" })).toBeVisible();
+  expect(posts(m, "/install")).toHaveLength(1);
+  expect(posts(m, "/install")[0].body).toMatchObject({ digest: REVIEW.digest, confirm_local: false });
+});
+
+test("lost install response and page reload read the same operation without replay", async ({ page }) => {
+  const m = await fixture(page); m.setInstall("running", true);
+  await localReview(page);
+  await page.getByRole("checkbox", { name: /I trust this exact/ }).check();
+  await page.getByRole("button", { name: "Install", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Check operation status" })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "install · running" })).toBeVisible();
+  expect(posts(m, "/install")).toHaveLength(1);
+  await page.getByRole("link", { name: "Cancel", exact: true }).click();
+  await expect(page.getByRole("dialog")).toContainText("server operation continues");
+  await page.getByRole("button", { name: "Leave setup", exact: true }).click();
+  await page.getByRole("link", { name: "View operation" }).click();
+  await expect(page.getByRole("heading", { name: "install · running" })).toBeVisible();
+  m.data.operations[0].state = "installed";
+  await expect(page.getByRole("heading", { name: "Connect your account" })).toBeVisible();
+  expect(posts(m, "/install")).toHaveLength(1);
+});
+
+test("failed verification cannot enable and reload pins an older generation", async ({ page }) => {
+  const m = await fixture(page, true); m.setVerify(false);
+  m.data.plugins[0].generations!.push({ ...generation(), id: "newer-candidate" });
+  m.data.plugins[0].candidate = "newer-candidate";
+  await page.goto(`${PATH}?plugin=sample-agent&generation=${GEN}`);
+  await page.getByRole("button", { name: "Continue to verification" }).click();
+  await page.getByRole("button", { name: "Verify installation" }).click();
+  await expect(page.getByRole("heading", { name: "verify · failed" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Enable agent" })).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "verify · failed" })).toBeVisible();
+  expect(posts(m, "/verify")[0].body.generation_id).toBe(GEN);
+  expect(posts(m, "/verify")).toHaveLength(1);
+  expect(posts(m, "/activate")).toHaveLength(0);
+});
+
+for (const signinKind of ["cli-subcommand", "auth-login", "interactive"]) {
+test(`temporary ${signinKind} sign-in opens once and closing it never reconnects or persists terminal bytes`, async ({ page }) => {
+  const m = await fixture(page, true);
+  m.gen.review.entry.manifest.signin = { kind: signinKind };
+  await page.goto(`${PATH}?plugin=sample-agent&generation=${GEN}`);
+  await page.getByRole("button", { name: "Start sign-in", exact: true }).click();
+  await expect.poll(() => m.sockets.length).toBe(1);
+  await page.getByRole("button", { name: "Close sign-in terminal" }).click();
+  await expect(page.getByRole("heading", { name: "signin · interrupted" })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "signin · interrupted" })).toBeVisible();
+  expect(m.sockets).toHaveLength(1);
+  expect(posts(m, "/signin")).toHaveLength(1);
+  expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain("ephemeral-secret-marker");
+});
+}
+
+test("the sign-in terminal forwards a pasted vendor code as terminal input", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  const m = await fixture(page, true);
+  m.gen.review.entry.manifest.signin = { kind: "cli-subcommand", subcommand: "login" };
+  await page.goto(`${PATH}?plugin=sample-agent&generation=${GEN}`);
+  await page.getByRole("button", { name: "Start sign-in", exact: true }).click();
+  await expect.poll(() => m.sockets.length).toBe(1);
+  // #2106: the terminal is behind "Show as terminal"; the text view is the default.
+  await page.getByRole("button", { name: "Show as terminal" }).click();
+  await page.getByLabel("Temporary vendor sign-in terminal").click();
+  await page.evaluate(() => navigator.clipboard.writeText("oauth-code-123"));
+  await page.keyboard.press("Control+V");
+  await expect.poll(() => m.sent.join("")).toContain("oauth-code-123");
+});
+
+test("a failed sign-in keeps the vendor's last screen, opens its link and sends a typed code", async ({ page }) => {
+  const m = await fixture(page, true);
+  m.gen.review.entry.manifest.signin = { kind: "auth-login" };
+  // A 400-character OAuth URL, printed as an OSC 8 hyperlink the way Claude Code does: it soft-wraps
+  // across rows, so it must be offered whole, never selected by hand.
+  const url = `https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a&state=${"x".repeat(380)}`;
+  const received: string[] = [];
+  await page.routeWebSocket(/\/ws\/plugins\/signin\//, ws => {
+    const current = m.data.operations.find(o => ws.url().endsWith(o.id))!;
+    current.state = "running";
+    ws.send(Buffer.from(`If the browser didn't open, visit: \x1b]8;;${url}\x07${url}\x1b]8;;\x07\r\nPaste code here if prompted > `));
+    ws.onMessage(msg => {
+      if (typeof msg === "string") return; // a {rows, cols} resize, not terminal input
+      received.push(new TextDecoder().decode(msg as ArrayBuffer));
+      if (received.join("").includes("\r")) {
+        ws.send(Buffer.from("Login failed: Request failed with status code 400\r\n"));
+        current.state = "failed";
+        current.error = "the sign-in command exited without success";
+        void ws.close({ code: 4409 }); // the server always names its verdict (plugins/signin.py)
+      }
+    });
+  });
+  await page.goto(`${PATH}?plugin=sample-agent&generation=${GEN}`);
+  await page.getByRole("button", { name: "Start sign-in", exact: true }).click();
+  const open = page.getByRole("link", { name: /Open the sign-in link · claude\.com/ });
+  await expect(open).toHaveAttribute("href", url);
+  await expect(open).toHaveAttribute("rel", /noopener/);
+  await page.getByLabel("Code from the sign-in page").fill("abc123#state");
+  await page.getByRole("button", { name: "Send to sign-in" }).click();
+  await expect.poll(() => received.join("")).toBe("abc123#state\r");
+  // The vendor's own reason stays on screen after the command ends.
+  const output = page.getByRole("log", { name: "Sign-in output" });
+  await expect(page.getByRole("status").filter({ hasText: "The sign-in command ended" })).toBeVisible();
+  await expect(output).toContainText("Login failed: Request failed with status code 400");
+  await expect(output).toContainText("— sign-in ended —");
+  await expect(page.getByRole("button", { name: "Start sign-in", exact: true })).toBeEnabled();
+});
+
+test("a sign-in survives a lost connection: the terminal reattaches and keeps its screen (#1846)", async ({ page }) => {
+  const m = await fixture(page, true);
+  const received: string[][] = [];
+  await page.routeWebSocket(/\/ws\/plugins\/signin\//, ws => {
+    const current = m.data.operations.find(o => ws.url().endsWith(o.id))!;
+    current.state = "running";
+    const own: string[] = [];
+    received.push(own);
+    if (received.length === 1) {
+      ws.send(Buffer.from("Open the link, then paste the code > "));
+      // The phone backgrounds the page while the operator approves on the vendor's site.
+      setTimeout(() => void ws.close({ code: 1001, reason: "going away" }), 300);
+    } else {
+      ws.send(Buffer.from("\r\nPrinted while you were away.\r\n"));
+    }
+    ws.onMessage(msg => { if (typeof msg !== "string") own.push(new TextDecoder().decode(msg as ArrayBuffer)); });
+  });
+  await page.goto(`${PATH}?plugin=sample-agent&generation=${GEN}`);
+  await page.getByRole("button", { name: "Start sign-in", exact: true }).click();
+  const terminal = page.getByRole("log", { name: "Sign-in output" });
+  await expect(terminal).toContainText("paste the code");
+  await expect(terminal).toContainText("Printed while you were away.");
+  expect(received).toHaveLength(2);
+  // Same screen, no "ended": the first attempt's text is still there and the code field is live.
+  await expect(terminal).toContainText("Open the link");
+  await expect(terminal).not.toContainText("sign-in ended");
+  await expect(page.getByRole("status").filter({ hasText: "The sign-in command ended" })).toHaveCount(0);
+  await expect(page.getByTestId("signin-reconnecting")).toHaveCount(0);
+  await page.getByLabel("Code from the sign-in page").fill("code-after-return");
+  await page.getByRole("button", { name: "Send to sign-in" }).click();
+  await expect.poll(() => received[1].join("")).toBe("code-after-return\r");
+  expect(received[0].join("")).toBe("");
+});
+
+test("closing the sign-in terminal while it reconnects ends the sign-in on the server (#1846)", async ({ page }) => {
+  const m = await fixture(page, true);
+  let n = 0;
+  await page.routeWebSocket(/\/ws\/plugins\/signin\//, ws => {
+    const current = m.data.operations.find(o => ws.url().endsWith(o.id))!;
+    current.state = "running";
+    if (n++ === 0) {
+      ws.send(Buffer.from("Paste code here if prompted > "));
+      setTimeout(() => void ws.close({ code: 1001, reason: "going away" }), 300);
+    } else void ws.close({ code: 4423 }); // still held elsewhere: the terminal stays between sockets
+  });
+  await page.goto(`${PATH}?plugin=sample-agent&generation=${GEN}`);
+  await page.getByRole("button", { name: "Start sign-in", exact: true }).click();
+  await expect(page.getByTestId("signin-reconnecting")).toBeVisible();
+  const op = m.data.operations.find(o => o.kind === "signin")!;
+  expect(posts(m, "/cancel")).toHaveLength(0);
+  await page.getByRole("button", { name: "Close sign-in terminal" }).click();
+  await expect.poll(() => posts(m, "/cancel").map(w => w.path)).toEqual([`/api/plugins/operations/${op.id}/cancel`]);
+});
+
+test("closing the sign-in terminal while a reconnect is still being refused ends the sign-in (#1846)", async ({ page }) => {
+  const m = await fixture(page, true);
+  let n = 0;
+  await page.routeWebSocket(/\/ws\/plugins\/signin\//, ws => {
+    const current = m.data.operations.find(o => ws.url().endsWith(o.id))!;
+    current.state = "running";
+    if (n++ === 0) {
+      ws.send(Buffer.from("Paste code here if prompted > "));
+      setTimeout(() => void ws.close({ code: 1001, reason: "going away" }), 300);
+    } else setTimeout(() => void ws.close({ code: 4423 }), 10_000); // open, not the owner yet
+  });
+  await page.goto(`${PATH}?plugin=sample-agent&generation=${GEN}`);
+  await page.getByRole("button", { name: "Start sign-in", exact: true }).click();
+  await expect.poll(() => n).toBe(2); // the reconnect's socket exists and is not the owner
+  const op = m.data.operations.find(o => o.kind === "signin")!;
+  expect(posts(m, "/cancel")).toHaveLength(0);
+  await page.getByRole("button", { name: "Close sign-in terminal" }).click();
+  await expect.poll(() => posts(m, "/cancel").map(w => w.path)).toEqual([`/api/plugins/operations/${op.id}/cancel`]);
+});
+
+test("a sign-in that ended sends no cancel when its terminal is closed", async ({ page }) => {
+  const m = await fixture(page, true);
+  await page.routeWebSocket(/\/ws\/plugins\/signin\//, ws => {
+    const current = m.data.operations.find(o => ws.url().endsWith(o.id))!;
+    current.state = "running";
+    ws.send(Buffer.from("Login successful\r\n"));
+    current.state = "complete";
+    setTimeout(() => void ws.close({ code: 1000 }), 200);
+  });
+  await page.goto(`${PATH}?plugin=sample-agent&generation=${GEN}`);
+  await page.getByRole("button", { name: "Start sign-in", exact: true }).click();
+  // A completed sign-in moves setup on to verification, which unmounts the terminal; closing it,
+  // where it is still shown, is the same unmount. Neither may cancel a finished operation.
+  await page.waitForTimeout(1500);
+  const close = page.getByRole("button", { name: "Close sign-in terminal" });
+  if (await close.isVisible()) await close.click();
+  await page.waitForTimeout(500);
+  expect(posts(m, "/cancel")).toHaveLength(0);
+});
+
+test("remove confirmation preserves data and Escape returns focus", async ({ page }) => {
+  const m = await fixture(page, true);
+  await gotoAgent(page);
+  await menu(page, "Remove…");
+  await expect(page.getByRole("dialog")).toContainText("Vendor transcripts, credentials and installed copies stay");
+  await page.keyboard.press("Escape");
+  // Focus returns to the ⋯ trigger: the menu item that opened the dialog is gone with the menu.
+  await expect(page.getByTestId("agent-menu")).toBeFocused();
+  expect(posts(m, "/remove")).toHaveLength(0);
+  await menu(page, "Remove…");
+  await page.getByRole("button", { name: "Remove agent", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(posts(m, "/remove")).toHaveLength(1);
+  expect(posts(m, "/reload")).toHaveLength(0); // The mutation already commits its roster revision.
+});
+
+for (const theme of ["dark", "light"]) {
+  test(`gallery and setup visual states (${theme})`, async ({ page }, info) => {
+    const m = await fixture(page, true);
+    await page.addInitScript(value => localStorage.setItem("tr-theme", value), theme);
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    const shot = async (state: string) => {
+      await noOverflow(page);
+      await page.screenshot({ path: `../design-review/853-${state}-${info.project.name}-${theme}.png`, fullPage: true });
+    };
+    await page.goto("/settings/agents");
+    await page.getByLabel("Search agents").fill("sample");
+    await expect(page.getByRole("link", { name: "Details for Sample agent" })).toBeVisible();
+    await shot("gallery");
+    await gotoAgent(page);
+    await menu(page, "Remove…");
+    await expect(page.getByRole("dialog")).toBeVisible();
+    await shot("remove");
+    await page.keyboard.press("Escape");
+    await page.goto("/settings/agents");
+    await page.getByLabel("Search agents").fill("nothing-matches");
+    await expect(page.getByText("No agents match these filters.")).toBeVisible();
+    await shot("empty");
+    await localReview(page);
+    await page.getByText("Source and pinned digests").click();
+    await shot("review");
+    await page.getByRole("checkbox", { name: /I trust this exact/ }).check();
+    m.setInstall("running");
+    await page.getByRole("button", { name: "Install", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "install · running" })).toBeVisible();
+    await shot("running");
+    m.data.operations[0].state = "installed";
+    await expect(page.getByRole("heading", { name: "Connect your account" })).toBeVisible();
+    await page.getByRole("button", { name: "Start sign-in", exact: true }).click();
+    await expect.poll(() => m.sockets.length).toBe(1);
+    await shot("signin");
+    await page.getByRole("button", { name: "Close sign-in terminal" }).click();
+    await expect(page.getByRole("heading", { name: "signin · interrupted" })).toBeVisible();
+    await page.getByRole("button", { name: "Continue to verification" }).click();
+    m.setVerify(false);
+    await page.getByRole("button", { name: "Verify installation" }).click();
+    await expect(page.getByRole("heading", { name: "verify · failed" })).toBeVisible();
+    await shot("failure");
+    m.setVerify(true);
+    await page.getByRole("button", { name: "Run verification again" }).click();
+    await expect(page.getByRole("button", { name: "Enable agent" })).toBeVisible();
+    await shot("verify");
+  });
+}
+
+test("updates compare the signed recipe, not the operator confirmation digest", async ({ page }) => {
+  const m = await fixture(page, true);
+  m.data.plugins[0].active = GEN;
+  m.data.plugins[0].enabled = true;
+  m.data.catalog[0].digest = m.gen.review.recipe_digest;
+  await page.goto("/settings/agents");
+  await page.getByLabel("Search agents").fill("sample");
+  const row = page.locator('[data-plugin-id="sample-agent"]');
+  await expect(row).toBeVisible();
+  await expect(row.getByRole("link", { name: /^Update/ })).toHaveCount(0);
+  m.data.catalog[0].digest = "d".repeat(64);
+  await page.getByTestId("catalog-line").getByRole("button", { name: "Refresh", exact: true }).click();
+  // #1741: the action is the one-click Update (it was "Review update").
+  await expect(row.getByRole("link", { name: /^Update/ })).toBeVisible();
+  await expect(row.getByText("Update available", { exact: true })).toBeVisible();
+});
+
+test("setup controls retain touch size, keyboard order and wrapped sources at 320px", async ({ page }) => {
+  await fixture(page);
+  await page.setViewportSize({ width: 320, height: 740 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/settings/agents");
+  const targets = [page.getByLabel("Search agents"), page.getByRole("button", { name: "Refresh", exact: true }),
+    page.getByRole("link", { name: "Add agent", exact: true }), page.getByRole("button", { name: "All", exact: true })];
+  for (const target of targets) {
+    const box = await target.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+    expect(box!.width).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+  }
+  await page.getByLabel("Search agents").focus();
+  for (const name of ["All", "Ready", "Needs attention"]) {
+    await page.keyboard.press("Tab");
+    await expect(page.getByRole("button", { name, exact: true })).toBeFocused();
+  }
+  await noOverflow(page);
+  await localReview(page);
+  await expect(page.getByRole("heading", { name: "Review this installation" })).toBeFocused();
+  await page.keyboard.press("Tab");
+  const details = page.getByText("Source and pinned digests", { exact: true });
+  await expect(details).toBeFocused();
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Tab");
+  const consent = page.getByRole("checkbox", { name: /I trust this exact/ });
+  await expect(consent).toBeFocused();
+  const label = consent.locator("..");
+  expect((await label.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+  await page.keyboard.press("Space");
+  await expect(consent).toBeChecked();
+  await page.keyboard.press("Tab");
+  await expect(page.getByRole("link", { name: "Cancel", exact: true })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(page.getByRole("button", { name: "Back", exact: true })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(page.getByRole("button", { name: "Install", exact: true })).toBeFocused();
+  const panel = page.getByRole("region", { name: "Reviewed installation" });
+  expect(await panel.locator("p, dd").evaluateAll(nodes => nodes.every(n => n.scrollWidth <= n.clientWidth + 1))).toBe(true);
+  expect(await page.evaluate(() => matchMedia("(prefers-reduced-motion: reduce)").matches)).toBe(true);
+  const progress = page.getByTestId("wizard-progress");
+  expect(await progress.evaluate(node => [node, ...node.querySelectorAll("*")].every(n => {
+    const style = getComputedStyle(n);
+    return style.animationName === "none" && style.transitionDuration.split(",").every(v => parseFloat(v) <= .01);
+  }))).toBe(true);
+  await noOverflow(page);
+});
+
+
+test("definite install rejection returns to a fresh review while a lost response retains its ID", async ({ page }) => {
+  const m = await fixture(page);
+  m.rejectNext("install", "The review expired; review this installation again.");
+  await localReview(page);
+  await page.getByRole("checkbox", { name: /I trust this exact/ }).check();
+  await page.getByRole("button", { name: "Install", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Choose an agent" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Check operation status" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Review installation" }).click();
+  await expect(page.getByRole("checkbox", { name: /I trust this exact/ })).not.toBeChecked();
+  await page.getByRole("checkbox", { name: /I trust this exact/ }).check();
+  await page.getByRole("button", { name: "Install", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Connect your account" })).toBeVisible();
+  expect(posts(m, "/install")).toHaveLength(2);
+});
+
+test("a rejected verification can be retried without leaving setup", async ({ page }) => {
+  const m = await fixture(page, true);
+  m.rejectNext("verify", "another plugin operation is busy");
+  await page.goto(`${PATH}?plugin=sample-agent&generation=${GEN}`);
+  await page.getByRole("button", { name: "Continue to verification" }).click();
+  await page.getByRole("button", { name: "Verify installation" }).click();
+  await expect(page.getByRole("button", { name: "Check operation status" })).toHaveCount(0);
+  // Reconciled generation is still unverified and can be prepared again.
+  await page.getByRole("button", { name: "Continue to verification" }).click();
+  await page.getByRole("button", { name: "Verify installation" }).click();
+  await expect(page.getByRole("button", { name: "Enable agent" })).toBeVisible();
+  expect(posts(m, "/verify")).toHaveLength(2);
+});
+
+test("a lost remove response survives reload and cannot remove an intervening activation", async ({ page }) => {
+  const m = await fixture(page, true);
+  m.data.plugins[0].enabled = true; m.data.plugins[0].active = GEN;
+  m.loseNext("remove");
+  await gotoAgent(page);
+  await menu(page, "Remove…");
+  await page.getByRole("button", { name: "Remove agent", exact: true }).click();
+  await expect(page.getByRole("alert")).toBeVisible();
+  m.data.plugins[0].enabled = true;
+  m.data.plugins[0].active = "another-activation";
+  await page.reload();
+  await menu(page, "Check previous remove");
+  await page.getByRole("button", { name: "Remove agent", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(posts(m, "/remove")).toHaveLength(1);
+  expect(m.data.plugins[0].enabled).toBe(true);
+  expect(m.data.plugins[0].active).toBe("another-activation");
+});
+
+for (const kind of ["disable", "remove"] as const) test(`a delayed ${kind} cannot undo re-enabling the same installation`, async ({ page }) => {
+  const m = await fixture(page, true);
+  m.data.plugins[0].enabled = true; m.data.plugins[0].active = GEN;
+  await gotoAgent(page);
+  const label = kind === "remove" ? "Remove" : "Disable";
+  await menu(page, `${label}…`);
+  // Another operator disables and re-enables G1 while this confirmation stays open.
+  const revision = "d6ba9ee1-9eec-4cc2-9133-d125fe4576a2";
+  m.data.roster_revision = revision;
+  await page.getByRole("button", { name: `${label} agent`, exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.getByRole("alert")).toContainText("confirm a new decision");
+  expect(m.data.plugins[0].enabled).toBe(true);
+  expect(m.data.operations).toHaveLength(0);
+  const previous = posts(m, `/${kind}`)[0].body;
+  expect(previous.expected_active).toBe(GEN);
+  expect(previous.expected_revision).toBeNull();
+  await menu(page, `${label}…`);
+  await page.getByRole("button", { name: `${label} agent`, exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(m.data.plugins[0].enabled).toBe(false);
+  const fresh = posts(m, `/${kind}`)[1].body;
+  expect(fresh.expected_active).toBe(GEN);
+  expect(fresh.expected_revision).toBe(revision);
+  expect(fresh.request_id).not.toBe(previous.request_id);
+});
+
+for (const kind of ["disable", "remove"] as const) test(`a missing ${kind} requires a refreshed new confirmation`, async ({ page }) => {
+  const m = await fixture(page, true);
+  m.data.plugins[0].enabled = true; m.data.plugins[0].active = GEN;
+  m.dropNext(kind);
+  await gotoAgent(page);
+  const label = kind === "remove" ? "Remove" : "Disable";
+  await menu(page, `${label}…`);
+  await page.getByRole("button", { name: `${label} agent`, exact: true }).click();
+  await expect(page.getByRole("alert")).toBeVisible();
+  const previous = posts(m, `/${kind}`)[0].body;
+  expect(previous.expected_active).toBe(GEN);
+  expect(m.data.operations).toHaveLength(0);
+  m.data.plugins[0].active = "another-activation";
+  await page.reload();
+  await menu(page, `Check previous ${kind}`);
+  await page.getByRole("button", { name: `${label} agent`, exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.getByRole("alert")).toContainText("confirm a new decision");
+  await page.getByTestId("agent-menu").click();
+  await expect(menuItem(page, `Check previous ${kind}`)).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  expect(posts(m, `/${kind}`)).toHaveLength(1);
+  expect(m.data.plugins[0].enabled).toBe(true);
+  await menu(page, `${label}…`);
+  await page.getByRole("button", { name: `${label} agent`, exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  const fresh = posts(m, `/${kind}`)[1].body;
+  expect(fresh.expected_active).toBe("another-activation");
+  expect(fresh.request_id).not.toBe(previous.request_id);
+});
+
+test("saving a verified candidate endpoint clears the verdict before enable", async ({ page }) => {
+  const m = await fixture(page, true);
+  m.gen.review.entry.manifest.runtime = { kind: "chat" };
+  m.gen.required_checks = ["endpoint"];
+  let ep = { base_url: "https://one.test/v1", model: "sample", api_key_set: true, configured: true,
+    context_window: 32768, max_output_tokens: 4096, request_timeout: null, tools: "none" };
+  await page.route("**/generations/*/endpoint", r => {
+    if (r.request().method() === "PATCH") {
+      const patch = r.request().postDataJSON(); delete patch.api_key;
+      ep = { ...ep, ...patch }; m.gen.verification = null;
+    }
+    return r.fulfill({ json: ep });
+  });
+  await page.goto(`${PATH}?plugin=sample-agent&generation=${GEN}`);
+  await page.getByRole("button", { name: "Continue to verification" }).click();
+  await page.getByRole("button", { name: "Verify installation" }).click();
+  await expect(page.getByRole("button", { name: "Enable agent" })).toBeVisible();
+  await page.getByRole("button", { name: "Back to account setup" }).click();
+  await page.getByLabel("Base URL").fill("https://two.test/v1");
+  await page.getByLabel("API key", { exact: true }).fill("a-new-test-key");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByText("Saved — run verification before enabling this installation.")).toBeVisible();
+  await page.getByRole("button", { name: "Continue to verification" }).click();
+  await expect(page.getByRole("button", { name: "Enable agent" })).toHaveCount(0);
+  await expect(page.getByText("All required checks passed", { exact: false })).toHaveCount(0);
+});
+
+
+for (const staged of [false, true]) {
+  test(`confirmed missing operation on reload recovers ${staged ? "the candidate" : "installation review"}`, async ({ page }) => {
+    const m = await fixture(page, staged);
+    const query = new URLSearchParams({ plugin: "sample-agent", operation: crypto.randomUUID(), ...(staged ? { generation: GEN } : {}) });
+    await page.goto(`${PATH}?${query}`);
+    await expect(page.getByRole("button", { name: "Check operation status" })).toHaveCount(0);
+    await expect.poll(() => new URL(page.url()).searchParams.has("operation")).toBe(false);
+    await expect(page.getByRole("button", { name: staged ? "Continue to verification" : "Review installation" })).toBeEnabled();
+    expect(new URL(page.url()).searchParams.get("generation")).toBe(staged ? GEN : null);
+    expect(m.writes).toHaveLength(0);
+  });
+}
+
+for (const kind of ["install", "verify"] as const) {
+  test(`ambiguous ${kind} retains its ID until status confirms a missing operation`, async ({ page }) => {
+    await fixture(page, kind === "verify");
+    const attempts: Record<string, unknown>[] = [];
+    let confirmedMissing = false;
+    await page.route(`**/api/plugins/${kind}`, r => {
+      attempts.push(r.request().postDataJSON());
+      return attempts.length === 1 ? r.abort() : r.fallback();
+    });
+    await page.route("**/api/plugins/operations/*", r => {
+      if (!attempts.length || !r.request().url().endsWith(attempts[0].request_id as string)) return r.fallback();
+      return r.fulfill({ status: confirmedMissing ? 409 : 503,
+        json: { detail: confirmedMissing ? "plugin operation not found" : "temporarily unavailable" } });
+    });
+    if (kind === "install") {
+      await localReview(page);
+      await page.getByRole("checkbox", { name: /I trust this exact/ }).check();
+      await page.getByRole("button", { name: "Install", exact: true }).click();
+    } else {
+      await page.goto(`${PATH}?plugin=sample-agent&generation=${GEN}`);
+      await page.getByRole("button", { name: "Continue to verification" }).click();
+      await page.getByRole("button", { name: "Verify installation" }).click();
+    }
+    const check = page.getByRole("button", { name: "Check operation status" });
+    await expect(check).toBeEnabled();
+    const first = new URL(page.url()).searchParams.get("operation");
+    await check.click();
+    await expect(page.getByRole("alert")).toContainText("temporarily unavailable");
+    expect(new URL(page.url()).searchParams.get("operation")).toBe(first);
+    await expect(check).toBeEnabled();
+    confirmedMissing = true;
+    await check.click();
+    await expect(check).toHaveCount(0);
+    expect(new URL(page.url()).searchParams.has("operation")).toBe(false);
+    expect(attempts).toHaveLength(1);
+    if (kind === "install") {
+      await page.getByRole("button", { name: "Review installation" }).click();
+      await expect(page.getByRole("checkbox", { name: /I trust this exact/ })).not.toBeChecked();
+      await page.getByRole("checkbox", { name: /I trust this exact/ }).check();
+      await page.getByRole("button", { name: "Install", exact: true }).click();
+      await expect(page.getByRole("heading", { name: "Connect your account" })).toBeVisible();
+    } else {
+      expect(new URL(page.url()).searchParams.get("generation")).toBe(GEN);
+      await page.getByRole("button", { name: "Continue to verification" }).click();
+      await page.getByRole("button", { name: "Verify installation" }).click();
+      await expect(page.getByRole("button", { name: "Enable agent" })).toBeVisible();
+      expect(attempts[1].generation_id).toBe(GEN);
+    }
+    expect(attempts).toHaveLength(2);
+    expect(attempts[1].request_id).not.toBe(attempts[0].request_id);
+  });
+}
+
+for (const theme of ["dark", "light"]) {
+  test(`agent detail manages active and candidate installations (${theme})`, async ({ page }, info) => {
+    const m = await fixture(page, true);
+    const active = structuredClone(m.gen);
+    active.id = "bc29a026-9eb7-4b71-986b-e66c075cbdb7";
+    active.review.entry.manifest.identity.version = "1.0.0";
+    active.verification = { digest: active.review.digest, checked_at: 1790852400,
+      results: active.required_checks.map(check => ({ check, passed: true, detail: "Existing installation passed." })) };
+    Object.assign(m.data.plugins[0], { active: active.id, enabled: true, generations: [active, m.gen] });
+    await page.addInitScript(value => localStorage.setItem("tr-theme", value), theme);
+    await page.route("**/api/engines/sample-agent", r => r.fulfill({ json: {
+      id: "sample-agent", label: "Sample agent", publisher: "Local publisher", version: "1.0.0", contract: 1,
+      source: "managed", kind: "agent", runtime: "pty", binary: { name: "sample-agent", search_paths: [] },
+      provenance: { state: "local", via: "install", path: "/private/sample-agent", note: null },
+      store: null, launch: null, transcript: { kind: "none" }, usage: { source: "none" },
+      capabilities: {}, models: [], maintenance: [],
+    } }));
+    await page.goto("/settings/agents/sample-agent");
+    // Installation is one summary line per generation, its evidence behind a disclosure (#1408).
+    const activePanel = page.getByLabel("Active installation");
+    await expect(activePanel.getByTestId("installation-summary")).toContainText("Active · 1.0.0");
+    await expect(activePanel.getByTestId("installation-summary")).toContainText("6/6 checks passed");
+    await activePanel.locator("summary").click();
+    await expect(activePanel.getByText("Existing installation passed.").first()).toBeVisible();
+    await activePanel.locator("summary").click();
+    const candidatePanel = page.getByLabel("Candidate installation");
+    await expect(candidatePanel.getByTestId("installation-summary")).toContainText("Candidate · 1.2.3");
+    await candidatePanel.locator("summary").click();
+    await expect(candidatePanel.getByText("Pending", { exact: true }).first()).toBeVisible();
+    await candidatePanel.locator("summary").click();
+    // ONE primary action in the header — the worst state's (#1408): the pending candidate.
+    const header = page.locator("section", { has: page.getByRole("heading", { name: "Sample agent" }) }).first();
+    await expect(header.getByRole("link", { name: "Continue setup" })).toBeVisible();
+    // The catalog is the roster's business now, not repeated on every agent.
+    await expect(page.getByRole("region", { name: "Public agent catalog" })).toHaveCount(0);
+    expect(m.writes).toHaveLength(0);
+    for (const control of [header.getByRole("link", { name: "Continue setup" }), page.getByTestId("agent-menu"), activePanel.locator("summary"), candidatePanel.locator("summary")]) {
+      expect((await control.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+      expect((await control.boundingBox())!.height).toBeLessThanOrEqual(60);
+    }
+    await noOverflow(page);
+    await activePanel.screenshot({ path: `../design-review/853-detail-active-${info.project.name}-${theme}.png` });
+    await candidatePanel.screenshot({ path: `../design-review/853-detail-candidate-${info.project.name}-${theme}.png` });
+    await page.screenshot({ path: `../design-review/853-detail-${info.project.name}-${theme}.png` });
+    await menu(page, "Reload agent roster");
+    await expect.poll(() => posts(m, "/reload").length).toBe(1);
+    await menu(page, "Disable…");
+    await page.getByRole("button", { name: "Disable agent", exact: true }).click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    expect(posts(m, "/disable")).toHaveLength(1);
+    await menu(page, "Remove…");
+    await page.keyboard.press("Escape");
+    expect(posts(m, "/remove")).toHaveLength(0);
+    await header.getByRole("link", { name: "Continue setup" }).click();
+    await expect(page.getByRole("button", { name: "Continue to verification" })).toBeVisible();
+    expect(new URL(page.url()).searchParams.get("generation")).toBe(GEN);
+  });
+}
+
+test("agent detail retains a saved candidate when no live engine exists", async ({ page }) => {
+  await fixture(page, true);
+  await page.route("**/api/engines/sample-agent", r => r.fulfill({ status: 404, json: { detail: "unknown engine" } }));
+  await page.goto("/settings/agents");
+  await page.getByRole("link", { name: "Details for Sample agent" }).click();
+  await expect(page.getByLabel("Candidate installation").getByTestId("installation-summary")).toContainText("1.2.3");
+  await expect(page.getByRole("link", { name: "Continue setup" })).toBeVisible();
+  await page.getByTestId("agent-menu").click();
+  await expect(menuItem(page, "Remove…")).toBeVisible();
+});
+
+test("an activated API endpoint stays read-only after disabling", async ({ page }) => {
+  const m = await fixture(page, true);
+  m.gen.review.entry.manifest.runtime = { kind: "chat" };
+  m.gen.required_checks = ["endpoint"];
+  Object.assign(m.data.plugins[0], { active: GEN, enabled: false });
+  await page.route("**/generations/*/endpoint", r => r.fulfill({ json: {
+    base_url: "https://saved.test/v1", model: "saved-model", api_key_set: true, configured: true,
+    context_window: 32768, max_output_tokens: 4096, request_timeout: null, tools: "write",
+  } }));
+  await page.goto(`${PATH}?plugin=sample-agent&generation=${GEN}`);
+  await expect(page.getByText("https://saved.test/v1 · saved-model")).toBeVisible();
+  await expect(page.getByText("This installation’s endpoint is fixed after activation.", { exact: false })).toBeVisible();
+  await expect(page.getByLabel("Base URL")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Save", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Continue to verification" }).click();
+  await expect(page.getByRole("button", { name: "Verify installation" })).toBeVisible();
+  expect(m.writes).toHaveLength(0);
+});
+
+test("step=signin opens a verified waiting copy at its sign-in step, never the active one", async ({ page }) => {
+  const m = await fixture(page, true);
+  m.gen.verification = { digest: m.gen.review.digest, checked_at: 1790852400,
+    results: m.gen.required_checks.map(check => ({ check, passed: true, detail: "Passed." })) };
+  // Plain: a verified copy opens at Enable.
+  await page.goto(`${PATH}?plugin=sample-agent&generation=${GEN}`);
+  await expect(page.getByRole("heading", { name: "Ready to enable" })).toBeVisible();
+  // A Sign in link: the same copy opens at its sign-in.
+  await page.goto(`${PATH}?plugin=sample-agent&generation=${GEN}&step=signin`);
+  await expect(page.getByRole("heading", { name: "Connect your account" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Start sign-in", exact: true })).toBeVisible();
+  // Sign-in never runs on the active generation, so the intent is ignored there.
+  Object.assign(m.data.plugins[0], { active: GEN, enabled: true });
+  await page.goto(`${PATH}?plugin=sample-agent&generation=${GEN}&step=signin`);
+  await expect(page.getByRole("button", { name: "Start sign-in", exact: true })).toHaveCount(0);
+  expect(m.writes).toHaveLength(0);
+});
+
+test("reopening an enabled installation does not offer re-verification", async ({ page }) => {
+  const m = await fixture(page, true);
+  m.gen.verification = { digest: m.gen.review.digest, checked_at: 1790852400,
+    results: m.gen.required_checks.map(check => ({ check, passed: true, detail: "Passed." })) };
+  Object.assign(m.data.plugins[0], { active: GEN, enabled: true });
+  await page.goto(`${PATH}?plugin=sample-agent&generation=${GEN}`);
+  await expect(page.getByText("Agent enabled. Your saved defaults and budgets are unchanged.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Run verification again" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Back to account setup" })).toHaveCount(0);
+  expect(m.writes).toHaveLength(0);
+});
+
+for (const kind of ["review", "install", "signin", "verify", "activate"] as const) {
+  test(`browser Back fences a delayed ${kind} response to its setup target`, async ({ page }) => {
+    const m = await fixture(page, true);
+    const other = { ...generation(), id: "older-candidate", review: structuredClone(REVIEW) };
+    other.review.entry.manifest.identity.label = "Older installation";
+    m.data.plugins[0].generations!.push(other);
+    if (kind === "activate") m.gen.verification = { digest: REVIEW.digest, checked_at: 2,
+      results: m.gen.required_checks.map(check => ({ check, passed: true, detail: "Passed" })) };
+    const target = `${PATH}?plugin=sample-agent&generation=older-candidate`;
+    const current = `${PATH}?plugin=sample-agent${["review", "install"].includes(kind) ? "" : `&generation=${GEN}`}`;
+    await page.addInitScript(({ target, current }) => {
+      history.replaceState({ ...history.state, idx: 0 }, "", target);
+      history.pushState({ ...history.state, idx: 1 }, "", current);
+    }, { target, current });
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    let requested = false;
+    await page.route(`**/api/plugins/${kind}`, async route => {
+      requested = true;
+      const body = route.request().postDataJSON();
+      await held;
+      await route.fulfill({ json: kind === "review" ? REVIEW : {
+        id: body.request_id, plugin_id: "sample-agent", generation_id: GEN,
+        kind, state: kind === "install" ? "installed" : kind === "signin" ? "ready" : kind === "verify" ? "verified" : "complete",
+        review: REVIEW, created_at: 1, updated_at: 1, review_digest: REVIEW.digest, error: null,
+      } });
+    });
+    await page.goto(current);
+    if (kind === "install") await page.getByRole("button", { name: "Review installation" }).click();
+    if (kind === "verify") await page.getByRole("button", { name: "Continue to verification" }).click();
+    const action = { review: "Review installation", install: "Install", signin: "Start sign-in", verify: "Verify installation", activate: "Enable agent" }[kind];
+    await page.getByRole("button", { name: action, exact: true }).click();
+    await expect.poll(() => requested).toBe(true);
+    await page.goBack();
+    await expect(page).toHaveURL(new RegExp("generation=older-candidate$"));
+    await expect(page.getByRole("heading", { name: "Older installation 1.2.3" })).toBeVisible();
+    const response = page.waitForResponse(r => r.url().endsWith(`/api/plugins/${kind}`) && r.request().method() === "POST");
+    release(); await response;
+    await expect(page.getByRole("button", { name: "Continue to verification" })).toBeEnabled();
+    await expect(page.getByRole("heading", { name: "Older installation 1.2.3" })).toBeVisible();
+    await expect(page.getByText(/Agent enabled\. Your saved defaults/)).toHaveCount(0);
+    await expect(page.getByRole("region", { name: "Operation status" })).toHaveCount(0);
+    expect(m.sockets).toEqual([]);
+    expect(posts(m, "/reload")).toHaveLength(0);
+  });
+}
+
+for (const field of ["Base URL", "API key"]) test(`candidate endpoint discards a test when ${field} changes`, async ({ page }) => {
+  const m = await fixture(page, true);
+  m.gen.review.entry.manifest.runtime = { kind: "chat" };
+  await page.route("**/generations/*/endpoint", r => r.fulfill({ json: {
+    base_url: "https://one.test/v1", model: "sample", api_key_set: true, configured: true,
+    context_window: 32768, max_output_tokens: 4096, request_timeout: null, tools: "none",
+  } }));
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  let requested = false;
+  await page.route("**/generations/*/endpoint/test", async r => {
+    requested = true; await held;
+    await r.fulfill({ json: { listing: "ok", models: ["old-endpoint-model"] } });
+  });
+  await page.goto(`${PATH}?plugin=sample-agent&generation=${GEN}`);
+  await expect(page.getByLabel("Base URL")).toHaveValue("https://one.test/v1");
+  await page.getByRole("button", { name: "Test", exact: true }).click();
+  await expect.poll(() => requested).toBe(true);
+  await page.getByLabel(field, { exact: true }).fill(field === "Base URL" ? "https://two.test/v1" : "new-test-key");
+  release();
+  await expect(page.getByRole("button", { name: "Test", exact: true })).toBeEnabled();
+  await expect(page.getByTestId("endpoint-status")).toHaveCount(0);
+  await expect(page.locator("datalist option")).toHaveCount(0);
+  await page.getByRole("button", { name: "Test", exact: true }).click();
+  await expect(page.getByTestId("endpoint-status")).toContainText("The endpoint answered");
+  await page.getByLabel(field, { exact: true }).fill(field === "Base URL" ? "https://three.test/v1" : "newer-test-key");
+  await expect(page.getByTestId("endpoint-status")).toHaveCount(0);
+  await expect(page.locator("datalist option")).toHaveCount(0);
+});
+
+
+test("a disabled agent's page leads back to Enable for that generation (#1416 review)", async ({ page }) => {
+  const m = await fixture(page, true);
+  m.gen.verification = { digest: m.gen.review.digest, checked_at: 1790852400,
+    results: m.gen.required_checks.map(check => ({ check, passed: true, detail: "ok" })) };
+  Object.assign(m.data.plugins[0], { active: GEN, candidate: GEN, enabled: false, generations: [m.gen] });
+  await gotoAgent(page);
+  await expect(page.getByText("Disabled", { exact: true }).first()).toBeVisible();
+  const enable = page.getByRole("link", { name: "Enable", exact: true });
+  await expect(enable).toBeVisible();
+  await enable.click();
+  expect(new URL(page.url()).searchParams.get("generation")).toBe(GEN);
+  await expect(page.getByRole("button", { name: "Enable agent" })).toBeVisible();
+});
+
+// #2106: Copilot's `copilot login` (and Codex, Gemini) finishes on a LOOPBACK callback on the
+// BattleLab host. The browser lands on its own unreachable 127.0.0.1; the operator pastes that
+// address and BattleLab delivers it. Also: Copy link beside Open, and the output as plain text.
+const LOOPBACK_URL = "https://github.com/login/oauth/authorize?client_id=Iv1.b507a08c87ecfe98&redirect_uri=http%3A%2F%2F127.0.0.1%3A35067%2Fcallback&state=M5TE5B3lQvjjOux6mxXvQw&code_challenge=" + "q".repeat(120);
+const CALLBACK = "http://127.0.0.1:35067/callback?browser_session_id=8e44e9&code=68da887864236bdb3620&iss=https%3A%2F%2Fgithub.com%2Flogin%2Foauth&state=M5TE5B3lQvjjOux6mxXvQw";
+
+async function loopbackSignin(page: Page) {
+  const m = await fixture(page, true);
+  const typed: string[] = [];
+  const callbacks: { path: string; url: unknown }[] = [];
+  let refuse = "";
+  await page.route("**/api/plugins/operations/*/signin/callback", r => {
+    const url = (r.request().postDataJSON() as { url: unknown }).url;
+    callbacks.push({ path: new URL(r.request().url()).pathname, url });
+    if (refuse) return r.fulfill({ status: 422, json: { detail: refuse } });
+    return r.fulfill({ json: { delivered: true, status: 200 } });
+  });
+  await page.routeWebSocket(/\/ws\/plugins\/signin\//, ws => {
+    m.data.operations.find(o => ws.url().endsWith(o.id))!.state = "running";
+    // The colours and cursor moves a CLI prints are the emulator's business, never the text's.
+    ws.send(Buffer.from(`\x1b[1mSigning in to GitHub.com...\x1b[0m\r\n\r\nOpen this URL to authorize GitHub Copilot CLI:\r\n${LOOPBACK_URL}\r\n\x1b[2KWaiting for authorization...`));
+    ws.onMessage(msg => { if (typeof msg !== "string") typed.push(new TextDecoder().decode(msg as ArrayBuffer)); });
+  });
+  await page.goto(`${PATH}?plugin=sample-agent&generation=${GEN}`);
+  await page.getByRole("button", { name: "Start sign-in", exact: true }).click();
+  return { m, typed, callbacks, refuseNext: (detail: string) => { refuse = detail; } };
+}
+
+test("a loopback sign-in reads as text and finishes from the pasted address (#2106)", async ({ page }, testInfo) => {
+  const { typed, callbacks, refuseNext } = await loopbackSignin(page);
+  const output = page.getByRole("log", { name: "Sign-in output" });
+  await expect(output).toContainText("Signing in to GitHub.com...");
+  await expect(output).toContainText("Waiting for authorization...");
+  await expect(output).not.toContainText("[1m");
+  // The whole OAuth URL is one link, inside the pane at any width.
+  const inline = output.getByRole("link", { name: /github\.com\/login\/oauth/ });
+  await expect(inline).toHaveAttribute("href", LOOPBACK_URL);
+  const [pane, view] = [await output.boundingBox(), page.viewportSize()!];
+  expect(pane!.x + pane!.width).toBeLessThanOrEqual(view.width + 1);
+  // The raw terminal is hidden, not gone.
+  await expect(page.getByLabel("Temporary vendor sign-in terminal")).toBeHidden();
+
+  await expect(page.getByTestId("signin-loopback")).toContainText("finishes on your BattleLab machine");
+  const field = page.getByLabel("Address your browser ended on");
+  const finish = page.getByRole("button", { name: "Finish sign-in" });
+  for (const target of [field, finish]) expect((await target.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+  await page.screenshot({ path: testInfo.outputPath("signin-loopback.png"), fullPage: true });
+
+  refuseNext("nothing in this sign-in is listening on port 35068; paste the exact address of the page that could not be reached");
+  await field.fill(CALLBACK.replace("35067", "35068"));
+  await finish.click();
+  await expect(page.getByRole("alert")).toContainText("listening on port 35068");
+  refuseNext("");
+  await field.fill(CALLBACK);
+  await finish.click();
+  await expect(page.getByRole("status").filter({ hasText: "Handed to the sign-in" })).toBeVisible();
+  expect(callbacks.at(-1)).toEqual({ path: expect.stringMatching(/^\/api\/plugins\/operations\/[^/]+\/signin\/callback$/), url: CALLBACK });
+  // Nothing of the address was typed into the vendor's prompt.
+  expect(typed.join("")).not.toContain("127.0.0.1");
+});
+
+test("Copy link copies the sign-in link, and offers it selected where the clipboard is refused (#2106)", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await loopbackSignin(page);
+  const open = page.getByRole("link", { name: /Open the sign-in link · github\.com/ });
+  await expect(open).toHaveAttribute("href", LOOPBACK_URL);
+  const copy = page.getByRole("button", { name: "Copy link" });
+  expect((await copy.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+  await copy.click();
+  await expect(page.getByRole("button", { name: "✓ Copied" })).toBeVisible();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(LOOPBACK_URL);
+
+  // A plain-http origin has no async clipboard: the link is offered selected instead.
+  await page.evaluate(() => Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true }));
+  await expect(page.getByRole("button", { name: "Copy link" })).toBeVisible({ timeout: 5000 });
+  await page.getByRole("button", { name: "Copy link" }).click();
+  const manual = page.getByLabel("Copy the sign-in link from here");
+  await expect(manual).toHaveValue(LOOPBACK_URL);
+  await expect(manual).toBeFocused();
+});
+
+test("a code pasted into the code field still reaches the vendor; a pasted loopback address is delivered instead (#2106)", async ({ page }) => {
+  const m = await fixture(page, true);
+  const typed: string[] = [];
+  const callbacks: unknown[] = [];
+  await page.route("**/api/plugins/operations/*/signin/callback", r => {
+    callbacks.push((r.request().postDataJSON() as { url: unknown }).url);
+    return r.fulfill({ json: { delivered: true, status: 200 } });
+  });
+  await page.routeWebSocket(/\/ws\/plugins\/signin\//, ws => {
+    m.data.operations.find(o => ws.url().endsWith(o.id))!.state = "running";
+    ws.send(Buffer.from("? Select a provider\r\n> Anthropic\r\n  OpenAI\r\n"));
+    ws.onMessage(msg => { if (typeof msg !== "string") typed.push(new TextDecoder().decode(msg as ArrayBuffer)); });
+  });
+  await page.goto(`${PATH}?plugin=sample-agent&generation=${GEN}`);
+  await page.getByRole("button", { name: "Start sign-in", exact: true }).click();
+  await expect(page.getByRole("log", { name: "Sign-in output" })).toContainText("Select a provider");
+  // A menu is answered with keys, not by typing escape sequences.
+  await page.getByRole("button", { name: "Arrow down" }).click();
+  await page.getByRole("button", { name: "Enter" }).click();
+  await expect.poll(() => typed.join("")).toBe("\x1b[B\r");
+  const code = page.getByLabel("Code from the sign-in page");
+  await code.fill("abc123");
+  await page.getByRole("button", { name: "Send to sign-in" }).click();
+  await expect.poll(() => typed.join("")).toBe("\x1b[B\rabc123\r");
+  await code.fill("http://localhost:1455/auth/callback?code=xyz&state=s");
+  await page.getByRole("button", { name: "Send to sign-in" }).click();
+  await expect.poll(() => callbacks).toEqual(["http://localhost:1455/auth/callback?code=xyz&state=s"]);
+  expect(typed.join("")).toBe("\x1b[B\rabc123\r");
+  // The terminal is one tap away for a full-screen menu.
+  await page.getByRole("button", { name: "Show as terminal" }).click();
+  await expect(page.getByLabel("Temporary vendor sign-in terminal")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Show as text" })).toHaveAttribute("aria-pressed", "true");
+});

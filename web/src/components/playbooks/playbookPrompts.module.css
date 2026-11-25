@@ -1,0 +1,98 @@
+/* A playbook step's prompts (NIGHTJAR #1531 Phase 10, #1574): each prompt is a hairline-ruled
+ * block with a mono title; fields are square (`nj-field`'s look). Tokens only. */
+.prompts {
+  min-width: 0;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.prompts p {
+  color: var(--text-2);
+  line-height: 1.6;
+}
+.prompt {
+  margin: var(--sp-4) 0;
+  padding-top: var(--sp-1);
+  border-top: 1px solid var(--line-strong);
+}
+.prompts h3,
+.prompts h4 {
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+}
+.actions button {
+  white-space: normal;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: var(--sp-3) 0;
+  color: var(--text-2);
+  font-size: var(--fs-row);
+}
+.prompts input,
+.prompts select,
+.prompts textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--bg-2);
+  color: var(--text-1);
+  font: inherit;
+  transition: border-color var(--t-fast) var(--ease-out);
+}
+.prompts input:hover,
+.prompts select:hover,
+.prompts textarea:hover {
+  border-color: var(--hud-dim);
+}
+.prompts input:focus,
+.prompts select:focus,
+.prompts textarea:focus {
+  border-color: var(--hud);
+}
+.prompts textarea {
+  resize: vertical;
+}
+.prompts pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow: auto;
+  max-height: 240px;
+  padding: var(--sp-3);
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+}
+.error {
+  composes: nj-error from global;
+}
+.prompts :focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -2px;
+}
+.prompts summary {
+  min-height: 44px;
+  padding: var(--sp-3) 0;
+  box-sizing: border-box;
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+}

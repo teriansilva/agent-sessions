@@ -1,0 +1,997 @@
+/* HQ → PROJECTS (#2143): the index, Folders & discovery and one project's page. NIGHTJAR (#1531,
+ * docs/design.md v2): the head is HQ's kicker + display title; panels are `Panel tone="quiet"`
+ * with a callsign; an index row is ONE plate link; fields are `Field` (`nj-field`), choices `Seg`,
+ * on/off `Switch`, actions the shared plates (actionButton). Status colour only for state: memory
+ * ON is `--ok-text`, a read that failed is the down tone, a stale read or an unsaved draft amber /
+ * draft. Tokens only — the project colours are DATA (the stored hex, set inline as `--pc`), engine
+ * swatches the manifest's accent token (`--eng`). Ledger: docs/nightjar-ledger.md. */
+
+/* ------------------------------------------------------------------ page */
+/* Its own scroll container, like the Library pages: the shell's pane clips at the window's foot. */
+.page {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0;
+  padding: var(--sp-6) max(var(--sp-6), calc((100% - 1280px) / 2 + var(--sp-6)));
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+/* The page scrolls; its rows never shrink to fit it. The tab row clips sideways (overflow-x), which
+ * would otherwise let a flex column squeeze it to nothing under a tall page and lay the panel over
+ * the tabs. */
+.page > * {
+  flex: none;
+}
+.head,
+.phead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-3) var(--sp-4);
+}
+.headText {
+  min-width: 0;
+}
+.head h1,
+.phead h1 {
+  margin: var(--sp-2) 0 0;
+  font: 600 var(--fs-h1) / 1.1 var(--font-display);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--hud-text);
+  text-shadow: var(--glow-head);
+}
+.head h1:focus,
+.phead h1:focus {
+  outline: none;
+}
+.kicker {
+  margin: 0;
+}
+.lede {
+  max-width: var(--prose-max);
+  margin: var(--sp-2) 0 0;
+  font-size: var(--fs-body);
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.tabs {
+  max-width: 100%;
+  overflow-x: auto;
+}
+.tabN {
+  margin-left: var(--sp-2);
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+[aria-selected="true"] > .tabN {
+  color: var(--hud-text);
+}
+/* Phone tab labels: the short form shows; the long one stays the accessible name, clipped. */
+.short {
+  display: none;
+}
+@media (max-width: 800px) {
+  .page {
+    padding: var(--sp-4) var(--sp-3);
+  }
+  .long {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .short {
+    display: inline;
+  }
+  /* Four tabs fit a 360 px phone without scrolling: tighter padding and tracking, still 44 px tall. */
+  .tabs > [role="tab"] {
+    padding: 0 var(--sp-2);
+    letter-spacing: 0.08em;
+  }
+}
+.body {
+  display: grid;
+  gap: var(--sp-4);
+  min-width: 0;
+}
+.cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--sp-4);
+  align-items: start;
+}
+@media (max-width: 1100px) {
+  .cols {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.quiet,
+.quietLine {
+  margin: 0;
+  font-size: var(--fs-row);
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.text {
+  margin: 0;
+  font-size: var(--fs-row);
+  line-height: 1.55;
+  color: var(--text-2);
+}
+.warn {
+  color: var(--warn-text);
+}
+.num {
+  text-align: right;
+}
+
+/* ------------------------------------------------------------------ swatches */
+.swatch {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  background: var(--pc);
+  outline: 1px solid var(--line-strong);
+  outline-offset: -1px;
+}
+.swatchLg {
+  width: 28px;
+  height: 28px;
+}
+.swatchNone {
+  background: transparent;
+  outline-style: dashed;
+}
+/* An engine is named by its manifest accent TOKEN, never a hex. */
+.eng {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  background: var(--eng, var(--engine-slate));
+}
+
+/* ------------------------------------------------------------------ the index list */
+.lhead,
+.row {
+  display: grid;
+  grid-template-columns: minmax(200px, 1.4fr) minmax(200px, 1.3fr) minmax(170px, 1.1fr) 96px 72px 16px;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: 0 var(--sp-4);
+}
+.lhead {
+  min-height: 28px;
+  font: 500 var(--fs-micro) / 1.2 var(--font-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.list {
+  display: grid;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-width: 0;
+}
+/* A row is ONE link: a plate, so the chamfered corners stay inside the hit area. */
+.row {
+  --c: var(--cut-sm);
+  --nj-face: color-mix(in srgb, var(--text-1) 4%, var(--bg-1));
+  --nj-edge: var(--line-strong);
+  min-height: 68px;
+  padding-block: var(--sp-3);
+  border: 1px solid transparent;
+  color: var(--text-1);
+  text-decoration: none;
+  transition: color var(--t-fast) var(--ease-out);
+}
+.row:hover {
+  --nj-edge: var(--hud-dim);
+}
+.row:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.who {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: var(--sp-3);
+  row-gap: 2px;
+  min-width: 0;
+}
+.who > .swatch {
+  grid-row: 1 / span 2;
+}
+.name {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+  font-size: var(--fs-body);
+  font-weight: 600;
+}
+.nameText {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.star {
+  flex: none;
+  color: var(--hud-text);
+}
+.sub {
+  min-width: 0;
+  font: 400 var(--fs-micro) / 1.5 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.sub b {
+  font-weight: 600;
+  color: var(--text-1);
+}
+.cell {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  font-size: var(--fs-row);
+}
+.line {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.cell > .quietLine {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+/* The column's name: read by a screen reader on a desktop (the visual head is aria-hidden), shown
+ * on a phone where the row becomes a card. */
+.cellLabel {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.stampAccent {
+  color: var(--hud-text);
+  border-color: var(--hud);
+}
+.onoff {
+  font: 600 var(--fs-micro) / 1.2 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.onoff[data-on="true"] {
+  color: var(--ok-text);
+}
+.n {
+  font: 500 var(--fs-title) / 1 var(--font-display);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-1);
+}
+.chev {
+  color: var(--text-3);
+}
+.archived {
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--line);
+}
+.pathLink {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-1);
+  text-decoration: none;
+  font-weight: 600;
+}
+.pathLink:hover,
+.pathLink:focus-visible {
+  color: var(--accent-text);
+}
+
+/* Phone: the row is a card — who on top, then one labelled line per fact. Still one link. */
+@media (max-width: 800px) {
+  .lhead {
+    display: none;
+  }
+  .row {
+    grid-template-columns: minmax(0, 1fr) 16px;
+    grid-template-areas:
+      "who chev"
+      "defaults defaults"
+      "playbook playbook"
+      "memory memory";
+    gap: var(--sp-2) var(--sp-3);
+    padding: var(--sp-3);
+  }
+  .row > .who {
+    grid-area: who;
+  }
+  .row > .chev {
+    grid-area: chev;
+  }
+  .isDefaults {
+    grid-area: defaults;
+  }
+  .isPlaybook {
+    grid-area: playbook;
+  }
+  .isMemory {
+    grid-area: memory;
+  }
+  .isSessions {
+    display: none;
+  }
+  .cell {
+    grid-template-columns: 76px minmax(0, 1fr);
+    align-items: baseline;
+    column-gap: var(--sp-2);
+    font-size: var(--fs-meta);
+  }
+  .cellLabel {
+    position: static;
+    width: auto;
+    height: auto;
+    overflow: visible;
+    clip-path: none;
+    grid-row: 1 / span 2;
+    font: 500 var(--fs-micro) / 1.8 var(--font-mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-2);
+  }
+  .cell > :not(.cellLabel) {
+    grid-column: 2;
+  }
+  .isMemory {
+    grid-template-columns: 76px auto minmax(0, 1fr);
+  }
+  .isMemory > :not(.cellLabel) {
+    grid-column: auto;
+  }
+  .isMemory > .cellLabel {
+    grid-row: auto;
+  }
+  /* A phone wraps a fact rather than clipping it. */
+  .line,
+  .cell > .quietLine {
+    flex-wrap: wrap;
+    white-space: normal;
+  }
+}
+
+/* ------------------------------------------------------------------ states */
+.empty > :global(.nj-face) {
+  display: grid;
+  justify-items: start;
+  gap: var(--sp-3);
+  padding: var(--sp-5);
+}
+.emptyTitle {
+  margin: 0;
+  font: 600 var(--fs-label) / 1.2 var(--font-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+/* Down (design.md §3): nothing could be shown. */
+.failed,
+.stale,
+.report {
+  display: grid;
+  justify-items: start;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border-left: 2px solid var(--status-down);
+  background: color-mix(in srgb, var(--status-down) 8%, var(--bg-1));
+}
+/* Degraded: the last good data is still shown, or nothing was written. */
+.stale {
+  border-left-color: var(--status-degraded);
+  background: color-mix(in srgb, var(--status-degraded) 8%, var(--bg-1));
+}
+.report {
+  border-left-color: var(--hud-dim);
+  background: var(--bg-1);
+}
+.failedTitle {
+  margin: 0;
+  font: 600 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--danger-text);
+}
+.failedText {
+  margin: 0;
+  font-size: var(--fs-row);
+  line-height: 1.5;
+  color: var(--text-1);
+}
+.failedList {
+  margin: 0;
+  padding-left: var(--sp-4);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+/* ------------------------------------------------------------------ panels */
+.panel > :global(.nj-face) {
+  display: grid;
+  align-content: start;
+  gap: var(--sp-3);
+  min-width: 0;
+  padding: var(--sp-4) var(--sp-5) var(--sp-5);
+}
+@media (max-width: 800px) {
+  .panel > :global(.nj-face) {
+    padding: var(--sp-4) var(--sp-3);
+  }
+}
+.panel h2 {
+  margin: 0;
+}
+.sep {
+  height: 1px;
+  background: var(--line);
+}
+.setRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  min-width: 0;
+}
+.setRow > div {
+  min-width: 0;
+}
+.setRow > :global(.nj-switch),
+.setRow > button {
+  flex: none;
+}
+.setTitle {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-1);
+  font-size: var(--fs-body);
+  font-weight: 600;
+  color: var(--text-1);
+}
+@media (max-width: 800px) {
+  .setRow {
+    flex-wrap: wrap;
+  }
+}
+.fieldBlock {
+  display: grid;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.fieldBlock > :global(.nj-hint) {
+  margin: 0;
+}
+/* A field and its one action on the same line. */
+.inline {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.inline > :global(.nj-fieldset) {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.inline > button {
+  flex: none;
+}
+.alignEnd {
+  align-self: flex-end;
+}
+/* A read-only path in the field's voice. */
+.pathBox {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 var(--sp-3);
+  font: 400 var(--fs-row) / 1.4 var(--font-mono);
+  color: var(--text-1);
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+@media (max-width: 800px) {
+  .inline {
+    flex-wrap: wrap;
+  }
+  .inline > :global(.nj-fieldset),
+  .pathBox {
+    flex-basis: 100%;
+  }
+}
+.link {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  justify-self: start;
+  gap: var(--sp-2);
+  min-height: 32px;
+  color: var(--accent-text);
+  text-decoration: none;
+  font-size: var(--fs-meta);
+  font-weight: 500;
+}
+.link:hover,
+.link:focus-visible {
+  text-decoration: underline;
+}
+@media (pointer: coarse), (max-width: 800px) {
+  .link {
+    min-height: 44px;
+  }
+}
+
+/* ------------------------------------------------------------------ paths (roots, exclusions) */
+.paths {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--line);
+}
+.paths > li {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-height: 48px;
+  padding: var(--sp-1) 0;
+  border-bottom: 1px solid var(--line);
+}
+.path {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: 400 var(--fs-row) / 1.4 var(--font-mono);
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+
+/* ------------------------------------------------------------------ overview visibility */
+.seg {
+  width: 100%;
+}
+.seg > button {
+  flex: 1 1 0;
+}
+.groupHead {
+  margin: var(--sp-1) 0 0;
+  font: 500 var(--fs-micro) / 1.2 var(--font-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.group {
+  display: grid;
+  border: 1px solid var(--line);
+}
+.groupTitle {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-height: 44px;
+  padding: 0 var(--sp-3);
+  font-size: var(--fs-row);
+}
+.groupTitle b {
+  font-weight: 600;
+  color: var(--text-1);
+}
+.groupTitle .sub {
+  flex: 1 1 auto;
+}
+.folders {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px dashed var(--line);
+}
+.unassigned {
+  border: 1px dashed var(--line-strong);
+}
+.folders > li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--sp-3);
+  min-height: 52px;
+  padding: var(--sp-1) var(--sp-3);
+  border-bottom: 1px solid var(--line);
+}
+.folders > li:last-child {
+  border-bottom: 0;
+}
+.fname {
+  display: grid;
+  min-width: 0;
+  font-size: var(--fs-row);
+  color: var(--text-1);
+}
+.fname > span:last-child {
+  font: 400 var(--fs-micro) / 1.5 var(--font-mono);
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.isOff .fname > span:first-child {
+  color: var(--text-2);
+}
+@media (max-width: 800px) {
+  .folders > li {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+  .folders > li > :global(.nj-stamp) {
+    grid-column: 2;
+    justify-self: start;
+  }
+}
+
+/* ------------------------------------------------------------------ the project page head */
+.back {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: var(--sp-2);
+  min-height: 44px;
+  font: 500 var(--fs-label) / 1 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent-text);
+  text-decoration: none;
+}
+.back:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
+.ptitle {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+/* ------------------------------------------------------------------ General: folder chips */
+.folderChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+/* A folder chip with its own remove target: the chip's full height, square. */
+.folderChips > li {
+  padding-right: 0;
+  text-transform: none;
+  letter-spacing: 0.02em;
+  font-size: var(--fs-meta);
+  color: var(--text-1);
+}
+.chipX {
+  display: grid;
+  place-items: center;
+  align-self: stretch;
+  width: 32px;
+  min-height: 32px;
+  margin-left: var(--sp-1);
+  padding: 0;
+  border: 0;
+  border-left: 1px solid var(--line);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.chipX:hover:not(:disabled),
+.chipX:focus-visible {
+  color: var(--danger-text);
+}
+.chipX:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -2px;
+}
+@media (pointer: coarse), (max-width: 800px) {
+  .chipX {
+    width: 44px;
+    min-height: 44px;
+  }
+}
+
+/* ------------------------------------------------------------------ Session defaults save bar */
+/* Sticky to the pane's foot while the draft differs from what is stored. */
+.savebar {
+  --nj-face: var(--bg-2);
+  --nj-edge: var(--hud-dim);
+  position: sticky;
+  bottom: var(--sp-3);
+  z-index: var(--z-dock);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-4);
+}
+.led,
+.ledWord {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font: 500 var(--fs-micro) / 1.2 var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+.ledWord {
+  color: var(--text-2);
+}
+.what {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+
+/* ------------------------------------------------------------------ Memory & equipment */
+.readouts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-5);
+  margin: 0;
+}
+.readouts > div {
+  display: grid;
+  gap: var(--sp-1);
+}
+.readouts dt {
+  font: 500 var(--fs-micro) / 1.2 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.readouts dd {
+  margin: 0;
+}
+.rows {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--line);
+}
+.rows > li {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-height: 52px;
+  padding: var(--sp-2) 0;
+  border-bottom: 1px solid var(--line);
+}
+.rowMain {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 2px;
+  min-width: 0;
+}
+.rowMain > b {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  font: 600 var(--fs-row) / 1.3 var(--font-mono);
+  color: var(--text-1);
+}
+.rowMain > b.isSans {
+  font-family: inherit;
+}
+.rowMain > span {
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+/* An MCP server's name opens its Library page (#2163 P2): the name stays the row's ink. */
+.rowLink {
+  color: inherit;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.rowLink:hover,
+.rowLink:focus-visible {
+  text-decoration: underline;
+}
+
+/* ------------------------------------------------------------------ Playbook (#1949) */
+.pbCols {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: var(--sp-4);
+  align-items: start;
+}
+@media (max-width: 1100px) {
+  .pbCols {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.pbHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+.pbName {
+  margin: 0;
+  font: 600 var(--fs-h2) / 1.2 var(--font-display);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.facts {
+  display: grid;
+  gap: var(--sp-1);
+  margin: 0;
+}
+.facts > div {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: var(--sp-3);
+  align-items: baseline;
+}
+.facts dt {
+  font: 500 var(--fs-micro) / 1.2 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.facts dd {
+  margin: 0;
+  min-width: 0;
+  font-size: var(--fs-row);
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.verify {
+  display: grid;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--status-up);
+  background: var(--bg-2);
+}
+.verify[data-tone="att"] {
+  border-left-color: var(--status-degraded);
+}
+.verify[data-tone="down"] {
+  border-left-color: var(--status-down);
+}
+.verifyHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+  margin: 0;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.verifyHead > b {
+  font-size: var(--fs-title);
+  color: var(--text-1);
+}
+.verify[data-tone="att"] .verifyHead > b {
+  color: var(--status-degraded);
+}
+.verify[data-tone="down"] .verifyHead > b {
+  color: var(--danger-text);
+}
+.checks {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-2) var(--sp-5);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.checks > li {
+  display: grid;
+  grid-template-columns: 128px minmax(0, 1fr);
+  gap: var(--sp-3);
+  align-items: baseline;
+  min-width: 0;
+  font-size: var(--fs-meta);
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.checks > li[data-tone="down"] > span:last-child {
+  color: var(--danger-text);
+}
+.stages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-5);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.stages > li[aria-current="step"] {
+  color: var(--status-degraded);
+}
+.pbActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.pbActions > div,
+.pushEnd > div {
+  display: contents;
+}
+.pushEnd {
+  margin-left: auto;
+}
+.trust {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  min-height: 44px;
+  font-size: var(--fs-row);
+  color: var(--text-1);
+}
+@media (max-width: 800px) {
+  .checks {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .checks > li {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--sp-1);
+  }
+  .pushEnd {
+    margin-left: 0;
+  }
+  .pbActions > button,
+  .pbActions :global(button) {
+    flex: 1 1 auto;
+  }
+}

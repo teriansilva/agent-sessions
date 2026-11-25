@@ -1,0 +1,159 @@
+/* Sent-messages recovery modal (#619) on THE dialog (../HudDialog.module.css, NIGHTJAR #1531): the
+ * frame, head, close and the ≤800px bottom sheet are composed; this sheet holds the message rows,
+ * their badges and actions. Tokens only. */
+
+.backdrop {
+  composes: backdrop from "../HudDialog.module.css";
+}
+
+.dialog {
+  composes: dialog from "../HudDialog.module.css";
+  width: min(460px, 100%);
+  max-height: min(80vh, 660px);
+}
+
+.head {
+  composes: head from "../HudDialog.module.css";
+}
+/* The heading doubles as the dialog's accessible name, so it carries the accent, not --text-3. */
+.tag {
+  composes: tag from "../HudDialog.module.css";
+}
+.close {
+  composes: close from "../HudDialog.module.css";
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.msg {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 0;
+  border-top: 1px solid var(--line);
+}
+.meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.when {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+/* The only delivery claim the client can honestly make, and it's the negative one. Uses the
+ * unsent-draft blue (#477) — deliberately not a status hue: this is information, not an error. */
+.badge {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--status-draft);
+  border: 1px solid color-mix(in srgb, var(--status-draft) 45%, transparent);
+  background: color-mix(in srgb, var(--status-draft) 10%, transparent);
+  padding: 1px 5px;
+}
+/* The ring is device-global (a fresh session has no id yet), so an entry can come from elsewhere. */
+.other {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+/* Two-line preview: enough to recognise the message, never enough to bury the actions. */
+.body {
+  margin: 0;
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  color: var(--text-1);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.attachments {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.acts {
+  display: flex;
+  gap: 6px;
+}
+/* 26px chips read as secondary next to the compose CTA; the mobile rule below lifts them to a
+ * comfortable touch target. */
+.act {
+  composes: nj-plate from global;
+  --nj-face: color-mix(in srgb, var(--bg-2) 55%, transparent);
+  --nj-edge: var(--line-strong);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 32px;
+  padding: 0 var(--sp-3);
+  border: 1px solid transparent;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: color var(--t-fast) var(--ease-out);
+}
+.act:hover,
+.act:focus-visible {
+  color: var(--accent-text);
+  --nj-edge: var(--hud);
+}
+.act:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.primary {
+  --nj-face: color-mix(in srgb, var(--hud) 12%, transparent);
+  --nj-edge: var(--hud-dim);
+  color: var(--accent-text);
+  border-color: var(--hud-dim);
+}
+
+.foot {
+  margin: 11px 0 0;
+  padding-top: 9px;
+  border-top: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+/* Mobile (≤800px): the bottom sheet comes from the shared dialog; the row actions grow to a real
+ * touch target. */
+@media (pointer: coarse), (max-width: 800px) {
+  .act {
+    min-height: 44px;
+    padding: 0 var(--sp-3);
+  }
+}
+@media (max-width: 800px) {
+  .dialog {
+    max-height: 82vh;
+    padding-bottom: calc(var(--sp-4) + env(safe-area-inset-bottom, 0px));
+  }
+}

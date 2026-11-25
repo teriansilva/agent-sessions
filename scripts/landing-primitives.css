@@ -1,0 +1,317 @@
+/* ---- landing primitives (#1597) ----------------------------------------------------------
+ * The NIGHTJAR primitives for battlelabos.com's sub-pages (legal, privacy, 404), on the tokens
+ * above. Source: scripts/landing-primitives.css; scripts/gen-landing-css writes it into
+ * landing/nightjar.css after the generated tokens. Tokens only — no colour literal in this file
+ * (tests/test_landing_pages.py). The site is dark-only, like the shipped index (#1544), and the
+ * only motion is the atmosphere and the cursor, both off under prefers-reduced-motion.
+ * ------------------------------------------------------------------------------------------ */
+
+* { box-sizing: border-box; }
+html, body { margin: 0; min-height: 100%; }
+html { scroll-behavior: smooth; }
+body {
+  background: var(--ground);
+  color: var(--text-1);
+  font: 400 13px/1.7 var(--font-mono);
+  font-variant-ligatures: none;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+a { color: var(--accent-text); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+
+/* ---- atmosphere: hex grid + vignette + scanlines + a slow sweep ---- */
+.atmo { position: fixed; inset: 0; pointer-events: none; z-index: 0; }
+.atmo > i { position: absolute; inset: 0; display: block; }
+.atmo .hex {
+  background: var(--hud-faint);
+  opacity: 0.35;
+  -webkit-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='56' height='97' viewBox='0 0 56 97'><path d='M28 0 L56 16 L56 48 L28 64 L0 48 L0 16 Z M28 64 L28 97' fill='none' stroke='black' stroke-width='1'/></svg>");
+  mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='56' height='97' viewBox='0 0 56 97'><path d='M28 0 L56 16 L56 48 L28 64 L0 48 L0 16 Z M28 64 L28 97' fill='none' stroke='black' stroke-width='1'/></svg>");
+}
+.atmo .vig { background: radial-gradient(ellipse at 50% 25%, transparent 0 45%, var(--vignette) 100%); }
+.atmo .scan { background: repeating-linear-gradient(0deg, var(--scanline) 0 1px, transparent 1px 3px); }
+.atmo .sweep {
+  inset: -140px 0 auto;
+  height: 140px;
+  background: linear-gradient(180deg, transparent, var(--hud-tint) 70%, transparent);
+  animation: lp-sweep 11s linear infinite;
+}
+@keyframes lp-sweep { to { transform: translateY(calc(100vh + 140px)); } }
+
+/* ---- chamfered armour panel: .cf paints the edge, .face the face ---- */
+.cf {
+  --c: var(--cut);
+  position: relative;
+  padding: 1px;
+  clip-path: polygon(var(--c) 0, 100% 0, 100% calc(100% - var(--c)), calc(100% - var(--c)) 100%, 0 100%, 0 var(--c));
+  background: var(--hud-dim);
+}
+.cf > .face {
+  clip-path: inherit;
+  background: var(--bg-1);
+  height: 100%;
+  position: relative;
+}
+.rail {
+  position: absolute; left: calc(var(--cut) + 2px); right: 0; top: 0; height: 2px;
+  background: var(--hud);
+  box-shadow: var(--glow-rail);
+}
+.rail.short { right: auto; width: 34%; }
+.tick { position: absolute; width: 10px; height: 10px; border: 0 solid var(--hud); pointer-events: none; }
+.tick.tr { top: 6px; right: 6px; border-top-width: 1px; border-right-width: 1px; }
+.tick.bl { bottom: 6px; left: 6px; border-bottom-width: 1px; border-left-width: 1px; }
+
+/* ---- callsign / kicker with a hazard notch ---- */
+.notch {
+  display: inline-block; width: 22px; height: 10px; flex: none;
+  background: repeating-linear-gradient(-45deg, var(--hud) 0 3px, transparent 3px 6px);
+  opacity: 0.9;
+}
+.kicker {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  font: 500 var(--fs-micro) / 1.2 var(--font-mono);
+  letter-spacing: 0.22em; text-transform: uppercase; color: var(--text-3);
+}
+.kicker b { color: var(--hud-text); font-weight: 600; }
+.led {
+  display: inline-block; width: 7px; height: 7px; border-radius: 50%; flex: none;
+  background: var(--text-3);
+}
+.led.up { background: var(--status-up); box-shadow: 0 0 var(--glow-led) var(--status-up); }
+.led.att { background: var(--status-degraded); box-shadow: 0 0 var(--glow-led) var(--status-degraded); }
+
+/* ---- buttons: chamfered plates, 44 px floor, inset focus ring ---- */
+.cta, .ghost {
+  --c: 10px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 10px;
+  min-height: 46px; padding: 0 22px; border: 0; cursor: pointer;
+  text-decoration: none; white-space: nowrap;
+  clip-path: polygon(var(--c) 0, 100% 0, 100% calc(100% - var(--c)), calc(100% - var(--c)) 100%, 0 100%, 0 var(--c));
+  font: 600 12px/1 var(--font-display); letter-spacing: 0.16em; text-transform: uppercase;
+}
+.cta { background: var(--accent); color: var(--on-accent); }
+.ghost {
+  --c: var(--cut-sm);
+  min-height: 44px; padding: 0 16px;
+  background: color-mix(in srgb, var(--hud) 14%, transparent);
+  color: var(--hud-text);
+  font-family: var(--font-mono); font-size: var(--fs-micro);
+}
+.ghost.plain { background: color-mix(in srgb, var(--text-1) 7%, transparent); color: var(--text-1); }
+.cta:hover, .ghost:hover { filter: brightness(1.12); }
+/* Focus inside a chamfer: the clip would eat an outset ring, so it is drawn inset. */
+.cta:focus-visible, .ghost:focus-visible { outline: 2px solid var(--text-1); outline-offset: -4px; }
+
+/* ---- site top bar: the brand and the index's section links ---- */
+.top {
+  position: sticky; top: 0; z-index: 6;
+  background: color-mix(in srgb, var(--ground) 88%, transparent);
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--hud-dim);
+}
+.topin {
+  max-width: 1200px; margin: 0 auto; padding: 0 20px;
+  display: flex; align-items: center; gap: 14px; min-height: 56px;
+}
+.brand {
+  display: flex; align-items: center; gap: 10px; padding: 12px 0;
+  font: 600 15px/1 var(--font-display); letter-spacing: 0.22em;
+  color: var(--text-1); text-decoration: none; white-space: nowrap;
+}
+.brand b { color: var(--accent-text); font-weight: 600; }
+.brand .brand-mark { width: 22px; height: 22px; flex: none; }
+.nav { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.nav a {
+  --c: var(--cut-sm);
+  display: inline-flex; align-items: center; min-height: 44px; padding: 0 12px; white-space: nowrap;
+  font: 500 var(--fs-micro) / 1 var(--font-mono); letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--text-2); text-decoration: none;
+  clip-path: polygon(var(--c) 0, 100% 0, 100% calc(100% - var(--c)), calc(100% - var(--c)) 100%, 0 100%, 0 var(--c));
+  background: color-mix(in srgb, var(--text-1) 6%, transparent);
+}
+.nav a:hover { color: var(--text-1); }
+.nav a.hot { background: var(--accent); color: var(--on-accent); font-weight: 600; }
+.nav a:focus-visible { outline: 2px solid var(--text-1); outline-offset: -4px; }
+
+/* ---- the page: a reading column over the atmosphere ---- */
+.site { position: relative; z-index: 1; min-height: 100vh; display: flex; flex-direction: column; }
+.doc {
+  width: min(780px, calc(100% - 32px));
+  margin: 28px auto 40px;
+  display: grid; gap: 16px;
+}
+.doc.withtoc {
+  width: min(1040px, calc(100% - 32px));
+  grid-template-columns: 220px minmax(0, 760px);
+  align-items: start;
+}
+.doc .face { padding: 26px 30px 28px; }
+.doc .h1 {
+  margin: 10px 0 18px;
+  font: 600 26px/1.15 var(--font-display); letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--accent-text);
+}
+.doc .h1 .b { color: var(--text-3); }
+.cur {
+  display: inline-block; width: 10px; height: 0.9em; margin-left: 8px; vertical-align: -0.08em;
+  background: var(--accent); opacity: 0.85;
+  animation: lp-blink 1.1s step-end infinite;
+}
+@keyframes lp-blink { 50% { opacity: 0; } }
+.doc h2.sec {
+  display: flex; align-items: center; gap: 10px;
+  margin: 26px 0 10px;
+  font: 600 14px/1.2 var(--font-display); letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--text-1);
+}
+.doc h2.sec .i, .doc[data-numbered] h2.sec::before {
+  font: 500 var(--fs-micro) / 1 var(--font-mono); letter-spacing: 0.06em;
+  color: var(--hud-text);
+  border: 1px solid var(--hud-dim);
+  padding: 4px 6px;
+}
+/* A page whose headings carry no number of their own numbers them with a counter: generated
+   content, so the page's wording does not change (legal.html, #1597). */
+.doc[data-numbered] { counter-reset: sec; }
+.doc[data-numbered] h2.sec { counter-increment: sec; }
+.doc[data-numbered] h2.sec::before { content: counter(sec, decimal-leading-zero); }
+.doc p, .doc li { color: var(--text-2); margin: 0 0 10px; }
+.doc ul { margin: 8px 0 12px; padding-left: 20px; }
+.doc li { margin: 4px 0; }
+.doc strong { color: var(--text-1); font-weight: 600; }
+.doc code { color: var(--accent-text); overflow-wrap: anywhere; }
+.doc address { font-style: normal; color: var(--text-1); margin: 0 0 12px; }
+.doc a {
+  color: var(--accent-text);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  text-underline-offset: 3px;
+}
+.doc .muted { color: var(--text-3); font-size: var(--fs-micro); letter-spacing: 0.14em; text-transform: uppercase; }
+.doc .back-row { margin-top: 18px; }
+.doc .back-row a { text-decoration: none; }
+
+/* ---- the section index beside a long page (privacy) ---- */
+.toc {
+  position: sticky; top: 76px;
+  display: grid; gap: 2px;
+  border-left: 1px solid var(--line-strong); padding-left: 2px;
+}
+.toc .tlbl {
+  font: 500 var(--fs-micro) / 1 var(--font-mono); letter-spacing: 0.22em; text-transform: uppercase;
+  color: var(--text-3); padding: 6px 10px 10px;
+}
+.toc a {
+  display: flex; gap: 8px; align-items: center; min-height: 32px; padding: 6px 10px;
+  font: 400 var(--fs-micro) / 1.3 var(--font-mono); letter-spacing: 0.06em;
+  color: var(--text-3); text-decoration: none;
+}
+.toc a:hover, .toc a:focus-visible { color: var(--hud-text); box-shadow: inset 2px 0 0 var(--hud); }
+.toc a .i { color: var(--text-3); }
+
+/* ---- the analytics control (privacy #settings): consent.js owns the state; CSS only reads it ---- */
+.consent { margin: 12px 0 6px; }
+.consent .face { padding: 16px 18px; display: grid; gap: 12px; }
+.consent .state { display: flex; align-items: center; gap: 10px; margin: 0; color: var(--text-1); }
+/* The state LED follows the pressed button consent.js marks: lit "up" while analytics are on. */
+.consent .state::before {
+  content: ""; width: 7px; height: 7px; border-radius: 50%; flex: none;
+  background: var(--text-3);
+}
+.consent:has([data-consent="granted"][aria-pressed="true"]) .state::before {
+  background: var(--status-up); box-shadow: 0 0 var(--glow-led) var(--status-up);
+}
+.consent .choices { display: inline-flex; flex-wrap: wrap; border: 1px solid var(--line-strong); justify-self: start; }
+.consent .choices button {
+  min-height: 44px; min-width: 160px; padding: 0 18px;
+  border: 0; background: transparent; cursor: pointer;
+  font: 500 var(--fs-micro) / 1 var(--font-mono); letter-spacing: 0.16em; text-transform: uppercase;
+  color: var(--text-2);
+}
+.consent .choices button + button { border-left: 1px solid var(--line-strong); }
+.consent .choices button:hover { color: var(--text-1); }
+.consent .choices button[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--hud) 20%, transparent);
+  color: var(--hud-text);
+  box-shadow: inset 0 -2px 0 var(--hud);
+}
+.consent .choices button:focus-visible { outline: 2px solid var(--text-1); outline-offset: -4px; }
+
+/* ---- 404: Sector not found ---- */
+.lost { width: min(640px, calc(100% - 32px)); margin: 8vh auto 40px; }
+.lost .face { padding: 28px 30px; display: grid; gap: 16px; }
+.lost .code {
+  font: 600 64px/1 var(--font-display); letter-spacing: 0.08em;
+  color: var(--accent-text);
+}
+.lost h1 {
+  margin: 0;
+  font: 600 22px/1.2 var(--font-display); letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--accent-text);
+}
+.radar {
+  position: absolute; top: 22px; right: 26px;
+  width: 110px; height: 110px; border-radius: 50%;
+  border: 1px solid var(--hud-dim);
+  background: repeating-radial-gradient(circle, transparent 0 17px, var(--hud-faint) 17px 18px);
+}
+.radar::after {
+  content: ""; position: absolute; inset: 0; border-radius: 50%;
+  background: conic-gradient(from 0deg, var(--hud-tint), transparent 70deg);
+  /* Static: the sweep wedge is drawn, never turned. Only the atmosphere and the cursor move. */
+}
+.loglines {
+  font: 400 12px/1.7 var(--font-mono); color: var(--text-3);
+  border-left: 2px solid var(--line-strong); padding-left: 12px;
+}
+.loglines b { color: var(--danger-text); font-weight: 500; }
+.lost .acts { display: flex; gap: 10px; flex-wrap: wrap; }
+
+/* ---- site footer: the classification line is gone (Phase 0 decision 4) ---- */
+.sfoot {
+  margin-top: auto; position: relative; z-index: 1;
+  border-top: 1px solid var(--hud-dim);
+  display: flex; gap: 6px 18px; align-items: center; flex-wrap: wrap;
+  padding: 10px 22px;
+  font: 400 var(--fs-micro) / 1 var(--font-mono); letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--text-3);
+}
+.sfoot .stripe {
+  width: 34px; height: 8px; flex: none;
+  background: repeating-linear-gradient(-45deg, var(--hud) 0 3px, transparent 3px 6px);
+}
+.sfoot a { color: var(--text-2); text-decoration: none; min-height: 44px; display: inline-flex; align-items: center; }
+.sfoot a:hover { color: var(--hud-text); }
+.sfoot .r { margin-left: auto; }
+
+/* ---- phone (≤800, the one breakpoint) ---- */
+@media (max-width: 800px) {
+  .topin { padding: 0 12px; gap: 8px; }
+  .brand > span:not(.sr-only) { display: none; }
+  .nav { gap: 4px; }
+  .nav a { padding: 0 9px; letter-spacing: 0.08em; }
+  .nav a.sec { display: none; }
+  .doc, .doc.withtoc { width: calc(100% - 20px); margin: 16px auto 24px; grid-template-columns: minmax(0, 1fr); }
+  .doc .face { padding: 20px 16px 22px; }
+  .toc { display: none; }
+  .consent .choices { display: flex; }
+  .consent .choices button { flex: 1 1 0; min-width: 0; padding: 0 10px; letter-spacing: 0.08em; white-space: nowrap; }
+  .lost .face { padding: 22px 18px; }
+  .lost .code { font-size: 48px; }
+  .radar { width: 72px; height: 72px; top: 18px; right: 18px; }
+  .sfoot { padding: 6px 14px; }
+  .sfoot .r { margin-left: 0; }
+}
+
+/* ---- motion: the atmosphere and the cursor only, and none of it under reduced motion ---- */
+@media (prefers-reduced-motion: reduce) {
+  .atmo .sweep, .cur { animation: none; }
+  .atmo .sweep { display: none; }
+  html { scroll-behavior: auto; }
+}

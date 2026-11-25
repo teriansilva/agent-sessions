@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<title>BattleLab — approve sign-in</title>
+<!-- NIGHTJAR (#1596): the app's own palette and primitives, emitted by web/scripts/emit-page-tokens.mjs,
+     then this page family's layout. Before sign-in, no telemetry and no classification text. -->
+<link rel="stylesheet" href="/static/nightjar/fonts.css">
+<link rel="stylesheet" href="/static/nightjar/tokens.css">
+<link rel="stylesheet" href="/static/nightjar/motion.css">
+<link rel="stylesheet" href="/static/nightjar/nightjar.css">
+<link rel="stylesheet" href="/static/nightjar/pages.css">
+</head>
+<body class="nj-page">
+<div class="nj-atmo" aria-hidden="true"><i class="nj-hex"></i><i class="nj-scan"></i><i class="nj-noise"></i><i class="nj-sweep"></i><i class="nj-vig"></i></div>
+<main class="page-shell">
+<div class="nj-frame page-card is-wide" data-mode="{{ mode }}">
+  {% if mode == "confirm" %}
+    <p class="nj-callsign page-callsign"><span class="nj-notch" aria-hidden="true"></span>Security // <span class="nj-value">Device link</span><span class="nj-meta"><span class="hud-led att" aria-hidden="true"></span></span></p>
+    <h1 class="page-title">Approve sign-in on a new device?</h1>
+    <p class="page-lede">A new client is asking to sign in to your BattleLab account using this phone's session.</p>
+    <dl class="page-facts">
+      <dt>Device</dt><dd>{{ requester_ua or "unknown" }}</dd>
+      <dt>Address</dt><dd>{{ requester_ip or "unknown" }}</dd>
+    </dl>
+    <p class="page-warn">⚠ Approving grants the new device <b>full access</b> to your sessions and terminals. Only approve a device you just opened.</p>
+    <div class="page-actions">
+      <form method="post" action="/link/deny">
+        <input type="hidden" name="challenge_id" value="{{ challenge_id }}">
+        <button type="submit" class="nj-plate page-btn is-ghost deny">Deny</button>
+      </form>
+      <form method="post" action="/link/approve">
+        <input type="hidden" name="challenge_id" value="{{ challenge_id }}">
+        <button type="submit" class="nj-plate page-btn approve">Approve</button>
+      </form>
+    </div>
+  {% elif mode == "approved" %}
+    <p class="nj-callsign page-callsign"><span class="nj-notch" aria-hidden="true"></span>Security // <span class="nj-value">Device link</span><span class="nj-meta"><span class="hud-led up" aria-hidden="true"></span></span></p>
+    <h1 class="page-title">Approved</h1>
+    <p class="page-lede">The new device is now signed in. You can close this page.</p>
+  {% elif mode == "denied" %}
+    <p class="nj-callsign page-callsign"><span class="nj-notch" aria-hidden="true"></span>Security // <span class="nj-value">Device link</span><span class="nj-meta"><span class="hud-led idle" aria-hidden="true"></span></span></p>
+    <h1 class="page-title">Denied</h1>
+    <p class="page-lede">The sign-in request was rejected. You can close this page.</p>
+  {% else %}
+    <p class="nj-callsign page-callsign"><span class="nj-notch" aria-hidden="true"></span>Security // <span class="nj-value">Device link</span><span class="nj-meta"><span class="hud-led idle" aria-hidden="true"></span></span></p>
+    <h1 class="page-title">Request unavailable</h1>
+    <p class="page-lede">This sign-in request is invalid or has expired. Reload the QR on the other device and scan it again.</p>
+  {% endif %}
+</div>
+</main>
+</body>
+</html>

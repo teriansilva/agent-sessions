@@ -1,0 +1,4112 @@
+"""Calling HQ (#1397 P1): the call registry and the broker between the browser and the worker.
+
+```
+browser ──/ws/voice/{id}──▶ Call (this module, in the app) ──UDS ws──▶ voice worker (Pipecat)
+   mic PCM16 16 kHz  ─────────────────────────────────────────────────▶  VAD + Smart Turn → STT
+   speaker PCM16 24 kHz ◀─────────────────────────────────────────────  TTS ◀── "say"
+           utterance ──▶ HQ turn (ask_orchestrator, via="call") ──▶ stored answer ──▶ say
+```
+
+The worker is a **speech terminal**: it hears (VAD, end-of-turn, STT) and speaks (TTS) and knows
+nothing about HQ. Everything HQ does happens HERE, in the app, as an ordinary HQ turn with the
+operator taken from the socket that opened the call — so a call reaches exactly what typing in HQ
+reaches, through the same tools, limits and confirm routes (no new authority).
+
+What HQ says is HQ's STORED text: the answer as `ask_store.append` kept it (redacted), plus fixed
+sentences rendered here for cards and questions, and — while a slow turn runs — fixed status lines
+built from the turn's own progress events (#1702). The model never speaks unstored prose, and raw
+tool output never reaches the TTS endpoint.
+
+Limits: one call per instance; bounded frames and queues. A call ends when the operator ends it
+(#1668): the hang-up, or words HQ judges mean the call is over (`end_call`, after its farewell has
+played). No idle or duration limit: after SILENCE_ASK_S without real speech HQ asks once, and only
+no answer within NO_ANSWER_S of that question ends the call. On transport loss the call ends: mic
+and playback stop on the client, nothing reconnects without a new tap.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import logging
+import math
+import os
+import random
+import re
+import secrets
+import shutil
+import signal
+import sys
+import tempfile
+import time
+import uuid
+import weakref
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from . import ask_orchestrator, ask_store, hq_calls_settings, hq_contacts, voice_setup
+from .voice_cues import CUE_LINES
+from .voice_text import WHOLE_MIN_WORDS
+
+log = logging.getLogger(__name__)
+
+#: No automatic end (#1668): after this long without REAL speech (a heard utterance, or an HQ say
+#: the browser played), HQ asks whether the operator is still there…
+SILENCE_ASK_S = 30 * 60
+#: …and only no answer within this long of that question having played ends the call.
+NO_ANSWER_S = 60.0
+#: A say whose `played` ack never comes (a backgrounded tab) counts as played this long after the
+#: worker reported its audio sent (`said`), plus how long its words take to say: an
+#: UNCONFIRMED-playback end, not proof it was heard.
+PLAYBACK_FALLBACK_S = 10.0
+#: How fast speech is assumed to go when estimating how long a say takes to play (deliberately
+#: slow: a longer estimate only ends an unacked call later).
+SPEECH_CHARS_PER_S = 10.0
+STILL_THERE_LINE = "Are you still there?"
+#: What HQ says to a plain goodbye before the call ends (2026-11-25: no HQ turn for it).
+GOODBYE_LINE = "Take care, Commander."
+
+
+def speech_seconds(text: str) -> float:
+    """About how long `text` takes to say (at `SPEECH_CHARS_PER_S`): the no-ack fallback waits
+    for it to have played."""
+    return len(text) / SPEECH_CHARS_PER_S
+
+
+def asks_something(text: str) -> bool:
+    """Whether HQ's answer asks the operator something (any script's question mark): an answer
+    that asks is never a farewell, whatever was judged (#1668)."""
+    return any(q in text for q in "?？؟")
+
+
+#: How many recent worker turns' starts a call remembers (`turn_starts`).
+TURN_STARTS_KEPT = 32
+#: How many recent say ids a call remembers to tell its own `played` acks from stale ones.
+SAY_IDS_KEPT = 64
+#: HQ's lines the echo check remembers (#1807): what HQ said that may still be coming out of the
+#: speaker.
+AUDIBLE_KEPT = 16
+#: A line counts as possibly audible from when HQ said it until the browser played it out, plus
+#: this tail (the room's reverberation, the transcript's word timing)…
+ECHO_TAIL_S = 1.5
+#: …or, never acked (muted, suspended, cut by a dropped socket), until this long after it was said.
+ECHO_UNACKED_S = 60.0
+#: A client audio frame: 20–100 ms of 16 kHz PCM16 is 640–3200 bytes; anything past this is refused.
+MAX_AUDIO_FRAME = 64 * 1024
+MAX_CONTROL_FRAME = 8 * 1024
+#: Ingress budget per second of wall time (16 kHz PCM16 = 32 KB/s; generous headroom).
+MAX_INGRESS_BPS = 128 * 1024
+IN_RATE = 16_000
+OUT_RATE = 24_000
+WORKER_START_S = 30.0
+#: A call that no socket of its session joins within this ends ("not_connected").
+DIAL_TIMEOUT_S = 30.0
+#: The worker ends a segment at this pause, whatever the setting (#1845): HQ starts a DRAFT of its
+#: answer at once, and the turn-taking setting decides when it is committed instead.
+WORKER_STOP_S = 0.35
+#: How long the worker's turn model waits for more after a sentence it takes for UNFINISHED
+#: (#1996). Pipecat's default is 3 s, and all of it came before HQ was even given the words:
+#: measured on real calls through the worker, the words reached HQ 1.0 s after the last one
+#: when the model took the sentence for finished and 3.4 s when it did not ("Thanks. That
+#: helps."). One second is enough: the answer stays a draft for the commit pause, and words
+#: that come later join it (#1845).
+WORKER_TURN_WAIT_S = 1.0
+#: The silence after the Commander's last word before HQ's draft is committed (#1845), per
+#: turn-taking setting. Quick drafts nothing: it commits at the worker's own stop.
+COMMIT_PAUSE_S = {"quick": 0.0, "natural": 1.5, "patient": 2.5}
+#: …and at least this long when the stop ended a sentence the worker's turn model took for
+#: UNFINISHED (#1996): the Commander trailed off. Three seconds is what that model's own wait
+#: used to be, when it was spent before HQ had the words; now HQ drafts during it. Quick, which
+#: drafts nothing, is not affected.
+UNFINISHED_PAUSE_S = 3.0
+DRAFT_TICK_S = 0.05
+#: A spoken confirmation's window, from the moment its read-back finished playing (#1397 P2).
+CHALLENGE_S = 20.0
+#: Words heard this soon after HQ's turn began, before it ran any tool, are the SAME request
+#: carried on after a pause ("…sessions with this handoff title." / "I want you to review all of
+#: them."): they go into that turn as a steer, never judged, so they can never be queued as a
+#: second question and answered twice (the Commander's 21:24 call on 2026-11-25).
+CONTINUATION_S = 8.0
+#: How long a 202 (a session starting, an operation running) is followed to its end state.
+OUTCOME_POLL_S = 30.0
+OUTCOME_EVERY_S = 1.5
+#: Past `OUTCOME_POLL_S`, an accepted card is still followed at this rate, for at most this long
+#: (#2372): a slow launch's end is still told.
+OUTCOME_LATE_EVERY_S = 5.0
+OUTCOME_LATE_MAX_S = 15 * 60.0
+STILL_STARTING_LINE = "Still starting. I'll tell you when it's up."
+#: Card outcome lines kept awaiting their `played` ack (#2372); the oldest go unrecorded past it.
+SAID_PENDING_KEPT = 32
+#: A conversation card's id (`ask_store`'s action id shape).
+_CARD_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+#: The call panel's "What needs me?" chip (#2137): asked of HQ like any spoken question. There is
+#: no keyword shortcut any more — a phrase list once swallowed a whole spoken request because it
+#: contained "what … need … you" (2026-11-18), and HQ never saw it.
+NEEDS_YOU_CHIP = "What needs me?"
+#: The most Needs-you rows one HQ answer may put to the Commander by voice (`offer_decisions`).
+OFFERS_MAX = 4
+#: The call's record writer (#2137) retires after this long with nothing to write.
+RECORD_WRITER_IDLE_S = 30.0
+#: How long a question waits for the call's earlier records to be written before HQ reads the
+#: conversation, so a word dropped just before it is on record when HQ looks (#2137).
+RECORDS_BEFORE_ASK_S = 0.5
+LANG = re.compile(r"^[a-z]{2}\Z")  # `$` would also match "de\n"
+#: What HQ says while a turn is still running (#1702): short, casual and FIXED. No durations and no
+#: step counts: the Commander asked for "let me check", not a stopwatch. The first line depends
+#: only on whether the running step is one of HQ's read tools (by its pinned kind, never its
+#: arguments or result); later lines take turns; the stall line is its own.
+LOOKING = "Let me check."
+WORKING = "Working on it."
+STILL_WORKING = ("Still on it.", "One moment.", "Still working on this.")
+STALLED = "This is taking longer than usual. Still on it."
+#: While an HQ turn runs on a call, HQ never goes quiet for long (#1702): a fixed status line once
+#: HQ has been quiet this long within the turn (counted from the later of the turn's start and
+#: when its last line had time to play). A turn that answers sooner says only its answer (#1827)…
+FIRST_PROGRESS_S = 12.0
+#: …then after every this much quiet…
+PROGRESS_EVERY_S = 25.0
+#: …and, once the model has kept HQ waiting this long, a stall line every STALL_EVERY_S.
+STALL_S = 90.0
+STALL_EVERY_S = 45.0
+PROGRESS_TICK_S = 1.0
+#: HQ thinking out loud (#2113 P2): its own aside about what it is doing replaces the fixed line
+#: when the model wrote one. Said once HQ has been quiet this long within the turn (#2339: as it
+#: arrives, like a person searching aloud, not 4 s later)…
+ASIDE_QUIET_S = 1.0
+#: …and never sooner than this after the previous status line, so it does not chatter (#2339:
+#: 8 s blocked a search's second aside until after its answer).
+ASIDE_GAP_S = 3.0
+#: An aside shorter than this many words is not said (#2339): VoxCPM2 voices a line of one to
+#: five words outside its voice now and then (#1996); a whole sentence keeps it.
+ASIDE_MIN_WORDS = WHOLE_MIN_WORDS
+#: HQ's thinking cue (#2339): this long after the Commander's words were committed, a turn they
+#: just asked that has said nothing yet gets ONE short fixed line ("Hmm, let me see."), played
+#: from a take the worker rendered and checked ahead (`voice_cues`), so it costs the answer no TTS
+#: time. The operator's decision on #2339 replaces #1827's "no stock acknowledgement".
+CUE_AFTER_S = 0.4
+#: A share of turns get no cue, so it never becomes a tic.
+CUE_SKIP = 0.25
+#: `pulse_chat`'s sub-steps (the find pipeline, also the no-tools fallback): looking through
+#: sessions.
+FIND_STEPS = frozenset({"catalog", "content"})
+#: What HQ says once the Commander stopped its running turn (#2076). The call stays open.
+STOPPED_LINE = "Stopped."
+#: What HQ says when a task finished whose answer the Commander is no longer waiting on — they
+#: asked something newer meanwhile (#2103). Fixed and number-free; the answer is on screen, and
+#: is spoken only if they ask for it.
+ANSWER_READY_LINE = "I have that answer now."
+#: A spoken question while the conversation's queue is full (#2103). Number-free.
+QUEUE_FULL_LINE = "I already have questions waiting. Ask again once one of them is done."
+#: What HQ says to words heard while it works when no verdict could be had (#2113 P3): the words
+#: then wait for the running work, as they always did.
+INTERJECT_FALLBACK = "One sec, I'll finish this first."
+
+
+def _doing(work: dict | None) -> str:
+    """What HQ is doing right now, for the interjection judgement (#2113 P3): its own newest
+    aside if it wrote one, else the running tool's NAME. Never a tool's arguments or output."""
+    if not work:
+        return "thinking about the answer"
+    aside = work.get("last_aside")
+    tool = work.get("tool") if work.get("phase") == "tool" else None
+    if aside and tool:
+        return f"{aside} (running its {tool} tool)"
+    if aside:
+        return str(aside)
+    return f"running its {tool} tool" if tool else "thinking about the answer"
+
+
+def progress_line(work: dict, now: float) -> str:
+    """The fixed status line for an HQ turn still in flight (#1702), from its real state only:
+    whether a read tool runs (by tool NAME), how many status lines this turn has said, and whether
+    the model has stalled. Never model text, tool arguments or tool output, and never a duration."""
+    phase = work.get("phase")
+    if phase == "model" and now - work.get("phase_since", now) >= STALL_S:
+        return STALLED
+    said = int(work.get("updates") or 1)  # this line included (`progress_tick` counts first)
+    if said > 1:
+        return STILL_WORKING[(said - 2) % len(STILL_WORKING)]
+    tool = ask_orchestrator.TOOLS.get(str(work.get("tool") or ""))
+    return LOOKING if phase == "tool" and tool is not None and tool.kind == "read" else WORKING
+
+
+#: How long ending a call waits on each socket send before giving up on it.
+SEND_BUDGET_S = 2.0
+#: How long the "can the worker's interpreter import Pipecat?" probe may take.
+RUNTIME_PROBE_S = 30.0
+
+
+class CallError(Exception):
+    def __init__(self, status: int, detail: str, code: str = "refused"):
+        super().__init__(detail)
+        self.status = status
+        self.detail = detail
+        self.code = code
+
+
+# Spoken-text helpers live in `voice_text` (no app imports: the worker uses them too).
+#: The card kinds a spoken reply may be JUDGED for (#1715 P1): a yes/no on one card or a numbered
+#: choice among cards. Needs-you decisions (permission, menu, pick, needs_you) keep the English
+#: grammar until P2 has its own approval.
+JUDGED_KINDS = frozenset({"nudge", "session", "operation", "suggest"})
+
+
+def listen_languages(settings: dict) -> frozenset | None:
+    """The languages a call listens in (#1807): those it can answer in — the speech server's
+    languages, and the operator's fixed one. An utterance heard in any other language was, on the
+    operator's calls, Whisper's reading of noise or someone else talking ("Ég æt brafnum…",
+    "Espero que siga en el Hotel Región."). ``None`` when the speech server lists no languages:
+    then nothing tells a foreign utterance from a real one, so none is dropped."""
+    langs = {x for x in settings.get("tts_languages") or [] if isinstance(x, str) and LANG.match(x)}
+    if not langs:
+        return None
+    fixed = settings.get("language", "auto")
+    if isinstance(fixed, str) and LANG.match(fixed):
+        langs.add(fixed)
+    return frozenset(langs)
+
+
+def _judged(cards: list[dict]) -> bool:
+    return bool(cards) and all(c.get("kind") in JUDGED_KINDS for c in cards)
+
+
+#: HQ cards a spoken reply may DISMISS through their own decide route (#2120): the proposal
+#: sidecar's cards. A nudge (a ledger action) and every Needs-you row keep their own grammar and
+#: routes; "dismiss" there is a cancel, never a refusal.
+DISMISSABLE_KINDS = frozenset({"session", "operation", "message", "suggest"})
+
+
+def _dismissable(cards: list[dict]) -> bool:
+    return bool(cards) and all(c.get("kind") in DISMISSABLE_KINDS for c in cards)
+
+
+from .voice_text import (  # noqa: E402,F401
+    CHUNK_WORDS,
+    call_language,
+    card_sentences,
+    classify_confirmation,
+    classify_decision,
+    is_goodbye,
+    is_no_speech_phrase,
+    is_skip,
+    is_stop_all_phrase,
+    is_stop_phrase,
+    or_list,
+    ordinal_list,
+    pick_option,
+    readback,
+    readback_screen_only,
+    speakable,
+    split_speech,
+    strip_echo,
+    verbatim,
+    which_of,
+)
+
+# --- the call ----------------------------------------------------------------------------------
+
+
+@dataclass
+class Call:
+    id: str
+    cid: str
+    contact: str
+    voice: str
+    operator: object
+    app: object
+    registry: object
+    #: The CSRF token of the session that admitted the call. The call's socket must present it
+    #: (and the same session's cookie): a call's audio belongs to the session that started it.
+    session_csrf: str = ""
+    dial_timer: asyncio.Task | None = None
+    started: float = field(default_factory=time.monotonic)
+    #: The last sign the operator is there (#1668): an utterance heard, a typed turn on the call's
+    #: conversation, or an HQ say the browser played. Voice activity alone (`user_started`, which
+    #: room noise can fire), worker housekeeping, progress, status lines (#1702) and stale acks
+    #: are not.
+    last_speech: float = field(default_factory=time.monotonic)
+    #: Every time the operator starts speaking (`user_started`): a farewell planned for an
+    #: utterance is dropped if they began speaking again before it was installed (#1668).
+    user_starts: int = 0
+    #: Every ACCEPTED typed turn on the call's conversation: a farewell planned for an earlier
+    #: utterance is off if the Commander typed after it (#1668).
+    typed_turns: int = 0
+    #: The typed turns' tasks already counted: a client retrying a turn that is still running gets
+    #: the same task back, and that is no new turn (Hermes 7012).
+    typed_tasks: weakref.WeakSet = field(default_factory=weakref.WeakSet, repr=False)
+    #: Every say this call sent (bounded): only their `played` acks count as HQ having spoken.
+    say_ids: list = field(default_factory=list)
+    #: HQ judged the call over (`end_call`): ``{"say_id", "gen", "heard", "said_at", "speech_s"}``
+    #: of its farewell. `heard` is what the bye's words were heard after; the call
+    #: ends only while it still holds (`_still_heard`).
+    ending: dict | None = None
+    #: The still-there question in flight: ``{"say_id", "sent_at", "said_at", "played_at",
+    #: "speech_s"}``.
+    still_there: dict | None = None
+    #: HQ's last question was the still-there one: the next utterance answers it. Kept apart
+    #: from `still_there`, which any sign of the operator (their voice) already clears.
+    replying_still_there: bool = False
+    #: …and `user_starts` when it was asked: only words BEGUN after it answer it (Hermes 7008).
+    still_there_since: int = 0
+    state: str = "dialing"  # dialing | listening | thinking | speaking | ended
+    ended_reason: str = ""
+    muted: bool = False
+    #: (#2103: the call's own one-question buffer is gone. A question spoken while HQ works
+    #: waits in the conversation's queue, `ask_orchestrator`, like a typed one.)
+    #: The first part of a request, held because the Commander was already speaking again when
+    #: it arrived (#1842): ``(text, heard)``. The rest joins it, and the whole is asked once.
+    #: Questions on their way into the conversation's queue (`_ask_later`, #2103): counted from
+    #: the moment the call decided they wait until `begin` has admitted or refused them.
+    admitting: int = 0
+    held: tuple | None = None
+    #: When the Commander last stopped speaking (`user_stopped`'s own instant, #1845).
+    user_stopped_at: float = 0.0
+    #: Whether that stop ended a sentence the worker's turn model took for UNFINISHED (#1996):
+    #: the Commander trailed off, and the draft then waits `UNFINISHED_PAUSE_S` before it commits.
+    stopped_unfinished: bool = False
+    #: The answer HQ is about to speak, for its timing line (#1996): ``(stopped, asked,
+    #: answered)`` monotonic instants, ``stopped`` None for words with no turn of their own.
+    answer_clock: tuple | None = None
+    #: The silence HQ waits for before a draft is committed (#1845, `COMMIT_PAUSE_S`); 0: no drafts.
+    commit_pause: float = 0.0
+    #: HQ's answer started before the Commander has surely finished (#1845), until it is committed
+    #: or dropped. Only `_take_draft` clears it, so a commit and a discard never both act on it.
+    draft: _CallDraft | None = None
+    #: The draft whose commit is being written right now (#2076): neither `draft` any more nor
+    #: a visible running turn yet. A Stop in that window stops it by its id once the write ends.
+    committing: _CallDraft | None = None
+    #: Utterances being handled right now: a held first part is never released past one.
+    in_flight: int = 0
+    #: The newest worker turn whose transcript is all in (its `turn_end`, #1842): a held first part
+    #: waits until every turn begun so far has delivered its words, or said it had none.
+    turn_ended: int = 0
+    #: Bumped by every new utterance: an answer from an older generation is not spoken. Words
+    #: heard while this call's own turn works do NOT bump it (#2113 P3): they are answered beside
+    #: that turn, and its answer is still said — unless the verdict was to drop it.
+    generation: int = 0
+    turn_task: asyncio.Task | None = None
+    #: This call's own HQ turn while it runs (#2113 P3): ``(turn_id, the words it answers)``.
+    #: Words heard meanwhile steer or stop ONLY this turn, never a typed one on the conversation.
+    call_turn: tuple[str, str] | None = None
+    #: Words to wait for the running turn that came AFTER earlier words still riding on it as a
+    #: steer, by that turn (2026-11-25 call): asked with whatever of the steer it did not use, in
+    #: the order said, once it settles — never ahead of the earlier words.
+    held_later: dict = field(default_factory=dict, repr=False)
+    #: A likely goodbye being judged beside the relay (2026-11-25): ``{"seq", "text", "heard_id",
+    #: "turn", "began", "starts", "typed"}``. Words heard meanwhile join it, so nothing is lost or
+    #: reordered while the judgement runs; the verdict acts only on its own `seq`.
+    goodbye_pending: dict | None = None
+    goodbye_seq: int = 0
+    #: Words heard while that turn works, being judged (#2113 P3): ``{"seq", "text", "heard",
+    #: "turn_id"}``. More words join it and are judged again; only the newest judgement acts.
+    interjection: dict | None = None
+    interject_seq: int = 0
+    #: When the first words a turn took as a steer were heard (#2354), by turn id: words it never
+    #: used come back (`take_unconsumed`) and are asked as said that long ago.
+    steer_since: dict = field(default_factory=dict, repr=False)
+    #: The `ask_operator` question the Commander can answer by voice: one HQ asked on this call, or
+    #: one a typed turn on its conversation put on screen (`on_typed_settled`)…
+    ask: dict | None = None
+    #: …and `user_starts` when it was presented: only words the Commander BEGAN after that answer
+    #: it (#1668 review: words begun while HQ was still answering are a new request).
+    ask_since: int = 0
+    #: `user_starts` at each worker turn's start (bounded): what an utterance of that turn was begun
+    #: after, whenever its transcript lands.
+    turn_starts: dict = field(default_factory=dict, repr=False)
+    #: When each worker turn STARTED (bounded, like `turn_starts`): the echo check asks which of
+    #: HQ's lines could have been audible since (#1807).
+    turn_started_at: dict = field(default_factory=dict, repr=False)
+    #: HQ's recent lines as said: ``{"id", "text", "start", "until"}`` — `until` is when it can no
+    #: longer be coming out of the speaker (#1807).
+    audible: list = field(default_factory=list, repr=False)
+    #: The languages HQ listens in (#1807): an utterance heard in any other is noise or someone
+    #: else in the room. ``None``: no filter (the speech server lists no languages).
+    listen_languages: frozenset | None = None
+    #: The pending spoken confirmation (#1397 P2): `{cards, say_id, armed_at, expires_at}`. Server
+    #: state only; armed when its read-back has played; one use; void on anything else.
+    challenge: dict | None = None
+    #: How many challenges this call has ever installed: only ever grows. A reply's verdict settles
+    #: only if none was installed after its own — even one voided since (Hermes 7336).
+    challenge_seq: int = 0
+    #: How new the newest question or answer TAKEN is, in turn order: a spoken one is its worker
+    #: turn, the "What needs me?" chip ranks after every turn begun before it. A judged non-answer
+    #: whose turn is older than this steps aside; a newer one is still asked (independent review
+    #: of 834d1045: two non-answers in one window must not drop the newer words; Hermes 7359: nor
+    #: may older words be asked after a newer confirmation).
+    taken_turn: float = 0.0
+    #: Settlements and Needs-you read-outs run here, never in the worker relay loop (a confirm
+    #: following its card for 30 s must not freeze the call's audio and events).
+    side_tasks: set = field(default_factory=set, repr=False)
+    #: Cards tapped on screen during this call: a voice settlement already under way skips them.
+    tapped: set = field(default_factory=set, repr=False)
+    #: Cards whose end the call has ATTEMPTED to say (#2372): one terminal announcement per card,
+    #: never repeated even if it went unheard. What HQ is told about the card's state comes from
+    #: the card facts, never from this.
+    _told_end: set = field(default_factory=set, repr=False)
+    #: A card's outcome lines sent but not yet played (#2372, Hermes 8935): recorded as `said`
+    #: only on their `played` ack, so an interrupted or undelivered line is never claimed.
+    _said_pending: dict = field(default_factory=dict, repr=False)
+    #: The call-owned follower per accepted card still launching past the window (#2372).
+    _followers: dict = field(default_factory=dict, repr=False)
+    #: The contact's resolved voice profile (#1397 P3): voice, style (only if advertised), speed.
+    profile: dict | None = None
+    #: The call's language (#1397 P3): the operator's fixed choice, else the last one detected.
+    language: str | None = None
+    fixed_language: str | None = None
+    #: Does the STT endpoint report languages on this call (#1397 P3)? True: a confirmation must
+    #: itself be heard as English. False (TESTED, it cannot): English is assumed. None (untested,
+    #: or its endpoint changed since): unknown — spoken confirmation fails closed.
+    detects_language: bool | None = None
+    #: The shared `voice/call.lock` (#1397 P4) held for this call's lifetime.
+    _held: contextlib.ExitStack | None = field(default=None, repr=False)
+    #: Did the TTS server accept a `language` field (conformance `tts.language`)? Else none is sent.
+    tts_takes_language: bool = False
+    heard_language: str | None = None
+    #: The settings this call was admitted with: the worker is configured from THESE, so the
+    #: call's language gate and the worker's STT config can never come from two reads (#1635).
+    settings: dict | None = field(default=None, repr=False)
+    #: When the latest utterance STARTED (the worker's `user_started`): a confirmation must begin
+    #: after its challenge armed, so HQ's own read-back echoing into the mic cannot confirm it.
+    user_started_at: float = 0.0
+    #: The worker's number for the latest user turn to START. A transcript arrives up to the STT
+    #: grace after its turn ended — after a newer turn's `user_started` — so a confirmation is
+    #: judged by ITS OWN turn number: only a turn that started after arming confirms.
+    user_turn: int = 0
+    _to_client: Callable[[dict | bytes], Awaitable[None]] | None = None
+    _to_worker: Callable[[dict | bytes], Awaitable[None]] | None = None
+    #: The HQ turn in flight on this call (#1702): ``{"since", "phase", "phase_since", "tool",
+    #: "updates" (status lines said), "stalled", "unsaid" (the status line whose audio has not gone
+    #: out yet)}`` from its own progress events; None between turns.
+    work: dict | None = None
+    #: When HQ's last line will have had time to play (sent + `speech_seconds`): the quiet the
+    #: progress lines are counted from.
+    hq_quiet_at: float = 0.0
+    #: Thinking cues (#2339): the (say voice field, language) pairs the worker was asked to get
+    #: ready ("" for the contact's default), the (EFFECTIVE voice, line) pairs it reported ready,
+    #: and the line said last (never twice in a row).
+    cues_asked: set = field(default_factory=set)
+    cues_ready: set = field(default_factory=set)
+    last_cue: str | None = None
+    #: The Commander is mid-utterance (`user_started` … `user_stopped`): no status line over them.
+    user_speaking: bool = False
+    _ended: asyncio.Event = field(default_factory=asyncio.Event)
+    #: Set once nothing of this call runs any more (its worker stopped, or it never had one): only
+    #: then may the registry admit the next call.
+    torn_down: asyncio.Event = field(default_factory=asyncio.Event)
+    worker_started: bool = False
+    #: "brief" | "detailed" — Settings → HQ calls → answers (picks the registered call prompt).
+    answers: str = "brief"
+    #: The call's own records (#2137): `heard`, `heard_link`, `said`, queued WITHOUT an await and
+    #: written in order by one writer task, so a record is taken at the instant it happens.
+    _records: asyncio.Queue | None = field(default=None, repr=False)
+    _records_loop: object = field(default=None, repr=False)  # the loop the queue belongs to
+    _writer: asyncio.Task | None = field(default=None, repr=False)
+    #: Records the conversation already holds, per bound; read once by the writer.
+    _rec_counts: dict | None = field(default=None, repr=False)
+    #: Records not stored past a bound, per bound, and the heard ids whose `heard` was skipped.
+    _rec_skipped: dict = field(
+        default_factory=lambda: {"heard_dropped": 0, "heard_said": 0}, repr=False
+    )
+    _rec_skipped_ids: set = field(default_factory=set, repr=False)
+
+    def public(self) -> dict:
+        return {
+            "id": self.id,
+            "conversation_id": self.cid,
+            "contact": self.contact,
+            "state": self.state,
+            "muted": self.muted,
+            "elapsed_s": int(time.monotonic() - self.started),
+            "ended_reason": self.ended_reason,
+        }
+
+    # -- wiring ---------------------------------------------------------------------------------
+
+    async def client(self, msg: dict | bytes) -> None:
+        if self._to_client is not None:
+            with contextlib.suppress(Exception):
+                await self._to_client(msg)
+
+    async def worker(self, msg: dict | bytes) -> None:
+        if self._to_worker is not None:
+            with contextlib.suppress(Exception):
+                await self._to_worker(msg)
+
+    async def set_state(self, state: str) -> None:
+        if self.state == "ended" or self.state == state:
+            return
+        self.state = state
+        await self.client({"t": "state", "state": state})
+
+    async def say(
+        self,
+        text: str,
+        *,
+        kind: str = "answer",
+        turn_id: str | None = None,
+        sid: str | None = None,
+        heard: bool = True,
+        cue: bool = False,
+        card: str | None = None,
+    ) -> str | None:
+        """`heard=False`: its `played` ack is no sign of the operator (#1702 status lines — HQ
+        talking while it waits proves nobody is listening). `cue`: a thinking-cue line (#2339),
+        played from the worker's checked take or not at all."""
+        text = text.strip()
+        if not text or self.state == "ended":
+            return None
+        sid = sid or uuid.uuid4().hex[:12]
+        self.hq_quiet_at = max(self.hq_quiet_at, time.monotonic() + speech_seconds(text))
+        # Known BEFORE anything is awaited (#1668, Hermes 6983): a short line can be played, and
+        # acked, while the sends below are still in flight.
+        if heard:
+            self.say_ids.append(sid)
+            del self.say_ids[:-SAY_IDS_KEPT]
+        now = time.monotonic()
+        self.audible.append({"id": sid, "text": text, "start": now, "until": now + ECHO_UNACKED_S})
+        del self.audible[:-AUDIBLE_KEPT]
+        await self.client({"t": "caption", "who": "hq", "id": sid, "text": text, "kind": kind,
+                           "turn_id": turn_id})  # fmt: skip
+        if self.state == "ended":
+            return None  # hung up during the caption send: nothing recorded, nothing spoken
+        if kind in ask_store.SAID_KINDS:
+            # What HQ said outside an answer (#2137): the greeting, a read-back, an outcome, the
+            # still-there question. Kept in the conversation so HQ's next turn knows it was said.
+            rec = {"type": "said", "kind": kind, "text": text}
+            if ask_store.valid_turn_id(turn_id):
+                rec["turn_id"] = turn_id
+            if card is not None:
+                # A card's outcome (#2372) is recorded only once PLAYED (`on_played`): never
+                # claimed as said when it was cut off, muted or never delivered (Hermes 8935).
+                rec["card"] = card
+                self._said_pending[sid] = rec
+                while len(self._said_pending) > SAID_PENDING_KEPT:
+                    self._said_pending.pop(next(iter(self._said_pending)))
+            else:
+                self._record(rec)
+        lang = self.language if self.tts_takes_language else None
+        voice = self._say_voice()
+        # The first say in a voice and language asks the worker to get that language's thinking
+        # cues ready (#2339): it renders them while the call is idle, measured against this very
+        # voice's sentences.
+        cue_lang = self.language or "en"
+        if cue_lang in CUE_LINES and (voice or "", cue_lang) not in self.cues_asked:
+            self.cues_asked.add((voice or "", cue_lang))
+            await self.worker({"t": "cues", "voice": voice, "language": lang,
+                               "texts": list(CUE_LINES[cue_lang])})  # fmt: skip
+        msg = {"t": "say", "id": sid, "text": text, "language": lang, "voice": voice}
+        if cue:
+            msg["cue"] = True
+        if self.state == "ended":
+            self._said_pending.pop(sid, None)
+            return None  # hung up while the cues were asked for: never sent after the stop
+        await self.worker(msg)
+        return sid
+
+    # -- events from the worker -----------------------------------------------------------------
+
+    async def on_worker_event(self, ev: dict) -> None:
+        t = ev.get("t")
+        if t == "ready":
+            await self.set_state("listening")
+            await self.client({"t": "connected"})
+            await self.greet()
+        elif t == "user_started":
+            self.user_started_at = time.monotonic()
+            self.user_starts += 1
+            self.user_speaking = True
+            self.ending = None  # speaking again after HQ's farewell: the call goes on (#1668)
+            # NOT a sign of the operator for the silence clock (Hermes 7000): voice activity fires
+            # on room noise too, and a forgotten tab must still be asked and hung up.
+            n = _turn_number(ev.get("turn"))
+            if n is not None and n > self.user_turn:
+                self.user_turn = n
+            if n is not None:
+                self.turn_starts[n] = self.user_starts
+                self.turn_started_at[n] = self.user_started_at
+                while len(self.turn_starts) > TURN_STARTS_KEPT:
+                    self.turn_starts.pop(next(iter(self.turn_starts)))
+                while len(self.turn_started_at) > TURN_STARTS_KEPT:
+                    self.turn_started_at.pop(next(iter(self.turn_started_at)))
+            ch = self.challenge
+            if ch is not None and ch.get("armed_at") is None:
+                await self.void_challenge()  # talked over the read-back: never armed
+            await self.client({"t": "user", "speaking": True})
+        elif t == "said":
+            # The worker has SENT this say's audio. Forwarded in order behind it, so the
+            # browser's playback queue can ack when it has actually PLAYED it (`played`).
+            ch = self.challenge
+            if ch is not None and ev.get("id") == ch["say_id"]:
+                ch["sent"] = True  # BEFORE forwarding: the browser's `played` may come back at once
+            # The no-ack fallbacks (#1668) count from HERE, once its audio went out, not from when
+            # it was handed to the worker: a long farewell, or one queued behind another say, is
+            # never cut off while it is still playing.
+            work = self.work
+            if work is not None and ev.get("id") == work.get("unsaid"):
+                work["unsaid"] = None  # its audio went out: the next status line may follow
+            for pending in (self.ending, self.still_there):
+                if pending is not None and ev.get("id") == pending["say_id"]:
+                    pending["said_at"] = time.monotonic()
+            await self.client({"t": "said", "id": ev.get("id")})
+        elif t == "turn_end":
+            # That turn's words are all in (#1842): the worker sends this after its utterance, or
+            # alone when it had none. In order, on the same stream: nothing of it is still unread.
+            n = _turn_number(ev.get("turn"))
+            if n is not None and n > self.turn_ended:
+                self.turn_ended = n
+            self._release_if_complete()
+        elif t == "user_stopped":
+            self.user_speaking = False
+            self.user_stopped_at = _stop_instant(ev.get("at"))
+            # The turn model took the sentence for unfinished (#1996): HQ waits longer.
+            self.stopped_unfinished = ev.get("unfinished") is True
+            await self.client({"t": "user", "speaking": False})
+        elif t == "interrupt":
+            # The browser flushes what it had queued: those says never play, so their late or
+            # duplicate acks are not speech (#1668).
+            self.say_ids.clear()
+            self._quiet_from(None)  # and nothing of HQ's is coming out of the speaker any more
+            if self.work is not None:
+                self.work["unsaid"] = None  # flushed: it will never be said
+            # Barge-in: the client drops what it has queued, at once — and a challenge whose
+            # read-back was talked over is void. Pipecat sends this at EVERY user turn start, a
+            # confirmation's too: an ARMED challenge's read-back has played out, so it stays.
+            ch = self.challenge
+            if ch is not None and ch.get("armed_at") is None:
+                await self.void_challenge()
+            await self.client({"t": "interrupt"})
+            if self.state == "speaking":
+                # Back to what HQ is doing: a turn still running is still `thinking`, so its status
+                # lines (#1702) carry on after a barge-in over the ack or a status line.
+                await self.set_state("thinking" if self._turn_running() else "listening")
+        elif t == "cue_ready":
+            # A thinking-cue line the worker has a checked take of (#2339), in the EFFECTIVE voice
+            # it rendered it in. Only the app's own FIXED lines count.
+            v, text = ev.get("voice"), ev.get("text")
+            if isinstance(v, str) and v and any(text in lines for lines in CUE_LINES.values()):
+                self.cues_ready.add((v, text))
+        elif t == "bot_started":
+            self._log_answer_clock()
+            self.hq_quiet_at = max(self.hq_quiet_at, time.monotonic())
+            await self.set_state("speaking")
+            await self.client({"t": "speaking", "id": ev.get("id"), "on": True})
+        elif t == "bot_stopped":
+            # HQ's audio really stopped NOW (a say queued behind TTS plays later than its send
+            # suggested): status lines count their quiet from here at the earliest (#1702).
+            self.hq_quiet_at = max(self.hq_quiet_at, time.monotonic())
+            await self.client({"t": "speaking", "id": ev.get("id"), "on": False})
+            if self.state == "speaking":
+                await self.set_state("thinking" if self._turn_running() else "listening")
+        elif t == "utterance" and (why := self._not_the_operator(ev)):
+            # Dropped BEFORE anything else (#1667, #1807): no HQ turn, no language change, and an
+            # armed confirmation keeps waiting for a real answer. Recorded without its words.
+            self._heard(ev, why)
+        elif t == "utterance":
+            # Recorded as it arrives, before anything routes it (#2137): every word the
+            # Commander said leaves a record of where it went.
+            hid = self._heard(ev, None)
+            n = _turn_number(ev.get("turn"))
+            if n is None or n >= self.user_turn:
+                # Only the newest turn's words mean the Commander stopped: an older turn's
+                # transcript can land while they are already speaking again (#1842).
+                self.user_speaking = False
+            heard = ev.get("heard_language")
+            self.heard_language = heard if isinstance(heard, str) and LANG.match(heard) else None
+            text = self._without_echo(ev)[: ask_orchestrator.QUERY_MAX]
+            if self.fixed_language is None:
+                self.language = self._language_after(text)
+            if text:
+                # `late`: its turn already went out; it began before anything now armed.
+                await self.on_utterance(
+                    text, late=bool(ev.get("late")), turn=_turn_number(ev.get("turn")),
+                    heard_id=hid,
+                )  # fmt: skip
+        elif t == "error":
+            await self.end(
+                f"{ev.get('endpoint') or 'speech'}_failed",
+                detail=str(ev.get("detail") or "the speech endpoint stopped answering")[:200],
+                endpoint=str(ev.get("endpoint") or ""),
+            )
+
+    def _turn_running(self) -> bool:
+        return self.turn_task is not None and not self.turn_task.done()
+
+    def _log_answer_clock(self) -> None:
+        """One line per spoken answer (#1996): how long after the Commander's stop HQ was asked
+        (the speech server's transcript, and the turn settling), how long the answer took (the
+        commit pause and the model), and how long after it HQ's audio began (the speech server's
+        first audio). Durations and the call's id only, never words."""
+        clock, self.answer_clock = self.answer_clock, None
+        if clock is None:
+            return
+        stopped, asked, answered = clock
+        now = time.monotonic()
+        heard = "-" if stopped is None else f"{max(0.0, asked - stopped):.2f}s"
+        total = now - (asked if stopped is None else min(stopped, asked))
+        log.info(
+            "voice call %s answer: asked %s after the stop, answered in %.2fs, "
+            "speaking %.2fs later, %.2fs in all",
+            self.id, heard, answered - asked, now - answered, total,
+        )  # fmt: skip
+
+    def _language_after(self, text: str) -> str | None:
+        """The call's language after an utterance it KEPT (#1807, Hermes 7438/7443). **The app owns
+        it**: only a kept utterance's own heard language can move it, by the worker's rule applied
+        here (`voice_text.call_language`: 3+ words, no stock phrase, a listened-in language) to the
+        words left after echo is cut. The worker's `language` tag is never adopted: it is a running
+        guess over every utterance, the ones the app drops (HQ's echo, other languages) included,
+        so even an utterance without a heard language of its own can carry a dropped one's guess.
+        No heard language: the call's language stays as it is."""
+        if self.heard_language is None:
+            return self.language
+        return call_language(self.language, self.heard_language, text, self.listen_languages)
+
+    def _not_the_operator(self, ev: dict) -> str | None:
+        """Why an utterance is not the operator speaking to HQ, or ``None`` (#1667, #1807). Every
+        check is made on the words that would be KEPT, after HQ's echo is cut (Hermes 7453: "Thank
+        you One moment, Commander." passed the stock-phrase check whole, and cutting the echo
+        left "Thank you" for HQ). An empty transcript is not judged here: nothing goes to HQ."""
+        raw = str(ev.get("text") or "")
+        if not raw.strip():
+            return None
+        if self._foreign(ev.get("heard_language")):
+            return "foreign"  # a language the call does not listen in
+        kept = self._without_echo(ev)
+        if not kept:
+            return "echo"  # HQ's own speech heard back
+        if is_no_speech_phrase(raw) or is_no_speech_phrase(kept):
+            return "no_speech"  # a stock no-speech phrase
+        return None
+
+    # -- the call's own record (#2137) ----------------------------------------------------------
+
+    def _heard(self, ev: dict, why: str | None) -> str | None:
+        """Record one utterance as it arrives (#2137), before anything routes it; its id, or None
+        for an empty transcript (nothing was heard). A dropped one (`why`) keeps no words: only why,
+        its heard language and its length. One INFO line per utterance, never with its words."""
+        raw = str(ev.get("text") or "")
+        if not raw.strip():
+            return None
+        hid = uuid.uuid4().hex[:12]
+        rec: dict = {"type": "heard", "heard_id": hid, "chars": min(len(raw), 10**9)}
+        n = _turn_number(ev.get("turn"))
+        if n is not None and n <= 10**9:
+            rec["turn"] = n
+        lang = ev.get("heard_language")
+        if isinstance(lang, str) and LANG.match(lang):
+            rec["lang"] = lang
+        if ev.get("late"):
+            rec["late"] = True
+        if why is not None:
+            rec.update(route="dropped", why=why)
+        else:
+            rec.update(route="received", text=self._without_echo(ev))
+        self._record(rec)
+        log.info(
+            "voice call %s heard: turn %s, %s, %d words", self.id, n,
+            f"dropped ({why})" if why else "received", len(raw.split()),
+        )  # fmt: skip
+        return hid
+
+    def _link(
+        self, hid: str | None, route: str, turn_id: str | None = None, card: str | None = None
+    ) -> None:
+        """Where heard words went (#2137): appended, never rewritten. Words only ever on `heard`.
+        `card`: the card those words settled (#2372), so HQ's history ties them to its outcome."""
+        if hid is None:
+            return
+        rec: dict = {"type": "heard_link", "heard_id": hid, "route": route}
+        if turn_id is not None:
+            rec["turn_id"] = turn_id
+        if card is not None:
+            rec["card"] = card
+        self._record(rec)
+        log.info("voice call %s heard %s: %s%s", self.id, hid, route,
+                 f" (turn {turn_id})" if turn_id else "")  # fmt: skip
+
+    def _record(self, rec: dict) -> None:
+        """Queue one of the call's own records WITHOUT awaiting: the queue keeps them in the order
+        they happened, and one writer task appends them. Never fails the call."""
+        if not ask_store.valid_cid(self.cid):
+            return
+        if self._queue() is None:
+            loop = asyncio.get_running_loop()
+            self._records, self._records_loop, self._writer = asyncio.Queue(), loop, None
+        if self._writer is None or self._writer.done():
+            # Started on demand, and again for a record after the writer retired (a settlement's
+            # outcome that lands after the call ended): nothing queued is ever left unwritten.
+            self._writer = asyncio.create_task(self._write_records())
+        self._records.put_nowait(rec)
+
+    def _queue(self) -> asyncio.Queue | None:
+        """The record queue, if it belongs to the running loop (a queue is bound to one loop)."""
+        if self._records is None or self._records_loop is not asyncio.get_running_loop():
+            return None
+        return self._records
+
+    async def _write_records(self) -> None:
+        """Append queued records in order. Retires once idle for `RECORD_WRITER_IDLE_S`, or when
+        the call ends (`end`): it never outlives the call by more than that."""
+        q = self._records
+        assert q is not None
+        while True:
+            try:
+                rec = await asyncio.wait_for(q.get(), RECORD_WRITER_IDLE_S)
+            except TimeoutError:
+                if q.empty():
+                    return
+                continue
+            try:
+                await asyncio.to_thread(self._append_bounded, rec)
+            except Exception:  # noqa: BLE001 — a lost record never ends or stalls the call
+                log.warning("voice call %s: a call record was not stored", self.id, exc_info=True)
+            finally:
+                q.task_done()
+
+    def _append_bounded(self, rec: dict) -> None:
+        """Append `rec` unless its bound is reached (`ask_store.HEARD_*_MAX`, per conversation):
+        then it is counted, and a link to a heard record that was not stored is not stored either.
+        Runs on the writer's thread, one record at a time."""
+        kind = rec["type"]
+        if self._rec_counts is None:
+            self._rec_counts = _call_record_counts(ask_store.read(self.cid))
+        c = self._rec_counts
+        if kind == "counts":
+            if c["counts"] >= ask_store.HEARD_COUNTS_MAX:
+                return
+            c["counts"] += 1
+        else:
+            dropped = kind == "heard" and rec.get("route") == "dropped"
+            if (
+                c["heard_said"] >= ask_store.HEARD_SAID_MAX
+                or (dropped and c["heard_dropped"] >= ask_store.HEARD_DROPPED_MAX)
+                or (kind == "heard_link" and rec["heard_id"] in self._rec_skipped_ids)
+            ):
+                self._rec_skipped["heard_dropped" if dropped else "heard_said"] += 1
+                if kind == "heard":
+                    self._rec_skipped_ids.add(rec["heard_id"])
+                return
+            c["heard_said"] += 1
+            c["heard_dropped"] += int(dropped)
+        ask_store.append(self.cid, rec)
+
+    async def flush_records(self) -> None:
+        """Write what is queued, then how many records were not stored past a bound (#2137). The
+        queue drains first: the writer's thread is the only one that counts skips."""
+        if self._queue() is None:
+            return
+        await self._records.join()
+        if any(self._rec_skipped.values()):
+            skipped, self._rec_skipped = self._rec_skipped, {"heard_dropped": 0, "heard_said": 0}
+            self._record({"type": "counts", **skipped})
+            await self._records.join()
+
+    def _foreign(self, heard: object) -> bool:
+        """An utterance the STT heard in a language HQ does not listen in (#1807)."""
+        langs = self.listen_languages
+        return (
+            bool(langs)
+            and isinstance(heard, str)
+            and bool(LANG.match(heard))
+            and (heard not in langs)
+        )
+
+    def _quiet_from(self, say_id: object) -> None:
+        """`say_id` (``None``: every line) has stopped coming out of the speaker."""
+        until = time.monotonic() + ECHO_TAIL_S
+        for line in self.audible:
+            if say_id is None or line["id"] == say_id:
+                line["until"] = min(line["until"], until)
+
+    def _without_echo(self, ev: dict) -> str:
+        """The utterance's text without HQ's own words heard back (#1807): only lines that could
+        still have been coming out of the speaker after its turn began, and only stretches of
+        `voice_text.ECHO_RUN_WORDS` or more of their words in a row. A late transcript, or one
+        whose turn start is unknown, is left as heard."""
+        text = str(ev.get("text") or "").strip()
+        n = None if ev.get("late") else _turn_number(ev.get("turn"))
+        began = self.turn_started_at.get(n) if n is not None else None
+        if began is None:
+            return text
+        now = time.monotonic()
+        said = [x["text"] for x in self.audible if x["start"] <= now and x["until"] >= began]
+        return strip_echo(text, said) if said else text
+
+    async def greet(self) -> None:
+        name = ""
+        with contextlib.suppress(KeyError):
+            name = hq_contacts.get(self.contact).name.split()[-1]
+        who = f"General {name} " if name else ""
+        await self.say(f"HQ, {who}speaking. Go ahead, Commander.", kind="greeting")
+
+    async def on_played(self, say_id: object) -> None:
+        """The browser played a say out to its end (its playback queue reached the `said` marker).
+        The ONLY thing that arms a challenge: an interrupted, flushed, muted or suspended playback
+        never acks, so it never arms (#1397 P2)."""
+        if isinstance(say_id, str):
+            self._quiet_from(say_id)  # played out: from here it is only the room's echo tail
+            said = self._said_pending.pop(say_id, None)
+            if said is not None:
+                self._record(said)  # played out to its end: now it was said (#2372)
+        if say_id in self.say_ids and self.state != "ended":
+            self.say_ids.remove(say_id)  # heard ONCE: a duplicate or old ack is not new speech
+            now = time.monotonic()
+            self.last_speech = now  # HQ was heard: real speech (#1668)
+            st = self.still_there
+            if st is not None and st["say_id"] == say_id and st["played_at"] is None:
+                st["played_at"] = now
+            end = self.ending
+            if end is not None and end["say_id"] == say_id and self._ending_holds(end):
+                await self.end("hq_ended")
+                return
+        ch = self.challenge
+        if ch is None or ch.get("armed_at") is not None or not ch.get("sent"):
+            return
+        if say_id != ch["say_id"] or self.muted or self.state == "ended":
+            return
+        if ch["gen"] != self.generation:
+            return  # installed for a question something newer has superseded
+        await self._arm(ch)
+
+    async def _arm(self, ch: dict) -> None:
+        now = time.monotonic()
+        ch["armed_at"] = now
+        ch["armed_turn"] = self.user_turn  # every turn up to this one began before arming
+        ch["expires_at"] = now + CHALLENGE_S
+        await self.client(
+            {"t": "challenge", "cards": [c["id"] for c in ch["cards"]], "expires_s": CHALLENGE_S}
+        )
+
+    async def on_card_decided(self, card_id: object) -> None:
+        """A tap decided a card: a spoken challenge naming it is now inert."""
+        if isinstance(card_id, str):
+            self.tapped.add(card_id)
+        ch = self.challenge
+        if ch is not None and any(c["id"] == card_id for c in ch["cards"]):
+            await self.void_challenge()
+
+    async def void_challenge(self) -> None:
+        if self.challenge is not None:
+            self.challenge = None
+            await self.client({"t": "challenge", "cards": []})
+
+    async def on_needs_you_request(self) -> None:
+        """The call panel's "What needs me?" chip (#2137): the same question as saying it, asked of
+        HQ like any other. HQ reads the Needs-you list itself (`needs_you`) and puts what a voice
+        may decide to the Commander (`offer_decisions`). A turn already running queues it. A tap
+        is never a reply to a pending confirmation: it is a NEW question, so its generation is
+        taken BEFORE anything is awaited and any older offer still in flight is stale (#1631
+        review 6874)."""
+        if self.state == "ended":
+            return
+        self.touch()
+        self.generation += 1
+        gen = self.generation
+        self.taken_turn = max(self.taken_turn, self.user_turn + 0.5)
+        await self.void_challenge()
+        await self.client(
+            {"t": "caption", "who": "you", "id": uuid.uuid4().hex[:12], "text": NEEDS_YOU_CHIP}
+        )
+        heard = {"starts": self.user_starts, "typed": self.typed_turns, "turn": None,
+                 "began": None, "replying_to": None, "ids": []}  # fmt: skip
+        self._dispatch(NEEDS_YOU_CHIP, heard, gen)
+
+    def _side(self, coro) -> None:
+        """Run `coro` beside the relay loop; ended with the call."""
+        task = asyncio.create_task(coro)
+        self.side_tasks.add(task)
+
+        def done(t: asyncio.Task) -> None:
+            self.side_tasks.discard(t)
+            if not t.cancelled() and t.exception() is not None:
+                log.warning("voice call side task failed", exc_info=t.exception())
+
+        task.add_done_callback(done)
+
+    async def on_utterance(
+        self,
+        text: str,
+        *,
+        late: bool = False,
+        turn: int | None = None,
+        captioned: bool = False,
+        heard_id: str | None = None,
+        judged_goodbye: bool = False,
+    ) -> None:
+        # Claimed before the first await (Hermes 7631): while any utterance is still being
+        # handled, a held first part waits for it, so its rest can never be asked separately.
+        self.in_flight += 1
+        try:
+            await self._on_utterance(
+                text,
+                late=late,
+                turn=turn,
+                captioned=captioned,
+                heard_id=heard_id,
+                judged_goodbye=judged_goodbye,
+            )
+        finally:
+            self.in_flight -= 1
+            self._release_if_complete()
+
+    async def _on_utterance(
+        self,
+        text: str,
+        *,
+        late: bool = False,
+        turn: int | None = None,
+        captioned: bool = False,
+        heard_id: str | None = None,
+        judged_goodbye: bool = False,
+    ) -> None:
+        if self.muted:
+            self._link(heard_id, "muted")
+            return
+        pending = self.goodbye_pending
+        if pending is not None and not captioned:
+            # Words while a likely goodbye is still being judged: they join it (its verdict is
+            # void from now on), so "bye … wait, one more thing" is one question, in order.
+            self.goodbye_pending = None
+            self._link(pending["heard_id"], "joined")
+            text = f"{pending['text']} {text}"[: ask_orchestrator.QUERY_MAX]
+        # Answering HQ's still-there question (#1668): HQ is told what the words answer, and an
+        # older HQ question is no longer what they reply to.
+        # When these words BEGAN: their own turn's start, LATE words too (the worker tags them with
+        # their turn), so a late answer to HQ's question, or to the still-there one, is bound to it
+        # exactly as an on-time one is (Hermes 7642, 7643). Unknown or evicted: no start, as before.
+        began = None if turn is None else self.turn_starts.get(turn)
+        replying_to = (
+            STILL_THERE_LINE
+            if self.replying_still_there and began is not None and began > self.still_there_since
+            else None
+        )
+        self.touch()
+        if await self._answer_challenge(text, late=late, turn=turn, heard_id=heard_id):
+            self._link(heard_id, "confirm")
+            return
+        if not captioned and is_stop_all_phrase(text, self.listen_languages):
+            # "Stop everything" (#2103): every running HQ task is stopped and every question
+            # waiting behind one is withdrawn — Stop all, spoken. The call stays open.
+            if self.stop_turn(said=text, everything=True):
+                return
+        if not captioned and is_stop_phrase(text, self.listen_languages):
+            # Nothing but "stop" while HQ works (#2076): the running turn is stopped and the
+            # call stays open. With no turn running the words go to HQ like any others.
+            if self.stop_turn(said=text):
+                self._link(heard_id, "stop")
+                return
+        if (
+            not captioned
+            and not judged_goodbye
+            and not late
+            and turn is not None
+            and turn >= self.user_turn  # no newer turn begun: not words to hold for a rest (#1842)
+            and self._idle_for_goodbye()
+            and is_goodbye(text, self.listen_languages, self._contact_names())
+        ):
+            # Words that look like nothing but a goodbye while HQ is idle (2026-11-25: a whole HQ
+            # turn for "Bye-bye" took 36 s). The words only pick the path: HQ's focused call-end
+            # judgement decides (operator, 2026-10-24), in one quick request instead of a turn.
+            # Never while HQ works, a card or question waits for an answer, or anything is
+            # queued: "Tchau, tchau." mid-work was not a hang-up. Not over, no verdict in time,
+            # or anything newer meanwhile: HQ answers the words as any others.
+            # Judged BESIDE the relay (Hermes 8936): the worker's receive loop never waits for
+            # the model, so newer speech is seen while it runs. Reserved before anything yields.
+            self.generation += 1  # an older offer never installs now
+            self.goodbye_seq += 1
+            self.goodbye_pending = {
+                "seq": self.goodbye_seq, "text": text, "heard_id": heard_id, "turn": turn,
+                "began": began, "starts": self.user_starts, "typed": self.typed_turns,
+            }  # fmt: skip
+            self._side(self._judge_goodbye(self.goodbye_seq))
+            return
+        if not captioned and self._interjectable():
+            # Words while HQ works on this call's own turn (#2113 P3): answered at once, judged
+            # beside the relay. No new generation: the running answer is still said. The turn is
+            # captured BEFORE the caption is awaited, and checked again after it (Hermes on #2124).
+            if turn is not None and not late:
+                self.taken_turn = max(self.taken_turn, turn)
+            heard = {
+                "starts": self.user_starts,
+                "typed": self.typed_turns,
+                "turn": None if late else turn,
+                "began": began,
+                "replying_to": replying_to,
+                "ids": [heard_id] if heard_id else [],  # #2137
+            }
+            self._link(heard_id, "interject")
+            # RESERVED before the caption is awaited (Hermes on #2124): the words join anything
+            # still pending and take the newest sequence number now, so an older verdict is a
+            # no-op from this instant, and Stop, mute or the end can take them back meanwhile.
+            seq = self._reserve_interjection(text, heard)
+            await self.client(
+                {"t": "caption", "who": "you", "id": uuid.uuid4().hex[:12], "text": text}
+            )
+            self._start_interjection(seq)
+            return
+        # A new question. Its generation is taken BEFORE anything is awaited — the void below
+        # included — so an older offer still in flight sees it is stale and never installs its
+        # challenge (#1631 review 6874).
+        self.generation += 1
+        gen = self.generation
+        if turn is not None and not late:
+            self.taken_turn = max(self.taken_turn, turn)
+        await self.void_challenge()
+        if not captioned:  # a judged reply re-entering as a question was captioned already
+            await self.client(
+                {"t": "caption", "who": "you", "id": uuid.uuid4().hex[:12], "text": text}
+            )
+        # What these words were heard after (#1668): how often the Commander had started speaking
+        # and typed, the worker's turn they belong to (none for a LATE transcript, whose turn is
+        # gone: it never ends the call nor counts as the newest words), when that turn BEGAN, and
+        # the HQ line they answer.
+        heard = {
+            "starts": self.user_starts,
+            "typed": self.typed_turns,
+            "turn": None if late else turn,
+            "began": began,
+            "replying_to": replying_to,
+            # The heard records these words came from (#2137): linked to the HQ turn they become.
+            "ids": [heard_id] if heard_id else [],
+        }
+        d = self.draft
+        if d is not None and not captioned:
+            # More words before HQ's draft was committed (#1845): the same request goes on. The
+            # draft is dropped — nothing of it was stored, shown or said — and the whole is asked.
+            if await self._drop_draft(d):
+                text = f"{d.text} {text}"[: ask_orchestrator.QUERY_MAX]
+                self._link(heard_id, "joined")
+                heard = {
+                    **heard,
+                    "ids": [*d.heard.get("ids", []), *heard["ids"]],
+                    # A LATE transcript is the tail of the draft's own turn: timed from it too.
+                    "turn": d.turn if heard["turn"] is None else heard["turn"],
+                    "began": d.heard["began"],
+                    "replying_to": d.heard["replying_to"],
+                }
+        joined = self.held is not None
+        if joined:
+            # The rest of a request whose first part was held (#1842): one question, asked once.
+            first, first_heard = self.held
+            self.held = None
+            text = f"{first} {text}"[: ask_orchestrator.QUERY_MAX]
+            self._link(heard_id, "joined")
+            heard = {
+                **heard,
+                "ids": [*first_heard.get("ids", []), *heard["ids"]],
+                "began": first_heard["began"],
+                "replying_to": first_heard["replying_to"],
+            }
+        # A joined request stays held while any begun turn has not ended: more of it (a late
+        # result of the same turn, say) may still come (Hermes 7639).
+        if not captioned and (
+            self._continues(heard, late, turn) or (joined and self.turn_ended < self.user_turn)
+        ):
+            self.held = (text, heard)  # released by `_release_if_complete`, never by a timer
+            self._link(heard_id, "held")
+            return
+        self._dispatch(text, heard, gen)
+
+    def _continues(self, heard: dict, late: bool, owner: int | None = None) -> bool:
+        """The Commander was already speaking again when these words arrived (#1842): a pause long
+        enough to end the turn was a breath before the rest. Decided now, before anything awaits,
+        and never for words HQ is already working on, nor for an answer to HQ's own question. A
+        judged reply re-entering as a question (`captioned`) was decided already: never held.
+        LATE words count by the turn they belong to (`owner`, Hermes 7641): a slow transcript of
+        the first part is held for the rest like an on-time one."""
+        turn = owner if late else heard.get("turn")
+        if turn is None or self.user_turn <= turn or self._turn_running():
+            return False
+        began = heard.get("began")  # a late transcript's too (Hermes 7642, 7643)
+        answering = (
+            self.ask is not None
+            and heard.get("replying_to") is None
+            and began is not None
+            and began > self.ask_since
+        )
+        return not answering and heard.get("replying_to") is None
+
+    def _release_if_complete(self) -> None:
+        """Ask a held first part on its own once no rest can still come (#1842): every worker turn
+        begun so far has ended and delivered its words (`turn_end`), nobody is speaking, and no
+        utterance is being handled. Decided on the worker's own markers, read in order on its one
+        stream — never on a timer, which could fire while the rest is still unread behind a slow
+        send (Hermes 7633, 7636, 7637). A newer turn that brought no words was a breath or noise."""
+        if (
+            self.held is None
+            or self.state == "ended"
+            or self.in_flight
+            or self.user_speaking
+            or self.turn_ended < self.user_turn
+        ):
+            return
+        text, heard = self.held
+        self.held = None
+        if not self.muted:
+            self._dispatch(text, heard, self.generation)
+
+    def _dispatch(self, text: str, heard: dict, gen: int) -> None:
+        if self._turn_running() or ask_orchestrator.running(self.cid):
+            # HQ is still working in this conversation (#2103): the question waits in the
+            # conversation's queue, in order, exactly as a typed one would, and runs when the
+            # running task settles. Nothing is kept here.
+            self._ask_later(text, heard, gen)
+            return
+        # Drafted (#1845) where the setting waits at all and the words have a turn to time from.
+        draft = self.commit_pause > 0 and heard.get("turn") is not None
+        self.turn_task = asyncio.create_task(self._ask(text, gen, heard, draft=draft))
+
+    def _ask_later(
+        self,
+        text: str,
+        heard: dict | None,
+        gen: int | None = None,
+        *,
+        after: str | None = None,
+    ) -> None:
+        """Words that wait for the running work (#2103): admitted to the conversation's queue
+        (`_ask_behind`), where the call's one-question buffer used to keep only the newest.
+        Their heard records are linked as queued (#2137). ``after``: admitted only once that
+        (stopped) turn has settled."""
+        heard = heard if heard is not None else self._heard_now()
+        # Words that wait were said while HQ worked (#2354): stamped once, at their first wait.
+        heard = {**heard, "busy_since": heard.get("busy_since", time.monotonic())}
+        for hid in heard.get("ids", []):
+            self._link(hid, "queued")
+        self.admitting += 1  # until the conversation's queue has it (`_ask_behind`)
+        gen = self.generation if gen is None else gen
+
+        async def admit() -> None:
+            if after is not None:
+                await ask_orchestrator.wait_settled(self.cid, after)
+            if self.state == "ended":
+                self.admitting = max(0, self.admitting - 1)
+                return
+            await self._ask_behind(text, gen, heard)
+
+        self._side(admit())
+
+    @property
+    def queued(self) -> list[str] | None:
+        """The questions waiting behind the running work in this call's conversation, by turn
+        id, or None for none. The call keeps no buffer of its own (#2103): this reads the
+        conversation's queue."""
+        waiting = [*ask_orchestrator.queued(self.cid), *([""] * self.admitting)]
+        return waiting or None
+
+    def _hand_back(self, turn_id: str, view: dict) -> None:
+        """At a turn's settle: the steer words it never used (#2113 P3; none for a stopped turn)
+        and the words held behind them (`held_later`), asked as ONE question in the order the
+        Commander said them, timed from the earliest (#2354). Nothing once the call ended."""
+        left = ask_orchestrator.take_unconsumed(self.cid, turn_id)
+        since = self.steer_since.pop(turn_id, None)
+        held = self.held_later.pop(turn_id, [])
+        if self.state == "ended":
+            return
+        words: list[str] = []
+        heard: dict | None = None
+        if left and view.get("status") != "stopped":
+            words.append(" ".join(left))
+            heard = self._steered(since)
+        for text, h in held:
+            words.append(text)
+            if heard is None:
+                heard = {**h, "ids": []}  # already linked as queued when held
+        if words:
+            self._ask_later(" ".join(words)[: ask_orchestrator.QUERY_MAX], heard)
+
+    def _steered(self, since: float | None) -> dict | None:
+        """What steer words a turn never used were heard after (#2354): now, said at `since`."""
+        return None if since is None else {**self._heard_now(), "busy_since": since}
+
+    def _heard_now(self) -> dict:
+        return {"starts": self.user_starts, "typed": self.typed_turns, "turn": None,
+                "began": None, "replying_to": None}  # fmt: skip
+
+    def _interjectable(self) -> bool:
+        """This call's own turn is running and visible, with no draft or commit in between and no
+        first part held (#2113 P3): only then are words answered beside it."""
+        ct = self.call_turn
+        return (
+            ct is not None
+            and self.draft is None
+            and self.committing is None
+            and self.held is None
+            and self._turn_running()
+            and ask_orchestrator.turn_live(self.cid, ct[0])
+        )
+
+    def _continues_turn(self, turn_id: str) -> bool:
+        """Words now are the running turn's own request carried on (`CONTINUATION_S`): it began
+        moments ago, has run no tool, said no aside, and no words are held behind it."""
+        work = self.work
+        return (
+            work is not None
+            and not work.get("acted")
+            and not work.get("last_aside")
+            and not self.held_later.get(turn_id)
+            and time.monotonic() - work["since"] < CONTINUATION_S
+        )
+
+    def _reserve_interjection(self, text: str, heard: dict) -> int:
+        """Claim words heard while HQ works (#2113 P3), SYNCHRONOUSLY: they join words still
+        pending (reserved or being judged) and take the newest sequence number, so the older
+        judgement's verdict is a no-op from now on. `_start_interjection` judges them once
+        their caption is out — unless Stop, mute or the end took them back meanwhile."""
+        pending = self.interjection
+        # Said while HQ works (#2354): HQ is told how long ago, whenever the words are asked.
+        heard = {**heard, "busy_since": time.monotonic()}
+        if pending is not None:
+            text = f"{pending['text']} {text}"[: ask_orchestrator.QUERY_MAX]
+            heard = {
+                **heard,
+                "began": pending["heard"]["began"],
+                "replying_to": pending["heard"]["replying_to"],
+                "busy_since": pending["heard"].get("busy_since", heard["busy_since"]),
+            }
+        assert self.call_turn is not None  # `_interjectable` said so; nothing awaited since
+        turn_id, question = self.call_turn
+        self.interject_seq += 1
+        seq = self.interject_seq
+        self.interjection = {
+            "seq": seq,
+            "text": text,
+            "heard": heard,
+            "turn_id": turn_id,
+            "question": question,
+        }
+        return seq
+
+    def _start_interjection(self, seq: int) -> None:
+        """After the caption: judge the reserved words, if they are still the newest and nothing
+        took them back. Gone (Stop, mute, the end) → dropped; superseded by newer words → those
+        words' own start judges the whole; their turn settled normally → a new question."""
+        cur = self.interjection
+        if cur is None or cur["seq"] != seq or self.state == "ended" or self.muted:
+            return
+        ct = self.call_turn
+        if ct is None or ct[0] != cur["turn_id"] or not self._interjectable():
+            self.interjection = None
+            self._dispatch(cur["text"], cur["heard"], self.generation)
+            return
+        if self._continues_turn(cur["turn_id"]) and ask_orchestrator.steer(
+            self.cid, cur["turn_id"], cur["text"]
+        ):
+            # The same request, carried on after a pause: the running turn takes the words in
+            # its next request. Nothing is said over the Commander, nothing waits, no judgement.
+            self.interjection = None
+            self.steer_since.setdefault(
+                cur["turn_id"], cur["heard"].get("busy_since", time.monotonic())
+            )
+            return
+        self._side(
+            self._judge_interjection(
+                seq, cur["text"], cur["heard"], cur["turn_id"], cur["question"]
+            )
+        )
+
+    async def _judge_interjection(
+        self, seq: int, text: str, heard: dict, turn_id: str, question: str
+    ) -> None:
+        """The judgement, then its FENCE (#2113 P3): it acts only if it is still the newest one,
+        the call is open and unmuted, and THIS call's turn ``turn_id`` is still the one running.
+        A turn that settled meanwhile gets the words as a new question, whatever the verdict."""
+        from . import voice_judge
+
+        try:
+            verdict = await voice_judge.judge_interjection(question, _doing(self.work), text)
+            say = (
+                await asyncio.to_thread(ask_orchestrator.aside_text, verdict[1])
+                if verdict
+                else None
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — no verdict: the fallback, and the words wait
+            log.info("interjection judgement failed", exc_info=True)
+            verdict = say = None
+        cur = self.interjection
+        if cur is None or cur["seq"] != seq:
+            return  # newer words joined it, or Stop / the end dropped it
+        self.interjection = None
+        if self.state == "ended" or self.muted:
+            return
+        ct = self.call_turn
+        if ct is None or ct[0] != turn_id or not ask_orchestrator.turn_live(self.cid, turn_id):
+            # Settled meanwhile — even if its slot is not released yet: a new question. A late
+            # `switch` then stops nothing and says nothing about stopping.
+            self._dispatch(text, heard, self.generation)
+            return
+        do = verdict[0] if verdict is not None and say else None
+        if do == "steer" and self.held_later.get(turn_id):
+            # Words are already held behind this turn (Hermes 8936): a newer steer must not
+            # overtake them (A steer, B held, C steer was asked A C B). It is held after them.
+            do = "later"
+        if do == "steer" and not ask_orchestrator.steer(self.cid, turn_id, text):
+            do = "later"  # it could not take them any more: they wait instead
+        elif do == "steer":
+            self.steer_since.setdefault(turn_id, heard.get("busy_since", time.monotonic()))
+        if do == "switch":
+            if self.stop_turn(announce=False):
+                # Asked once the stopped turn has settled (as before #2103): admitted then, so
+                # they run in the freed slot, or behind what already waited in the queue.
+                # The Commander's newest intent, asked at once: never told it was said earlier.
+                self._ask_later(text, {**heard, "busy_since": None}, after=turn_id)
+                await self._interject_say(say or INTERJECT_FALLBACK)
+                return
+            do = "later"
+        if do in (None, "later") and turn_id in self.steer_since:
+            # Earlier words still ride on the running turn as a steer: if it settles without
+            # using them they are asked next, so these must not be asked AHEAD of them (a queued
+            # question starts the moment the turn settles, before the handback is admitted).
+            # Held, and asked together with them in the order said (`_hand_back`).
+            for hid in heard.get("ids", []):
+                self._link(hid, "queued")
+            self.held_later.setdefault(turn_id, []).append((text, heard))
+        elif do in (None, "later"):
+            # The running answer is said first, then these: they wait in the conversation's
+            # queue (#2103) with no new generation, so both answers are spoken.
+            self._ask_later(text, heard)
+        await self._interject_say(say if do is not None and say else INTERJECT_FALLBACK)
+
+    def on_mute(self, on: bool) -> None:
+        """The Commander muted or unmuted (#2113 P3, Hermes on #2124): muting drops a pending
+        interjection judgement, so a verdict that returns after a quick mute and unmute acts on
+        nothing. Synchronous: decided before the route awaits anything."""
+        self.muted = on
+        if on:
+            self.interjection = None
+
+    async def _interject_say(self, text: str) -> None:
+        work = self.work
+        if work is not None:
+            await self._say_status(work, text, time.monotonic())
+        else:
+            await self.say(text, kind="progress", heard=False)
+
+    def stop_turn(
+        self, *, said: str | None = None, everything: bool = False, announce: bool = True
+    ) -> bool:
+        """Stop the HQ turn running in this call's conversation (#2076): the Stop on the call
+        screen, or a spoken stop phrase (`said`, captioned). HQ says `STOPPED_LINE`; the call
+        NEVER ends by this. A draft not yet committed is dropped — nothing of it was stored or
+        shown. False when nothing was running: nothing is said and nothing changes. Decided
+        now; the stop itself runs beside the relay loop (an effect in flight finishes first).
+
+        The questions waiting behind the running turn STAY (#2103): the next one starts.
+        ``everything`` ("stop everything") is Stop all: every running HQ task in any
+        conversation is flagged here, at once, and every queue is withdrawn."""
+        if self.state == "ended":
+            return False
+        # Stop all's own fence first, with no await (#2103): the "no successor" marks and every
+        # running turn's stop flag.
+        elsewhere = bool(ask_orchestrator.request_stop_all()) if everything else False
+        if everything:
+            self.held_later.clear()  # held words wait like queued ones: Stop all withdraws them
+        # WHAT is stopped is fixed NOW, before anything awaits, so nothing can slip between the
+        # decision and the stop:
+        # - an open draft is CLAIMED here (`_take_draft`), so the quiet timer can no longer
+        #   commit it while the caption below is being sent;
+        # - a draft whose commit is in progress is neither `self.draft` any more nor visible
+        #   as running yet. Its STOP FLAG IS SET HERE, on that exact turn, before the commit can
+        #   set `committed`: a tool waiting on the commit then wakes to a stopped turn and never
+        #   starts. Waiting for the commit first would let it start a send that was not in
+        #   flight when the Commander said stop;
+        # - a turn already running has its flag set here too, not behind the caption send.
+        d = self.draft
+        if d is not None and self._take_draft(d):
+            d.dropped = True  # a draft still being begun is discarded by `_run_turn` itself
+        else:
+            d = None
+        committing = self.committing
+        turn_id = committing.turn_id if committing is not None else None
+        turn_id = turn_id or ask_orchestrator.running_turn(self.cid)
+        if d is None and turn_id is None and not elsewhere:
+            return False
+        flagged = turn_id is not None and ask_orchestrator.request_stop(
+            self.cid, turn_id, committing=committing is not None
+        )
+        # (#2103: a plain Stop leaves the questions waiting in the conversation's queue.)
+        self.interjection = None  # …and what was still being judged (#2113 P3)
+        self._side(self._stop_turn(d, committing, turn_id, said, flagged, everything, announce))
+        return True
+
+    async def _stop_turn(
+        self,
+        d: _CallDraft | None,
+        committing: _CallDraft | None,
+        turn_id: str | None,
+        said: str | None,
+        flagged: bool,
+        everything: bool = False,
+        announce: bool = True,
+    ) -> None:
+        """The waiting half of a stop. The fence itself was set in `stop_turn` (`flagged`).
+        `announce=False`: HQ already said why (an interjection's switch, #2113 P3)."""
+        if said is not None:
+            await self.client(
+                {"t": "caption", "who": "you", "id": uuid.uuid4().hex[:12], "text": said}
+            )
+        stopped = flagged
+        if d is not None:
+            await self._discard_claimed(d)  # claimed in `stop_turn`: nothing else acts on it
+            stopped = True
+        if committing is not None:
+            await committing.commit_done.wait()  # then it is a normal, visible turn — or gone
+        if turn_id is not None:
+            if flagged:
+                await ask_orchestrator.wait_settled(self.cid, turn_id)
+            else:
+                # Not there to flag a moment ago (its commit had not reached the orchestrator's
+                # turn): asked again now that the commit has ended.
+                stopped = await ask_orchestrator.stop(self.cid, turn_id) or stopped
+        if everything:
+            # The queues go, and the turns flagged in `stop_turn` settle (bounded wait).
+            done = await ask_orchestrator.stop_all()
+            stopped = stopped or bool(done["stopped"] or done["withdrawn"])
+        # Said only when a turn really was stopped or discarded: one that answered first, or
+        # whose commit failed, was not stopped, and its own outcome speaks for it.
+        if stopped and announce:
+            await self.say(STOPPED_LINE, kind="status")
+
+    def _take_draft(self, d: _CallDraft) -> bool:
+        """Claim `d` for ONE commit or discard, before anything awaits: whichever path claims it
+        first acts, and the other finds it gone."""
+        if self.draft is not d:
+            return False
+        self.draft = None
+        return True
+
+    async def _drop_draft(self, d: _CallDraft) -> bool:
+        """Discard the open draft `d` and wait until its turn has ended and the conversation is
+        free (#1845). False when it was already committed or gone: its turn runs on as normal."""
+        if not self._take_draft(d):
+            return False
+        d.dropped = True  # a draft still being begun is discarded by `_run_turn` itself
+        await self._discard_claimed(d)
+        return True
+
+    async def _discard_claimed(self, d: _CallDraft) -> None:
+        """Discard a draft this caller already claimed (`_take_draft`) and marked dropped."""
+        await ask_orchestrator.discard(self.cid, d.turn_id)
+        task = self.turn_task
+        if task is not None and task is not asyncio.current_task():
+            await asyncio.wait({task})  # its `_ask` ends quietly: nothing said, nothing queued
+
+    async def _commit_draft(self, d: _CallDraft) -> None:
+        """The Commander has finished: the draft `d` becomes HQ's turn (#1845). While the commit
+        is being written the draft is `committing`: no longer `self.draft`, not yet a visible
+        running turn — a Stop in that window waits for `commit_done` and stops it by id (#2076).
+
+        Before admission (#2044) there is no orchestrator turn to commit yet, and the mute route
+        must not wait for `begin`: the intent is recorded on THIS draft and `_run_turn` consumes it
+        once admission succeeds. Discard and supersession stay authoritative — they claim the
+        draft first (`_take_draft`) and mark it `dropped`, which always wins."""
+        if self.draft is not d:
+            return
+        if not d.admitted:
+            d.commit_requested = True
+            return
+        if not self._take_draft(d):
+            return
+        self.committing = d
+        try:
+            if await ask_orchestrator.commit(self.cid, d.turn_id):
+                d.committed.set()
+        finally:
+            if self.committing is d:
+                self.committing = None
+            d.commit_done.set()
+
+    async def drop_draft(self) -> None:
+        """The call is going (#1845): an open draft is discarded, never left holding the
+        conversation."""
+        if self.draft is not None:
+            await self._drop_draft(self.draft)
+
+    async def commit_draft(self) -> None:
+        """Muted (#1845): the Commander will say no more, so what they said is asked now.
+        Before admission this only records the intent (#2044), so the mute route never waits
+        for `begin`."""
+        if self.draft is not None:
+            await self._commit_draft(self.draft)
+
+    async def _commit_when_quiet(self, d: _CallDraft) -> None:
+        """Commit `d` once the Commander has finished (#1845): every worker turn begun has ended
+        and delivered its words (`turn_end`, as #1842's held part), nobody is speaking, no
+        utterance is being handled, and the commit pause has passed since the last stop — timed
+        from the worker's own stop instant, never from the transcript. A turn begun after the
+        draft's postpones it: its words join the draft (`_on_utterance`); a turn that brings none
+        was a breath or noise, and the same draft commits after the pause from ITS stop."""
+        while self.draft is d and self.state != "ended":
+            # Read every tick: a later stop (a turn that brought no words) may have ended on a
+            # finished sentence or an unfinished one, and the pause follows the LAST stop.
+            wait = max(0.0, self._commit_pause_now() - WORKER_STOP_S)
+            if (
+                not self.in_flight
+                and not self.user_speaking
+                and self.turn_ended >= self.user_turn
+                and time.monotonic() - self.user_stopped_at >= wait
+            ):
+                await self._commit_draft(d)
+                return
+            await asyncio.sleep(DRAFT_TICK_S)
+
+    def _commit_pause_now(self) -> float:
+        """The silence a draft waits for after the last stop (#1845, #1996): the turn-taking
+        setting's pause, and at least `UNFINISHED_PAUSE_S` when that stop ended a sentence the
+        turn model took for unfinished — the Commander trailed off mid-thought and is more
+        likely to go on. HQ's answer is being drafted meanwhile either way."""
+        if self.stopped_unfinished:
+            return max(self.commit_pause, UNFINISHED_PAUSE_S)
+        return self.commit_pause
+
+    def on_typed_turn(self, task: object = None) -> bool:
+        """The Commander typed a turn on this call's conversation and it was ACCEPTED (#1668): they
+        are there, and a farewell HQ planned is off — they have more to say. Once per turn `task`:
+        a retry of one still running is no new turn. Whether this was the first time."""
+        if task is not None:
+            if task in self.typed_tasks:
+                return False
+            self.typed_tasks.add(task)
+        self.typed_turns += 1
+        self.touch()
+        self.ending = None
+        self.ask = None  # a newer turn: until it settles, no older question is what a reply answers
+        return True
+
+    def on_typed_settled(self, view: object) -> None:
+        """A typed turn on this call's conversation settled (#1668): if it ended on an
+        `ask_operator` question, that is the one a spoken reply begun from now on answers."""
+        if self.state == "ended" or not isinstance(view, dict) or view.get("status") != "done":
+            return
+        ask = view.get("ask")
+        if isinstance(ask, dict) and ask.get("question_id"):
+            self.ask, self.ask_since = ask, self.user_starts
+        else:
+            self.ask = None  # it settled without a question: no older one is still waiting
+
+    def touch(self) -> None:
+        """The operator is there (#1668): their words, or a typed turn. Restarts the silence clock
+        and answers any still-there question — a typed answer too, so the next spoken words are
+        not taken as its reply (Hermes 7002)."""
+        self.last_speech = time.monotonic()
+        self.still_there = None
+        self.replying_still_there = False
+
+    def _still_heard(self, heard: dict) -> bool:
+        """Nothing came after the words `heard` describes (#1668): the Commander has not started
+        speaking again (nor did a newer worker turn begin before they landed) and typed nothing.
+        Checked when a farewell is planned AND when it would end the call, whatever the order."""
+        turn = heard.get("turn")
+        return (
+            turn is not None  # a late transcript's turn is gone: it never ends the call
+            and self.user_starts == heard["starts"]
+            and self.typed_turns == heard["typed"]
+            and self.user_turn <= turn
+        )
+
+    def _idle_for_goodbye(self) -> bool:
+        """Nothing is running, waiting for an answer or queued in this call's conversation."""
+        return (
+            not self._turn_running()
+            and self.draft is None
+            and self.committing is None
+            and self.held is None
+            and self.challenge is None
+            and self.ask is None
+            and self.interjection is None
+            and self.goodbye_pending is None
+            and not self.queued
+            and ask_orchestrator.running_turn(self.cid) is None
+        )
+
+    def _contact_names(self) -> frozenset[str]:
+        """The contact's own names, as words a goodbye may hold ("Bye, General Harlan.")."""
+        try:
+            name = hq_contacts.get(self.contact).name
+        except Exception:  # noqa: BLE001 — no name: a goodbye without one still ends the call
+            return frozenset()
+        return frozenset(w.casefold() for w in name.split() if w)
+
+    async def _judge_goodbye(self, seq: int) -> None:
+        """The verdict on a likely goodbye, beside the relay. It acts only if it is still the
+        pending one (words heard meanwhile joined it). A "yes" says the farewell only if nothing
+        newer was heard or typed and the call is still idle; anything else hands the words on as
+        any others (`judged_goodbye`: not judged again)."""
+        from . import voice_judge
+
+        p = self.goodbye_pending
+        if p is None or p["seq"] != seq:
+            return
+        over = await voice_judge.judge_goodbye(p["text"], GOODBYE_LINE)
+        if self.goodbye_pending is not p:
+            return  # joined by newer words, or the call moved on: their path has them
+        self.goodbye_pending = None
+        if self.state == "ended":
+            return
+        if self.muted:
+            self._link(p["heard_id"], "muted")
+            return
+        if (
+            over
+            and self.user_starts == p["starts"]
+            and self.typed_turns == p["typed"]
+            and self._idle_for_goodbye()
+        ):
+            self._link(p["heard_id"], "goodbye")
+            await self._goodbye(p["text"], p["turn"], p["began"])
+            return
+        await self.on_utterance(
+            p["text"], turn=p["turn"], heard_id=p["heard_id"], judged_goodbye=True
+        )
+
+    async def _goodbye(self, text: str, turn: int, began: float | None) -> None:
+        self.generation += 1  # newer than anything before: an older offer never installs now
+        gen = self.generation
+        heard = {"starts": self.user_starts, "typed": self.typed_turns, "turn": turn,
+                 "began": began, "replying_to": None}  # fmt: skip
+        await self.client({"t": "caption", "who": "you", "id": uuid.uuid4().hex[:12], "text": text})
+        sid = uuid.uuid4().hex[:12]
+        # Installed BEFORE the farewell is sent: its ack can come back while the send is in flight.
+        self.ending = {"say_id": sid, "gen": gen, "heard": heard, "said_at": None,
+                       "speech_s": speech_seconds(GOODBYE_LINE)}  # fmt: skip
+        if await self.say(GOODBYE_LINE, kind="farewell", sid=sid) is None:
+            self.ending = None
+
+    def _ending_holds(self, end: dict) -> bool:
+        return end["gen"] == self.generation and self._still_heard(end["heard"])
+
+    async def _ask(
+        self, text: str, gen: int, heard: dict | None = None, *, draft: bool = False
+    ) -> None:
+        """`heard`: what these words were heard after (`on_utterance`). `draft`: start HQ's turn as
+        a draft, committed once the Commander has surely finished (#1845)."""
+        if heard is None:
+            heard = {"starts": self.user_starts, "typed": self.typed_turns, "turn": None,
+                     "began": None, "replying_to": None}  # fmt: skip
+        replying_to = heard["replying_to"]
+        option = None
+        answers = None
+        # HQ's open question, if these words were BEGUN after it was presented (#1668): words begun
+        # while HQ was still answering are a new request. A late transcript counts by its own
+        # turn's start (Hermes 7643); one whose start is unknown is a new request. Never for a
+        # reply to the still-there question.
+        ask = None
+        began = heard.get("began")
+        if self.ask and replying_to is None and began is not None and began > self.ask_since:
+            ask, self.ask = self.ask, None
+        if ask:
+            idx = pick_option(text, ask.get("options") or [])
+            if idx is not None:
+                option, answers, text = idx, ask["question_id"], ""
+            elif ask.get("allow_text"):
+                answers = ask["question_id"]
+        turn_id = str(uuid.uuid4())
+        # An answer to HQ's own question is never drafted: it runs as typed (#1845).
+        d = None
+        if draft and answers is None and option is None:
+            d = _CallDraft(turn_id, gen, heard["turn"], text, heard, time.monotonic())
+            self.draft = d  # its commit timer starts once the orchestrator holds it (`_run_turn`)
+        else:
+            await self.set_state("thinking")
+        now = time.monotonic()
+        work = {"since": now, "phase": None, "phase_since": now, "tool": None, "updates": 0}
+        self.work = work
+        progress = asyncio.create_task(self._report_progress(d, cue=True))
+        self.call_turn = (turn_id, text)
+        if self._queue() is not None:
+            # What the call heard before these words is written before HQ reads the conversation
+            # (#2137): a word dropped just now is on record for this very question. Bounded.
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(self._records.join(), RECORDS_BEFORE_ASK_S)
+        try:
+            view = await self._run_turn(
+                turn_id,
+                text,
+                answers,
+                option,
+                replying_to=replying_to,
+                draft=d,
+                waited_since=heard.get("busy_since"),
+            )
+        except _DraftDropped:
+            return  # nothing of it was stored, shown or said; the words went on elsewhere
+        except _NotStarted:
+            return  # it waited in the queue and was withdrawn, or the call ended meanwhile
+        except ask_orchestrator.TurnError as e:
+            view = {"status": "failed", "detail": e.detail}
+        except ask_store.StoreRefused:
+            view = {"status": "failed", "detail": "HQ could not store this question"}
+        except Exception:  # noqa: BLE001 — never a call stuck in "thinking" with a lost queue
+            log.warning("voice call turn failed", exc_info=True)
+            view = {"status": "failed", "detail": ""}
+        finally:
+            progress.cancel()
+            if self.work is work:  # the next task's own, once a queued one has started (#2103)
+                self.work = None
+            if self.call_turn is not None and self.call_turn[0] == turn_id:
+                self.call_turn = None
+            if d is not None and self.draft is d:
+                self.draft = None  # a draft that failed before its commit is gone too
+        if d is None or not d.dropped:
+            # The heard words were asked as THIS turn (#2137): linked to it, whatever it answered.
+            # A dropped draft's words went on into the next request, and are linked there.
+            for hid in heard.get("ids", []):
+                self._link(hid, "hq", turn_id)
+        # Words the Commander added that the turn settled without using (#2113 P3): asked next,
+        # exactly once. A stopped turn hands none back (the
+        # orchestrator drops them at its settle; checked here too).
+        self._hand_back(turn_id, view)
+        if self.state == "ended" or (d is not None and d.dropped):
+            return
+        await self._present(view, gen, heard, now)
+
+    async def _ask_behind(self, text: str, gen: int, heard: dict) -> None:
+        """A question spoken while HQ is working (#2103). It is admitted to the conversation's
+        queue like a typed one (never a draft: the Commander has finished it), and this call
+        follows it: when it starts it is the call's turn, and when it settles it is presented
+        like any other. Withdrawn, or the call over before it started: nothing is said. A
+        queued spoken turn outlives the call and runs as a typed one would; an ended or
+        replaced call is never spoken to (every `say` is this call's own)."""
+        from . import actuator
+
+        turn_id = str(uuid.uuid4())
+        try:
+            task, view = await ask_orchestrator.begin(
+                self.cid,
+                turn_id,
+                text,
+                working_keys=actuator.working_keys(self.registry),
+                busy_keys=actuator.busy_keys(self.registry),
+                # Never an answer to HQ's own question: that one is asked into a free slot.
+                answers=None,
+                option=None,
+                contact=self.contact,
+                via="call",
+                call_answers=self.answers,
+                replying_to=heard.get("replying_to"),
+                operator=self.operator,
+                app=self.app,
+                waited_since=heard.get("busy_since"),  # said while HQ worked (#2354)
+            )
+        except ask_orchestrator.TurnError as e:
+            self.admitting = max(0, self.admitting - 1)
+            full = e.extra.get("queue_full") is True
+            await self.say(
+                QUEUE_FULL_LINE if full else "Sorry, I couldn't take that question.",
+                kind="error",
+            )
+            return
+        except BaseException as e:  # never a silent loss of what the Commander said
+            self.admitting = max(0, self.admitting - 1)
+            if not isinstance(e, Exception):
+                raise
+            log.warning("voice call: a spoken question could not be queued", exc_info=True)
+            await self.say("Sorry, I couldn't take that question.", kind="error")
+            return
+        self.admitting = max(0, self.admitting - 1)  # the conversation has it now
+        if task is None:
+            if (view or {}).get("status") != "queued":
+                if view and self.state != "ended":
+                    self._link_asked(heard, turn_id)
+                    await self._present(view, gen, heard, time.monotonic())  # already settled
+                return
+            task, settled = await self._follow_queued(turn_id, view)
+            if self.state == "ended":
+                return
+            if task is None:
+                # It settled before this call could follow it: presented once, like any other.
+                # Withdrawn or never started: nothing is said.
+                if settled and settled.get("status") in ask_orchestrator.RAN_STATUSES:
+                    self._link_asked(heard, turn_id)
+                    await self._present(settled, gen, heard, time.monotonic())
+                return
+        # It runs now (or ran: a finished task still holds its view): this call's turn, shown
+        # and timed as one asked into a free slot.
+        self.turn_task = asyncio.current_task()
+        await self.set_state("thinking")
+        now = time.monotonic()
+        work = {"since": now, "phase": None, "phase_since": now, "tool": None, "updates": 0}
+        self.work = work
+        progress = asyncio.create_task(self._report_progress())
+        self.call_turn = (turn_id, text)  # words heard while it works are its own (#2113 P3)
+        try:
+            view = await self._watch_turn(task)
+        except Exception:  # noqa: BLE001 — as `_ask`: never a call stuck in "thinking"
+            log.warning("voice call turn failed", exc_info=True)
+            view = {"status": "failed", "detail": ""}
+        finally:
+            progress.cancel()
+            if self.work is work:
+                self.work = None
+            if self.call_turn is not None and self.call_turn[0] == turn_id:
+                self.call_turn = None
+        self._link_asked(heard, turn_id)
+        self._hand_back(turn_id, view)
+        if self.state == "ended":
+            return
+        await self._present(view, gen, heard, now)
+
+    def _link_asked(self, heard: dict, turn_id: str) -> None:
+        """The heard words were asked as this turn (#2137): linked to it, whatever it answered."""
+        for hid in heard.get("ids", []):
+            self._link(hid, "hq", turn_id)
+
+    async def _follow_queued(
+        self, turn_id: str, view: dict
+    ) -> tuple[asyncio.Task | None, dict | None]:
+        """Follow a question this call has just queued (#2103): ``(task, None)`` once it runs or
+        ran, ``(None, view)`` for one the store already settled (or that never will run).
+
+        The start handle is taken HERE, before anything awaits, in the same step in which
+        `begin` returned the queued view — and kept across the client send (review 8407): that
+        send can yield for as long as the running turn needs to settle and the queued one to
+        start, and even to settle too. Looking the turn up only after it found the queue
+        entry gone and took a turn that ran for one that never started."""
+        handle = ask_orchestrator.when_started(self.cid, turn_id)
+        await self.client({"t": "queued", "turn": view})
+        return await ask_orchestrator.follow(self.cid, turn_id, handle)
+
+    async def _present(self, view: dict, gen: int, heard: dict, now: float) -> None:
+        """A turn of this call settled: show it, and say what is to be said."""
+        await self.client({"t": "turn", "turn": view})
+        # The call screen has just been given this turn's outcome (#2103): it is SEEN, like one
+        # a console displayed, so the bell is not told about an answer the Commander is being
+        # shown and read. A turn that settles after the call ended never gets here.
+        at = view.get("settled_at")
+        if isinstance(at, int | float) and ask_store.valid_cid(self.cid):
+            from . import ask_follow
+
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(ask_follow.mark_seen, self.cid, float(at))
+        # New Library drafts are offered with a spoken summary of their BOUND draft (#1681): read
+        # before the generation check below, so a question asked meanwhile still wins.
+        ready = gen == self.generation and view.get("status") == "done"
+        summaries = await draft_summaries(view) if ready else {}
+        picks = await folder_picks(view) if ready else {}
+        suggestions = await folder_suggestions(view) if ready else {}
+        # Needs-you rows HQ put to the Commander (`offer_decisions`, #2137), built from the LIVE
+        # list now: only a row still waiting on the very decision HQ read is offered.
+        offered = await self._offered_needs_you(view) if ready else []
+        if self.state == "ended":
+            pass
+        elif gen != self.generation:
+            # The Commander asked something newer meanwhile, so this is not the answer they
+            # are waiting on (#2103): it is on screen, and HQ only says that it has it, in a
+            # fixed line and never over its own voice. Asked for, HQ answers it from the
+            # conversation.
+            # A quiet answer (#2354) has nothing to be ready with: nothing is said.
+            if view.get("status") == "done" and self.state != "speaking" and not view.get("quiet"):
+                await self.say(ANSWER_READY_LINE, kind="status", turn_id=view.get("turn_id"))
+        elif view.get("status") == "done":
+            ask = view.get("ask")
+            if isinstance(ask, dict) and ask.get("question_id"):
+                self.ask, self.ask_since = ask, self.user_starts  # presented now
+            else:
+                # A newer answer: an older question is no longer what a reply answers.
+                self.ask = None
+            # Words said while HQ worked that no longer need an answer (#2354): the thread shows
+            # the quiet line, the call says nothing. Its cards are still offered below.
+            words = "" if view.get("quiet") is True else speakable(view.get("answer") or "")
+            # offered by voice; any more are screen-only
+            cards = confirmable_cards(
+                view, summaries=summaries, picks=picks, suggestions=suggestions
+            )[:4]
+            lines = list(
+                card_sentences(
+                    view,
+                    skip={c["id"] for c in cards},
+                    said=words,
+                    reasons=screen_reasons(view, summaries=summaries, suggestions=suggestions),
+                )
+            )
+            sid = uuid.uuid4().hex[:12]
+            # HQ judged the call over (#1668): it ends once THIS farewell has played — never over
+            # a card that still needs the operator, an empty answer, an answer that ASKS
+            # something, or once the operator started speaking again after these words (their
+            # next words may still be on the way). Installed BEFORE the farewell is sent: its ack
+            # can come back while the send is still in flight.
+            if (
+                view.get("end_call") is True
+                and words.strip()
+                and not cards
+                and not lines
+                and not view.get("ask")  # an open question, even one already said (#1911)
+                and not asks_something(words)
+                and self._still_heard(heard)
+            ):
+                self.ending = {
+                    "say_id": sid,
+                    "gen": gen,
+                    "heard": heard,
+                    "said_at": None,
+                    "speech_s": speech_seconds(words),
+                }
+            # Where this turn's time went (#1996), closed by HQ's first audio (`bot_started`).
+            stopped = self.user_stopped_at if heard.get("turn") is not None else None
+            self.answer_clock = (stopped, now, time.monotonic()) if words.strip() else None
+            if await self.say(words, turn_id=view.get("turn_id"), sid=sid) is None:
+                self.ending = None
+            for line in lines:
+                await self.say(line, turn_id=view.get("turn_id"))
+            picks = [c for c in cards if c["kind"] == "pick"]
+            others = [c for c in cards if c["kind"] != "pick"]
+            if offered and not cards:
+                # One Needs-you row per challenge (#1681 P2), in the order HQ named them.
+                await self.offer(offered[:1], turn_id=view.get("turn_id"), gen=gen,
+                                 queue=offered[1:])  # fmt: skip
+            elif offered:
+                # HQ's own cards first, as always; the Needs-you rows follow one at a time.
+                await self.offer(others or picks[:1], turn_id=view.get("turn_id"), gen=gen,
+                                 queue=[*(picks if others else picks[1:]), *offered])  # fmt: skip
+            elif picks and (others or self.language in (None, "en")):
+                # A pick is answered by ITS OWN numbers, so it is offered alone, after the turn's
+                # other cards — those together, as always (#1681). On a call in another language
+                # the other cards are judged (#1715) while the pick stays for the screen: mixed in
+                # one offer, the pick would keep the judged cards from arming (Hermes 7282).
+                first = others or picks[:1]
+                rest = picks if others else picks[1:]
+                await self.offer(first, turn_id=view.get("turn_id"), gen=gen, queue=rest)
+            elif cards:
+                # Only picks on a call in another language: read for the screen (`offer`).
+                await self.offer(cards, turn_id=view.get("turn_id"), gen=gen)
+        elif view.get("status") == "stopped":
+            pass  # the Commander stopped it (#2076): `stop_turn` said so; nothing failed
+        else:
+            await self.say(
+                "Sorry, I couldn't answer that. " + (str(view.get("detail") or "")[:160]),
+                kind="error",
+            )
+        # A queued question that started meanwhile is thinking now: its state is its own.
+        mine = self.turn_task is None or self.turn_task is asyncio.current_task()
+        if self.state == "thinking" and (mine or self.turn_task.done()):
+            await self.set_state("listening")
+
+    # -- spoken confirmation (#1397 P2) -------------------------------------------------------
+
+    async def offer(
+        self,
+        cards: list[dict],
+        *,
+        turn_id: str | None = None,
+        gen: int | None = None,
+        queue: list[dict] | None = None,
+    ) -> None:
+        """Read the cards back; the challenge arms once that read-back has played. `gen`: the
+        question this offer answers — checked with no await between it and installing the
+        challenge, which keeps that generation: a slower, older offer can never displace a newer
+        one, and a challenge outlived by its generation never arms or confirms (#1631 reviews).
+
+        On a call in another language, HQ cards (`JUDGED_KINDS`) still arm: a reply the English
+        phrases don't cover is judged (#1715 P1). Anything else — a Needs-you decision, a pick —
+        keeps the English grammar and is read back for the SCREEN with no challenge armed, so a
+        translated or misdetected command can never settle it."""
+        await self.void_challenge()
+        cards = cards[:4]
+        if gen is not None and gen != self.generation:
+            return
+        if self.language not in (None, "en") and not _judged(cards):
+            # Needs-you decisions keep the English grammar (#1715 P2 is held): screen only.
+            await self.say(readback_screen_only(cards), kind="readback", turn_id=turn_id)
+            return
+        # The PENDING challenge exists before its read-back is sent: the worker's `said`, the
+        # browser's `played` — and an interruption, mute, tap or new question, which void it —
+        # all meet the real challenge, whatever order the awaits resolve in (#1631 reviews).
+        sid = uuid.uuid4().hex[:12]
+        line = readback(cards, judged=_judged(cards))
+        ch = {"cards": cards, "say_id": sid, "sent": False, "armed_at": None,
+              "expires_at": None, "gen": self.generation,
+              # The Needs-you items still to offer, one at a time, after this one (#1681 P2).
+              "queue": list(queue or []),
+              # What was read out, word for word: what the judge is shown (#1715).
+              "readback": line}  # fmt: skip
+        self.challenge = ch
+        self.challenge_seq += 1
+        ch["seq"] = self.challenge_seq
+        said = await self.say(line, kind="readback", turn_id=turn_id, sid=sid)
+        if self.challenge is not ch:
+            return  # voided or replaced while its read-back was being sent
+        if said is None or (gen is not None and gen != self.generation):
+            await self.void_challenge()
+
+    async def _answer_challenge(
+        self, text: str, *, late: bool = False, turn: int | None = None, heard_id: str | None = None
+    ) -> bool:
+        """True when `text` was the reply to a pending confirmation (and was handled). False: it is
+        a new question — awaiting nothing, so the caller supersedes before its first await."""
+        ch = self.challenge
+        if ch is None:
+            return False
+        armed = ch.get("armed_at")
+        if (
+            late  # a transcript whose turn already went out: it began before this was armed
+            or armed is None
+            or ch["gen"] != self.generation  # installed for a superseded question
+            or turn is None  # an utterance with no turn number cannot show when it began
+            or turn <= ch["armed_turn"]  # its turn began before arming (arriving late)
+            or time.monotonic() > ch["expires_at"]
+            or self.user_started_at <= armed
+        ):
+            # Not armed yet, superseded, expired, late, or its turn began before arming or while
+            # HQ was still reading it back: a new question (the caller voids the challenge).
+            return False
+        if turn != self.user_turn:
+            # Overtaken: the Commander began a newer turn before this one's transcript landed (the
+            # worker can flush turn N after N+1 starts). The newer turn is what they mean now, so
+            # this reply decides nothing on ANY path — judged or English fast path (Hermes 7288,
+            # 7336): a new question.
+            return False
+        # What the call looked like when THIS reply was heard, taken before any await: a verdict
+        # (judged or the English fast path) settles only if no turn began and nothing was typed
+        # since — checked again right before the card's route (Hermes 7282, 7288, 7310).
+        snap = {"starts": self.user_starts, "typed": self.typed_turns,
+                "armed_at": ch.get("armed_at"), "gen": ch["gen"], "seq": ch["seq"],
+                "expires_at": ch.get("expires_at"), "turn": turn}  # fmt: skip
+        english = self._confirmation_language_ok()
+        judged = _judged(ch["cards"])
+        if not english and not judged:
+            # Fail closed: a Needs-you decision is matched by the English grammar only, so a turn
+            # not known to be English never decides one. The caller voids it.
+            return False
+        first = ch["cards"][0]
+        if len(ch["cards"]) == 1 and first["kind"] in ("permission", "menu", "pick"):
+            # A Needs-you decision (#1681 P2): the reply names WHICH answer, of this row only.
+            verdict, choice = classify_decision(text, first)
+            idx = 0 if verdict == "choose" else None
+            if choice is not None:
+                first = {**first, "choice": choice}
+        elif len(ch["cards"]) == 1 and first["kind"] == "needs_you" and is_skip(text):
+            verdict, idx = "skip", None
+        else:
+            # The fixed English phrases decide at once (the fast path); anything they don't cover
+            # — any wording, any language — goes to ONE focused judgement (#1715 P1).
+            verdict, idx = (
+                classify_confirmation(text, len(ch["cards"]), dismiss=_dismissable(ch["cards"]))
+                if english
+                else ("other", None)
+            )
+            if verdict == "other" and judged:
+                # `snap` was taken at receipt, before ANY await (this caption send included): a
+                # turn begun after it is newer than the reply and voids its verdict.
+                await self.client(
+                    {"t": "caption", "who": "you", "id": uuid.uuid4().hex[:12], "text": text}
+                )
+                self._side(
+                    self._judge_reply(ch, text, snap, late=late, turn=turn, heard_id=heard_id)
+                )
+                return True
+        return await self._apply_verdict(
+            ch, first, text, verdict, idx, snap=snap, heard_id=heard_id
+        )
+
+    async def _judge_reply(
+        self,
+        ch: dict,
+        text: str,
+        snap: dict,
+        *,
+        late: bool = False,
+        turn: int | None = None,
+        heard_id: str | None = None,
+    ) -> None:
+        """Ask the judge what `text` means for challenge `ch` (#1715 P1). A verdict that settles or
+        re-arms acts ONLY if the challenge is still exactly as it was when the reply was heard
+        (`snap`, taken at receipt; `_judge_still_holds`). `other` and no verdict authorise nothing:
+        they are dropped only if a question from a later turn or a typed turn was taken, or the call
+        ended."""
+        from . import voice_judge
+
+        got = await voice_judge.judge_cards(ch.get("readback") or "", len(ch["cards"]), text)
+        if got is not None and got[0] != "other":
+            # A verdict that settles or re-arms: the whole freshness fence, or it decides nothing.
+            if self._judge_still_holds(ch, snap):
+                await self._apply_verdict(
+                    ch,
+                    ch["cards"][0],
+                    text,
+                    got[0],
+                    got[1],
+                    captioned=True,
+                    snap=snap,
+                    heard_id=heard_id,
+                )
+            return
+        # `other` or NO verdict authorises nothing, so a bare turn start (room noise, a breath)
+        # must not swallow the words (independent review of a160b29d). They are dropped only when
+        # something NEWER than them was actually taken: a question from a later turn (or the
+        # chip), a typed turn, or the call ended. A question from an EARLIER turn — another reply
+        # judged in the same window whose verdict came back first — does not drop them (review of
+        # 834d1045): the newer words are what the Commander means now.
+        if (
+            self.state == "ended"
+            or turn is None
+            or self.taken_turn > turn
+            or self.typed_turns != snap["typed"]
+        ):
+            return
+        if got is None:
+            # NO verdict: nothing is decided, the card stays, and the words are not a question. Said
+            # only while this reply's card is still the one waiting: after a newer reply settled
+            # or replaced it, "it's still waiting" would be false.
+            if self.challenge is ch:
+                await self.void_challenge()
+                await self.say("Sorry, I didn't catch that. It's still waiting for you.",
+                               kind="outcome")  # fmt: skip
+            return
+        # Not an answer: the words go on as a new question, as an unmatched reply always did. The
+        # challenge is retired WITHOUT an await, so nothing newer can be asked before these words
+        # take their generation (`on_utterance` takes it before its first await).
+        cleared = self.challenge is ch
+        if cleared:
+            self.challenge = None
+        await self.on_utterance(text, late=late, turn=turn, captioned=True, heard_id=heard_id)
+        if cleared and self.challenge is None:
+            await self.client({"t": "challenge", "cards": []})
+
+    def _judge_still_holds(self, ch: dict, snap: dict) -> bool:
+        """The freshness fence after the judge's await (#1715): the SAME challenge, still armed in
+        the same arming and generation, the call live and unmuted, no turn begun and nothing typed
+        since the reply was heard, and still inside this arming's window. The reply's OWN
+        turn-start (and Pipecat's interrupt with it) came before its transcript, so it is in
+        `snap` already; only a subsequent one counts."""
+        return (
+            self.challenge is ch
+            and ch.get("armed_at") is not None
+            and ch.get("armed_at") == snap["armed_at"]
+            and ch["gen"] == snap["gen"] == self.generation
+            and not self.muted
+            and self.state != "ended"
+            and self.user_starts == snap["starts"]
+            and self.typed_turns == snap["typed"]
+            and time.monotonic() <= ch["expires_at"]
+        )
+
+    async def _apply_verdict(
+        self,
+        ch: dict,
+        first: dict,
+        text: str,
+        verdict: str,
+        idx: int | None,
+        *,
+        captioned: bool = False,
+        snap: dict | None = None,
+        heard_id: str | None = None,
+    ) -> bool:
+        """Act on what the reply means. False only for `other` (a new question). `snap`: the call
+        as of the reply — a settlement goes ahead only if it still holds then. `heard_id`: the
+        words' record, linked to the card they settle (#2372)."""
+
+        async def caption() -> None:
+            if not captioned:
+                await self.client(
+                    {"t": "caption", "who": "you", "id": uuid.uuid4().hex[:12], "text": text}
+                )
+
+        if verdict == "other":
+            return False
+        if verdict in ("dismiss", "ambiguous_dismiss") and not _dismissable(ch["cards"]):
+            verdict = "cancel"  # a judged nudge: "drop it" leaves it, as a no always did
+        if snap is not None:
+            # An ANSWER from this turn is taken (Hermes 7359): an older reply still being judged
+            # is now older than what the Commander did since, so its words step aside.
+            self.taken_turn = max(self.taken_turn, snap["turn"])
+        if verdict in ("confirm", "choose", "dismiss") and idx is not None:
+            self.challenge = None  # single use: consumed BEFORE anything is awaited
+            card = first if verdict == "choose" else ch["cards"][idx]
+            if verdict == "dismiss":
+                card = {**card, "dismiss": True}  # its own route, with the screen's dismiss
+            if heard_id is not None and _card_ref(card) is not None:
+                # The words that decide it (#2372): tied to the card only once its route really
+                # runs (`settle`), never before a fence that may still stop it (Hermes 8935).
+                card = {**card, "heard_id": heard_id}
+            await caption()
+            await self.client({"t": "challenge", "cards": []})
+            self._side(self._settle_then_next(card, ch["queue"], ch["gen"], snap))
+            return True
+        if verdict == "skip":
+            self.challenge = None
+            await caption()
+            await self.client({"t": "challenge", "cards": []})
+            if not await self._offer_next(ch["queue"], ch["gen"]):
+                await self.say("Okay. That was the last one.", kind="outcome")
+            return True
+        await caption()
+        if verdict == "cancel":
+            await self.void_challenge()
+            line = (
+                "Okay, I'll leave them."
+                if ch["queue"] or len(ch["cards"]) > 1
+                else "Okay, I'll leave it."
+            )
+            await self.say(line, kind="outcome")
+            return True
+        # "all" / "ambiguous" / "broader" / "no_allow": HQ answers, and the challenge waits for
+        # THAT line to have played before it arms again — so its own echo can never be taken
+        # for a confirmation.
+        which = which_of(len(ch["cards"]))  # a person's question, never a command (#2342)
+        if _judged(ch["cards"]):
+            pick, drop = f"Which one do you mean, {which}?", f"Which one should I drop, {which}?"
+        else:  # the grammar decides (Hermes 8839): the question names the phrase it takes
+            pick, drop = f"Confirm {which}, or cancel?", f"Drop {which}?"
+        line = {
+            "all": f"I can only do one at a time. {pick}",
+            "broader": "By voice I can only allow it once. For anything more, you'll need to"
+            " tap it.",
+            "no_allow": "I can't allow this one by voice. Refuse it, or skip it?",
+            "ambiguous_dismiss": drop,
+        }.get(verdict, pick)
+        sid = uuid.uuid4().hex[:12]
+        # Disarmed BEFORE the line is sent; it re-arms only once THIS line has played.
+        ch.update(say_id=sid, sent=False, armed_at=None, expires_at=None)
+        await self.client({"t": "challenge", "cards": []})
+        said = await self.say(line, kind="outcome", sid=sid)
+        if self.challenge is ch and said is None:
+            await self.void_challenge()
+        return True
+
+    async def _settle_then_next(
+        self, card: dict, queue: list[dict], gen: int, snap: dict | None = None
+    ) -> None:
+        """Settle one card, then offer the next queued Needs-you item — unless something newer
+        (a question, an offer) took the call meanwhile."""
+        await self._settle_if_still_wanted(card, snap)
+        if self.challenge is None and gen == self.generation:
+            await self._offer_next(queue, gen)
+
+    async def _offer_next(self, queue: list[dict], gen: int) -> bool:
+        """Offer the first queued item not tapped meanwhile, the rest queued behind it. False when
+        none is left (or the call moved on)."""
+        rest = [c for c in queue if c["id"] not in self.tapped]
+        if not rest or gen != self.generation or self.state == "ended":
+            return False
+        await self.offer(rest[:1], gen=gen, queue=rest[1:])
+        return True
+
+    async def _settle_if_still_wanted(self, card: dict, snap: dict | None = None) -> None:
+        """Settle unless the call ended, was muted, or the card was tapped meanwhile — or, with
+        `snap` (the call as of the reply), the Commander began another turn or typed since: the
+        newer turn is what they mean now, so the old reply authorises nothing (Hermes 7310)."""
+        if self.state == "ended" or self.muted or card["id"] in self.tapped:
+            return
+        if snap is not None and not self._settle_fence_holds(snap):
+            return
+        await self.settle(card, snap)
+
+    def _settle_fence_holds(self, snap: dict) -> bool:
+        """The reply's freshness fence, at the LAST boundary before the card's route (Hermes 7310,
+        7318): no turn begun and nothing typed since the reply was heard, the same question
+        (generation), no newer challenge EVER installed — not merely none installed now: one offered
+        and then voided (a tap) still supersedes the reply (Hermes 7336) — the call live and
+        unmuted, and still inside the window the reply was heard in."""
+        expires = snap.get("expires_at")
+        return (
+            self.user_starts == snap["starts"]
+            and self.typed_turns == snap["typed"]
+            and self.generation == snap["gen"]
+            and self.challenge is None
+            and self.challenge_seq == snap["seq"]
+            and self.state != "ended"
+            and not self.muted
+            and expires is not None
+            and time.monotonic() <= expires
+        )
+
+    def _confirmation_language_ok(self) -> bool:
+        """English is KNOWN for this utterance. Where the endpoint detects language — on Auto AND
+        on a fixed-English call — THIS utterance must have been heard as English; German, mixed or
+        unknown fails closed. Only where the endpoint was TESTED and cannot detect is a
+        fixed-English or Auto call taken as English (Settings says so: there is nothing to check
+        against); an untested endpoint fails closed (#1635 review)."""
+        if self.fixed_language not in (None, "en"):
+            return False
+        if self.detects_language is None:
+            return False  # never tested (or its endpoint changed): unknown fails closed
+        if self.detects_language:
+            return self.heard_language == "en" and self.language in (None, "en")
+        return True
+
+    async def settle(self, card: dict, snap: dict | None = None) -> None:
+        """The card's OWN route, in-process, as the operator (the #1559 mechanism): every guard and
+        re-check a tap gets. What is said is rendered from the route's result. `snap`: a spoken
+        reply's freshness fence, re-checked right before the route — after every await here (the
+        suggest branch's folder lookup included)."""
+        from . import asgi_call
+
+        kind = card["kind"]
+        if card.get("dismiss") and kind in DISMISSABLE_KINDS:
+            # A spoken dismiss (#2120): the card's decide route with the screen's own dismiss —
+            # exactly what the Dismiss button sends. Nothing of the card runs.
+            method, path = "POST", f"/api/ask/proposals/{card['id']}/decide"
+            body = {"decision": "dismiss"}
+        elif card.get("dismiss"):
+            return  # never anything but a sidecar card's own dismiss
+        elif kind in ("nudge", "needs_you"):
+            method, path, body = "POST", f"/api/pulse/actions/{card['id']}/approve", None
+        elif kind == "suggest":
+            # Still the same EXISTING folder for a card still waiting, at THIS moment: what was
+            # read back must still hold. Nothing is ever made on disk by voice (option A).
+            s = card["suggest"]
+            from . import ask_operations
+
+            try:
+                now = await asyncio.to_thread(ask_operations.suggested_folder, card["id"])
+            except Exception:  # noqa: BLE001
+                now = None
+            if not now or now.get("folder") != s["folder"]:
+                await self.client({"t": "settled", "card": card["id"], "ok": False, "status": 0})
+                await self.say("That one changed in the meantime, so I left it alone.",
+                               kind="outcome")  # fmt: skip
+                return
+            method, path = "POST", f"/api/ask/proposals/{card['id']}/decide"
+            # `existing`: the store re-checks it is still that real directory as it saves.
+            body = {"decision": "confirm", "inputs": {"folder": s["folder"], "existing": True}}
+        elif kind == "pick" and not isinstance(card.get("choice"), dict):
+            return  # never settled without the folder the Commander picked
+        elif kind == "pick":
+            # The card's own decide route, with the folder the Commander picked by number from
+            # the card's OWN choices (`ask_operations.folder_choices`) as its input — the payload
+            # a tap on the picker sends. The model never saw or chose it.
+            method, path = "POST", f"/api/ask/proposals/{card['id']}/decide"
+            body = {"decision": "confirm", "inputs": {"folder": card["choice"]["label"]}}
+        elif kind in ("permission", "menu"):
+            # The screen's own route and payload: the RECORDED option's number and label. The
+            # route re-checks the live screen against what the escalation recorded (#1213).
+            choice = card["choice"]
+            method, path = "POST", f"/api/pulse/actions/{card['id']}/choose"
+            body = {"option": choice["option"], "label": choice["label"]}
+        elif kind == "message":
+            # Exactly the screen's tap (#1833): the decision and nothing else; the stored entry
+            # is what is sent.
+            method, path = "POST", f"/api/ask/proposals/{card['id']}/decide"
+            body = {"decision": "send"}
+        elif kind == "session":
+            method, path = "POST", f"/api/ask/proposals/{card['id']}/decide"
+            body = {"decision": "start", "bypass": False}
+        else:  # operation
+            method, path = "POST", f"/api/ask/proposals/{card['id']}/decide"
+            body = {"decision": "confirm"}
+        if snap is not None and not self._settle_fence_holds(snap):
+            return  # something newer took the call while this settlement was being prepared
+        ref, hid = _card_ref(card), card.get("heard_id")
+        if ref is not None and isinstance(hid, str):
+            # Past every fence, synchronously before the route (#2372): HQ's history may now say
+            # these words went to the card's route. Written for a route that really runs.
+            self._link(hid, "confirm", card=ref)
+        try:
+            resp = await asgi_call.call(self.app, self.operator, method, path, body)
+        except Exception:  # noqa: BLE001 — never speak an exception; say it failed
+            log.warning("voice confirmation route failed", exc_info=True)
+            resp = None
+        ok = settled_ok(card, resp)
+        await self.client({"t": "settled", "card": card["id"], "ok": ok,
+                           "status": resp.status if resp else 0,
+                           **({"dismissed": True} if card.get("dismiss") else {})})  # fmt: skip
+        await self.say(outcome_sentence(card, resp), kind="outcome", card=ref)
+        if resp is not None and resp.status == 202 and card["kind"] in _PROPOSAL_KINDS:
+            # Accepted is not finished: follow the card to its end state and say THAT.
+            final = await self._follow(card["id"])
+            if final is None:
+                # Still launching past the window (#2372: a 39 s API-session start went unsaid).
+                # Say so, and keep ONE call-owned follower on it that tells the end when it lands.
+                await self.say(STILL_STARTING_LINE, kind="outcome", card=ref)
+                if self.state != "ended" and card["id"] not in self._followers:
+                    task = asyncio.create_task(self._follow_late(card))
+                    self._followers[card["id"]] = task
+                    task.add_done_callback(
+                        lambda _t, pid=card["id"]: self._followers.pop(pid, None)
+                    )
+                return
+            await self._tell_end(card, final)
+
+    async def _tell_end(self, card: dict, final: str) -> None:
+        """A card's end, said ONCE (#2372): a repeated observation says nothing, and nothing is
+        said, or recorded as said, once the call has ended."""
+        if card["id"] in self._told_end or self.state == "ended":
+            return
+        self._told_end.add(card["id"])
+        await self.client({"t": "settled", "card": card["id"], "final": final})
+        if self.state == "ended":
+            return  # hung up during that send: nothing is said (`say` checks again too)
+        await self.say(final_sentence(card, final), kind="outcome", card=_card_ref(card))
+
+    async def _follow_late(self, card: dict) -> None:
+        """Follow an accepted card past `OUTCOME_POLL_S` at a low rate until it ends, the call
+        ends, or `OUTCOME_LATE_MAX_S` passes (#2372). An unreadable state is not an end: it is
+        read again, and never spends the card's one announcement."""
+        from . import ask_proposals
+
+        deadline = time.monotonic() + OUTCOME_LATE_MAX_S
+        while time.monotonic() < deadline and self.state != "ended":
+            await asyncio.sleep(OUTCOME_LATE_EVERY_S)
+            status, entries = await asyncio.to_thread(ask_proposals.views, self.cid)
+            if self.state == "ended":
+                return  # re-checked after the read: a hang-up during it says nothing
+            state = (entries.get(card["id"]) or {}).get("state") if status == "ok" else None
+            if state not in (None, "pending", "deciding"):
+                await self._tell_end(card, state)
+                return
+
+    async def _follow(self, pid: str) -> str | None:
+        from . import ask_proposals
+
+        deadline = time.monotonic() + OUTCOME_POLL_S
+        while time.monotonic() < deadline and self.state != "ended":
+            await asyncio.sleep(OUTCOME_EVERY_S)
+            status, entries = await asyncio.to_thread(ask_proposals.views, self.cid)
+            state = (entries.get(pid) or {}).get("state") if status == "ok" else None
+            if state not in (None, "pending", "deciding"):
+                return state
+        return None
+
+    async def _offered_needs_you(self, view: dict) -> list[dict]:
+        """The Needs-you rows HQ put to the Commander in this answer (`offer_decisions`, #2137), as
+        voice cards, read from the server's LIVE list now: a row is offered only if the decision
+        HQ named is still the one it waits on (its pending action's id) and a voice may settle it
+        (`needs_you_cards`). Nothing read, or nothing still waiting: nothing offered."""
+        from . import asgi_call
+
+        ids = view.get("offers")
+        if not isinstance(ids, list) or not ids:
+            return []
+        try:
+            resp = await asgi_call.call(
+                self.app, self.operator, "GET", "/api/pulse/needs-you", None
+            )
+        except Exception:  # noqa: BLE001 — nothing offered; the rows stay on the screen
+            return []
+        if resp.status != 200 or not isinstance(resp.body, dict):
+            return []
+        rows = [r for r in resp.body.get("rows") or [] if isinstance(r, dict)]
+        by_id = {c["id"]: c for c in needs_you_cards(rows)}
+        out: list[dict] = []
+        for i in ids:
+            if isinstance(i, str) and i in by_id and by_id[i] not in out:
+                out.append(by_id[i])
+        return out[:OFFERS_MAX]
+
+    async def _report_progress(self, d: _CallDraft | None = None, *, cue: bool = False) -> None:
+        """While HQ's turn runs: a fixed status line whenever HQ has been quiet too long (#1702),
+        so a slow model never reads as a dropped call. Cancelled as the turn settles. A draft's
+        turn shows nothing until it is committed (#1845): then HQ is thinking, from now. `cue`:
+        the Commander's own words just started this turn, so it may open with a thinking cue
+        (#2339)."""
+        if d is not None:
+            await d.committed.wait()
+            await self.set_state("thinking")
+            if self.work is not None:
+                self.work["since"] = time.monotonic()
+        # The cue waits for a real lookup (the operator, 2026-11-25: "it should not say 'let me
+        # check' to all, only when it really looks up stuff"): small talk, a question back, or a
+        # card is answered without one. None ready: nothing to wait for, the cadence is unchanged.
+        pending = cue and bool(self.cues_ready)
+        next_tick = time.monotonic() + PROGRESS_TICK_S
+        while self.state != "ended":
+            await asyncio.sleep(CUE_AFTER_S if pending else PROGRESS_TICK_S)
+            if pending and (self.work or {}).get("looked_up"):
+                pending = False
+                await self.cue_tick()
+            if not pending or time.monotonic() >= next_tick:
+                next_tick = time.monotonic() + PROGRESS_TICK_S
+                await self.progress_tick()
+
+    def _track(self, ev: dict) -> None:
+        """What the running turn is doing now, from its own progress events (#1702)."""
+        work = self.work
+        if work is None:
+            return
+        if ev.get("type") == "aside":
+            # The model's own words beside its tool calls (#2113 P2), already through the store's
+            # text boundary: the newest waits to be said, an older unsaid one is dropped.
+            text = ev.get("text")
+            if isinstance(text, str) and text.strip():
+                work["last_aside"] = text.strip()
+                # The newest aside replaces any older one still waiting, even one too short to say
+                # in the voice (#2339): that one is still what HQ is doing (the interjection judge
+                # reads it) and outdates the older line, but is not spoken itself.
+                work["aside"] = work["last_aside"] if len(text.split()) >= ASIDE_MIN_WORDS else None
+            return
+        step = ev.get("step")
+        now = time.monotonic()
+        if step == "thinking":
+            work.update(phase="model", phase_since=now, tool=None)
+        elif step == "tool":
+            name = str(ev.get("tool") or "")
+            work.update(phase="tool", phase_since=now, tool=name, acted=True)
+            spec = ask_orchestrator.TOOLS.get(name)
+            if spec is not None and spec.kind == "read":
+                work["looked_up"] = True  # a real lookup: the thinking cue may play now
+        elif step in FIND_STEPS and work["phase"] != "tool":
+            # The no-tools fallback runs the find pipeline without a `tool` event.
+            work.update(
+                phase="tool", phase_since=now, tool="find_sessions", acted=True, looked_up=True
+            )
+
+    async def progress_tick(self) -> None:
+        """Say where the running turn is, if HQ has been quiet long enough (#1702): FIRST_PROGRESS_S
+        before the first status line, PROGRESS_EVERY_S between them, STALL_EVERY_S after a stall
+        line. Only while HQ is thinking (never over its own audio), the Commander isn't speaking
+        and the last status line has gone out — a best-effort cadence of ELIGIBLE quiet, never a
+        guarantee of audible speech by a deadline."""
+        work = self.work
+        if work is None or self.state != "thinking" or self.user_speaking:
+            return
+        if work.get("unsaid"):
+            # The last status line hasn't gone out yet (TTS or the worker is slow): never queue
+            # another behind it — at most one is ever waiting.
+            return
+        now = time.monotonic()
+        quiet = now - max(self.hq_quiet_at, work["since"])
+        aside = work.get("aside")
+        if aside:
+            # Its own words first (#2113 P2): a waiting aside is the only line said, once HQ has
+            # been quiet ASIDE_QUIET_S and ASIDE_GAP_S after the last status line.
+            if quiet < ASIDE_QUIET_S or now - work.get("said_at", -math.inf) < ASIDE_GAP_S:
+                return
+            work["aside"] = None
+            await self._say_status(work, aside, now)
+            return
+        if not work["updates"]:
+            need = FIRST_PROGRESS_S
+        else:
+            # The stall line comes at the usual pace; only the lines after it slow down.
+            need = STALL_EVERY_S if work.get("stalled") else PROGRESS_EVERY_S
+        # Quiet from before this turn doesn't count: the question was just asked (#1827).
+        if quiet < need:
+            return
+        work["stalled"] = work["phase"] == "model" and now - work["phase_since"] >= STALL_S
+        work["updates"] += 1  # counted first: `progress_line` reads this line's number
+        await self._say_status(work, progress_line(work, now), now, counted=True)
+
+    def _say_voice(self) -> str | None:
+        """A voice per language (#1397 P3): the contact's voice for the call's language, if set;
+        None means the contact's own voice (`self.voice`, the worker's default)."""
+        return (self.profile or {}).get("language_voices", {}).get(self.language or "")
+
+    def pick_cue(self) -> str | None:
+        """A thinking-cue line for the call's language whose take the worker has ready in the
+        voice a say would use now, never the line said last; None when there is none."""
+        lang = self.language or "en"
+        voice = self._say_voice() or self.voice  # the EFFECTIVE voice, as the worker names it
+        ready = [
+            t for t in CUE_LINES.get(lang, ())
+            if (voice, t) in self.cues_ready and t != self.last_cue
+        ]  # fmt: skip
+        return random.choice(ready) if ready else None  # noqa: S311 — variety, not security
+
+    async def cue_tick(self) -> None:
+        """ONE thinking cue for the turn the Commander's words just started (#2339), if HQ is
+        still thinking and has said nothing in it, nothing of HQ's is playing or waiting, and the
+        Commander isn't speaking again. A cue counts for the aside gap (`said_at`), never for the
+        fixed lines' cadence. A skipped share keeps it from becoming a tic."""
+        work = self.work
+        if work is None or self.state != "thinking" or self.user_speaking:
+            return
+        if work.get("unsaid") or work["updates"] or "said_at" in work:
+            return
+        now = time.monotonic()
+        if self.hq_quiet_at > now:
+            return  # HQ's own audio may still be playing
+        if random.random() < CUE_SKIP:  # noqa: S311 — variety, not security
+            return
+        text = self.pick_cue()
+        if text is None:
+            return
+        self.last_cue = text
+        work["said_at"] = now
+        sid = uuid.uuid4().hex[:12]
+        work["unsaid"] = sid  # BEFORE the send, as `_say_status`
+        if await self.say(text, kind="progress", sid=sid, heard=False, cue=True) is None:
+            work["unsaid"] = None
+
+    async def _say_status(
+        self, work: dict, text: str, now: float, *, counted: bool = False
+    ) -> None:
+        """One status line while the turn runs: a fixed line or HQ's own aside (#2113 P2). It
+        counts toward the fixed lines' cadence either way."""
+        if not counted:
+            work["updates"] += 1
+        work["said_at"] = now
+        sid = uuid.uuid4().hex[:12]
+        work["unsaid"] = sid  # BEFORE the send: its `said` can come back while it is in flight
+        if await self.say(text, kind="progress", sid=sid, heard=False) is None:
+            work["unsaid"] = None
+
+    async def _run_turn(
+        self,
+        turn_id: str,
+        text: str,
+        answers,
+        option,
+        *,
+        replying_to: str | None = None,
+        draft: _CallDraft | None = None,
+        waited_since: float | None = None,
+    ) -> dict:
+        from . import actuator  # the same snapshot the HQ route takes
+
+        task, view = await ask_orchestrator.begin(
+            self.cid,
+            turn_id,
+            text,
+            working_keys=actuator.working_keys(self.registry),
+            busy_keys=actuator.busy_keys(self.registry),
+            answers=answers,
+            option=option,
+            contact=self.contact,
+            via="call",
+            call_answers=self.answers,
+            replying_to=replying_to,
+            operator=self.operator,
+            app=self.app,
+            draft=draft is not None,
+            waited_since=waited_since,  # said while HQ worked (#2354)
+        )
+        if task is None:
+            if (view or {}).get("status") != "queued":
+                return view
+            # The slot was taken between the dispatch and this begin (#2103): it waits in the
+            # conversation's queue and is followed from here once it starts — by the handle
+            # taken with the admission (`_follow_queued`, review 8407).
+            task, settled = await self._follow_queued(turn_id, view)
+            if self.state == "ended":
+                raise _NotStarted
+            if task is None:
+                if settled and settled.get("status") in ask_orchestrator.RAN_STATUSES:
+                    return settled  # it ran and settled before this call looked: presented once
+                raise _NotStarted
+        if draft is not None:
+            if draft.dropped:  # more words arrived while it was being begun
+                await ask_orchestrator.discard(self.cid, turn_id)
+                raise _DraftDropped
+            draft.admitted = True  # the orchestrator holds it: a commit can be written now
+            if draft.commit_requested:  # muted while it was being admitted (#2044)
+                await self._commit_draft(draft)
+            else:
+                self._side(self._commit_when_quiet(draft))
+        return await self._watch_turn(task, draft)
+
+    async def _watch_turn(self, task: asyncio.Task, draft: _CallDraft | None = None) -> dict:
+        """Follow the running turn `task` to its settled view, relaying its progress."""
+        queue = ask_orchestrator.listen(self.cid, task)
+        try:
+            while not task.done():
+                get = asyncio.ensure_future(queue.get())
+                done, _ = await asyncio.wait({get, task}, return_when=asyncio.FIRST_COMPLETED)
+                if get in done:
+                    ev = get.result()
+                    if ev.get("type") == "screen":
+                        # HQ asked this call's screen to show something (#2102): the directive
+                        # goes to the browser holding the call socket, once, and nowhere else.
+                        await self.client(
+                            {
+                                "t": "screen",
+                                "turn_id": ev.get("turn_id"),
+                                "directive": ev.get("directive"),
+                                "title": str(ev.get("title") or ""),
+                            }
+                        )
+                        continue
+                    self._track(ev)
+                    if ev.get("type") == "aside":
+                        continue  # said aloud by `progress_tick`, never a step on the screen
+                    if ev.get("step") == "tool_done":
+                        continue  # a finished step: the next event says what runs now
+                    step = ev.get("tool") or ev.get("step")
+                    # The process row on the call screen (#2076): the step's name and how many
+                    # steps the turn has finished. Numbers on screen only, never spoken.
+                    steps = ev.get("n") - 1 if isinstance(ev.get("n"), int) else ev.get("steps")
+                    await self.client(
+                        {
+                            "t": "progress",
+                            "step": str(step)[:40],
+                            "steps": steps if isinstance(steps, int) else None,
+                        }
+                    )
+                else:
+                    get.cancel()
+            if draft is not None and task.cancelled():
+                raise _DraftDropped  # discarded (#1845), by more words or a typed turn
+            return await asyncio.shield(task)
+        finally:
+            ask_orchestrator.unlisten(self.cid, queue)
+
+    # -- ending ---------------------------------------------------------------------------------
+
+    async def check_silence(self) -> None:
+        """The call's clock, ticked by the socket's watchdog (#1668). Ends the call only when HQ
+        judged it over and the farewell had its chance to play, or when nobody answered HQ's
+        still-there question. Nothing else ends a call on time."""
+        if self.state == "ended":
+            return
+        now = time.monotonic()
+        end = self.ending
+        if end is not None and end["gen"] == self.generation:
+            # Counted from when its audio went out (`said`), never from the send: a goodbye queued
+            # behind another say, or slow to synthesise, is not cut off. (An interruption that
+            # drops `said` comes with `user_started`, which keeps the call anyway.)
+            out = end["said_at"]
+            late = out is not None and now - out >= end["speech_s"] + PLAYBACK_FALLBACK_S
+            if late and self._ending_holds(end):
+                await self.end("hq_ended")  # unconfirmed playback
+            return
+        st = self.still_there
+        if st is None:
+            if now - self.last_speech >= SILENCE_ASK_S:
+                # Installed BEFORE it is sent (Hermes 6983): a reply landing during the send
+                # clears it, and it is never put back afterwards.
+                sid = uuid.uuid4().hex[:12]
+                self.still_there = {
+                    "say_id": sid,
+                    "sent_at": None,
+                    "said_at": None,
+                    "played_at": None,
+                    "speech_s": speech_seconds(STILL_THERE_LINE),
+                }
+                # The reply answers THIS question, not one HQ left open half an hour ago.
+                self.ask = None
+                self.replying_still_there = True
+                self.still_there_since = self.user_starts
+                said = await self.say(STILL_THERE_LINE, kind="still_there", sid=sid)
+                st = self.still_there
+                if st is not None and st["say_id"] == sid:
+                    if said is None:
+                        self.still_there = None
+                    else:
+                        st["sent_at"] = time.monotonic()
+            return
+        heard = st["played_at"]
+        if heard is None:  # no ack (a backgrounded tab): count it as played after the fallback
+            # From its audio going out (`said`), else from its send: noise interrupting it drops
+            # the worker's `said` marker, and a forgotten tab must still be hung up (#1668).
+            out = st["said_at"] or st["sent_at"]
+            if out is None:
+                return  # still being sent: no window has started yet
+            heard = out + st["speech_s"] + PLAYBACK_FALLBACK_S
+        if now - heard >= NO_ANSWER_S:
+            await self.end("no_answer")
+
+    async def end(self, reason: str, *, detail: str = "", endpoint: str = "") -> None:
+        if self.state == "ended":
+            return
+        self.challenge = None  # a dropped call settles nothing
+        self.state = "ended"
+        # A draft the Commander had not finished is dropped, never left holding the conversation
+        # (#1845). Bounded like the sends below.
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(self.drop_draft(), SEND_BUDGET_S)
+        # The call's own records (#2137) are written out, bounded like the sends below, and the
+        # writer retires: a record that arrives later (a settlement finishing) starts a new one.
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(self.flush_records(), SEND_BUDGET_S)
+        w = self._writer
+        q = self._queue()
+        if w is not None and not w.done() and (q is None or q.empty()):
+            w.cancel()
+        # Late followers only read and speak (#2372): they stop with the call.
+        for task in list(self._followers.values()):
+            task.cancel()
+        # Side tasks are NOT cancelled: a settlement checks the call before it starts, and one
+        # already inside its card's route must finish that route, never stop half way.
+        self.ended_reason = reason
+        try:
+            # Bounded: a stalled client or worker socket must not keep a hang-up from finishing.
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(
+                    self.client({"t": "ended", "reason": reason, "detail": detail,
+                                 "endpoint": endpoint}), SEND_BUDGET_S)  # fmt: skip
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(self.worker({"t": "stop"}), SEND_BUDGET_S)
+        finally:
+            self._ended.set()
+            if not self.worker_started:
+                self.mark_torn_down()  # nothing to tear down
+
+    def mark_torn_down(self) -> None:
+        """Nothing of this call runs any more (its worker stopped, or it never had one): the next
+        call may be admitted, and `voice setup`/`remove` may proceed (#1397 P4)."""
+        self.release()
+        self.torn_down.set()
+
+    def release(self) -> None:
+        """Drop the shared `voice/call.lock` (#1397 P4). Once a worker started, only after it has
+        been STOPPED: setup must not swap or restart what a call is still tearing down."""
+        if self._held is not None:
+            self._held.close()
+            self._held = None
+
+    async def wait_ended(self) -> None:
+        await self._ended.wait()
+
+
+class _NotStarted(Exception):
+    """A question that waited in the queue never started for this call (#2103): withdrawn, or
+    the call ended first. Nothing is said."""
+
+
+class _DraftDropped(Exception):
+    """A call's draft turn was discarded before its commit (#1845)."""
+
+
+@dataclass
+class _CallDraft:
+    """HQ's turn for the words `text`, heard in worker turn `turn`, begun as a draft (#1845)."""
+
+    turn_id: str
+    gen: int
+    turn: int
+    text: str
+    heard: dict
+    started: float
+    committed: asyncio.Event = field(default_factory=asyncio.Event)
+    #: Its commit has ended, whichever way (`Call._commit_draft`).
+    commit_done: asyncio.Event = field(default_factory=asyncio.Event)
+    #: Claimed for a discard (`Call._drop_draft`): it is never committed, said or shown.
+    dropped: bool = False
+    #: The orchestrator holds this draft (`_run_turn`): a commit can be written now.
+    admitted: bool = False
+    #: A commit was asked for before admission succeeded (#2044): `_run_turn` consumes it once,
+    #: unless the draft was discarded or superseded first (`dropped`).
+    commit_requested: bool = False
+
+
+def _call_record_counts(records: list[dict]) -> dict:
+    """How many of the call records (#2137) a conversation already holds, per bound."""
+    total = dropped = counts = 0
+    for r in records:
+        if r.get("type") in ("heard", "heard_link", "said"):
+            total += 1
+            dropped += int(r.get("type") == "heard" and r.get("route") == "dropped")
+        counts += int(r.get("type") == "counts")
+    return {"heard_said": total, "heard_dropped": dropped, "counts": counts}
+
+
+def _stop_instant(at: object) -> float:
+    """The worker's `user_stopped` instant on this clock, or now when it sent none or one that
+    cannot be right (in the future, or older than a transcript could trail it)."""
+    now = time.monotonic()
+    if isinstance(at, int | float) and not isinstance(at, bool) and 0 <= now - at <= 5.0:
+        return float(at)
+    return now
+
+
+def _turn_number(v: object) -> int | None:
+    """The worker's user-turn number, or None for anything that is not a positive int."""
+    return v if isinstance(v, int) and not isinstance(v, bool) and v > 0 else None
+
+
+def _sentence(s: str) -> str:
+    return s if s.endswith((".", "!", "?")) else s + "."
+
+
+def _voice_operation(op_id: object) -> bool:
+    """May a voice confirm this HQ operation at all? Only one the catalog knows (an unknown id
+    fails closed) and that is not a Library operation. A Library card offers Confirm only once
+    its content is on screen (#1611), and enabling or widening an automation consents to a scope
+    the card shows: none of that is in its one-sentence summary, so a voice never confirms it."""
+    from . import ask_library, ask_operations
+
+    op = ask_operations.CATALOG.get(op_id) if isinstance(op_id, str) else None
+    # A secret operation (#1786) is never voice-confirmed: turning agent access on widens what
+    # agents can read, and the operator approved HQ proposing it only as a card they tap.
+    # A team card (#1950) names its step and model on screen; it is a screen decision too, and so
+    # is a draft mission (#1950): its instruction is on the card. An MCP server card (#2163)
+    # registers, installs third-party code, checks with credentials or widens which projects'
+    # agents get a server and its credentials: like a secret's access, only ever a tap.
+    return op is not None and op.group not in (
+        *ask_library.GROUPS,
+        "secret",
+        "team",
+        "mission",
+        "mcp",
+    )
+
+
+#: The Library operations a voice may confirm (#1681): NEW drafts that run nothing, each only
+#: with a spoken summary of its bound draft (`draft_summary`). Edits, copies, enabling and
+#: widening stay screen decisions.
+VOICE_DRAFTS = frozenset({"playbook.create", "skill.create", "automation.create"})
+#: The longest Library summary a call reads out (characters).
+DRAFT_TOLD_MAX = 700
+
+
+def draft_summary(op_id: str, files: dict) -> str | None:
+    """A new draft as a FIXED spoken summary (#1681), every field read verbatim — or ``None``
+    when anything it promises can't be said in full (the card stays on screen).
+
+    - playbook: "Save a new playbook, “{name}”: {summary}. It has {n} steps: {titles}." — or, with
+      several flows, every flow by its title with all of its steps (none is left unsaid);
+    - skill: "Save a new skill, “{name}”: {description}. It has {n} files: {paths}."
+    """
+    if (
+        not isinstance(files, dict)
+        or not files
+        or not all(isinstance(k, str) and isinstance(v, str) for k, v in files.items())
+    ):
+        return None
+    if op_id == "playbook.create":
+        from .playbooks import loader, store
+
+        try:
+            card = loader.card(loader.validate_tree(store.tree_from_files(files)))
+        except Exception:  # noqa: BLE001 — not a valid playbook: nothing to summarise
+            return None
+        name = _said_name(card.get("name"))
+        about = str(card.get("summary") or "")
+        said_about = verbatim(about) if about else ""
+        # EVERY flow and every step (review of 1420f59e): a step of a second flow is in the
+        # playbook too, so a summary that left it out would not be the playbook confirmed.
+        flows = sorted(card.get("flows") or [], key=lambda f: f.get("id") != card["default_flow"])
+        told = []
+        for f in flows:
+            steps = [verbatim(str(st.get("title") or "")) for st in f.get("steps") or []]
+            if not steps or any(t is None for t in steps):
+                return None
+            n = len(steps)
+            told.append((verbatim(str(f.get("title") or "")), f"{n} step{'s' if n != 1 else ''}: "
+                         + "; ".join(steps)))  # type: ignore[arg-type]  # fmt: skip
+        if name is None or said_about is None or not told:
+            return None
+        head = f"Save a new playbook, “{name}”" + (f": {_sentence(said_about)}" if about else ".")
+        if len(told) == 1:
+            line = f"{head} It has {told[0][1]}."
+        else:
+            if any(title is None for title, _ in told):
+                return None
+            parts = " ".join(f"{title}: {steps}." for title, steps in told)
+            line = f"{head} It has {len(told)} flows. {parts}"
+    elif op_id == "skill.create":
+        text = files.get("SKILL.md") or ""
+        name = _said_name(_front_matter(text, "name"))
+        about = _front_matter(text, "description")
+        said_about = verbatim(about) if about else ("" if about == "" else None)
+        paths = [verbatim(p) for p in sorted(files)]
+        if not name or said_about is None or any(p is None for p in paths):
+            return None
+        head = f"Save a new skill, “{name}”" + (f": {_sentence(said_about)}" if about else ".")
+        n = len(paths)
+        line = f"{head} It has {n} file{'s' if n != 1 else ''}: {', '.join(paths)}."  # type: ignore[arg-type]
+    else:
+        return None
+    return line if len(line) <= DRAFT_TOLD_MAX else None
+
+
+def automation_summary(config: object) -> str | None:
+    """A NEW automation as a FIXED spoken summary (#1681) — or ``None`` when anything it promises
+    can't be said in full. It is saved switched off (the create route takes no ``enabled``; turning
+    it on is its own consent card), so the summary says what it would do once enabled:
+
+    "Save a new automation, “{name}”, switched off: nothing runs until you enable it. Then it
+    {starts a mission in the {project} project | starts a {agent} session in {folder}} with the
+    {instruction | message}: {text}. {When, in the store's own schedule words}."
+
+    Only plain text is read: a template's text is filled in at run time, so it can't be heard
+    now. Typing into an existing session, and a session launched with permission bypass, stay on
+    screen."""
+    from . import ask_settings, automations, projects
+
+    if not isinstance(config, dict):
+        return None
+    name = _said_name(config.get("name"))
+    action = config.get("action") if isinstance(config.get("action"), dict) else {}
+    trigger = config.get("trigger") if isinstance(config.get("trigger"), dict) else {}
+    kind = action.get("kind")
+    try:
+        policy = automations.validate_policy(config.get("policy"))
+    except automations.AutomationError:
+        return None
+    if policy != automations.validate_policy(None):
+        return None  # limits it would run under that the summary doesn't say: on screen
+    if kind == "start_mission":
+        project = projects.load().get(str(action.get("project_id") or ""))
+        where = verbatim(project.name) if project is not None else None
+        said = _plain_message(action.get("instruction"))
+        # How far it goes on its own, in the consent lines' own words (`automations.describe`);
+        # answering menus on its own is never a voice decision.
+        how = {
+            "propose": "It plans the mission and waits for you to dispatch it.",
+            "dispatch": "It dispatches the plan without asking you.",
+        }.get(str(action.get("autonomy") or "propose"))
+        what = f"starts a mission in the {where} project with the instruction: {said}"
+        if where is None or said is None or how is None:
+            return None
+        what = f"{_sentence(what)} {how}"[:-1]
+    elif kind == "start_session" and action.get("bypass") is False:
+        agent = verbatim(ask_settings.agent_labels().get(str(action.get("engine") or ""), ""))
+        folder = verbatim(str(action.get("folder") or ""))
+        said = _plain_message(action.get("message"))
+        what = f"starts a {agent} session in {folder} with the message: {said}"
+        if not agent or folder is None or said is None:
+            return None
+    else:
+        return None
+    t = trigger.get("kind")
+    if t == "manual":
+        when = "It runs only when you start it."
+    elif t == "once":
+        when = automations._cadence_words(trigger.get("at"), trigger.get("tz")) + "."
+    elif t == "schedule":
+        when = automations._cadence_words(trigger.get("cadence"), trigger.get("tz")) + "."
+    else:
+        return None
+    if name is None or verbatim(when) is None:
+        return None
+    line = (
+        f"Save a new automation, “{name}”, switched off: nothing runs until you enable it. Then it"
+        f" {_sentence(what)} {when}"
+    )
+    return line if len(line) <= DRAFT_TOLD_MAX else None
+
+
+def _plain_message(raw: object) -> str | None:
+    """A stored message's text as read out — only plain text, verbatim."""
+    if not isinstance(raw, dict) or set(raw) != {"text"} or not isinstance(raw["text"], str):
+        return None
+    return verbatim(raw["text"])
+
+
+def _said_name(raw: object) -> str | None:
+    """A draft's name as said inside the summary's quotes: verbatim, and with no quote marks of
+    its own — a name can't close the quotes and read on as the summary's words."""
+    name = verbatim(str(raw or "")) if isinstance(raw, str) else None
+    if not name or any(q in name for q in '“”"'):
+        return None
+    return name
+
+
+def _front_matter(text: str, key: str) -> str | None:
+    """A SKILL.md front matter value, ``""`` when absent — or ``None`` when it can't be read as
+    one plain line: a value continued on the next line, or a block scalar, would be cut."""
+    if not text.startswith("---"):
+        return ""
+    lines = text.split("\n")[1:40]
+    for i, line in enumerate(lines):
+        if line.strip() == "---":
+            break
+        k, sep, v = line.partition(":")
+        if not sep or k.strip() != key:
+            continue
+        v = v.strip()
+        nxt = lines[i + 1] if i + 1 < len(lines) else ""
+        if not v or v[0] in "|>" or (nxt[:1] in (" ", "\t") and nxt.strip()):
+            return None  # a block, or a value that continues: not one line to read
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+            v = v[1:-1]  # YAML's own quotes are not part of the value
+        return v
+    return ""
+
+
+async def draft_summaries(view: dict) -> dict[str, str]:
+    """The spoken summary of each new Library draft a turn proposed, read from its BOUND draft —
+    `ask_operations.content`, which serves it only while it still hashes to what the card is
+    bound to, so what is read is what a confirm would save."""
+    from . import ask_operations
+
+    out: dict[str, str] = {}
+    for p in view.get("proposals") or []:
+        pid = p.get("action_id")
+        if (
+            p.get("kind") != "operation"
+            or p.get("op") not in VOICE_DRAFTS
+            or not isinstance(pid, str)
+        ):
+            continue
+        if p["op"] == "automation.create":
+            try:
+                status, draft, op_id = await asyncio.to_thread(ask_operations.bound_draft, pid)
+            except Exception:  # noqa: BLE001 — unreadable: the card stays on screen
+                log.warning("a draft card's content could not be read", exc_info=True)
+                continue
+            said = (
+                automation_summary(draft.get("config"))
+                if status == 200 and op_id == "automation.create"
+                else None
+            )
+            if said is not None:
+                out[pid] = said
+            continue
+        try:
+            status, shown = await asyncio.to_thread(ask_operations.content, pid)
+        except Exception:  # noqa: BLE001 — unreadable: the card stays on screen
+            log.warning("a draft card's content could not be read", exc_info=True)
+            continue
+        if status != 200 or not isinstance(shown, dict) or shown.get("kind") != "files":
+            continue
+        files = {
+            f.get("path"): f.get("text") for f in shown.get("files") or [] if isinstance(f, dict)
+        }
+        summary = draft_summary(str(p["op"]), files)
+        if summary is not None:
+            out[pid] = summary
+    return out
+
+
+#: A folder pick read out has at most this many folders; a longer list stays on screen.
+PICK_OPTIONS_TOLD = 5
+
+
+async def folder_picks(view: dict) -> dict[str, list[str]]:
+    """The folders each pick-from-project card of a turn offers, read from the card's OWN
+    choices on the server (#1681) — what its picker would list, never anything the model said."""
+    from . import ask_operations
+
+    out: dict[str, list[str]] = {}
+    for p in view.get("proposals") or []:
+        pid = p.get("action_id")
+        if p.get("kind") != "operation" or p.get("needs") != ["folder"] or not isinstance(pid, str):
+            continue
+        try:
+            folders = await asyncio.to_thread(ask_operations.folder_choices, pid)
+        except Exception:  # noqa: BLE001 — unreadable: the card stays on screen
+            log.warning("a card's folder choices could not be read", exc_info=True)
+            continue
+        if folders:
+            out[pid] = list(folders)
+    return out
+
+
+async def folder_suggestions(view: dict) -> dict[str, dict]:
+    """The folder the call suggests for each create-project or add-folder card of a turn, derived
+    on the server from the project's name (`ask_operations.suggested_folder`) — never a path the
+    model wrote (#1681)."""
+    from . import ask_operations
+
+    out: dict[str, dict] = {}
+    for p in view.get("proposals") or []:
+        pid = p.get("action_id")
+        if p.get("kind") != "operation" or p.get("needs") != ["folder"] or not isinstance(pid, str):
+            continue
+        if p.get("op") not in ask_operations._SUGGEST_FROM_NAME:
+            continue
+        try:
+            got = await asyncio.to_thread(ask_operations.suggested_folder, pid)
+        except Exception:  # noqa: BLE001 — unreadable: the card stays on screen
+            log.warning("a card's folder suggestion could not be made", exc_info=True)
+            continue
+        if got:
+            out[pid] = got
+    return out
+
+
+def _suggest_card(p: dict, suggestion: dict) -> dict | None:
+    """A browsed-for folder by voice: the card's effect, then the EXISTING folder suggested from
+    the project's name, read verbatim; "confirm" uses it — nothing is ever made on disk."""
+    folder = suggestion.get("folder") if isinstance(suggestion, dict) else None
+    if not isinstance(folder, str) or any(c in folder for c in ";,"):
+        return None
+    said = verbatim(folder)
+    raw_title = str(p.get("title") or "")  # a new project has none: its name is in the effect
+    title = verbatim(raw_title) if raw_title else ""
+    label = verbatim(str(p.get("label") or ""))
+    effect = verbatim(str(p.get("text") or ""))
+    if said is None or title is None or label is None or effect is None:
+        return None
+    head = f"{label}, for {title}" if title else label
+    line = f"{head}: {_sentence(effect)} I suggest the existing folder {said}."
+    if len(line) > PERMISSION_TOLD_MAX:
+        return None
+    return {"id": p["action_id"], "kind": "suggest", "verb": "use it", "line": line,
+            "suggest": dict(suggestion)}  # fmt: skip
+
+
+def _suggests_from_name(op_id: object) -> bool:
+    from . import ask_operations
+
+    return op_id in ask_operations._SUGGEST_FROM_NAME and _voice_operation(op_id)
+
+
+def _picks_from_card(op_id: object) -> bool:
+    """An operation whose folder the card's OWN picker lists (the project's folders) — never one
+    that must be browsed for (creating a project, adding a folder)."""
+    from . import ask_operations
+
+    return op_id in ask_operations._PICK_FROM_PROJECT and _voice_operation(op_id)
+
+
+def _pick_card(p: dict, folders: list[str]) -> dict | None:
+    """A folder pick by voice: the card's own choices, each read verbatim, picked by number."""
+    if not (1 <= len(folders) <= PICK_OPTIONS_TOLD):
+        return None
+    # A folder whose name carries a list's own punctuation could read as more options than there
+    # are ("…/web; two, …/important"): such a list stays on screen.
+    said = [verbatim(f) if not any(c in f for c in ";,") else None for f in folders]
+    title = verbatim(str(p.get("title") or ""))
+    label = verbatim(str(p.get("label") or ""))
+    # What the operation DOES, in the card's own words — read before it arms, like every other
+    # operation's effect (Hermes 7047), or the pick stays on screen.
+    effect = verbatim(str(p.get("text") or ""))
+    if title is None or label is None or effect is None or any(f is None for f in said):
+        return None
+    line = f"{label}, for {title}: {_sentence(effect)} {ordinal_list(said)}"
+    if len(line) > PERMISSION_TOLD_MAX:
+        return None
+    return {
+        "id": p["action_id"],
+        "kind": "pick",
+        "verb": "decide",
+        "line": line,
+        "options": [{"option": i + 1, "label": f, "as": "pick"} for i, f in enumerate(folders)],
+        "ask": "Which folder?",
+    }
+
+
+def confirmable_cards(
+    view: dict,
+    *,
+    summaries: dict[str, str] | None = None,
+    picks: dict[str, list[str]] | None = None,
+    suggestions: dict[str, dict] | None = None,
+) -> list[dict]:
+    """The cards of a settled HQ turn that a voice may confirm: nudges, new sessions, and HQ
+    operations that need no on-screen input. What will be SENT is read back in full, word for
+    word (`voice_text.verbatim`); a card whose text can't be is left to the screen (#1631)."""
+    from . import ask_proposals
+
+    out: list[dict] = []
+    for p in view.get("proposals") or []:
+        pid = p.get("action_id")
+        if not isinstance(pid, str) or not pid or p.get("replaced_by"):
+            continue  # a card HQ replaced is never offered (#2120)
+        title = (p.get("title") or "").strip()[:80] or "that session"
+        kind = p.get("kind")
+        if kind == "nudge":
+            if p.get("projection") not in (None, "actionable"):
+                continue  # HQ already sent it (#1960): there is nothing left to confirm
+            text = verbatim(p.get("text") or "")
+            if text is None:
+                continue  # it can't be heard in full: confirm it on screen
+            out.append({"id": pid, "kind": "nudge", "verb": "send it",
+                        "line": _sentence(f"A message to {title}: {text}")})  # fmt: skip
+        elif kind == "message":
+            # A message through a connector (#1833): read out word for word, or tapped on screen.
+            text = verbatim(p.get("text") or "")
+            if text is None:
+                continue
+            to = (p.get("recipient") or "").strip()[:80] or "that recipient"
+            via = (p.get("connector") or "").strip()[:40] or "the connector"
+            out.append({"id": pid, "kind": "message", "verb": "send it",
+                        "line": _sentence(f"A message to {to} on {via}: {text}")})  # fmt: skip
+        elif kind == "session":
+            brief = verbatim(p.get("text") or "")
+            # The kind the tap starts (#2014), from the card's live entry: what is heard is what
+            # launches. An entry not read yet says neither.
+            noun = ask_proposals.KIND_WORDS.get(p.get("runtime"), "session")
+            if brief is not None:
+                line = f"A new {noun} in {title}: {brief}"
+            elif not (p.get("text") or "").strip():
+                continue  # nothing would start it
+            else:
+                # A brief too long (or too marked up) to read back word for word is ANNOUNCED,
+                # and may still be confirmed (#2008 2c, the operator's own approval there): the
+                # briefs HQ wrote on real calls ran 350 to 600 characters, so "confirm" never
+                # started a session. The line says what starts, where, and that the brief was
+                # not read. The card's id binds the confirmation to exactly this brief: a
+                # changed brief is a new card with a new id. Only a NEW SESSION is announced
+                # this way; a message and an operation's effect are still read in full or stay
+                # on screen (`verbatim` is unchanged).
+                agent = " ".join(str(p.get("agent") or "").split())[:40]
+                if noun == "session":  # no kind known: the words before #2014
+                    what = f"A new {agent} session" if agent else "A new session"
+                else:
+                    what = f"A new {noun}" + (f" with {agent}" if agent else "")
+                line = f"{what} in {title}. The brief's too long to read out; it's in the chat"
+            out.append({"id": pid, "kind": "session", "verb": "start it",
+                        "line": _sentence(line), "announced": brief is None})  # fmt: skip
+        elif kind == "operation" and p.get("op") in VOICE_DRAFTS and not p.get("needs"):
+            # A new draft: its spoken SUMMARY of the bound draft is what is confirmed, or it stays
+            # on screen (#1681).
+            summary = (summaries or {}).get(pid)
+            if summary is None:
+                continue
+            out.append({"id": pid, "kind": "operation", "verb": "save it", "line": summary})
+        elif (
+            kind == "operation"
+            and p.get("needs") == ["folder"]
+            and _suggests_from_name(p.get("op"))
+        ):
+            # A browsed-for folder, suggested from the project's name (#1681, the operator's
+            # decision); without a suggestion the card stays on screen.
+            card = _suggest_card(p, (suggestions or {}).get(pid) or {})
+            if card is not None:
+                out.append(card)
+        elif kind == "operation" and p.get("needs") == ["folder"] and _picks_from_card(p.get("op")):
+            # A folder the card's own picker offers, chosen by number (#1681); anything else
+            # that needs input stays on screen.
+            card = _pick_card(p, (picks or {}).get(pid) or [])
+            if card is not None:
+                out.append(card)
+        elif kind == "operation" and not p.get("needs") and _voice_operation(p.get("op")):
+            # The EFFECT is what is authorized (deleting a project loses its memory; archiving
+            # stops its agents): it is read out in full, or the operation stays on screen.
+            effect = verbatim(p.get("text") or "")
+            if effect is None:
+                continue
+            label = (p.get("label") or p.get("verb") or "A change").strip()[:60]
+            out.append({"id": pid, "kind": "operation", "verb": "do it",
+                        "line": _sentence(f"{label}, for {title}: {effect}")})  # fmt: skip
+    # A card that replaced an earlier one is read back as the change it is (#2120).
+    changed = {p.get("action_id") for p in view.get("proposals") or [] if p.get("replaces")}
+    return [{**c, "line": f"Changed: {c['line']}"} if c["id"] in changed else c for c in out]
+
+
+def screen_reasons(
+    view: dict,
+    *,
+    summaries: dict[str, str] | None = None,
+    suggestions: dict[str, dict] | None = None,
+) -> dict[str, str]:
+    """Why each HQ operation card of a turn stays on screen (#2120): a FIXED sentence per card
+    id, from the card's kind and the call's own checks — never model text — so the Commander
+    hears the reason, and HQ is never taken to be unable to confirm anything by voice. Only for
+    operations: a session, nudge or message card says its own reason already."""
+    from . import ask_library, ask_operations
+
+    out: dict[str, str] = {}
+    for p in view.get("proposals") or []:
+        pid, op_id = p.get("action_id"), p.get("op")
+        if p.get("kind") != "operation" or not isinstance(pid, str) or not isinstance(op_id, str):
+            continue
+        op = ask_operations.CATALOG.get(op_id)
+        group = op.group if op is not None else ""
+        needs = p.get("needs") or []
+        if op_id in ask_operations._SUGGEST_FROM_NAME and needs == ["folder"]:
+            if not (suggestions or {}).get(pid):
+                out[pid] = "Its folder doesn't exist yet, and I can't pick a new one by voice."
+        elif group == "mission":
+            out[pid] = "A draft mission is confirmed on screen for now."
+        elif group == "team":
+            out[pid] = "A team change is confirmed on screen."
+        elif group == "secret":
+            out[pid] = "Secrets are only ever confirmed on screen."
+        elif group == "mcp":
+            out[pid] = "MCP servers are only ever set up on screen."
+        elif group in ask_library.GROUPS and op_id not in VOICE_DRAFTS:
+            out[pid] = "Library changes are confirmed on screen, where their content is."
+        elif op_id in VOICE_DRAFTS and not (summaries or {}).get(pid):
+            out[pid] = "It's too long to read out in full."
+        elif needs:
+            out[pid] = "It needs a choice on screen."
+        elif verbatim(p.get("text") or "") is None:
+            out[pid] = "It's too long to read out in full."
+    return out
+
+
+#: Needs-you items a call describes at most; the rest are counted ("and 7 more").
+#: The longest permission dialog a call reads out (characters of the sentence): each part is read
+#: verbatim, and a dialog whose whole reading is longer is a screen decision.
+PERMISSION_TOLD_MAX = 900
+#: Options a menu may have to be read out; a longer menu is a screen decision.
+MENU_OPTIONS_TOLD = 5
+_NUMBER_WORDS = ("one", "two", "three", "four", "five")
+_ICON = re.compile(r"^[^\w\s]{1,2}\s+(?=\w)")  # a tool line's glyph ("# Shell command", "✱ Grep")
+_PROMPT = re.compile(r"^\$\s+")  # a shell prompt mark before a command ("$ mkdir -p …")
+#: Said after an item the call describes but a voice cannot settle.
+_ON_SCREEN = "You'll need to look at that one."
+
+
+def _who(row: dict) -> str:
+    """The session, and where it is: "{title} in {project}". A title or project name is the
+    agent's or the operator's text, so it is said only when `verbatim` reads it as written (and it
+    is short); otherwise "A session", and no project."""
+    title = verbatim(str(row.get("title") or ""))
+    if title is None or len(title) > 80:
+        return "A session"
+    project = row.get("project") if isinstance(row.get("project"), dict) else {}
+    name = verbatim(str(project.get("name") or ""))
+    return f"{title} in {name}" if name and len(name) <= 60 and name != title else title
+
+
+def _permission_words(perm: object) -> str | None:
+    """What the recorded permission dialog asks, as read out — ONLY when the dialog can be read as
+    a whole (#1681): the projection named its request (``command``, and the ``note`` drawn under
+    it), its tool line, request, question and every option label read back verbatim, and its
+    refusal identified. Otherwise ``None``: the dialog is a screen decision and only that is
+    said."""
+    if not isinstance(perm, dict):
+        return None
+    deny = perm.get("deny")
+    if not isinstance(deny, int) or isinstance(deny, bool):
+        return None
+    tool = verbatim(_ICON.sub("", str(perm.get("title") or "")))
+    raw = perm.get("command")
+    command = verbatim(_PROMPT.sub("", raw.strip())) if isinstance(raw, str) else None
+    if tool is None or command is None:
+        return None
+    note = perm.get("note")
+    said_note = verbatim(note) if isinstance(note, str) else None
+    if note is not None and said_note is None:
+        return None  # a line of the dialog that can't be read: the whole dialog is screen-only
+    if verbatim(f"{command} {said_note or ''}") is None:  # within one read-back's bound
+        return None
+    question = verbatim(str(perm.get("question") or ""))
+    if question is None:
+        return None
+    options = perm.get("options")
+    if not isinstance(options, list) or not (1 <= len(options) <= len(_NUMBER_WORDS)):
+        return None
+    labels = [verbatim(str(o.get("label") or "")) if isinstance(o, dict) else None for o in options]
+    if any(lbl is None for lbl in labels):
+        return None
+    # The WHOLE dialog is SAID, not only checked (Hermes 7021): the request, the question and
+    # every option — the broader grants included, so the Commander hears what stays on screen.
+    line = f"asks permission for {tool}: {_sentence(command)}"
+    if said_note:
+        line += f" The dialog also says: {_sentence(said_note)}"
+    # Read for what it offers (the reply is "allow it" / "refuse it"), never as a numbered list.
+    line += f" It asks: {_sentence(question)} The choices are {or_list(labels)[:-1]}."
+    return line if len(line) <= PERMISSION_TOLD_MAX else None
+
+
+def _menu_words(menu: object) -> tuple[str, list[str]] | None:
+    """A menu's question and option labels, ONLY when every one reads back verbatim."""
+    if not isinstance(menu, dict):
+        return None
+    question = verbatim(str(menu.get("question") or ""))
+    options = menu.get("options")
+    if question is None or not isinstance(options, list):
+        return None
+    if not (1 <= len(options) <= MENU_OPTIONS_TOLD):
+        return None
+    labels = [verbatim(str(o.get("label") or "")) if isinstance(o, dict) else None for o in options]
+    if any(lbl is None for lbl in labels):
+        return None
+    return question, labels  # type: ignore[return-value]
+
+
+def _question_card(row: dict) -> dict | None:
+    """A QUESTION row whose pending action answers it with text a voice may send."""
+    a = row.get("action") if isinstance(row.get("action"), dict) else None
+    if not a or row.get("kind") != "question" or not a.get("can_approve"):
+        return None
+    if a.get("verb") != "answer" or not isinstance(a.get("id"), str):
+        return None
+    answer = verbatim(str(a.get("answer") or ""))
+    if answer is None:
+        return None  # the answer that would be sent can't be read back in full: screen only
+    line = _sentence(f"{_who(row)} asks a question. The suggested answer is: {answer}")
+    return {"id": a["id"], "kind": "needs_you", "verb": "send it", "line": line,
+            "ask": "Send it, skip it, or cancel?"}  # fmt: skip
+
+
+def _escalation(row: dict) -> dict | None:
+    """The row's pending ESCALATION — the decision `/choose` answers — or None."""
+    a = row.get("action") if isinstance(row.get("action"), dict) else None
+    if not a or a.get("verb") != "escalate" or not isinstance(a.get("id"), str) or not a["id"]:
+        return None
+    return a
+
+
+def _recorded_option(options: list, n: object, as_: str) -> dict | None:
+    """Option ``n`` of a recorded list as a voice choice: its number and its label exactly as
+    recorded (what `/choose` compares), or None."""
+    if not isinstance(n, int) or isinstance(n, bool):
+        return None
+    hits = [o for o in options if isinstance(o, dict) and o.get("n") == n]
+    if len(hits) != 1 or not isinstance(hits[0].get("label"), str) or not hits[0]["label"]:
+        return None
+    return {"option": n, "label": hits[0]["label"], "as": as_}
+
+
+def _permission_card(row: dict) -> dict | None:
+    """A permission dialog a voice may decide (#1681 P2): ONLY one readable as a whole, with its
+    refusal identified (`_permission_words`). Refuse is always offered then; allow only with an
+    identified single-use option — never an option that grants more than this one call."""
+    a = _escalation(row)
+    if a is None or row.get("kind") not in ("choice", "approval"):
+        return None
+    perm = a.get("permission")
+    words = _permission_words(perm)
+    if words is None:
+        return None
+    options = perm["options"]  # type: ignore[index]
+    deny = _recorded_option(options, perm.get("deny"), "refuse")  # type: ignore[union-attr]
+    if deny is None:
+        return None
+    allow = _recorded_option(options, perm.get("once"), "allow")  # type: ignore[union-attr]
+    if allow is not None and any(
+        o.get("n") == allow["option"] and o.get("persistent") is not False for o in options
+    ):
+        allow = None  # only a single-use allow, and only when the dialog SAYS it is one
+    ask = "Allow it once, refuse it, or skip it?" if allow else "Refuse it, or skip it?"
+    return {"id": a["id"], "kind": "permission", "verb": "decide", "line": f"{_who(row)} {words}",
+            "allow": allow, "deny": deny, "ask": ask}  # fmt: skip
+
+
+def _menu_card(row: dict) -> dict | None:
+    """A menu a voice may answer (#1681 P2): the menu the escalation RECORDED (the one `/choose`
+    checks a reply against), every option read verbatim."""
+    a = _escalation(row)
+    if a is None or row.get("kind") != "choice" or "permission" in a:
+        return None
+    menu = a.get("menu")
+    words = _menu_words(menu)
+    if words is None:
+        return None
+    question, labels = words
+    options = [_recorded_option(menu["options"], o.get("n"), "pick") for o in menu["options"]]  # type: ignore[index]
+    if any(o is None for o in options):
+        return None
+    line = f"{_sentence(f'{_who(row)} asks: {_sentence(question)}')} {ordinal_list(labels)}"
+    return {"id": a["id"], "kind": "menu", "verb": "decide", "line": line, "options": options,
+            "ask": "Which one, or skip it?"}  # fmt: skip
+
+
+def needs_you_sentence(row: dict) -> str:
+    """What one Needs-you item is waiting on, as FIXED sentences (#1681): the item's own words
+    inside them only where `verbatim` reads them in full, else a fixed screen-only line. A
+    rationale or summary is never read as the request."""
+    who = _who(row)
+    kind = row.get("kind")
+    action = row.get("action") if isinstance(row.get("action"), dict) else {}
+    if kind in ("choice", "approval") and "permission" in action:
+        words = _permission_words(action.get("permission"))
+        if words is None:
+            return f"{who} wants a permission I can't read out. You'll need to look at that one."
+        return f"{who} {words} {_ON_SCREEN}"
+    if kind == "choice":
+        menu = _menu_words(row.get("menu"))
+        if menu is None:
+            return f"{who} is showing a menu I can't read out. You'll need to look at that one."
+        question, labels = menu
+        return (
+            f"{_sentence(f'{who} asks: {_sentence(question)}')} {ordinal_list(labels)} {_ON_SCREEN}"
+        )
+    if kind == "approval":
+        return f"{who} wants you to confirm something I can't read out. You'll need to look at it."
+    if kind == "question":
+        if action.get("verb") == "answer" and verbatim(str(action.get("answer") or "")):
+            answer = verbatim(str(action.get("answer") or ""))
+            line = _sentence(f"{who} asks a question. The suggested answer is: {answer}")
+            return f"{line} {_ON_SCREEN}"
+        return f"{who} asks a question. You'll need to look at that one."
+    return f"{who}'s screen needs a look — I couldn't read it."
+
+
+def needs_you_cards(rows: list[dict]) -> list[dict]:
+    """The Needs-you rows a voice may settle, as cards (#1681 P2): a QUESTION whose pending action
+    answers it with text, a permission dialog readable as a whole, a menu read in full. The rest
+    are settled on the screen. A card's id is its row's pending action id: what HQ names when it
+    offers the decision (`offer_decisions`, #2137)."""
+    cards: list[dict] = []
+    for r in rows:
+        card = _question_card(r) or _permission_card(r) or _menu_card(r)
+        if card is not None:
+            cards.append(card)
+    return cards
+
+
+#: Voice cards that settle through a proposal's decide route (`{"proposal": view}` back).
+_PROPOSAL_KINDS = ("session", "operation", "pick", "suggest", "message")
+
+
+def _result_state(card: dict, body: dict):
+    """The settled state in a route's answer: a delivery record's `state`, or — for proposal
+    cards — the `{"proposal": view}` the decide route returns."""
+    if card["kind"] in _PROPOSAL_KINDS:
+        prop = body.get("proposal")
+        return prop.get("state") if isinstance(prop, dict) else None
+    if card["kind"] in ("permission", "menu"):
+        # `/choose` answers the settled escalation, with the delivered choice under `choice`.
+        choice = body.get("choice")
+        return choice.get("state") if isinstance(choice, dict) else None
+    return body.get("state")
+
+
+def settled_ok(card: dict, resp) -> bool:
+    """Did the route's RESULT say it happened? A 200 is not enough: a delivery can come back
+    `failed`, and a decide on an already-decided card answers 200 with that card's state."""
+    if resp is None or not 200 <= resp.status < 300:
+        return False
+    if resp.status == 202:
+        return True  # accepted; `_follow` says the end
+    body = resp.body if isinstance(resp.body, dict) else {}
+    if card["kind"] in ("nudge", "needs_you", "permission", "menu"):
+        return _result_state(card, body) == "delivered"
+    if card.get("dismiss"):
+        return _result_state(card, body) == "dismissed"  # what a spoken dismiss asked for
+    return _result_state(card, body) in ("done", "started", "sent")
+
+
+def outcome_sentence(card: dict, resp) -> str:
+    """What happened, from the route's own status AND result — never model prose."""
+    if resp is None:
+        return "That didn't go through. It's still waiting."
+    if resp.status == 202:
+        return "Accepted. It's starting now."  # not finished: `final_sentence` says the end
+    if 200 <= resp.status < 300:
+        body = resp.body if isinstance(resp.body, dict) else {}
+        if card["kind"] in ("nudge", "needs_you"):
+            if _result_state(card, body) == "delivered":
+                return "Sent."
+            return "It wasn't sent. The card has the reason."
+        if card["kind"] in ("permission", "menu"):
+            if _result_state(card, body) != "delivered":
+                return "It wasn't sent. Check the session."
+            choice = card.get("choice") or {}
+            if choice.get("as") == "allow":
+                return "Allowed, once."
+            if choice.get("as") == "refuse":
+                return "Refused."
+            return _sentence(f"Chosen: {choice.get('label')}")
+        state = _result_state(card, body) or "unknown"
+        if card.get("dismiss") and state == "dismissed":
+            return "Dismissed."
+        return final_sentence(card, state)
+    if card["kind"] in ("permission", "menu"):
+        # FIXED sentences, never the route's `detail` (#1683 review): a refusal can quote the
+        # live screen's label, which is the agent's text.
+        body = resp.body if isinstance(resp.body, dict) else {}
+        if body.get("state") == "indeterminate":
+            return (
+                "I can't tell whether that reached the session. Check it before " "deciding again."
+            )
+        if resp.status in (404, 409):
+            return "Nothing was sent. The session changed, or it was already decided."
+    if resp.status == 409:
+        return "That one changed in the meantime, so I didn't send it."
+    return f"That didn't go through ({resp.status}). It's still waiting."
+
+
+_FINAL = {
+    "started": "The session is up.",
+    "done": "Done.",
+    "partly_done": "Partly done. The card has the details.",
+    "failed": "It failed. The card has the reason.",
+    "stale": "That card changed, so nothing ran.",
+    "dismissed": "It was dismissed, so nothing ran.",
+    "interrupted": "It was interrupted. Check your sessions.",
+    "unconfirmed": "It may have started, but I couldn't confirm it. Check your sessions.",
+}
+
+
+#: A message's end (#1833), in words that never claim more than the provider said.
+_FINAL_MESSAGE = {
+    "sent": "Sent.",
+    "failed": "It wasn't sent. The card has the reason.",
+    "stale": "That card changed, so nothing was sent.",
+    "dismissed": "Dismissed, so nothing was sent.",
+    "unconfirmed": "It may have been sent, but I couldn't confirm it. Check the chat; "
+    "I won't send it again.",
+    "interrupted": "It may have been sent, but I couldn't confirm it. Check the chat; "
+    "I won't send it again.",
+}
+
+
+def _card_ref(card: dict) -> str | None:
+    """The id of a card HQ proposed in this conversation (the ones with a stored state), else
+    None: a Needs-you row is not a conversation card."""
+    cid = card.get("id")
+    if card.get("kind") in _PROPOSAL_KINDS and isinstance(cid, str) and _CARD_ID_RE.match(cid):
+        return cid
+    return None
+
+
+def final_sentence(card: dict, state: str | None) -> str:
+    """The END of an accepted card, from its stored state — never model prose."""
+    if state is None:
+        return "Still running. The card will show when it's done."
+    if card.get("kind") == "message":
+        return _FINAL_MESSAGE.get(state, "The card has the result.")
+    return _FINAL.get(state, "The card has the result.")
+
+
+async def end_if_never_joined(call: Call) -> None:
+    await asyncio.sleep(DIAL_TIMEOUT_S)
+    if call.state == "dialing" and call._to_client is None:
+        await call.end("not_connected")
+
+
+# --- the registry ------------------------------------------------------------------------------
+
+
+class Registry:
+    """At most one call per instance (#1397 limits)."""
+
+    def __init__(self) -> None:
+        self.current: Call | None = None
+        self._lock = asyncio.Lock()
+
+    async def admit(self, **kw) -> Call:
+        async with self._lock:
+            cur = self.current
+            if cur is not None and cur.state != "ended":
+                raise CallError(409, "a call is already in progress — end it first", "busy")
+            if cur is not None and not cur.torn_down.is_set():
+                raise CallError(409, "the last call is still hanging up — try again", "busy")
+            held = contextlib.ExitStack()
+            try:
+                held.enter_context(voice_setup.call_lock())
+            except BlockingIOError:
+                raise CallError(
+                    503, "the voice setup is being changed — try again", "busy"
+                ) from None
+            except OSError as e:  # the voice dir can't be made or locked: named, never a 500
+                raise CallError(
+                    503,
+                    f"the call lock is unavailable ({e.strerror or type(e).__name__})",
+                    "runtime",
+                ) from None
+            call = Call(id=secrets.token_urlsafe(16), **kw)
+            call._held = held  # released when the call ends (`voice remove` waits for that)
+            self.current = call
+            return call
+
+    def get(self, call_id: str) -> Call | None:
+        c = self.current
+        if (
+            c is not None
+            and isinstance(call_id, str)
+            and call_id.isascii()
+            and secrets.compare_digest(c.id, call_id)
+        ):
+            return c
+        return None
+
+    async def end_all(self, reason: str) -> None:
+        if self.current is not None:
+            await self.current.end(reason)
+
+
+REGISTRY = Registry()
+
+
+# --- the worker process ------------------------------------------------------------------------
+
+
+def worker_python() -> str:
+    """The interpreter that runs the worker: `AGENT_SESSIONS_VOICE_PYTHON` (an explicit override
+    wins), else the runtime `agent-sessions voice setup` installed (#1397 P4), else the app's own
+    (the `voice` extra). Without `voice setup`, a separate environment: docs/voice/runtime.md."""
+    override = os.environ.get("AGENT_SESSIONS_VOICE_PYTHON")
+    if override:
+        return override
+    py = voice_setup.runtime_python()
+    return str(py) if py is not None else sys.executable
+
+
+_PACKAGE_DIR = Path(__file__).resolve().parent
+
+
+def _shim(d: Path) -> str:
+    """A dir whose `agent_sessions` is THIS running release's package, for the worker's
+    PYTHONPATH: a separate voice environment has Pipecat but not the app, and must run the
+    current code after every upgrade."""
+    link = d / "agent_sessions"
+    if not link.exists():
+        os.symlink(_PACKAGE_DIR, link)
+    return str(d)
+
+
+_RUNTIME_CACHE: dict[str, tuple[float, bool, str]] = {}
+
+
+async def runtime_ready() -> tuple[bool, str]:
+    """Whether the worker's interpreter can import Pipecat (cached for a minute)."""
+    py = worker_python()
+    hit = _RUNTIME_CACHE.get(py)
+    if hit and time.monotonic() - hit[0] < 60:
+        return hit[1], hit[2]
+    try:
+        with tempfile.TemporaryDirectory(prefix="bl-voice-check-") as d:
+            proc = await asyncio.create_subprocess_exec(
+                py, "-c", "import pipecat, agent_sessions.voice_worker",
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+                env=_worker_env({}, shim=_shim(Path(d))), cwd=d,
+            )  # fmt: skip
+            try:
+                _, err = await asyncio.wait_for(proc.communicate(), timeout=RUNTIME_PROBE_S)
+            except BaseException:  # a timeout, or the asking request cancelled: never leave it
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                with contextlib.suppress(BaseException):
+                    await asyncio.shield(proc.wait())
+                raise
+        ok = proc.returncode == 0
+        why = "" if ok else (err.decode("utf-8", "replace").strip().splitlines() or ["?"])[-1][:200]
+    except (OSError, TimeoutError) as e:
+        ok, why = False, str(e)[:200]
+    if not ok:
+        why = f"the voice runtime is not installed ({why})"
+    _RUNTIME_CACHE[py] = (time.monotonic(), ok, why)
+    return ok, why
+
+
+def _worker_env(tokens: dict[str, str], shim: str | None = None) -> dict[str, str]:
+    """A sanitized environment: no app secrets, no agent credentials — only what Python needs to
+    start, plus the two speech tokens."""
+    keep = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "PYTHONPATH", "VIRTUAL_ENV")
+    env = {k: os.environ[k] for k in keep if k in os.environ}
+    env["PYTHONUNBUFFERED"] = "1"
+    if shim is not None:
+        env["PYTHONPATH"] = shim  # this release's package, ahead of anything inherited
+    # A worker is one call: keep its native thread pools small (#1362's budget spirit).
+    for k in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+        env[k] = "2"
+    env.update({k: v for k, v in tokens.items() if v})
+    # Where this machine's speech server listens (its socket; never a TCP port, #1397 P4).
+    from . import voice_setup
+
+    env["AGENT_SESSIONS_SPEECH_SOCKET"] = str(voice_setup.socket_path())
+    return env
+
+
+@dataclass
+class Worker:
+    proc: asyncio.subprocess.Process
+    sock: Path
+    dir: Path
+
+    async def stop(self) -> None:
+        """TERM, then KILL, the worker's whole process group (it was started in a session of
+        its own, so the group id is its pid): children it forked go with it."""
+        pgid = self.proc.pid
+        if pgid is None or pgid <= 1:  # killpg(1) would be kill(-1): every process we own
+            return
+        if self.proc.returncode is not None and not _group_alive(pgid):
+            # Already gone (a normal hang-up exits by itself): never signal a number that may
+            # have been reused by another process group.
+            if not os.environ.get("VOICE_KEEP_WORKER_DIR"):
+                shutil.rmtree(self.dir, ignore_errors=True)
+            return
+        for sig, wait in ((signal.SIGTERM, 5.0), (signal.SIGKILL, 5.0)):
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(pgid, sig)
+            try:
+                if self.proc.returncode is None:
+                    await asyncio.wait_for(self.proc.wait(), timeout=wait)
+                if not _group_alive(pgid):
+                    break
+                await asyncio.sleep(0.2)
+                if not _group_alive(pgid):
+                    break
+            except TimeoutError:
+                continue
+        if not os.environ.get("VOICE_KEEP_WORKER_DIR"):
+            shutil.rmtree(self.dir, ignore_errors=True)
+
+
+def _group_alive(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+async def start_worker(settings: dict) -> Worker:
+    """Spawn the worker on a fresh private socket. The tokens ride the environment, never argv
+    (argv is world-readable in /proc on a shared host)."""
+    d = Path(tempfile.mkdtemp(prefix="bl-voice-"))
+    os.chmod(d, 0o700)
+    sock = d / "w.sock"
+    tokens = {
+        "VOICE_STT_TOKEN": settings["stt"]["api_key"],
+        "VOICE_TTS_TOKEN": settings["tts"]["api_key"],
+    }
+    # stderr goes to a file in the private dir, never an unread pipe: a chatty worker would
+    # fill a pipe's buffer and block its own event loop mid-call.
+    log_path = d / "worker.log"
+    try:
+        with open(log_path, "wb") as log_f:
+            proc = await asyncio.create_subprocess_exec(
+                worker_python(), "-m", "agent_sessions.voice_worker", "--socket", str(sock),
+                stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL,
+                stderr=log_f, env=_worker_env(tokens, shim=_shim(d)), cwd=str(d),
+                start_new_session=True,
+            )  # fmt: skip
+    except BaseException as e:  # no interpreter, no fork, or cancelled: the dir must go
+        shutil.rmtree(d, ignore_errors=True)
+        if not isinstance(e, OSError):
+            raise
+        raise CallError(
+            503, f"the voice worker could not start: {e.strerror or e}", "worker"
+        ) from None
+    deadline = time.monotonic() + WORKER_START_S
+    try:
+        while not sock.exists():
+            if proc.returncode is not None or time.monotonic() > deadline:
+                tail = ["no output"]
+                with contextlib.suppress(OSError):
+                    lines = log_path.read_text("utf-8", "replace").strip().splitlines()
+                    tail = lines[-1:] or tail
+                raise CallError(503, f"the voice worker did not start: {tail[0][:200]}", "worker")
+            await asyncio.sleep(0.05)
+    except BaseException:
+        # Failed, timed out, or the caller was cancelled while waiting: the spawned worker (and
+        # its dir) never outlive this function unless it returns them.
+        await asyncio.shield(Worker(proc, sock, d).stop())
+        raise
+    return Worker(proc, sock, d)
+
+
+def commit_pause(settings: dict) -> float:
+    """The silence before a call's draft is committed, for the turn-taking setting (#1845)."""
+    return COMMIT_PAUSE_S.get(str(settings.get("turn_taking")), COMMIT_PAUSE_S["natural"])
+
+
+def worker_config(settings: dict, voice: str, profile: dict | None = None) -> dict:
+    """What the worker is told at start: endpoints WITHOUT tokens (those are in its env)."""
+    lang = settings.get("language", "auto")
+    detect = settings.get("stt_detects_language") is True and lang in ("auto", "en")
+    return {
+        "t": "config",
+        "stt": {"base_url": settings["stt"]["base_url"], "model": settings["stt"]["model"]},
+        "tts": {
+            "base_url": settings["tts"]["base_url"],
+            "model": settings["tts"]["model"],
+            "voice": voice,
+            "style": (profile or {}).get("style"),
+            "speed": (profile or {}).get("speed"),
+        },
+        # P3: ask STT for the language only where the endpoint was found to report it.
+        # Detection also runs on a fixed-ENGLISH call, where it gates spoken confirmation only;
+        # the STT language hint is then left off so the detection is real, not echoed back.
+        "detect_language": detect,
+        "language": None if detect or lang == "auto" else lang,
+        # TTS gets a language only where the conformance probe proved the field is accepted.
+        "tts_language_ok": bool(settings.get("tts_accepts_language")),
+        # The languages the call listens in (#1807): the worker never adopts another as the
+        # call's language, as the app never takes an utterance in one.
+        "listen_languages": sorted(listen_languages(settings) or ()),
+        "in_rate": IN_RATE,
+        "out_rate": OUT_RATE,
+        # Silence after speech before a segment ends (VAD stop): short for every setting. At
+        # 0.35 s a pause of 0.5 s or more splits the turn (#1842, measured on the real models);
+        # the split no longer cuts the Commander off, because HQ's answer is only a draft until
+        # the setting's own pause has passed (`COMMIT_PAUSE_S`, #1845), and the rest joins it.
+        "stop_secs": WORKER_STOP_S,
+        "turn_wait": WORKER_TURN_WAIT_S,
+        "interrupt": bool(settings["interrupt"]),
+    }
+
+
+def profile_for(settings: dict, contact: str) -> dict:
+    return hq_calls_settings.profile(settings, contact)
+
+
+def voice_for(settings: dict, contact: str) -> str:
+    group = "woman"
+    with contextlib.suppress(KeyError):
+        group = hq_contacts.get(contact).voice_group or "woman"
+    return settings["voices"].get(group) or settings["voices"]["woman"]
+
+
+def json_msg(msg: dict) -> str:
+    out = json.dumps(msg, separators=(",", ":"))
+    return out
+
+
+__all__ = [
+    "Call",
+    "CallError",
+    "REGISTRY",
+    "card_sentences",
+    "hq_calls_settings",
+    "pick_option",
+    "speakable",
+]

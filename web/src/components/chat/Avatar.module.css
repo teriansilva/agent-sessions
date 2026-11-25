@@ -1,0 +1,83 @@
+/* The plate beside a message (#1931): the operator's image, a visitor's initial, the agent's 🤖.
+   A NIGHTJAR plate, chamfered top-left and bottom-right like the brand mark and every panel
+   (docs/design.md §1, §6): the operator asked for the cube instead of the earlier disc. The same
+   shape everywhere it appears — beside a message, on a share link, in Settings › Profile. Every
+   rule here is `.avatar…`. */
+.avatar {
+  inline-size: var(--avatar-size, 28px);
+  block-size: var(--avatar-size, 28px);
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  position: relative;
+  overflow: hidden;
+  /* The cut scales with the plate: 7px on a 28px message plate, 18px on the profile preview. */
+  --avatar-cut: calc(var(--avatar-size, 28px) / 4);
+  clip-path: polygon(
+    var(--avatar-cut) 0,
+    100% 0,
+    100% calc(100% - var(--avatar-cut)),
+    calc(100% - var(--avatar-cut)) 100%,
+    0 100%,
+    0 var(--avatar-cut)
+  );
+  background: var(--bg-2);
+  color: var(--who-ink);
+  font-family: var(--font-display);
+  font-size: var(--fs-row);
+  font-weight: 700;
+  line-height: 1;
+  user-select: none;
+}
+.avatar[data-kind="accent"] {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.avatar[data-kind="neutral"] {
+  color: var(--text-2);
+}
+/* A paired instance (#2061): square and dashed like the peer badge, no chamfer, neutral ink. */
+.avatar[data-kind="peer"] {
+  clip-path: none;
+  background: transparent;
+  color: var(--text-1);
+  border: 1px dashed var(--text-2);
+}
+.avatar[data-kind="peer"]::after {
+  content: none;
+}
+.avatar[data-kind="agent"] {
+  font-family: inherit;
+  font-size: var(--fs-body);
+  font-weight: 400;
+}
+/* The hairline edge, over the face and over an image alike: the border is clipped away at the two
+   cuts, and the two diagonal strokes close the outline there (the `nj-frame` recipe). */
+.avatar::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border: 1px solid var(--line-strong);
+  background:
+    linear-gradient(
+        to bottom right,
+        transparent calc(50% - 1px),
+        var(--line-strong) calc(50% - 0.5px) calc(50% + 0.5px),
+        transparent calc(50% + 1px)
+      )
+      top left / var(--avatar-cut) var(--avatar-cut) no-repeat border-box,
+    linear-gradient(
+        to bottom right,
+        transparent calc(50% - 1px),
+        var(--line-strong) calc(50% - 0.5px) calc(50% + 0.5px),
+        transparent calc(50% + 1px)
+      )
+      bottom right / var(--avatar-cut) var(--avatar-cut) no-repeat border-box;
+}
+.avatar > img {
+  inline-size: 100%;
+  block-size: 100%;
+  object-fit: cover;
+  display: block;
+}

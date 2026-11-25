@@ -1,0 +1,282 @@
+/* Library → Playbooks: the page wrapper's element rules, the flow, the fleet and the editor's
+ * pieces (NIGHTJAR #1531 Phase 10, #1574). The card, grid and detail frame are the shared Library
+ * gallery's (components/library, #2144). Tokens only (nightjarLedger.test.ts). */
+.page {
+  position: relative;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--sp-5);
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.page *,
+.review * {
+  box-sizing: border-box;
+  min-width: 0;
+}
+/* The page title (`nj-h1`'s voice): display caps in the chrome's ink. */
+.page h1 {
+  margin: var(--sp-2) 0 var(--sp-3);
+  font-family: var(--font-display);
+  font-size: var(--fs-h1);
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--hud-text);
+}
+.page h2 {
+  margin: 0 0 var(--sp-3);
+  font-family: var(--font-display);
+  font-size: var(--fs-title);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.page p {
+  color: var(--text-2);
+  line-height: 1.6;
+  margin: var(--sp-2) 0;
+}
+.page code,
+.review code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+}
+/* The section's breadcrumb, in the Library's voice: `LIBRARY // PLAYBOOKS`. */
+.kicker {
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+/* A mono stamp: the source, the version, an actor that is not an agent. */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 6px;
+  border: 1px solid var(--line-strong);
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+/* An agent actor: its engine colour on the left edge (inline), name and model in mono. */
+.actor {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  border: 1px solid var(--line-strong);
+  border-left-width: 3px;
+  background: var(--bg-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  align-items: center;
+}
+.actions a {
+  text-decoration: none;
+}
+.header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  align-items: center;
+  margin-bottom: var(--sp-4);
+}
+.section {
+  margin: var(--sp-5) 0;
+}
+/* A section's callsign: the hazard notch, then the mono title. */
+.section > h2 {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+.section > h2::before {
+  content: "";
+  flex: none;
+  width: 22px;
+  height: 10px;
+  background: repeating-linear-gradient(-45deg, var(--hud) 0 3px, transparent 3px 6px);
+  opacity: 0.85;
+}
+.stepList {
+  padding: 0;
+  list-style-position: inside;
+}
+.stepList li {
+  margin: var(--sp-2) 0;
+  padding: var(--sp-3) var(--sp-4);
+  border-left: 2px solid var(--hud-dim);
+  background: var(--bg-1);
+  font-size: var(--fs-row);
+}
+.stepList li > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+.section dl > div {
+  border-bottom: 1px solid var(--line);
+  padding: var(--sp-2) 0;
+}
+.section dt {
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.section dd {
+  margin: 6px 0 0;
+  color: var(--text-2);
+}
+.section ul {
+  padding-left: var(--sp-4);
+  line-height: 1.8;
+}
+.page pre,
+.review pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+  padding: var(--sp-3);
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  line-height: 1.6;
+}
+/* A file disclosure: the mono label row with the chevron the browser draws. */
+.page summary {
+  min-height: 44px;
+  padding: var(--sp-3) 0;
+  border-top: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: var(--fs-row);
+  cursor: pointer;
+}
+.page summary:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.markdown h1,
+.markdown h2 {
+  font-family: var(--font-display);
+  font-size: var(--fs-title);
+}
+.fleet {
+  border-top: 1px solid var(--line-strong);
+}
+.project {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: var(--sp-4);
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  padding: var(--sp-4) 0;
+  font-size: var(--fs-row);
+}
+.good,
+.page .good {
+  color: var(--ok-text);
+}
+.warn,
+.page .warn {
+  color: var(--warn-text);
+}
+.error {
+  composes: nj-error from global;
+  margin: var(--sp-2) 0;
+  padding: var(--sp-2) var(--sp-3);
+}
+.error button {
+  margin: var(--sp-2);
+}
+.review {
+  overflow-wrap: anywhere;
+}
+.review section {
+  padding: var(--sp-3) 0;
+  border-top: 1px solid var(--line-strong);
+}
+.review h3 {
+  margin: var(--sp-2) 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-row);
+  font-weight: 600;
+}
+/* PlaybookDialog (#1531): a native <dialog> on THE dialog chrome (../HudDialog.module.css, composed
+ * by the component); these rules place it, give it the scrim and size its scrolling body. */
+.dialog {
+  margin: auto;
+  overflow-wrap: anywhere;
+}
+.dialog::backdrop {
+  background: var(--scrim);
+}
+.dialogBody {
+  max-height: 50dvh;
+  overflow: auto;
+}
+.dialog h2 {
+  margin: 0 0 var(--sp-2);
+  font-family: var(--font-display);
+  font-size: var(--fs-title);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+@media (max-width: 800px) {
+  .dialog {
+    margin: auto auto var(--sp-2);
+    width: calc(100% - 20px);
+  }
+  .page {
+    padding: var(--sp-4);
+  }
+  .project {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--sp-1);
+  }
+  .header .actions {
+    width: 100%;
+  }
+  .header .actions button {
+    flex: 1 1 auto;
+  }
+}
+
+/* Format 5 role on a card/node (#1654): grade + required skills, no engine colour. */
+.role {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-2);
+  padding-left: var(--sp-2);
+  border-left: 2px solid var(--accent);
+  font-size: var(--fs-meta);
+}
+.roleGrade {
+  font-family: var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent-text);
+}

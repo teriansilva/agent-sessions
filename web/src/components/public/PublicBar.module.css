@@ -1,0 +1,85 @@
+/* The header of every public page (#2068) in NIGHTJAR // OPS: the share viewer's bar (#1596),
+ * moved here so a shared session, a shared reply and a shared artifact wear one. The lit rail
+ * along its top; tokens only; the mark link and the toggle keep the 44px floor at ≤800px. */
+
+.bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-3);
+  min-height: 52px;
+  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-4);
+  background: var(--bg-1);
+  border-top: 2px solid var(--hud);
+  border-bottom: 1px solid var(--line-strong);
+}
+
+/* Collapsed: a small tab over the page's top-right corner; the page below takes the full height. */
+.tab {
+  position: fixed;
+  top: var(--sp-2);
+  right: var(--sp-2);
+  z-index: var(--z-menu);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 0 var(--sp-1);
+  background: var(--bg-1);
+  border: 1px solid var(--line-strong);
+  border-top: 2px solid var(--hud);
+  box-shadow: var(--shadow-menu);
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 36px;
+  padding: 0 var(--sp-1);
+  font: 700 var(--fs-label) / 1 var(--font-display);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--hud-text);
+  text-decoration: none;
+}
+.brand:hover .name {
+  color: var(--text-1);
+}
+.brand:focus-visible,
+.toggle:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
+
+.toggle {
+  flex: none;
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  color: var(--text-2);
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+.tab .toggle {
+  margin-left: 0;
+}
+.toggle:hover {
+  color: var(--hud-text);
+  border-color: var(--hud-dim);
+}
+
+@media (max-width: 800px) {
+  .brand {
+    min-height: 44px;
+  }
+  .toggle {
+    width: 44px;
+    height: 44px;
+  }
+}

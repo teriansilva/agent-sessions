@@ -1,0 +1,674 @@
+/* Working together on a shared session (#2062): the owner's share strip, the access request, the
+ * decision card, the notes drawer and Continue here. They sit on the built federation look
+ * (Remote.module.css, SharePeer.module.css, PeerSuggestions.module.css). Tokens only.
+ *
+ * Status colour (docs/design.md): green is connected, present, answered. The amber edge WITH a
+ * word is something waiting for THIS operator, and the Continue-here warning. Red is Delete and
+ * an error. Waiting on the other side, declined, deleted, hidden and ended are grey. */
+
+.wordOk {
+  color: var(--ok-text);
+}
+.state {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--text-2);
+}
+
+/* ---- the owner's share strip ---- */
+.strip {
+  flex: none;
+  display: grid;
+  gap: var(--sp-1);
+  min-width: 0;
+  padding: var(--sp-2) var(--sp-4);
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  color: var(--text-1);
+  background: color-mix(in srgb, var(--text-1) 5%, var(--bg-1));
+  border-bottom: 1px solid var(--line);
+}
+.stripTitle {
+  margin: 0;
+  font: 500 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.stripRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-3);
+  min-width: 0;
+}
+/* The row's text opens the share dialog: a button drawn as the line it is. */
+.stripMain {
+  appearance: none;
+  flex: 1 1 200px;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0 6px;
+  margin: 0;
+  padding: 0;
+  font: inherit;
+  text-align: left;
+  color: inherit;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  cursor: pointer;
+}
+.stripMain:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
+.stripMain b {
+  font-weight: 600;
+}
+.stripTool {
+  flex: none;
+}
+.pickerWrap {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+}
+.pickerPanel {
+  /* Portalled to <body> (out of the pane's stacking contexts): it needs its own layer. */
+  z-index: var(--z-menu);
+  min-width: 220px;
+}
+.pickerItems {
+  display: grid;
+}
+.pickerCount {
+  margin-left: auto;
+  color: var(--text-2);
+}
+
+/* ---- the remote pane: presence, the menu, the foot ---- */
+.presence {
+  margin-left: auto;
+}
+.presence + .presenceNext {
+  margin-left: 0;
+}
+.menuWrap {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+}
+.menuPanel {
+  /* Portalled to <body> (out of the pane's stacking contexts): it needs its own layer. */
+  z-index: var(--z-menu);
+  min-width: 200px;
+}
+.menuItems {
+  display: grid;
+}
+.foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-3);
+  margin: 0;
+  padding: var(--sp-3) var(--sp-4) calc(var(--sp-3) + env(safe-area-inset-bottom, 0px));
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+  border-top: 1px solid var(--line-strong);
+}
+.foot > .footText {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+.foot b {
+  color: var(--text-1);
+  letter-spacing: 0.04em;
+}
+/* A Withdraw the owner did not take (#2062): its real outcome, on its own line. */
+.footError {
+  flex: 1 1 100%;
+  order: 3;
+  min-width: 0;
+  color: var(--danger-text);
+}
+.footState {
+  flex: 1 1 200px;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+/* ---- dialogs ---- */
+.dialog {
+  width: min(600px, 100%);
+}
+.dialog .close {
+  width: 44px;
+  height: 44px;
+}
+.lead {
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-row);
+  font-weight: 600;
+  color: var(--text-1);
+}
+.help {
+  margin: var(--sp-2) 0 0;
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.helpFirst {
+  margin-top: 0;
+}
+.tilesTwo {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.noteField {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 88px;
+  padding: var(--sp-2) var(--sp-3);
+  resize: vertical;
+  font: inherit;
+  font-size: var(--fs-row);
+  line-height: 1.4;
+  color: var(--text-1);
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: 0;
+}
+.noteField:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -1px;
+}
+.counter {
+  margin: var(--sp-1) 0 0;
+  font: 400 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-align: right;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.optional {
+  letter-spacing: 0.04em;
+  text-transform: none;
+}
+
+/* ---- the owner's request card, at the top of the share dialog ---- */
+.request {
+  margin: 0 0 var(--sp-3);
+}
+.requestLead {
+  margin: 0;
+  padding: var(--sp-3) var(--sp-3) 0;
+  font-size: var(--fs-row);
+  line-height: 1.5;
+  color: var(--text-1);
+}
+
+/* ---- decisions ---- */
+.zone {
+  flex: none;
+  display: grid;
+  gap: var(--sp-2);
+  min-width: 0;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: var(--sp-2);
+  border-top: 1px solid var(--line-strong);
+}
+.done {
+  border-left-color: var(--status-up);
+}
+.done .doneWord {
+  color: var(--ok-text);
+}
+.cmd {
+  margin: var(--sp-3) var(--sp-3) var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  font: 400 var(--fs-meta) / 1.5 var(--font-mono);
+  color: var(--text-1);
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.answer {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-3);
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3) var(--sp-3);
+  font-size: var(--fs-row);
+  color: var(--text-1);
+}
+.answer b {
+  font-weight: 600;
+}
+.by {
+  font: 400 var(--fs-meta) / 1.4 var(--font-mono);
+  color: var(--text-2);
+}
+.qTitle {
+  margin: 0;
+  padding: var(--sp-3) var(--sp-3) var(--sp-2);
+  font-size: var(--fs-row);
+  font-weight: 700;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.qOpts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 var(--sp-3) var(--sp-3);
+}
+.qOpt {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 10px var(--sp-3);
+  font: inherit;
+  font-size: var(--fs-row);
+  text-align: left;
+  color: var(--text-1);
+  background: var(--bg-2);
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.qOpt::before {
+  content: "";
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid var(--text-2);
+  border-radius: 50%;
+}
+.qOpt[aria-checked="true"] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-2));
+}
+.qOpt[aria-checked="true"]::before {
+  border-color: var(--hud);
+  background: var(--hud);
+  box-shadow: inset 0 0 0 2.5px var(--bg-2);
+}
+.qOpt:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 1px;
+}
+.qOpt:disabled {
+  cursor: default;
+}
+
+/* ---- notes ---- */
+/* Wide screens: a drawer over the pane's right edge, placed from the pane's own rectangle. It
+ * is not part of the conversation column and never resizes it. */
+.drawer {
+  position: fixed;
+  z-index: var(--z-dialog);
+  display: flex;
+  flex-direction: column;
+  width: min(340px, 100vw);
+  color: var(--text-1);
+  background: var(--bg-1);
+  border: 1px solid var(--line-strong);
+  border-left: 1px solid var(--hud-dim);
+}
+.drawer:focus {
+  outline: none;
+}
+.sheetScrim {
+  composes: nj-scrim from global;
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-dialog);
+  display: flex;
+  align-items: flex-end;
+}
+.notesHead {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  min-height: 44px;
+  padding: var(--sp-1) var(--sp-2) var(--sp-1) var(--sp-4);
+  border-bottom: 1px solid var(--line);
+}
+.notesTitle {
+  margin: 0;
+  min-width: 0;
+  font: 700 var(--fs-label) / 1.4 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.notesClose {
+  composes: ghost icon from "../ui/actionButton.module.css";
+  flex: none;
+  width: 44px;
+  height: 44px;
+}
+/* Always on screen: who reads these, and who never does. */
+.notesLine {
+  flex: none;
+  margin: 0;
+  padding: var(--sp-2) var(--sp-4);
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  color: var(--text-1);
+  background: color-mix(in srgb, var(--text-1) 5%, var(--bg-1));
+  border-bottom: 1px solid var(--line);
+}
+.notesBody {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.noteRow {
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--line);
+}
+.noteMeta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-2);
+  margin: 0 0 var(--sp-1);
+  font: 400 var(--fs-micro) / 15px var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.you {
+  font-weight: 600;
+  color: var(--text-1);
+}
+.mark {
+  padding: 0 5px;
+  border: 1px solid var(--text-2);
+}
+.noteState {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  text-transform: none;
+  letter-spacing: 0.03em;
+}
+/* A note's text: characters, line breaks kept. Never rendered as markup or a link. */
+.noteText {
+  margin: 0;
+  font-size: var(--fs-row);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.gone .noteText,
+.hidden .noteText {
+  color: var(--text-2);
+}
+.noteHint {
+  margin: var(--sp-1) 0 0;
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+  color: var(--text-2);
+}
+.noteActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+.noteEdit {
+  composes: noteField;
+  min-height: 72px;
+}
+.notesEmpty {
+  padding: var(--sp-5) var(--sp-4);
+  font-size: var(--fs-row);
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.notesEmpty b {
+  display: block;
+  margin-bottom: var(--sp-1);
+  color: var(--text-1);
+}
+.notesEnded {
+  flex: none;
+  margin: 0;
+  padding: var(--sp-3) var(--sp-4);
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  color: var(--text-1);
+  background: color-mix(in srgb, var(--text-1) 5%, var(--bg-1));
+  border-top: 1px solid var(--line-strong);
+}
+.notesError {
+  composes: notesEnded;
+  color: var(--danger-text);
+}
+/* The composer: the box across the drawer, then the counter and Send note on one row. */
+.notesBottom {
+  flex: none;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-2) calc(var(--sp-2) + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--border);
+}
+.notesBox {
+  grid-column: 1 / -1;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 44px;
+  max-height: 30vh;
+  padding: 11px var(--sp-3);
+  resize: none;
+  field-sizing: content;
+  font: inherit;
+  font-size: var(--fs-row);
+  line-height: 1.35;
+  color: var(--text-1);
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: 0;
+}
+.notesBox::placeholder {
+  color: var(--text-2);
+  opacity: 1;
+}
+.notesBox:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -1px;
+}
+.notesCount {
+  margin: 0;
+  font: 400 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.08em;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.over {
+  color: var(--danger-text);
+}
+.notesGo {
+  min-height: 44px;
+}
+
+/* ---- Continue here ---- */
+/* The warning: the attention edge with its word, before any control. */
+.warning {
+  margin: 0 0 var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  background: color-mix(in srgb, var(--status-degraded) 12%, var(--bg-1));
+  border-left: 3px solid var(--status-degraded);
+}
+.warningWord {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0 0 2px;
+  font: 600 var(--fs-micro) / 1.5 var(--font-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--warn-text);
+}
+.warningText {
+  margin: 0;
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  color: var(--text-1);
+}
+.summaryRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-row);
+  color: var(--text-1);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+}
+.summaryRow > span {
+  flex: 1 1 180px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.summaryRow b {
+  font: 500 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.change {
+  display: grid;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+.progress {
+  margin: var(--sp-2) 0;
+}
+.unavailable {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--bg-2);
+  border-left: 3px solid var(--line-strong);
+}
+.unavailableWord {
+  composes: warningWord;
+  color: var(--text-2);
+}
+.seedLine {
+  margin: 0 0 var(--sp-2);
+  font: 400 var(--fs-meta) / 1.5 var(--font-mono);
+  color: var(--text-1);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.seedRecord {
+  margin: 0 0 var(--sp-2);
+  border: 1px dashed var(--text-2);
+  background: var(--surface-3);
+}
+.seedRecord figcaption {
+  padding: var(--sp-1) var(--sp-3);
+  font: 600 var(--fs-micro) / 1.6 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-1);
+  border-bottom: 1px dashed var(--text-2);
+}
+.seedRecord pre {
+  margin: 0;
+  padding: var(--sp-3);
+  max-height: 40vh;
+  overflow-y: auto;
+  font: 400 var(--fs-meta) / 1.5 var(--font-mono);
+  color: var(--text-1);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* The new local session's strip: where its first message came from. */
+.startedFrom {
+  flex: none;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-4);
+  font-size: var(--fs-meta);
+  color: var(--text-1);
+  background: color-mix(in srgb, var(--text-1) 5%, var(--bg-1));
+  border-bottom: 1px solid var(--line);
+}
+/* The session route's pane column when the strip is above it: the strip takes its line and the
+ * pane keeps the rest. Only for a session started with Continue here. */
+.startedHost {
+  display: flex;
+  flex-direction: column;
+}
+.startedHost > :not(.startedFrom) {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.startedFrom b {
+  font-weight: 600;
+}
+
+@media (max-width: 800px) {
+  .tilesTwo {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .presence {
+    margin-left: 0;
+  }
+  /* The notes sheet: the thread scrolls, the composer stays at the sheet's floor. */
+  .drawer {
+    position: static;
+    width: 100%;
+    max-height: 88vh;
+    border: 0;
+    border-top: 2px solid var(--hud);
+  }
+  .noteActions > button,
+  .foot > button,
+  .stripTool {
+    min-height: 44px;
+  }
+  .noteActions > button {
+    flex: 1 1 auto;
+  }
+  .stripMain {
+    min-height: 44px;
+  }
+}
+@media (pointer: coarse) {
+  .noteActions > button,
+  .foot > button,
+  .stripTool,
+  .stripMain {
+    min-height: 44px;
+  }
+}

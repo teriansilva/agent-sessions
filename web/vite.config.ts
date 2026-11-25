@@ -1,0 +1,189 @@
+import react from "@vitejs/plugin-react";
+import { defineConfig, type Plugin } from "vite";
+
+/** The public share viewer (#1404) is not the app: VitePWA links the app manifest into EVERY html
+ *  entry, which would offer a visitor "Install BattleLab" (the operator's app, whose
+ *  `handle_links` would then capture public links). Drop it from share.html, and from the public
+ *  artifact viewer (#2068), artifact.html. */
+function shareViewerWithoutManifest(): Plugin {
+  return {
+    name: "share-viewer-without-manifest",
+    enforce: "post",
+    // On the emitted file, after every other plugin has written to it (VitePWA adds the link in
+    // its own late hooks).
+    generateBundle(_options, bundle) {
+      for (const name of ["share.html", "artifact.html"]) {
+        const page = bundle[name];
+        if (page && page.type === "asset" && typeof page.source === "string") {
+          page.source = page.source.replace(/\s*<link rel="manifest"[^>]*>/g, "");
+        }
+      }
+    },
+  };
+}
+import { VitePWA } from "vite-plugin-pwa";
+import { existsSync, readFileSync } from "node:fs";
+import {
+  isLazyOnlyChunk,
+  LAZY_CHUNK_DIR,
+  lazyOnlyPackages,
+  type Lockfile,
+} from "./src/pwaLazyChunks";
+
+// #2114: packages only a lazy feature (Mermaid) needs. Their chunks are written under
+// LAZY_CHUNK_DIR, which the precache ignores (src/pwaLazyChunks.ts says why).
+/** #2114: fails the BUILD if a lazy-only package's code lands in a precached chunk, or if the
+ *  service worker's manifest names anything under LAZY_CHUNK_DIR. Checked on the built output (the
+ *  real chunk graph and the real sw.js), because a config that only looks right is how the whole of
+ *  Mermaid would silently ride along in every install. */
+function lazyChunksStayOutOfPrecache(): Plugin {
+  let outDir = "dist";
+  return {
+    name: "lazy-chunks-stay-out-of-precache",
+    apply: "build",
+    configResolved(config) {
+      outDir = config.build.outDir;
+    },
+    generateBundle(_options, bundle) {
+      for (const chunk of Object.values(bundle)) {
+        if (chunk.type !== "chunk") continue;
+        const lazyCode = chunk.moduleIds.some((id) => id.replace(/\\/g, "/").includes("/node_modules/mermaid/"));
+        if (lazyCode && !chunk.fileName.startsWith(`${LAZY_CHUNK_DIR}/`)) {
+          this.error(`${chunk.fileName} holds Mermaid code but is outside ${LAZY_CHUNK_DIR}/, so it would be precached`);
+        }
+      }
+    },
+    closeBundle: {
+      order: "post",
+      sequential: true,
+      handler() {
+        const sw = new URL(`./${outDir}/sw.js`, import.meta.url);
+        if (!existsSync(sw)) return;
+        const text = readFileSync(sw, "utf8");
+        if (text.includes(`${LAZY_CHUNK_DIR}/`)) {
+          throw new Error(`sw.js precaches ${LAZY_CHUNK_DIR}/ — the globIgnores entry is not applied`);
+        }
+      },
+    },
+  };
+}
+
+const LAZY_ONLY = lazyOnlyPackages(
+  JSON.parse(readFileSync(new URL("./package-lock.json", import.meta.url), "utf8")) as Lockfile,
+);
+
+// https://vite.dev/config/
+export default defineConfig({
+  // Absolute base so /assets/* resolve correctly under deep client routes
+  // (e.g. /s/claude/<uuid>) when FastAPI serves index.html as the SPA fallback.
+  base: "/",
+  // Release version stamped into the bundle (#661). install.sh's build_web() sets
+  // AGENT_SESSIONS_VERSION from the just-installed package, so EVERY release changes dist
+  // content → new SW precache revisions → the cached PWA shell refreshes even for
+  // server-only releases. Unstamped (dev/CI) builds get "dev", which disables the
+  // footer's version-mismatch prompt.
+  define: {
+    __APP_VERSION__: JSON.stringify(process.env.AGENT_SESSIONS_VERSION || "dev"),
+  },
+  preview: {
+    // The connect-page E2E maps battlelab.superstatus.io to the local preview server so the
+    // public-host credential behavior is exercised in a real browser.
+    allowedHosts: ["battlelab.superstatus.io"],
+  },
+  // A modern cssTarget so esbuild keeps `backdrop-filter` as authored. With the default
+  // cssTarget (which includes old Safari) esbuild collapses a dual `backdrop-filter` +
+  // `-webkit-backdrop-filter` declaration to the `-webkit-` form ONLY and DROPS the standard
+  // property — so the frost didn't render where the unprefixed property is needed and DevTools
+  // flagged the prefixed-only rule. These targets all support unprefixed `backdrop-filter`, so
+  // the standard property survives; the redundant hand-written `-webkit-backdrop-filter`
+  // declarations were removed from the CSS (the `@supports` feature tests stay).
+  build: {
+    outDir: "dist",
+    cssTarget: ["chrome111", "firefox128", "safari18", "edge111"],
+    // Multi-entry: the SPA (index.html) + the standalone Home Free connect page
+    // (connect.html). connect.html is NOT linked from the app — a dark page for
+    // reaching a box through the blind relay. share.html is the public share viewer (#1404),
+    // which the server answers at /p/<token> and /p/: its own small bundle, none of the
+    // operator app's code.
+    rollupOptions: {
+      input: {
+        main: "index.html",
+        connect: "connect.html",
+        share: "share.html",
+        // A reply link (#1956), served at /r/<id>: one sealed reply, opened in the page.
+        reply: "reply.html",
+        // A publicly shared artifact (#2068), served at /artifacts/p/<id>/: the BattleLab header
+        // above the artifact, framed in a sandbox from ~/.
+        artifact: "artifact.html",
+      },
+      output: {
+        chunkFileNames: (chunk) =>
+          isLazyOnlyChunk(chunk.moduleIds, LAZY_ONLY)
+            ? `${LAZY_CHUNK_DIR}/[name]-[hash].js`
+            : "assets/[name]-[hash].js",
+      },
+    },
+  },
+  plugins: [
+    react(),
+    VitePWA({
+      registerType: "autoUpdate",
+      // injectManifest, not generateSW (#726 Phase 3): Web Push needs a `push` listener, and
+      // generateSW offers no seam to add one. The hand-written worker in src/sw.ts reproduces
+      // the previous behaviour exactly — precache the shell, navigation-fallback to
+      // index.html, deny that fallback for every server-rendered route. The denylist moved to
+      // src/sw-denylist.ts so the SW and its test share one source of truth; dropping an entry
+      // there is silent at build AND runtime, and shows up only as someone locked out.
+      strategies: "injectManifest",
+      srcDir: "src",
+      filename: "sw.ts",
+      // Registration is explicit (initSWUpdates() in main.tsx via virtual:pwa-register) so a
+      // long-lived tab re-checks sw.js hourly + on foreground (#661) — don't ALSO inject the
+      // one-shot registerSW.js script.
+      injectRegister: null,
+      // Precache the built static shell ONLY. Live data + the terminal stay
+      // network-only: the SPA navigation fallback explicitly excludes the API,
+      // websocket, terminal, auth, and upload paths so they're never served stale
+      // from cache (per #64 PWA rule). No runtimeCaching entries for them on purpose.
+      injectManifest: {
+        // No webm/mp4/jpg: the HQ contact loops and posters (#1525) are never precached, so only the
+        // chosen contact's loop loads, on first open (src/components/hq/contacts.test.ts pins it).
+        globPatterns: ["**/*.{js,css,html,svg,png,woff2}"],
+        // #2114: Mermaid's chunks load on first use, never at install (src/pwaLazyChunks.ts).
+        globIgnores: [`${LAZY_CHUNK_DIR}/**`],
+      },
+      manifest: {
+        name: "BattleLab",
+        short_name: "BattleLab",
+        description: "BattleLab — a self-hosted command deck for your AI-coding agents.",
+        theme_color: "#0d0e10",
+        background_color: "#0d0e10",
+        display: "standalone",
+        start_url: "./dashboard", // #1525: the dashboard is the start page
+        // Link capture (#1232): the installed app owns its whole origin, and a link into it
+        // focuses the open window and is delivered through `window.launchQueue` (handled by
+        // `EntryLinks`) instead of opening a browser tab or a second app window. `focus-existing`,
+        // not `navigate-existing`: the latter RELOADS the window onto the URL — losing whatever is
+        // unsaved in it — where this routes in-app. Chromium honours both fields; other browsers
+        // ignore them and fall back to the tab hand-off.
+        id: "/",
+        scope: "/",
+        launch_handler: { client_mode: ["focus-existing", "auto"] },
+        handle_links: "preferred",
+        icons: [
+          { src: "favicon.svg", sizes: "any", type: "image/svg+xml", purpose: "any" },
+          { src: "icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
+          { src: "icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
+          {
+            src: "icon-maskable-512.png",
+            sizes: "512x512",
+            type: "image/png",
+            purpose: "maskable",
+          },
+        ],
+      },
+    }),
+    shareViewerWithoutManifest(),
+    lazyChunksStayOutOfPrecache(),
+  ],
+});

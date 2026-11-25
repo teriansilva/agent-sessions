@@ -1,0 +1,184 @@
+/* The operator tile (#1058). The panel is the Help menu's (HelpMenu.module.css); what is here is
+ * the trigger and the identity header, which nothing else draws.
+ *
+ * Square, flat, hairline — `docs/design.md` §1. The accent at 20% is the tile's fill in BOTH themes,
+ * which is why it is a `color-mix` off `--accent` rather than a second colour: a custom accent
+ * cascades into it for free, and the initials stay on brand without touching a status hue. */
+
+.wrap {
+  /* The corner's last item, hard against the bar's right padding. */
+  margin-left: 2px;
+}
+/* The shell's `data-topbar-keep` slot around it (App.tsx) — a plain inline box, so the wrap's own
+ * `position: relative` and the flex row both behave as if the tile were a direct child. */
+:global(.operator-slot) {
+  display: inline-flex;
+}
+
+/* The operator tile is a PLATE like the tabs and the bell (NIGHTJAR v5, #1589). */
+.tile {
+  composes: nj-plate from global;
+  --nj-face: color-mix(in srgb, var(--text-1) 6%, var(--bg-1));
+  --nj-edge: var(--line-strong);
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  height: 34px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 0;
+  color: var(--text-muted);
+  cursor: pointer;
+  /* The bar is tight; the username must never push the row into a second line. */
+  max-width: 220px;
+  transition: border-color var(--t-fast) var(--ease-out), color var(--t-fast) var(--ease-out);
+}
+.tile:hover {
+  --nj-edge: var(--hud-dim);
+  color: var(--text-1);
+}
+.tile[aria-expanded="true"] {
+  --nj-edge: var(--hud);
+}
+.tile:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -2px;
+}
+
+.square {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  background: color-mix(in srgb, var(--hud) 20%, transparent);
+  color: var(--hud-text);
+  font-family: var(--font-display);
+  font-size: var(--fs-label);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  /* The plate's chamfer is paint on its ::before/::after, so it does not clip children: cut the
+     square's own top-left on the face's diagonal (the face sits 1px in, the square 1px further). */
+  clip-path: polygon(calc(var(--c) - 1px) 0, 100% 0, 100% 100%, 0 100%, 0 calc(var(--c) - 1px));
+}
+
+/* With the operator's image (#1931) the square is the plate's FACE: one pixel inside the edge on
+   every side, cut top-left AND bottom-right exactly like the face (`nj-plate`'s ::after), so the
+   plate's 1 px grey edge frames the picture and both chamfers stay cut. (The initials' square may
+   cover the edge; a photo must not, or the corner it overruns reads as a crop error.) */
+.square[data-image] {
+  width: 30px;
+  height: 30px;
+  margin: 1px;
+  background: transparent;
+  clip-path: polygon(
+    var(--c) 0,
+    100% 0,
+    100% calc(100% - var(--c)),
+    calc(100% - var(--c)) 100%,
+    0 100%,
+    0 var(--c)
+  );
+}
+.tile:has(.square[data-image]) {
+  --nj-edge: var(--line-strong);
+}
+.tile:has(.square[data-image]):hover {
+  --nj-edge: var(--hud-dim);
+}
+.tile:has(.square[data-image])[aria-expanded="true"] {
+  --nj-edge: var(--hud);
+}
+.squareImg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.name {
+  padding: 0 10px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  border-left: 1px solid var(--line-strong);
+}
+
+/* --- the panel's identity header --------------------------------------------- */
+.who {
+  padding: var(--sp-3);
+  border-bottom: 1px solid var(--line);
+}
+.whoName {
+  font-family: var(--font-display);
+  font-size: var(--fs-meta);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-1);
+  /* A long username wraps rather than widening the panel past its max. */
+  overflow-wrap: anywhere;
+}
+.whoSub {
+  margin-top: 3px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+}
+
+/* ICON-ONLY IN THE BAR below a full desktop (≤1100px, the same line where the telemetry and the
+ * section icons stand down in App.css): the square alone is the tile. The username may be REMOVED here rather than clipped, unlike the
+ * section labels — it is already `aria-hidden`, and the trigger's accessible name comes from
+ * `AnchoredMenu`'s `aria-label` ("Operator <name>"), which no width changes. The panel repeats the
+ * name in full the moment it opens. */
+@media (max-width: 1100px) {
+  .name {
+    display: none;
+  }
+}
+@media (max-width: 800px) {
+  /* The 44px touch floor is the plate itself (#1589): a plate paints with ::before/::after, so the
+     old invisible ::after hit-area halo is gone and the box is the target. */
+  /* The row's one gap separates it from the bell, like every other tile. */
+  .wrap {
+    margin-left: 0;
+  }
+  .tile {
+    width: var(--tb-tile, 44px);
+    height: 44px;
+    justify-content: center;
+    /* The initials ARE the tile on a phone: the accent tint moves from an inner square onto the
+       plate's own face, so the corner is one plate the size of its neighbours, not a box in a box. */
+    --nj-face: color-mix(in srgb, var(--hud) 20%, var(--bg-1));
+    --nj-edge: var(--hud-dim);
+  }
+  .square {
+    width: 100%;
+    height: 100%;
+    background: transparent;
+  }
+  /* The whole plate's face, one pixel in from its edge. */
+  .square[data-image] {
+    width: calc(100% - 2px);
+    height: calc(100% - 2px);
+  }
+}
+
+/* The tile is NOT duplicated into the drawer, unlike `?` and the gear. It carries
+ * `data-topbar-keep`, so it stays in the bar at every width — a corner that stops saying who you
+ * are the moment the screen narrows is the corner that most needed to. */
+
+/* A hairline between the menu's groups (#1085): account · help · sign out. */
+.groupStart {
+  border-top: 1px solid var(--line);
+}

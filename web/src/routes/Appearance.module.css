@@ -1,0 +1,585 @@
+/* Settings → Appearance pages (#1494; NIGHTJAR #1574). Shared shell classes (section, hint, subhead)
+   stay in Settings.module.css; this file holds the pickers the appearance pages add. Tokens only.
+   The API-sessions selectors at the end belong to AppearanceApi.tsx, fenced for #1311 / #1313. */
+
+/* ---- Choice cards: mode, motion, scheme --------------------------------------------------- */
+/* A card is a CONTROL (a radio), so it is a painted plate: the chamfer is drawn behind it and the
+   whole rectangle stays the hit area (design.md §6). Selected = the lit rail and the --hud edge. */
+.modes,
+.motions,
+.schemes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--sp-3);
+  margin-top: var(--sp-2);
+}
+.motions {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.mode,
+.scheme,
+.motion {
+  composes: nj-plate from global;
+  --c: var(--cut-sm);
+  --nj-face: var(--bg-0);
+  --nj-edge: var(--line-strong);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 1px;
+  text-align: left;
+  color: var(--text-1);
+  font: inherit;
+  cursor: pointer;
+}
+.mode:hover,
+.scheme:hover,
+.motion:hover {
+  --nj-edge: var(--hud-dim);
+}
+.mode.on,
+.scheme.on,
+.motion.on {
+  --nj-edge: var(--hud);
+  --nj-rail: var(--hud);
+}
+.mode:focus-visible,
+.scheme:focus-visible,
+.motion:focus-visible,
+.swatch:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.modePreview {
+  display: flex;
+  height: 96px;
+  overflow: hidden;
+  border-bottom: 1px solid var(--line);
+}
+.modeLabel {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 44px;
+  padding: var(--sp-2) var(--sp-3);
+}
+.modeText {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.modeName {
+  font: 600 var(--fs-label) / 1.3 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.on .modeName {
+  color: var(--accent-text);
+}
+.modeDesc {
+  font-size: var(--fs-meta);
+  color: var(--text-3);
+}
+/* The radio dot is a dot, so it may be round (design: only LEDs/dots are). Shared with the API
+   sessions page. */
+.radio {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid var(--text-3);
+  border-radius: 50%;
+}
+.on .radio {
+  border-color: var(--accent);
+}
+.on .radio::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/* The miniature (#1574): its ground is the card's OWN mode, read from the canonical tokens
+   through `[data-theme-scope]` (tokens.css) — no preview palette. A custom accent is re-applied
+   on the scope for that mode (applyAccent `accentVars`), so the bits show the live accent. */
+.mini {
+  flex: 1;
+  display: flex;
+  min-width: 0;
+  background: var(--bg-0);
+}
+.miniSide {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 26%;
+  padding: var(--sp-2) 6px;
+  background: var(--bg-1);
+  border-right: 1px solid var(--border);
+}
+.miniMain {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: var(--sp-2);
+}
+.miniPanel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 7px;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-top: 2px solid var(--hud);
+}
+.miniFoot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: auto;
+}
+.bar {
+  display: block;
+  height: 4px;
+  background: var(--text-3);
+}
+.barStrong {
+  background: var(--text-1);
+}
+.barAccent {
+  background: var(--accent);
+}
+.miniCta {
+  width: 34%;
+  height: 10px;
+  margin-left: auto;
+  background: var(--accent);
+}
+
+/* ---- Motion (#1574): each mode at work on a small stage --------------------------------- */
+/* Decorative (aria-hidden): the control is the radio group. The stage only moves in the mode the
+   PAGE is in — Off still stops everything (motion.css) — so it never costs more than the page. */
+.motionStage {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  height: 64px;
+  padding: var(--sp-2) var(--sp-3);
+  overflow: hidden;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--line);
+}
+.motionRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.motionLed {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--status-up);
+}
+.motionStage .bar {
+  flex: 1;
+}
+/* Full: the sweep runs across the stage and the light breathes.
+   Both beats repeat INSIDE one 19.2 s iteration — six 3.2 s sweeps, eight 2.4 s breaths. React
+   listens for `animationiteration` at its root, so every iteration of every CSS animation wakes the
+   main thread; the short loops made this page read 2.2% idle CPU on CI against the 2% budget. Same
+   motion, a sixth / an eighth of the wake-ups (the rule #1600 set for the map). */
+.motion_full .motionStage::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 30%;
+  background: linear-gradient(90deg, transparent, var(--hud-tint), transparent);
+  animation: stageSweep6 19.2s linear infinite;
+}
+.motion_full .motionLed {
+  animation: stageBreathe8 19.2s var(--ease-io) infinite;
+}
+/* One sweep is -100% → 340% of its own width (off the stage on both sides, so the jump back is
+   never seen); each starts 0.0001% (0.02 ms) after the last ends. */
+@keyframes stageSweep6 {
+  0%,
+  16.6667%,
+  33.3334%,
+  50.0001%,
+  66.6668%,
+  83.3334% {
+    transform: translateX(-100%);
+  }
+  16.6666%,
+  33.3333%,
+  50%,
+  66.6667%,
+  83.3333%,
+  100% {
+    transform: translateX(340%);
+  }
+}
+/* nj-breathe's beat eight times; --ease-io runs between each keyframe pair, so every half-beat has
+   the single beat's curve. */
+@keyframes stageBreathe8 {
+  0%,
+  12.5%,
+  25%,
+  37.5%,
+  50%,
+  62.5%,
+  75%,
+  87.5%,
+  100% {
+    opacity: 1;
+  }
+  6.25%,
+  18.75%,
+  31.25%,
+  43.75%,
+  56.25%,
+  68.75%,
+  81.25%,
+  93.75% {
+    opacity: 0.55;
+  }
+}
+/* Reduced: one short fade on a change — drawn as the row that just arrived, steady. */
+.motion_reduced .motionRow:last-child {
+  opacity: 0.55;
+}
+/* Off: nothing moves; the look stays complete. */
+.motion_off .motionStage {
+  background: var(--bg-0);
+}
+
+/* ---- Accent swatches -------------------------------------------------------------------- */
+.swatches {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, 44px);
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+.swatch {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  background: var(--dot);
+  cursor: pointer;
+}
+.swatch.on {
+  box-shadow:
+    0 0 0 2px var(--bg-1),
+    0 0 0 4px var(--hud);
+}
+/* The check takes the ink computed for THIS swatch (onAccentFor), so it reads on every colour. */
+.swatch.on::after {
+  content: "\2713";
+  font-weight: 700;
+  font-size: var(--fs-title);
+  color: var(--dot-ink);
+}
+.customRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+}
+.well {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border: 1px dashed var(--text-3);
+  cursor: pointer;
+  overflow: hidden;
+}
+/* The native colour well fills the square, so it reads as one more swatch. */
+.well input[type="color"] {
+  width: 150%;
+  height: 150%;
+  margin: -25%;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+/* Sized for the whole value: `#rrggbb` is 7 characters of mono plus padding (#1494). */
+.hex {
+  composes: nj-field from global;
+  box-sizing: border-box;
+  width: calc(7ch + 28px);
+  height: 44px;
+  padding: 0 var(--sp-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-row);
+  text-transform: lowercase;
+}
+.reset {
+  composes: ghost from "../components/ui/actionButton.module.css";
+}
+
+.chosen {
+  font: 400 var(--fs-label) / 1.3 var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.moved {
+  margin: var(--sp-5) 0 0;
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--hud-dim);
+}
+/* A link is TEXT, so it takes the AA-safe accent (#1494) — the raw accent is a fill colour. */
+.moved a {
+  color: var(--accent-text);
+}
+
+@media (max-width: 800px) {
+  .modePreview {
+    height: 72px;
+  }
+  .modeDesc {
+    display: none;
+  }
+  .motions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .swatches {
+    grid-template-columns: repeat(auto-fill, 44px);
+    gap: 10px;
+  }
+}
+
+/* ---- Terminal colour schemes (#1494 P2) ------------------------------------------------- */
+/* The sample paints in the SCHEME's colours (inline, the scheme's published palette — allowlisted
+   content), in the terminal's own mono stack. */
+.schemeSample {
+  display: flex;
+  flex-direction: column;
+  padding: var(--sp-2) 10px;
+  font: var(--fs-label) / 1.45 var(--font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.ansiStrip {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+}
+.ansiStrip i {
+  display: block;
+  height: 7px;
+}
+.schemeLabel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 44px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--border);
+}
+.schemeName {
+  font-weight: 700;
+  font-size: var(--fs-meta);
+  min-width: 0;
+}
+.on .schemeName {
+  color: var(--accent-text);
+}
+.tag {
+  margin-left: auto;
+  font: var(--fs-micro) var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+/* A measured fact about the scheme, not a state of the app — so plain muted text, never a
+   status colour (design §3). */
+.schemeNote {
+  padding: 0 10px var(--sp-2) 32px;
+  font-size: var(--fs-label);
+  color: var(--text-3);
+}
+
+@media (max-width: 800px) {
+  .schemes {
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  }
+}
+
+/* ---- API sessions (#1494 P3) ------------------------------------------------------------ */
+.preview {
+  margin: 10px 0 4px;
+  border: 1px solid var(--line-strong);
+  min-width: 0;
+}
+.previewHead {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 12px;
+  margin: 0;
+  padding: 6px 10px;
+  font: 10px var(--font-mono, ui-monospace, monospace);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--line);
+}
+/* The preview IS a pane log (chat.log); this only stops it behaving like a scrolling pane. */
+.previewLog {
+  flex: none;
+  overflow: visible;
+  min-width: 0;
+}
+.palettes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 8px;
+}
+.palette,
+.bgCard {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 0;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+.palette:hover,
+.bgCard:hover,
+.seg:hover {
+  border-color: var(--accent);
+}
+.palette.on,
+.bgCard.on,
+.seg.on {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+.palette:focus-visible,
+.bgCard:focus-visible,
+.seg:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.chips {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  height: 30px;
+}
+.chips i {
+  display: block;
+}
+.backgrounds {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 8px;
+}
+/* A pattern tile reuses the log's own pattern rules (chat.log[data-api-bg]), so a tile is the
+   pattern the log will wear. */
+.bgTile {
+  display: block;
+  flex: none;
+  height: 48px;
+  padding: 0;
+  overflow: hidden;
+  border-bottom: 1px solid var(--border);
+}
+.fontRows {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 18px;
+}
+.segs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.seg {
+  min-height: 44px;
+  padding: 0 12px;
+  font-size: 12.5px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+.stackInput {
+  box-sizing: border-box;
+  width: 100%;
+  height: 44px;
+  margin-top: 8px;
+  padding: 0 10px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 0;
+}
+.stackInput:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+}
+.stackInput.invalid {
+  border-color: var(--status-down);
+}
+.stackError {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--danger-text);
+}
+.footRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 20px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+@media (max-width: 800px) {
+  .palettes {
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  }
+  .backgrounds {
+    grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  }
+  .fontRows {
+    grid-template-columns: 1fr;
+  }
+}

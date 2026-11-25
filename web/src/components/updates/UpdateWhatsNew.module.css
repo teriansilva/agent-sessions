@@ -1,0 +1,63 @@
+/* What's new on the Updates card (#1085; NIGHTJAR #1574, board Y4): a small frame with the HUD
+ * eyebrow, square chrome. */
+
+.box {
+  composes: nj-frame-sm from global;
+  margin: var(--sp-3) 0;
+  padding: var(--sp-3) var(--sp-4);
+}
+
+.h {
+  margin: 0 0 6px;
+  font: 600 var(--fs-label) var(--font-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--hud-text);
+}
+
+.title {
+  margin: 0 0 6px;
+  font-size: var(--fs-body);
+  color: var(--text-1);
+}
+
+.body {
+  margin: 6px 0 0;
+  font-size: var(--fs-row);
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+.list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: var(--fs-row);
+  line-height: 1.6;
+  color: var(--text-2);
+}
+
+.list b {
+  color: var(--text-1);
+  font-weight: 600;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  margin-top: 8px;
+}
+
+.open {
+  composes: ghost compact from "../ui/actionButton.module.css";
+}
+
+.link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  color: var(--accent-text);
+  font-size: var(--fs-row);
+}

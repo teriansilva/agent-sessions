@@ -1,0 +1,312 @@
+/* THE MISSION THREAD'S SYSTEM ROWS (#967 P4). Conversation is `mission.module.css`'s `.event`;
+ * everything the SERVER records is drawn here, as graphics rather than a label over text.
+ *
+ * NIGHTJAR (#1573): every row is a hairline row, edge to edge, like the conversation's — no boxes in
+ * the history. A row that asks for something (a failed start's Start again, the completion
+ * proposal) carries an edge in its status colour instead. Tokens only (docs/nightjar-ledger.md).
+ *
+ * Status colour is load-bearing (§3): the failure edge is `--status-down`, the chips reuse the header's
+ * status dots, and the accent appears only on the Start again call to action. No radius, no gradient,
+ * tokens only (src/theme/cssGuard.test.ts). */
+
+.time {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.06em;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.chip {
+  flex: none;
+}
+
+.arrow {
+  flex: none;
+  color: var(--text-3);
+}
+
+/* --- a state change: a centred row between two hairlines ------------------------------------- */
+
+.state {
+  min-width: 0;
+  padding: var(--sp-2) var(--sp-4);
+  border-bottom: 1px solid var(--line);
+}
+.stateLine {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.stateLine::before,
+.stateLine::after {
+  content: none;
+}
+.stateLine > .time {
+  order: 1;
+  margin-left: auto;
+}
+.stateNote {
+  margin: var(--sp-1) 0 0;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+/* --- plan, plan edited, planning: one compact row ---------------------------------------------- */
+
+.box {
+  min-width: 0;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--hud) 3%, transparent);
+}
+.quiet {
+  min-width: 0;
+  border-bottom: 1px solid var(--line);
+}
+.line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px var(--sp-3);
+  min-height: 44px;
+  padding: var(--sp-1) var(--sp-4);
+  font-size: var(--fs-row);
+  color: var(--text-1);
+}
+.line > .time {
+  margin-left: auto;
+}
+.icon {
+  flex: none;
+  color: var(--text-3);
+}
+.lineText {
+  flex: 1 1 12rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.sep {
+  margin: 0 6px;
+  color: var(--text-3);
+}
+.mono {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+}
+.tag {
+  flex: none;
+  font: 600 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.note {
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.disclosure {
+  flex: none;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 var(--sp-3);
+  border: 0;
+  background: transparent;
+  font: 600 var(--fs-micro) / 1 var(--font-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--hud-text);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.disclosure:hover,
+.disclosure:focus-visible {
+  color: var(--text-1);
+}
+.disclosure:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.chevron {
+  color: var(--text-3);
+  transition: transform var(--t-base) var(--ease-out);
+}
+.chevronOpen {
+  color: var(--text-3);
+  transform: rotate(90deg);
+  transition: transform var(--t-base) var(--ease-out);
+}
+.brief {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-4) var(--sp-3);
+  border-top: 1px solid var(--line);
+  font-size: var(--fs-row);
+  line-height: 1.5;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  animation: global(nj-fade-in) var(--t-base) var(--ease-out) both;
+}
+
+/* --- an error the server recorded (a question that could not be asked): one quiet row ---------- */
+
+.errorIcon {
+  flex: none;
+  color: var(--danger-text);
+}
+.errorText {
+  flex: 1 1 12rem;
+  min-width: 0;
+  color: var(--danger-text);
+  overflow-wrap: anywhere;
+}
+
+/* --- a start that failed ---------------------------------------------------------------------- */
+
+.failure {
+  min-width: 0;
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--line);
+  border-left: 3px solid var(--status-down);
+  background: color-mix(in srgb, var(--status-down) 7%, var(--bg-1));
+}
+.failHead {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+.failHead > .time {
+  margin-left: auto;
+}
+.failMessage {
+  margin: var(--sp-2) 0 0;
+  font-size: var(--fs-body);
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.failDetail {
+  margin: 4px 0 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+.failActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+}
+.failAction {
+  text-decoration: none;
+}
+.why {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--sp-2);
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: var(--fs-meta);
+  color: var(--text-3);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.why:hover,
+.why:focus-visible {
+  color: var(--text-2);
+}
+.why:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.reason {
+  margin: 4px 0 0;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.error {
+  margin: var(--sp-2) 0 0;
+  font-size: var(--fs-meta);
+  color: var(--danger-text);
+  overflow-wrap: anywhere;
+}
+
+/* Phones: the actions stack, full width, each at the §8 floor. */
+@media (max-width: 800px) {
+  .failActions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .why {
+    align-self: flex-start;
+  }
+}
+
+/* --- the completion proposal (#1063), with how each gate holds (#1088) ------------------------ */
+.completion {
+  min-width: 0;
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--line);
+  box-shadow: inset 2px 0 0 var(--status-up);
+  background: color-mix(in srgb, var(--status-up) 5%, transparent);
+  font-size: var(--fs-row);
+  color: var(--text-2);
+}
+.completionHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 6px;
+  overflow-wrap: anywhere;
+}
+.completionHead b {
+  color: var(--text-1);
+}
+.completionHead > .time {
+  margin-left: auto;
+}
+.completionHeld {
+  margin: 6px 0 0;
+}
+.completionLine {
+  display: grid;
+  grid-template-columns: 6.5rem 1fr;
+  gap: var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  line-height: 1.6;
+}
+.completionLine dt {
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+.completionLine dd {
+  margin: 0;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.completionOpen {
+  margin: 6px 0 0;
+  font-size: var(--fs-meta);
+  color: var(--warn-text);
+  overflow-wrap: anywhere;
+}
+
+/* A thread event that arrives while the console is open slides in and flashes the HUD tint once
+ * (`--t-arrive`; 0 in Off, a fade in Reduced). Never on the first paint of a thread (#1573). */
+.arrive {
+  composes: nj-arrive nj-fade-ok from global;
+}

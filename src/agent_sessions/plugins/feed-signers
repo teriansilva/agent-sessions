@@ -1,0 +1,18 @@
+# Release signing trust root for agent-sessions (#832).
+#
+# OpenSSH allowed_signers format, read verbatim by:
+#   git -c gpg.ssh.allowedSignersFile=<this file> verify-tag <tag>
+#
+# ONE entry covers every FUTURE release — the property a per-release manifest
+# structurally cannot provide, because a build can only ever carry entries for
+# releases older than itself. This key outlives the releases it vouches for.
+#
+# Public key material only. Adding a line grants release authority; removing one
+# revokes it for every build shipped afterwards. Custody, rotation and recovery:
+# docs/release-signing.md (export-ignored — it names hosts and paths).
+# The primary key signs every release. The recovery key (same principal, so every check that
+# names release@agent-sessions holds for either) signs NOTHING in normal operation: it exists
+# to sign the bridge release that introduces a new primary if the primary or its passphrase is
+# lost — the one case the rotation bridge cannot cover, because that bridge needs the old key.
+release@agent-sessions ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOjW+gor5BTHMCjx6GWhCOJXdmR9Lei9elkzV7j++zbX agent-sessions release signing
+release@agent-sessions ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIE3LUURaBPIGDEAluzrmDCS++MwgQ0DHL23J+3TjcLKL agent-sessions release recovery

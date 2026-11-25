@@ -1,0 +1,76 @@
+/* HQ's right-hand drawer (#1294, Ask until #1525) on the one drawer chrome (NIGHTJAR #1531): an
+ * opaque face with the lit rail along its open edge, no radius, a scrim behind it on a phone. It
+ * slides in from the right edge; only `transform` moves, over `--t-slow`, and not at all outside
+ * the Full motion mode. */
+
+.panel {
+  position: fixed;
+  /* Under the command bar, which stays on top so the icon that opened this can close it. Portalled
+   * to <body>, outside `.app` where the header height is declared, hence the fallback. */
+  top: var(--app-header-height, 52px);
+  right: 0;
+  bottom: 0;
+  z-index: calc(var(--z-map) + 3);
+  width: min(440px, 100vw);
+  display: flex;
+  flex-direction: column;
+  padding-inline: var(--sp-3);
+  padding-right: calc(var(--sp-3) + env(safe-area-inset-right, 0px));
+  /* OPAQUE: a chat column over the dashboard or a live terminal must not show the page through. */
+  background: var(--bg-1);
+  border-left: 2px solid var(--hud);
+  box-shadow: var(--shadow-drawer);
+  transform: translateX(100%);
+  visibility: hidden;
+  transition:
+    transform var(--t-slow) var(--ease-out),
+    visibility 0s linear var(--t-slow);
+}
+.open {
+  transform: translateX(0);
+  visibility: visible;
+  transition:
+    transform var(--t-slow) var(--ease-out),
+    visibility 0s;
+}
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  /* Above the session drawer, below the panel and the topbar — the bell's numbers. */
+  z-index: calc(var(--z-map) + 2);
+  background: var(--scrim);
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  animation: global(nj-fade-in) var(--t-base) var(--ease-out) both;
+}
+
+@media (max-width: 800px) {
+  .panel {
+    width: min(92vw, 440px);
+  }
+}
+
+/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
+:root:not([data-motion="full"]) .panel,
+:root:not([data-motion="full"]) .open {
+  transition: none;
+}
+
+/* The details dialog's wrapper: a React-tree ancestor for its events, nothing in layout. */
+.contents {
+  display: contents;
+}
+
+/* The Ask icon's unread marker (#1443 Phase 4): the brand accent, square, on the button's corner.
+ * Never the only signal — the button's label says "new updates" too. */
+.dot {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 7px;
+  height: 7px;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--bg-1);
+}

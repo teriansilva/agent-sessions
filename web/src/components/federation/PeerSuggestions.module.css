@@ -1,0 +1,123 @@
+/* What a paired instance suggests (#2061), above the owner's composer. The approval card's shape
+ * (StructuredPane `.card`): a hairline box on the amber attention edge WITH its word ("waiting"),
+ * because it needs the operator. A card that only says what happened is grey. The suggested text
+ * sits in a quoted block as plain text. Tokens only. */
+.zone {
+  flex: none;
+  display: grid;
+  gap: var(--sp-2);
+  min-width: 0;
+  max-height: 50vh;
+  overflow-y: auto;
+  padding: var(--sp-2);
+  border-top: 1px solid var(--line-strong);
+}
+.count {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  font: 600 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--warn-text);
+}
+.card {
+  min-width: 0;
+  background: var(--bg-1);
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--status-degraded);
+}
+.quiet {
+  border-left-color: var(--line-strong);
+}
+.head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--line);
+  font: 700 var(--fs-label) / 1.4 var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+.word {
+  margin-left: auto;
+  font-weight: 600;
+  color: var(--warn-text);
+}
+.quiet .word {
+  color: var(--text-2);
+}
+/* The suggested text: characters in a quoted block, line breaks kept. Never rendered as markup. */
+.quote {
+  margin: var(--sp-3) var(--sp-3) var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  max-height: 30vh;
+  overflow-y: auto;
+  font-size: var(--fs-row);
+  line-height: 1.5;
+  color: var(--text-1);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--surface-3);
+  border-left: 2px solid var(--line-strong);
+}
+.edit {
+  display: block;
+  box-sizing: border-box;
+  width: calc(100% - 2 * var(--sp-3));
+  min-height: 96px;
+  margin: var(--sp-3) var(--sp-3) var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  resize: vertical;
+  font: inherit;
+  font-size: var(--fs-row);
+  line-height: 1.5;
+  color: var(--text-1);
+  background: var(--bg-0);
+  border: 1px solid var(--hud);
+  border-radius: 0;
+}
+.edit:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 1px;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-3) var(--sp-2);
+}
+.note {
+  margin: 0;
+  padding: 0 var(--sp-3) var(--sp-3);
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+  color: var(--text-2);
+}
+.only {
+  padding-top: var(--sp-3);
+  color: var(--text-1);
+}
+.error {
+  margin: 0;
+  padding: 0 var(--sp-3) var(--sp-2);
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+  color: var(--danger-text);
+}
+
+@media (max-width: 800px) {
+  .actions > button {
+    flex: 1 1 auto;
+    min-height: 44px;
+  }
+}
+@media (pointer: coarse) {
+  .actions > button {
+    min-height: 44px;
+  }
+}

@@ -1,0 +1,55 @@
+# A bundled action manifest (#2248 P3). Data only: every value is a member of a set in
+# actions/manifest.py, an unknown field anywhere refuses it, and `executor` names reviewed code in
+# actions/executors.py (the plugin `actions/run_script.py`). The script is a file the operator
+# picks in a project, pinned by its checksum; a manifest can never carry one.
+contract = 1
+id = "run_script"
+label = "Run a script"
+category = "run_locally"
+description = "Runs one script file from a project folder directly, contained, pinned by its checksum, never through a shell."
+effect = "run-local"
+executor = "run_script"
+requires = ["project", "containment"]
+triggers = ["once", "schedule", "manual", "webhook"]
+
+[[inputs]]
+name = "project_id"
+type = "project"
+label = "Project"
+required = true
+
+[[inputs]]
+name = "script"
+type = "file"
+label = "Script file"
+required = true
+
+[[inputs]]
+name = "args"
+type = "arguments"
+label = "Extra arguments"
+
+[[inputs]]
+name = "env"
+type = "environment"
+label = "Environment variables"
+
+[[inputs]]
+name = "timeout_minutes"
+type = "duration"
+label = "Time limit"
+
+[[inputs]]
+name = "outputs"
+type = "output_fields"
+label = "Output fields"
+
+[[outputs]]
+name = "exit_code"
+type = "number"
+label = "Exit code"
+
+[[outputs]]
+name = "fields"
+type = "fields"
+label = "Typed fields from its last line"

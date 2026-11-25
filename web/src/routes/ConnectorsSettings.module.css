@@ -1,0 +1,175 @@
+/* Settings → AI → HQ connectors (#1746 P1b). Tokens only; no radius, no gradient (docs/design.md).
+ * The fields, buttons, toggle and egress box come from Settings.module.css, so this sheet only
+ * lays out the cards and the catalog. */
+
+.list,
+.catalog {
+  list-style: none;
+  margin: 0 0 var(--sp-2);
+  padding: 0;
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.card {
+  display: grid;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+}
+.card[data-status="ready"] {
+  border-left: 3px solid var(--line-strong);
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.headText {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.name {
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.origin {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  font-weight: 400;
+  color: var(--text-2);
+}
+.status,
+.meta {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.read {
+  display: grid;
+  gap: var(--sp-1);
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--border);
+}
+/* The checkbox row is the switch's touch target (§8): the label is the whole row. */
+.read label {
+  min-height: 44px;
+}
+
+.foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.entry {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px dashed var(--line-strong);
+  background: var(--bg-1);
+}
+.entryText {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+@media (max-width: 800px) {
+  .entry {
+    flex-wrap: wrap;
+  }
+  .entry button,
+  .actions button,
+  .foot button {
+    flex: 1 1 100%;
+  }
+}
+
+/* A messenger connector's recipients (#1746 P2a). */
+.recipients {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--sp-1);
+}
+.recipient label {
+  min-height: 44px;
+}
+
+/* An email connector's typed addresses (#1836): the label and address, then Remove. */
+.address {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-1);
+  min-height: 44px;
+}
+.addressText {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.address button {
+  flex: 0 0 auto;
+}
+@media (max-width: 800px) {
+  .address button {
+    min-height: 44px;
+  }
+}
+
+/* A messenger's notify route (#1841): a label and its control on one line, wrapping on a phone. */
+.notifyRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-2);
+  min-height: 44px;
+}
+.notifyRow > label:first-child:not([class]) {
+  min-width: 10rem;
+}
+.notifyRow select {
+  max-width: 100%;
+  min-height: 44px;
+}
+.notifyTime {
+  width: 7.5rem;
+  min-height: 44px;
+}
+.notifyCap {
+  width: 5rem;
+  min-height: 44px;
+}
+.notifySet {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--sp-1);
+}
+.notifySet label {
+  min-height: 44px;
+}
+.deliveries {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}

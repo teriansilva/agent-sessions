@@ -1,0 +1,33 @@
+# A bundled action manifest (#2248 P2). Data only: every value is a member of a set in
+# actions/manifest.py, an unknown field anywhere refuses it, and `executor` names reviewed code in
+# actions/executors.py (the plugin `actions/call_webhook.py`). The destination is the operator's,
+# saved in the automation; this manifest carries no address.
+contract = 1
+id = "call_webhook"
+label = "Call a webhook"
+category = "web"
+description = "Sends a signed POST with typed fields to an https address you name, and nowhere else."
+effect = "write-external"
+executor = "call_webhook"
+triggers = ["once", "schedule", "manual", "webhook"]
+
+[[inputs]]
+name = "destination"
+type = "destination"
+label = "Address"
+required = true
+
+[[inputs]]
+name = "allow_private"
+type = "yes_no"
+label = "Allow private network addresses"
+
+[[inputs]]
+name = "fields"
+type = "fields"
+label = "Fields"
+
+[[outputs]]
+name = "response"
+type = "response"
+label = "The answer's status"

@@ -1,0 +1,358 @@
+/* The automation wizard's steps (#2221 P2b), inside the app's one WizardShell (#1187). Tokens only,
+ * no radius, no gradient (design.md §9); every target ≥44 px (§8). Nothing here moves: there are no
+ * transitions to gate on reduced motion. The form controls themselves are `automations.module.css`'s. */
+
+/* The page: the WizardShell scrolls inside it. */
+.root {
+  height: 100%;
+  min-height: 0;
+  color: var(--text-1);
+}
+
+.step {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+/* The whole step, as one fieldset so a save in flight disables every control at once. */
+.lock {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.lock:disabled {
+  opacity: 0.7;
+}
+
+/* A choice of cards (when it runs, what it does): a selection is state, lit in the chrome (`--hud`),
+ * never the accent. */
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 8px;
+}
+.card {
+  min-height: 44px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--bg-2);
+  color: var(--text-2);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.card:hover {
+  color: var(--text);
+}
+.card[aria-pressed="true"] {
+  color: var(--text);
+  border-color: var(--hud);
+  background: color-mix(in srgb, var(--hud) 12%, var(--bg-2));
+}
+.card:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.cardTitle {
+  font-weight: 600;
+  font-size: var(--fs-row);
+}
+.cardSub {
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+
+/* One radio per row (the presets), each row a full 44 px target. */
+.radios {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.radios legend {
+  padding: 0;
+  margin-bottom: 4px;
+}
+.radio {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  font-size: var(--fs-row);
+  cursor: pointer;
+}
+.radio input {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  accent-color: var(--accent);
+}
+
+/* A fold: what is advanced stays out of the way until asked for. */
+.fold {
+  border-top: 1px solid var(--line);
+}
+.foldHead {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.foldHead::-webkit-details-marker {
+  display: none;
+}
+.foldHead::before {
+  content: "▸";
+  color: var(--hud-text);
+}
+.fold[open] > .foldHead::before {
+  content: "▾";
+}
+.foldHead:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.foldBody {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px 0 8px;
+}
+
+/* "Why aren't other agents listed?" (#2244): a quiet hint-sized fold under the Agent picker, closed
+ * until asked, one plain line per held API agent. Sentence case: it is a question, not a heading. */
+.why {
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.whyHead {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+  color: var(--text-2);
+}
+.whyHead::-webkit-details-marker {
+  display: none;
+}
+.whyHead::before {
+  content: "▸";
+  color: var(--hud-text);
+}
+.why[open] > .whyHead::before {
+  content: "▾";
+}
+.whyHead:hover {
+  color: var(--text);
+}
+.whyHead:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.whyList {
+  margin: 0;
+  padding: 0 0 4px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  line-height: 1.45;
+}
+
+/* A condition: field, operator, remove; under them its values, one line each (value, type,
+ * remove). On a phone the field takes its own row. */
+.condRow {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1.2fr) 44px;
+  gap: 8px;
+  align-items: end;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.condRow > * {
+  min-width: 0;
+}
+.values {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-left: 12px;
+  border-left: 2px solid var(--line);
+}
+.valueLine {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 9rem) 44px;
+  gap: 8px;
+  align-items: end;
+}
+.valueLine > * {
+  min-width: 0;
+}
+/* An allowed choice: its value and remove. */
+.choiceLine {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 44px;
+  gap: 8px;
+}
+.remove {
+  composes: icon from "../../ui/actionButton.module.css";
+}
+
+/* A template field and where its value comes from. */
+.valueRow {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+  min-width: 0;
+}
+.valueHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.mapFields {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 8px 12px;
+}
+
+/* A segmented choice small enough for a row head: two equal buttons, 44 px tall. */
+.segs {
+  display: inline-grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  border: 1px solid var(--border);
+}
+.seg {
+  min-height: 44px;
+  padding: 6px 10px;
+  border: 0;
+  border-left: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--bg-2);
+  color: var(--text-2);
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.seg:first-child {
+  border-left: 0;
+}
+.seg[aria-pressed="true"] {
+  color: var(--hud-text);
+  background: color-mix(in srgb, var(--hud) 18%, var(--bg-2));
+  box-shadow: inset 0 -2px 0 var(--hud);
+}
+.seg:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+
+/* What holds the step (problems) and what may not match (warnings, amber: a thing to look at). */
+.issues {
+  margin: 0;
+  padding: 0 0 0 var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+}
+.problem {
+  color: var(--danger-text);
+}
+.warning {
+  color: var(--warn-text);
+}
+
+/* The review's summary: the draft in the form's words, before the server's scope. */
+.summary {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 14px;
+  font-size: var(--fs-meta);
+}
+.summary dt {
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.summary dd {
+  margin: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+@media (max-width: 800px) {
+  .condRow {
+    grid-template-columns: minmax(0, 1fr) 44px;
+  }
+  .condRow > :first-child {
+    grid-column: 1 / -1;
+  }
+  .valueLine {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 7rem) 44px;
+  }
+  .mapFields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .summary {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* "Run once per" (#2222): its own block under the conditions, one field per row. */
+.oncePer {
+  display: grid;
+  gap: 8px;
+  margin-top: var(--sp-4, 16px);
+}
+.oncePer h3 {
+  margin: 0;
+}
+.onceRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 44px;
+  gap: 8px;
+}
+.onceRow button {
+  min-height: 44px;
+  min-width: 44px;
+}

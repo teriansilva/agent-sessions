@@ -1,0 +1,120 @@
+import { describe, expect, test } from "vitest";
+import type { ShareCatalogItem, SharePreviewItem } from "../../types/share";
+import { asCatalog, asImports, asPreview, choiceProblem, closure, initialSelection, leftOutText, memoryCountsText, NO_CHOICE, notesRule, previewStates, unshown } from "./shareRules";
+
+const cat = (kind: string, id: string, depends_on: string[] = []): ShareCatalogItem => ({
+  kind,
+  id,
+  title: id,
+  depends_on,
+  exportable: true,
+  reason: null,
+  source: "local",
+});
+
+const item = (
+  key: string,
+  depends_on: string[] = [],
+  status: SharePreviewItem["status"] = "new",
+): SharePreviewItem => {
+  const [kind, id] = key.split(":");
+  return { key, kind, id, title: id, dest: id, status, reason: status === "refused" ? "bad" : null, depends_on, uses: [], files: [] };
+};
+
+describe("export closure", () => {
+  const items = [
+    cat("skill", "a"),
+    cat("skill", "b"),
+    cat("playbook", "p", ["skill:a", "skill:b"]),
+    cat("playbook", "q", ["skill:a"]),
+  ];
+  test("a chosen playbook includes its skills, each naming who needs it", () => {
+    const inc = closure(items, new Set(["playbook:p", "playbook:q"]));
+    expect(inc.get("skill:a")).toEqual(["playbook:p", "playbook:q"]);
+    expect(inc.get("skill:b")).toEqual(["playbook:p"]);
+  });
+  test("a chosen item is never listed as included, and unticking releases the closure", () => {
+    expect(closure(items, new Set(["playbook:p", "skill:a"])).has("skill:a")).toBe(false);
+    expect(closure(items, new Set()).size).toBe(0);
+  });
+});
+
+describe("preview states", () => {
+  const items = [item("skill:a"), item("skill:b"), item("playbook:p", ["skill:a", "skill:b"]), item("playbook:x", [], "refused")];
+  test("all selected: everything but a refused item imports", () => {
+    const s = previewStates(items, new Set(["skill:a", "skill:b", "playbook:p"]));
+    expect(s.get("playbook:p")).toEqual({ state: "import" });
+    expect(s.get("playbook:x")?.state).toBe("refused");
+  });
+  test("deselecting a dependency refuses its dependent with the reason in words", () => {
+    const s = previewStates(items, new Set(["skill:a", "playbook:p"]));
+    expect(s.get("skill:b")).toEqual({ state: "deselected" });
+    const p = s.get("playbook:p");
+    expect(p?.state).toBe("refused");
+    expect(p && "reason" in p && p.reason).toMatch(/needs skill b, which isn't being imported/i);
+  });
+  test("a refused dependency refuses its dependent", () => {
+    const s = previewStates([item("skill:a", [], "refused"), item("playbook:p", ["skill:a"])], new Set(["playbook:p"]));
+    const p = s.get("playbook:p");
+    expect(p && "reason" in p && p.reason).toMatch(/can't be imported/);
+  });
+});
+
+describe("reused copies (#1714 P2)", () => {
+  const items = [item("skill:a", [], "reused"), item("specialist:s", ["skill:a"])];
+  test("a reused skill needs no selection and satisfies its dependents", () => {
+    const s = previewStates(items, new Set(["specialist:s"]));
+    expect(s.get("skill:a")).toEqual({ state: "reused" });
+    expect(s.get("specialist:s")).toEqual({ state: "import" });
+  });
+  test("the starting selection never holds a reused item", () => {
+    const preview = { token: "t", expires_at: "", bundle: {} as never, items };
+    expect([...initialSelection(preview)]).toEqual(["specialist:s"]);
+  });
+});
+
+describe("shape guards (an e2e stub answers {})", () => {
+  test("catalog, imports and preview refuse the wrong shape", () => {
+    expect(asCatalog({})).toBeNull();
+    expect(asCatalog({ items: [{ kind: "skill", id: "a", depends_on: [] }, { bogus: 1 }] })?.items).toHaveLength(1);
+    expect(asImports([])).toEqual({});
+    expect(asImports({ "skill:a": { bundle: "d", revision: 3 } })).toEqual({ "skill:a": { bundle: "d", revision: null } });
+    expect(asPreview({})).toBeNull();
+  });
+});
+
+
+describe("a specialist's choice (#1714 P2)", () => {
+  const spec = { ...item("specialist:s", ["skill:a"]), specialist: { title: "S", summary: "", capacity: 1, skills: ["a"], suggests: { engine: null, model: null, effort: null }, settled: null, settle_reason: null, grade: null } };
+  const facts = (id: string) => ({ ok: { starts: true, skills: true }, noskills: { starts: true, skills: false }, gone: { starts: false, skills: true } } as Record<string, { starts: boolean; skills: boolean }>)[id];
+  test("nothing chosen, an agent that can't start, and skills on an agent without a channel are refused", () => {
+    expect(choiceProblem(spec, NO_CHOICE, facts)).toMatch(/Choose the agent/);
+    expect(choiceProblem(spec, { engine: "gone", model: "default", effort: null }, facts)).toMatch(/can't start/);
+    expect(choiceProblem(spec, { engine: "noskills", model: "default", effort: null }, facts)).toMatch(/cannot load skills/);
+    expect(choiceProblem(spec, { engine: "ok", model: "default", effort: null }, facts)).toBeNull();
+  });
+  test("a specialist without skills may run on an agent without a tool channel", () => {
+    const bare = { ...spec, specialist: { ...spec.specialist, skills: [] } };
+    expect(choiceProblem(bare, { engine: "noskills", model: "default", effort: null }, facts)).toBeNull();
+  });
+});
+
+// ---- project memory (#1714 P4) ------------------------------------------------------------------
+
+describe("project memory", () => {
+  const base = { token: "t", expires_at: "", bundle: { digest: "d", size: 1, format: 1, created_at: "", app_version: "", source: null, items: 1, files: 1 } };
+  const notes = { key: "memory:project", kind: "memory", id: "project", title: "Project memory", dest: null, status: "new" as const, reason: null, depends_on: [], uses: [], files: [{ path: "notes/0001.json", size: 1, withheld: true }] };
+  test("notes need a project with memory on, and say where else they can go", () => {
+    expect(notesRule({ ...base, items: [notes] }).items[0]).toMatchObject({ status: "refused", reason: expect.stringContaining("Library → Memory") });
+    expect(notesRule({ ...base, items: [notes] }, { id: "p", name: "Alpha", enabled: false }).items[0].reason).toContain("Memory is off for Alpha");
+    expect(notesRule({ ...base, items: [notes] }, { id: "p", name: "Alpha", enabled: true }).items[0].status).toBe("new");
+  });
+  test("a withheld file is never counted as unreviewed", () => {
+    expect(unshown(notes)).toBe(0);
+  });
+  test("counts read as words, and only what was left out is said", () => {
+    expect(memoryCountsText({ notes: 1, withheld: 0, quarantined: 0 })).toBe("1 note travels");
+    expect(leftOutText({ withheld: 0, quarantined: 0 })).toBe("");
+    expect(leftOutText({ withheld: 1, quarantined: 2 })).toBe(" 1 note was held back by the secret check; 2 quarantined items stayed here.");
+  });
+});

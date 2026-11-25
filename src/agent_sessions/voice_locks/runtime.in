@@ -1,0 +1,5 @@
+pipecat-ai==1.13.0
+fastapi==0.161.1
+uvicorn==0.54.0
+websockets==17.3
+httpx==0.28.1

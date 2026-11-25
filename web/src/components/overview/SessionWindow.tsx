@@ -1,0 +1,713 @@
+import { Maximize2, Minus, MoreHorizontal, X } from "lucide-react";
+import {
+  memo,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
+import { useNavigate } from "react-router-dom";
+import { useSessionRow } from "../../app/useSessionRow";
+import { engineName, projectColor, relTime } from "../../lib/format";
+import { pathToken } from "../../lib/pathToken";
+import type { TermRole, TermStatus } from "../../lib/termSocket";
+import type { FreshSession } from "../../lib/termUrl";
+import { FilePanel } from "../files/FilePanel";
+import { panelMode } from "../files/filePanelLayout";
+import type { HeadAction } from "../terminal/HeadActions";
+import { HeadFacts } from "../terminal/HeadFacts";
+import type { TemplateDraft } from "../terminal/Compose";
+import { Terminal, type TerminalHandle } from "../terminal/Terminal";
+import {
+  MenuPopover,
+  type MenuAnchor,
+  type RowMenuEntry,
+} from "../sidebar/RowMenu";
+import styles from "./sessionWindow.module.css";
+import { clampRect, type Rect, type Size } from "./workspace";
+import { runsInTerminal, useEngineRoster } from "../../app/engineRoster";
+import { RuntimeGate } from "../terminal/RuntimeGate";
+import { resolveApiModel } from "../../lib/apiModel";
+import { omittedSessionKeys, paneMenuEntries } from "../sessions/paneMenu";
+
+/** One floating session window on the Overview map (#208).
+ *
+ *  A window is the EXISTING session pane with ONE bar on top — `<Terminal>` is mounted with
+ *  the same props the `/s/:engine/:id` route gives it (its own `panelHead` suppressed via
+ *  `suppressHead`, #1109), so there is no second terminal implementation to keep in step. The
+ *  chrome bar carries the facts the pane's bar used to render — through the SAME `HeadFacts`
+ *  component, fed by this window's own row lookup — plus the session title, the action chips
+ *  (which portal in from the pane), and the window controls. Everything else this component
+ *  adds is chrome: drag, resize, focus/raise, and the controls.
+ *
+ *  Three deliberate non-features:
+ *  - **It never calls `fit()`.** Changing the window's CSS size is enough; the pane's own
+ *    ResizeObserver → debounced `refitSoon` (#859) does the refit, which is what stops a drag
+ *    from marching the agent through every intermediate width (the #227/#349 resize storm).
+ *    The file drawer changes nothing about that: it OVERLAYS the pane, so the agent's grid
+ *    never moves when it opens or closes.
+ *  - **It never touches the socket.** Mount/unmount is the whole lifecycle: closing the window
+ *    unmounts `<Terminal>`, which tears its own socket and document-level listeners down.
+ *  - **Window-level exits do not guard an unsaved editor draft.** ✕, Close all and an
+ *    archive-from-elsewhere unmount the pane (and with it the viewer) the way a browser tab
+ *    close would: the viewer's own `beforeunload` guard covers a reload, an in-flight save is
+ *    lease-bound server-side (applied, or its displaced copy retained — never lost, #950), and
+ *    a dirty UNSAVED draft is lost. The full-screen pane's dirty-guard paths (Esc, ✕, router
+ *    nav) are unchanged. Recorded in the PR for #1109. */
+
+/** What the chrome bar must hold besides the action chips: the grip, the four window buttons
+ *  (⋯ – ⤢ ✕), a minimum of title, and the bar's own gaps. The measured facts run is added on
+ *  top (`reservePx`), so the fold is decided against what the bar really has — folding a
+ *  little early is the safe direction; folding late would clip the title. */
+const CHROME_RESERVE = 214;
+
+/** The footer's link word (#1600), from the pane's own socket status. */
+type LinkState = "live" | "linking" | "down" | "idle";
+const LINK_WORD: Record<LinkState, string> = {
+  live: "Live",
+  linking: "Linking",
+  down: "Down",
+  idle: "Ready",
+};
+function linkState(s: TermStatus): LinkState {
+  if (s.kind === "idle") return "idle";
+  if (s.kind === "connected") return "live";
+  return s.kind === "connecting" || s.kind === "reconnecting" ? "linking" : "down";
+}
+
+export const SessionWindow = memo(function SessionWindow({
+  wkey,
+  engine,
+  id,
+  actionKey,
+  title,
+  fresh,
+  rect,
+  bounds,
+  focused,
+  role,
+  onFocus,
+  onMinimize,
+  onClose,
+  onFullScreen,
+  onRect,
+  onRole,
+  onReconcile,
+  onMenu,
+  offMapReason,
+}: {
+  /** The engine-qualified session id. Passed back to every handler so the handlers themselves
+   *  can be the workspace's own stable callbacks rather than per-render closures — that is what
+   *  lets `memo` above actually hold, and a mounted terminal is an expensive thing to re-render
+   *  because the map moved. */
+  wkey: string;
+  engine: string;
+  id: string;
+  /** The id the SERVER should act on — the engine's real id after a converge, the transport key
+   *  before one. Handed straight to `<Terminal rowKey>`, which is the pane's own name for the
+   *  same split (#867): without it a converged window's Recap "Review now" and its Hand off
+   *  gate keep naming the `new-<uuid>` placeholder, i.e. a session that does not exist. */
+  actionKey: string;
+  title: string;
+  /** Fresh-launch params for a window opened straight from the new-session flow (#936). The
+   *  pane freezes them itself (`freshRef`), so this is read once at mount and never again —
+   *  except for `fresh.cwd`, which is the file drawer's directory until a row reports one. */
+  fresh?: FreshSession;
+  rect: Rect;
+  /** The overlay box. Every move/resize is clamped against it, so a window can never be put
+   *  somewhere it cannot be dragged back from. */
+  bounds: Size;
+  focused: boolean;
+  /** Mirrors the pane's own #184/#293 verdict; the pane renders the banner + Take over itself. */
+  role: TermRole;
+  onFocus: (key: string) => void;
+  /** Park this window in the map's tray. Absent → no – button. */
+  onMinimize?: (key: string) => void;
+  onClose: (key: string) => void;
+  onFullScreen: (key: string) => void;
+  onRect: (key: string, rect: Rect) => void;
+  onRole: (key: string, role: TermRole) => void;
+  /** The engine reconciled a `new-` placeholder to its real id (#127/#315). The window's
+   *  transport identity does NOT change — see `WorkspaceWindow.actionKey`. */
+  onReconcile: (key: string, sid: string) => void;
+  /** Open the session menu (#968) for this window's session: from the ⋯ in the chrome, or a
+   *  right-click on the title bar. Stable, like every handler above. #1109 extends it with the
+   *  window's folded pane actions, which the canvas merges into the ONE menu as a labelled
+   *  second group. */
+  onMenu?: (
+    key: string,
+    anchor: MenuAnchor,
+    opener: HTMLElement | null,
+    paneItems?: RowMenuEntry[],
+    /** The session-menu keys to omit (#1329): the twins of the actions the pane offers. */
+    omit?: ReadonlySet<string>,
+  ) => void;
+  /** Set while the session is not on the map (filtered off), which is where the menu reads its
+   *  row from. #1109: this no longer disables the ⋯ — it only withdraws the ROW-DEPENDENT
+   *  session actions. The ⋯ stays enabled and opens the pane actions alone, so a narrow
+   *  filtered window keeps Repaint / Files / text size reachable (Hermes on #1109). The reason
+   *  rides the control's title, so the state still explains itself. */
+  offMapReason?: string;
+}) {
+  // Re-render when the engine roster lands or changes (#853 P4): this renders agent names,
+  // badges or colours, which come from the roster, not from a client-side list.
+  useEngineRoster();
+  const [dragging, setDragging] = useState(false);
+  // The template picker and "Save as template" leave through the ROUTER, never a document
+  // navigation: a full unload could abort the draft flush the composer issues on the way out —
+  // the loss SessionView's callbacks were added to prevent, and this host shares the same
+  // `<Terminal>` (Hermes on #908, round 9). `navigate` is stable, so `memo` still holds.
+  const navigate = useNavigate();
+  const onOpenGallery = useCallback((to: string) => navigate(to), [navigate]);
+  const onSaveAsTemplate = useCallback(
+    (draft: TemplateDraft) => navigate("/templates/new", { state: { prefill: draft } }),
+    [navigate],
+  );
+  // Pointer origin + the rect at gesture start. A ref, not state: it is read inside the move
+  // handler and must never re-render on its own.
+  const gestureRef = useRef<{ px: number; py: number; rect: Rect } | null>(null);
+  const menuBtnRef = useRef<HTMLButtonElement>(null);
+  const headRef = useRef<HTMLDivElement>(null);
+
+  // ---- the chrome's facts run (#1109) --------------------------------------------------------
+  // The same row accessor the pane reads (#867): the sidebar's list first, a per-session lookup
+  // as the fallback. A placeholder (`new-<uuid>`) is never requested — the store refuses the
+  // shape — and until the converge lands the chrome degrades to LED + engine + title, exactly
+  // as a bare pane header does.
+  const row = useSessionRow(`${engine}:${id}`, actionKey);
+  // The LED is THIS browser's attachment state — a fact only the pane's socket knows, so the
+  // pane publishes it (`onTermStatus`, through the status write itself) and the chrome renders
+  // it through the same HeadFacts run. The initial states match on purpose: the pane's opening
+  // "connecting" needs no publish.
+  const [status, setStatus] = useState<TermStatus>({ kind: "connecting" });
+  // Has the pane published a link state at all? A terminal always has one (its opening
+  // "connecting" is never published, by design); a structured pane publishes its own; a pane that
+  // publishes none (the chat pane) gets no LINK word in the footer rather than a made-up one.
+  const [linkSeen, setLinkSeen] = useState(false);
+  // The model an API session runs, by the one resolution the session pane and the recap share
+  // (#1511: observed, else requested, else reported) — only for a session that has no terminal
+  // grid to show.
+  const apiModel = runsInTerminal(engine) === false && row ? resolveApiModel(row).model : null;
+  const onTermStatus = useCallback((s: TermStatus) => {
+    setStatus(s);
+    setLinkSeen(true);
+  }, []);
+  // The terminal's grid for the status footer (#1600), published by the pane on every xterm
+  // resize. A structured (API) pane has no grid, so the footer leaves it out.
+  const [grid, setGrid] = useState<string | null>(null);
+  const onGrid = useCallback((c: number, r: number) => setGrid(`${c}×${r}`), []);
+  // The tint, computed exactly the way the pane's project chip does (#1109). Only a real
+  // project entity tints; a folder-cwd session keeps the plain chrome ground.
+  const proj =
+    row?.project.kind === "project"
+      ? row.project.color || projectColor(row.project.id)
+      : undefined;
+
+  // The facts run's measured width — the fold's reserve is only honest if it knows what the
+  // bar really carries. `flex: none`, so offsetWidth IS its natural width; the container-query
+  // ladder (which hides the time, then the tag) shows up here as real resizes.
+  const factsRef = useRef<HTMLSpanElement>(null);
+  const [factsW, setFactsW] = useState(0);
+  useLayoutEffect(() => {
+    const el = factsRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const measure = () => setFactsW(el.offsetWidth);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // ---- the file drawer (#1109) ---------------------------------------------------------------
+  // The panel needs a real starting directory: the row's cwd, else the fresh launch's (a
+  // window opened from the new-session flow carries one in its record before any row exists —
+  // the same order SessionView resolves). Remember the last cwd KEYED ON THE WINDOW KEY, which
+  // is frozen for life: `fresh` is dropped by nothing here but the row can lag a poll, and the
+  // drawer must not flicker out in the gap. The key matters exactly as in SessionView — an
+  // unkeyed cache would survive into a DIFFERENT session's window.
+  const resolvedCwd = row?.cwd || fresh?.cwd || "";
+  const [seenCwd, setSeenCwd] = useState<{ key: string; cwd: string }>({
+    key: wkey,
+    cwd: resolvedCwd,
+  });
+  if (seenCwd.key !== wkey) setSeenCwd({ key: wkey, cwd: resolvedCwd });
+  else if (resolvedCwd && resolvedCwd !== seenCwd.cwd)
+    setSeenCwd({ key: wkey, cwd: resolvedCwd });
+  const cwd = resolvedCwd || (seenCwd.key === wkey ? seenCwd.cwd : "");
+
+  const [filesOpen, setFilesOpen] = useState(false);
+  const [filesTrigger, setFilesTrigger] = useState<HTMLElement | null>(null);
+  const termRef = useRef<TerminalHandle>(null);
+  // The window BODY is the "pane" for filePanelLayout's dock/sheet math (#1109): the drawer
+  // docks when the body can spare TERM_MIN + MIN_W, and rides as a sheet over it otherwise.
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const [bodyW, setBodyW] = useState(0);
+  useLayoutEffect(() => {
+    const el = bodyRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const measure = () => setBodyW(el.clientWidth);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const filesMode = panelMode(bodyW);
+
+  // ---- the ONE menu (#1109) ------------------------------------------------------------------
+  // The pane's chips portal into the chrome bar and fold (measured, like the pane's own fold)
+  // into THE chrome ⋯ — published through this ref, read at menu-open time.
+  const paneOverflowRef = useRef<HeadAction[]>([]);
+  // The pane's FULL action list (#1329), published beside the overflow. The merged menu omits the
+  // session twins of what the pane REALLY offers; the overflow alone cannot say whether an action the
+  // fold kept on the bar is offered at all. A pane that mounts no head actions (a chat/api runtime)
+  // leaves this empty, so nothing is omitted and the session entries survive.
+  const paneAllRef = useRef<HeadAction[]>([]);
+  // The chrome's chips slot, as state: <Terminal> receives the ELEMENT to portal into, which
+  // only exists after this bar has committed. One extra frame on mount, before any socket has
+  // anything to show.
+  const [actionsSlot, setActionsSlot] = useState<HTMLSpanElement | null>(null);
+  // The off-map pane-only menu, hosted HERE: the canvas menu reads the row from the map, and
+  // off the map there is no row — but the pane actions never needed one.
+  const [paneMenuAnchor, setPaneMenuAnchor] = useState<MenuAnchor | null>(null);
+
+  /** The folded pane actions as menu entries (`paneMenuEntries`, shared with the session pane's
+   *  own menu, #2173), read from the ref at menu-open time. The merged menu DROPS the session
+   *  group's twins of the pane's actions (#1329), so a pane action is named once — as a chip when
+   *  it fits, else here. */
+  const paneMenuItems = useCallback(
+    (opener: HTMLElement | null): RowMenuEntry[] =>
+      paneMenuEntries(paneOverflowRef.current, opener),
+    [],
+  );
+
+  const openMergedMenu = useCallback(
+    (anchor: MenuAnchor) => {
+      const opener = menuBtnRef.current;
+      if (offMapReason) {
+        setPaneMenuAnchor(anchor);
+        return;
+      }
+      // Omit only the session twins of the actions the pane REALLY offers (#1329): read from
+      // the full list, not the overflow, so a pane that mounts no head actions (a chat/api
+      // runtime) or has not committed its fold yet omits nothing.
+      onMenu?.(wkey, anchor, opener, paneMenuItems(opener), omittedSessionKeys(paneAllRef.current));
+    },
+    [offMapReason, onMenu, wkey, paneMenuItems],
+  );
+
+  // A NATIVE listener, not React's `onContextMenu` on the bar (#1329): the pane's action chips
+  // PORTAL into the bar from <Terminal>, so their React parent is the pane — a synthetic event on
+  // a chip bubbles up the REACT tree to the pane and never reaches the bar's handler. The native
+  // listener follows the DOM, so a right-click anywhere on the bar — chip or not — opens the menu.
+  useEffect(() => {
+    const el = headRef.current;
+    if (!el || !onMenu) return;
+    const onContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+      openMergedMenu({ point: { x: e.clientX, y: e.clientY } });
+    };
+    el.addEventListener("contextmenu", onContextMenu);
+    return () => el.removeEventListener("contextmenu", onContextMenu);
+  }, [onMenu, openMergedMenu]);
+
+  const startGesture = (
+    e: ReactPointerEvent<HTMLElement>,
+    kind: "move" | "resize",
+  ) => {
+    // The header is the only drag initiator: a press that lands on ⋯, ⤢, ✕, the grip or one of
+    // the portalled action chips must not start a window drag, or every click on a control
+    // would nudge the window first.
+    if (kind === "move" && (e.target as HTMLElement).closest("button")) return;
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    onFocus(wkey);
+    gestureRef.current = { px: e.clientX, py: e.clientY, rect };
+    setDragging(true);
+    const el = e.currentTarget;
+    el.setPointerCapture(e.pointerId);
+
+    const onMove = (ev: globalThis.PointerEvent) => {
+      const g = gestureRef.current;
+      if (!g) return;
+      const dx = ev.clientX - g.px;
+      const dy = ev.clientY - g.py;
+      onRect(
+        wkey,
+        clampRect(
+          kind === "move"
+            ? { ...g.rect, x: g.rect.x + dx, y: g.rect.y + dy }
+            : { ...g.rect, w: g.rect.w + dx, h: g.rect.h + dy },
+          bounds,
+        ),
+      );
+    };
+    const onUp = () => {
+      gestureRef.current = null;
+      setDragging(false);
+      el.releasePointerCapture?.(e.pointerId);
+      el.removeEventListener("pointermove", onMove);
+      el.removeEventListener("pointerup", onUp);
+      el.removeEventListener("pointercancel", onUp);
+    };
+    el.addEventListener("pointermove", onMove);
+    el.addEventListener("pointerup", onUp);
+    el.addEventListener("pointercancel", onUp);
+  };
+
+  /** Keyboard resize, so the grip is not a pointer-only control. */
+  const onResizeKey = (e: React.KeyboardEvent) => {
+    const step = e.shiftKey ? 40 : 10;
+    const d: Record<string, [number, number]> = {
+      ArrowRight: [step, 0],
+      ArrowLeft: [-step, 0],
+      ArrowDown: [0, step],
+      ArrowUp: [0, -step],
+    };
+    const move = d[e.key];
+    if (!move) return;
+    e.preventDefault();
+    onRect(
+      wkey,
+      clampRect({ ...rect, w: rect.w + move[0], h: rect.h + move[1] }, bounds),
+    );
+  };
+
+  return (
+    <section
+      className={`${styles.win}${focused ? ` ${styles.focused}` : ""}${dragging ? ` ${styles.dragging}` : ""}`}
+      style={{
+        left: rect.x,
+        top: rect.y,
+        width: rect.w,
+        height: rect.h,
+        ...(proj ? ({ "--proj": proj } as CSSProperties) : {}),
+      }}
+      // Capture, so raising happens before the terminal swallows the press for selection.
+      onPointerDownCapture={() => onFocus(wkey)}
+      aria-label={`Session window: ${title}`}
+      data-session-window={`${engine}:${id}`}
+      data-focused={focused ? "true" : "false"}
+      data-tinted={proj ? "true" : undefined}
+    >
+      {/* The armour frame (#1600, the v5 panels' `.cf`): the frame is clipped to the chamfer and
+          paints the 1 px edge, the face is inset by a pixel. The cut corners only ever cut into
+          the bar and the footer — never the work surface. The focused window's glow is a
+          drop-shadow on its own clipped halo UNDER the frame, so no filter ever runs over the
+          terminal. */}
+      <span className={styles.halo} aria-hidden="true" data-window-halo="">
+        <span className={styles.haloShape} />
+      </span>
+      <div className={styles.frame} data-window-frame="">
+        <div className={styles.face}>
+          <div
+            ref={headRef}
+            className={styles.head}
+            onPointerDown={(e) => startGesture(e, "move")}
+            // Right-click opens THE menu at the pointer (#968/#1109): the merged session+pane menu
+            // when the row is on the map, the pane-only menu when it is not. Bound as a NATIVE DOM
+            // listener in the effect above — not React's `onContextMenu` — because the action chips
+            // portal in from the pane and a synthetic event on them never bubbles through this bar.
+            data-window-head
+          >
+            <span className={styles.grip} aria-hidden="true">
+              ⣿
+            </span>
+            <span className={`nj-notch ${styles.notch}`} aria-hidden="true" />
+            {/* The facts run (#1109): the SAME HeadFacts the pane's own bar renders — status LED,
+                engine badge, the session's custom tag, mission tag, project · relative time — fed
+                by this window's row lookup and the pane's published socket status. `flex: none`:
+                the run is a FACT the fold budgets for, and it yields through the container ladder
+                instead of by flex pressure. */}
+            <span ref={factsRef} className={styles.facts} data-window-facts="">
+              {/* The unit's callsign, as the map's cards read it (#1600): ENGINE-ID. */}
+              <span className={styles.callsign} data-window-callsign="">
+                {engineName(engine)}
+                {row?.short_uuid ? `-${row.short_uuid}` : ""}
+              </span>
+              <HeadFacts engine={engine} status={status} row={row} showTag />
+            </span>
+            {/* The pane's own header deliberately omits the title (it is the sidebar's job there);
+                a floating window has no sidebar beside it, so the chrome carries it — and it is
+                the bar's shrink absorber, ellipsising before anything clips. */}
+            <span className={styles.title} title={title}>
+              {title}
+            </span>
+            {/* The pane's action chips portal here from <Terminal> (#1109): the fold measures this
+                bar and overflows into the ONE ⋯ menu below, never into a second chip of its own. */}
+            <span
+              ref={setActionsSlot}
+              className={styles.actionsSlot}
+              data-window-actions-slot=""
+            />
+            {role === "secondary" && (
+              <span className={styles.lock} data-window-readonly>
+                READ-ONLY
+              </span>
+            )}
+            <span className={styles.btns}>
+              {onMenu && (
+                <button
+                  ref={menuBtnRef}
+                  type="button"
+                  className={styles.btn}
+                  aria-label="Session actions"
+                  title={offMapReason ? `Session actions unavailable — ${offMapReason}` : "Session actions"}
+                  aria-haspopup="menu"
+                  onClick={(e) => openMergedMenu({ element: e.currentTarget })}
+                  data-window-menu
+                >
+                  <MoreHorizontal size={13} aria-hidden="true" />
+                </button>
+              )}
+              {onMinimize && (
+                <button
+                  type="button"
+                  className={styles.btn}
+                  aria-label="Minimize window"
+                  title="Minimize window"
+                  onClick={(e) => {
+                    // Keystrokes must not keep landing in a pane nobody can see.
+                    const win = e.currentTarget.closest("section");
+                    const active = document.activeElement;
+                    if (win && active instanceof HTMLElement && win.contains(active)) active.blur();
+                    onMinimize(wkey);
+                  }}
+                  data-window-minimize
+                >
+                  <Minus size={13} aria-hidden="true" />
+                </button>
+              )}
+              <button
+                type="button"
+                className={styles.btn}
+                aria-label="Open full screen"
+                title="Open full screen"
+                onClick={() => onFullScreen(wkey)}
+                data-window-fullscreen
+              >
+                <Maximize2 size={13} aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                className={styles.btn}
+                aria-label="Close window"
+                title="Close window"
+                onClick={() => onClose(wkey)}
+                data-window-close
+              >
+                <X size={13} aria-hidden="true" />
+              </button>
+            </span>
+          </div>
+
+          {/* The off-map pane-only menu (#1109). The session group needs the map's row, which is
+              exactly what this session has lost — so only the pane group renders, and the control's
+              title carries the reason (see the ⋯ above). */}
+          {paneMenuAnchor && (
+            <MenuPopover
+              items={paneMenuItems(menuBtnRef.current)}
+              title={title}
+              label="Pane actions"
+              anchor={paneMenuAnchor}
+              ownerRef={menuBtnRef}
+              // The menu asks for refocus when it closes by Escape or after a keyboard selection
+              // (a menu item unmounts with its menu); honoring it keeps focus off BODY (#1109
+              // review) — the ⋯ that opened the menu is where focus returns to.
+              onClose={(refocus?: boolean) => {
+                setPaneMenuAnchor(null);
+                if (refocus) menuBtnRef.current?.focus();
+              }}
+            />
+          )}
+          <div ref={bodyRef} className={styles.body} data-window-body="">
+            {/* RuntimeGate (#1132): a REMOVED engine renders its attach-only retirement notice
+                instead of the pane — and with the pane gone, its portaled chips (and therefore
+                the Files toggle) never render either, so the drawer below stays unreachable for
+                a retired engine, exactly as before. */}
+            <RuntimeGate
+              engine={engine}
+              id={id}
+              // A structured API pane (#1332) takes the same chrome contract as the terminal below:
+              // no bar of its own, chips portalled into the slot, the fold into the ONE ⋯.
+              host={{
+                rowKey: actionKey,
+                suppressHead: true,
+                headActionsSlot: actionsSlot,
+                headOverflowRef: paneOverflowRef,
+                headAllRef: paneAllRef,
+                headReservePx: factsW + CHROME_RESERVE,
+                headBarRef: headRef,
+                onTermStatus,
+                filesOpen,
+                onToggleFiles: (trigger?: HTMLElement | null) => {
+                  setFilesTrigger(trigger ?? null);
+                  setFilesOpen((open) => !open);
+                },
+                filesDisabledReason: cwd ? undefined : "This session has not reported a folder yet",
+              }}
+            >
+            <Terminal
+              engine={engine}
+              id={id}
+              // Transport (`engine`/`id`) frozen, ACTIONS follow the converge — the same two
+              // identities the record keeps, handed to the pane under the name it already uses.
+              rowKey={actionKey}
+              fresh={fresh}
+              // The converge lands on the WORKSPACE, never on this component's own identity: the
+              // pane must keep its frozen `key` or React would remount it and tear down the socket
+              // of a session that just launched (#127). What changes is the record's `actionKey`.
+              onReconcileId={(sid) => onReconcile(wkey, sid)}
+              onRole={(r) => onRole(wkey, r)}
+              onTermStatus={onTermStatus}
+              onGrid={onGrid}
+              ref={termRef}
+              onOpenGallery={onOpenGallery}
+              onSaveAsTemplate={onSaveAsTemplate}
+              // #1109: the chrome bar IS the pane head here — the pane's own bar is suppressed and
+              // its chips portal into the slot above. The drawer toggle is REAL now: it opens the
+              // file drawer below, and a session still resolving its cwd keeps the VISIBLE
+              // DISABLED trigger a cwd-less session gets (#783), rather than a dead chip.
+              suppressHead
+              headActionsSlot={actionsSlot}
+              headOverflowRef={paneOverflowRef}
+              headAllRef={paneAllRef}
+              headReservePx={factsW + CHROME_RESERVE}
+              headBarRef={headRef}
+              filesOpen={filesOpen}
+              onToggleFiles={(trigger?: HTMLElement | null) => {
+                setFilesTrigger(trigger ?? null);
+                setFilesOpen((open) => !open);
+              }}
+              filesDisabledReason={
+                cwd ? undefined : "This session has not reported a folder yet"
+              }
+            />
+            </RuntimeGate>
+            {filesOpen && cwd && (
+              <div
+                className={filesMode === "dock" ? styles.drawerDock : styles.drawerSheet}
+                data-window-files-drawer={filesMode}
+              >
+                <FilePanel
+                  // MOUNT identity is the WINDOW (wkey), never the action id (Hermes on #1109):
+                  // a fresh launch's `new-` placeholder reconciles to the server id mid-life, and
+                  // a key that follows that AUTOMATIC transition would unmount the panel — and a
+                  // dirty editor with it. The panel's SERVER identity travels separately, as the
+                  // `sessionKey` PROP: it re-points the API calls to the converged id without
+                  // touching the mounted component. The dock↔sheet flip below is also NOT a
+                  // remount: the panel stays mounted across it, so an open viewer and its tree
+                  // state survive a window resize across the boundary.
+                  key={wkey}
+                  sessionKey={actionKey}
+                  // A BACKGROUND window's sheet owns no keys: focus is per-window on the map,
+                  // and Escape/Tab belong to whichever window is active (Hermes on #1109).
+                  sheetKeyScopeActive={focused}
+                  cwd={cwd}
+                  paneWidth={bodyW}
+                  persistOpen={false}
+                  contained={filesMode === "sheet"}
+                  returnFocusTo={filesTrigger}
+                  onClose={() => setFilesOpen(false)}
+                  // Only a terminal pane has the Compose draft a path goes into; an API pane's
+                  // composer takes paths in #1332 Phase 3, so until then it offers no send.
+                  onSendPath={
+                    runsInTerminal(engine) === false
+                      ? undefined
+                      : (path) => {
+                          // The panel knows the path; Compose knows the draft; neither knows the
+                          // other. Same handoff the full-screen pane makes (#792), via this handle.
+                          termRef.current?.insertToken(pathToken(path, cwd));
+                        }
+                  }
+                />
+              </div>
+            )}
+
+          </div>
+          {/* The status footer (#1600): a mono readout in the frame — the link, the grid, the last
+              activity. Not a bar: no controls, nothing to fold; the chrome bar stays the only bar. */}
+          <div
+            className={styles.foot}
+            data-window-foot={runsInTerminal(engine) === false ? "api" : "terminal"}
+          >
+            {(runsInTerminal(engine) !== false || linkSeen) && (
+              <span className={styles.link} data-link={linkState(status)}>
+                Link <span className={styles.sep}>//</span> {LINK_WORD[linkState(status)]}
+              </span>
+            )}
+            {grid && (
+              <>
+                <span className={styles.sep} aria-hidden="true">
+                  ·
+                </span>
+                <span data-window-grid="">{grid}</span>
+              </>
+            )}
+            {/* An API session reads out its model instead of a grid it does not have. */}
+            {apiModel && (
+              <>
+                <span className={styles.sep} aria-hidden="true">
+                  ·
+                </span>
+                <span data-window-model="">{apiModel}</span>
+              </>
+            )}
+            {row?.last_mtime ? (
+              <>
+                <span className={styles.sep} aria-hidden="true">
+                  ·
+                </span>
+                <span>Active {relTime(row.last_mtime)}</span>
+              </>
+            ) : null}
+          </div>
+        </div>
+      </div>
+      {/* The frame's paint over its edge (#1600): the lit rail and two corner ticks, on the bar
+          and the footer only. */}
+      <span className={styles.rail} aria-hidden="true" data-window-rail="" />
+      <span
+        className={`${styles.tick} ${styles.tickTr}`}
+        aria-hidden="true"
+        data-window-tick=""
+      />
+      <span
+        className={`${styles.tick} ${styles.tickBl}`}
+        aria-hidden="true"
+        data-window-tick=""
+      />
+      <button
+        type="button"
+        className={styles.resize}
+        aria-label="Resize window"
+        title="Resize window (arrow keys)"
+        onPointerDown={(e) => startGesture(e, "resize")}
+        onKeyDown={onResizeKey}
+        data-window-resize
+      />
+    </section>
+  );
+}, sameWindowProps);
+
+/** `memo`'s comparison with ONE difference: the rect compares by value (#1688 follow-up).
+ *
+ *  Every pointer move of a window drag hands the layer a new `windows` array, which rebuilds
+ *  every window's fitted rect — new objects with the same numbers for every window but the one
+ *  being dragged. Compared by identity, that re-rendered every open window on every move, and a
+ *  window showing an API session re-parsed all of its Markdown replies each time: the operator's
+ *  trace put that at ~350–550 ms per move. Every other prop stays an identity comparison. */
+function sameWindowProps<P extends { rect: Rect }>(a: Readonly<P>, b: Readonly<P>): boolean {
+  const keys = Object.keys(a) as (keyof P)[];
+  if (keys.length !== Object.keys(b).length) return false;
+  for (const k of keys) {
+    if (k === "rect") continue;
+    if (!Object.is(a[k], b[k])) return false;
+  }
+  const r = a.rect;
+  const q = b.rect;
+  return r === q || (r.x === q.x && r.y === q.y && r.w === q.w && r.h === q.h);
+}

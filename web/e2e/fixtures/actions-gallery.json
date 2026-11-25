@@ -1,0 +1,608 @@
+{
+  "actions": [
+    {
+      "id": "start_mission",
+      "label": "Start a mission",
+      "category": "battlelab",
+      "description": "Creates a mission draft in a project from your instruction; you plan it with HQ before it starts.",
+      "effect": "write-battlelab",
+      "executor": "start_mission",
+      "triggers": [
+        "once",
+        "schedule",
+        "manual"
+      ],
+      "inputs": [
+        {
+          "name": "project_id",
+          "type": "project",
+          "label": "Project",
+          "required": true
+        },
+        {
+          "name": "instruction",
+          "type": "message",
+          "label": "What the mission should do",
+          "required": true
+        },
+        {
+          "name": "autonomy",
+          "type": "choice",
+          "label": "What it may do on its own",
+          "required": false,
+          "choices": [
+            "propose",
+            "dispatch",
+            "dispatch_auto_choose"
+          ]
+        }
+      ],
+      "outputs": [
+        {
+          "name": "mission",
+          "type": "mission",
+          "label": "The mission it created"
+        }
+      ],
+      "requires": [
+        {
+          "id": "project",
+          "words": "a project",
+          "ok": null,
+          "detail": ""
+        }
+      ],
+      "available": true,
+      "used_by": 0
+    },
+    {
+      "id": "start_session",
+      "label": "Start a session",
+      "category": "battlelab",
+      "description": "Starts a new agent session in a folder with your first message: one agent, one message.",
+      "effect": "write-battlelab",
+      "executor": "start_session",
+      "triggers": [
+        "once",
+        "schedule",
+        "manual",
+        "webhook"
+      ],
+      "inputs": [
+        {
+          "name": "engine",
+          "type": "agent",
+          "label": "Agent",
+          "required": true
+        },
+        {
+          "name": "folder",
+          "type": "folder",
+          "label": "Folder",
+          "required": true
+        },
+        {
+          "name": "message",
+          "type": "message",
+          "label": "First message",
+          "required": true
+        },
+        {
+          "name": "bypass",
+          "type": "yes_no",
+          "label": "Skip permission prompts",
+          "required": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "session",
+          "type": "session",
+          "label": "The session it started"
+        }
+      ],
+      "requires": [
+        {
+          "id": "api_agent",
+          "words": "an API agent that can start unattended",
+          "ok": true,
+          "detail": "an API agent is ready",
+          "setup": "agents"
+        }
+      ],
+      "available": true,
+      "used_by": 3
+    },
+    {
+      "id": "send_to_session",
+      "label": "Message a session",
+      "category": "battlelab",
+      "description": "Sends a message to an existing session that is already running.",
+      "effect": "write-battlelab",
+      "executor": "send_to_session",
+      "triggers": [
+        "once",
+        "schedule",
+        "manual",
+        "webhook"
+      ],
+      "inputs": [
+        {
+          "name": "session_key",
+          "type": "session",
+          "label": "Session",
+          "required": true
+        },
+        {
+          "name": "message",
+          "type": "message",
+          "label": "Message",
+          "required": true
+        }
+      ],
+      "outputs": [],
+      "requires": [
+        {
+          "id": "running_session",
+          "words": "a running API session to message",
+          "ok": null,
+          "detail": ""
+        }
+      ],
+      "available": true,
+      "used_by": 1
+    },
+    {
+      "id": "tell_hq",
+      "label": "Tell HQ",
+      "category": "battlelab",
+      "description": "Puts a message in your notifications; HQ may comment on it but never acts on it.",
+      "effect": "notify",
+      "executor": "tell_hq",
+      "triggers": [
+        "once",
+        "schedule",
+        "manual",
+        "webhook"
+      ],
+      "inputs": [
+        {
+          "name": "message",
+          "type": "message",
+          "label": "Message",
+          "required": true
+        }
+      ],
+      "outputs": [
+        {
+          "name": "notification",
+          "type": "notification",
+          "label": "The notification"
+        }
+      ],
+      "requires": [],
+      "available": true,
+      "used_by": 4
+    },
+    {
+      "id": "send_message",
+      "label": "Send a message",
+      "category": "messaging",
+      "description": "Posts to a chat or an inbox you set up: Telegram, Matrix or mail, to a recipient you allowed.",
+      "effect": "notify",
+      "executor": "send_message",
+      "triggers": [
+        "once",
+        "schedule",
+        "manual",
+        "webhook"
+      ],
+      "inputs": [
+        {
+          "name": "connector",
+          "type": "connector",
+          "label": "Send with",
+          "required": true
+        },
+        {
+          "name": "recipient",
+          "type": "recipient",
+          "label": "To",
+          "required": true
+        },
+        {
+          "name": "message",
+          "type": "message",
+          "label": "Message",
+          "required": true
+        }
+      ],
+      "outputs": [
+        {
+          "name": "message",
+          "type": "message",
+          "label": "The message sent"
+        }
+      ],
+      "requires": [
+        {
+          "id": "messenger",
+          "words": "a messenger (Telegram, Matrix or mail) that can send",
+          "ok": true,
+          "detail": "a messenger can send",
+          "setup": "ai-hq"
+        }
+      ],
+      "available": true,
+      "used_by": 0
+    },
+    {
+      "id": "call_webhook",
+      "label": "Call a webhook",
+      "category": "web",
+      "description": "Sends a signed POST with typed fields to an https address you name, and nowhere else.",
+      "effect": "write-external",
+      "executor": "call_webhook",
+      "triggers": [
+        "once",
+        "schedule",
+        "manual",
+        "webhook"
+      ],
+      "inputs": [
+        {
+          "name": "destination",
+          "type": "destination",
+          "label": "Address",
+          "required": true
+        },
+        {
+          "name": "allow_private",
+          "type": "yes_no",
+          "label": "Allow private network addresses",
+          "required": false
+        },
+        {
+          "name": "fields",
+          "type": "fields",
+          "label": "Fields",
+          "required": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "response",
+          "type": "response",
+          "label": "The answer's status"
+        }
+      ],
+      "requires": [],
+      "available": true,
+      "used_by": 0
+    },
+    {
+      "id": "publish_artifact",
+      "label": "Publish an artifact",
+      "category": "files",
+      "description": "Publishes a file or a folder from a project as a private artifact at a stable link.",
+      "effect": "write-battlelab",
+      "executor": "publish_artifact",
+      "triggers": [
+        "once",
+        "schedule",
+        "manual",
+        "webhook"
+      ],
+      "inputs": [
+        {
+          "name": "project_id",
+          "type": "project",
+          "label": "Project",
+          "required": true
+        },
+        {
+          "name": "path",
+          "type": "file",
+          "label": "File or folder",
+          "required": true
+        },
+        {
+          "name": "title",
+          "type": "text",
+          "label": "Title",
+          "required": true
+        },
+        {
+          "name": "why",
+          "type": "text",
+          "label": "Why",
+          "required": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "artifact",
+          "type": "artifact",
+          "label": "The artifact link"
+        }
+      ],
+      "requires": [
+        {
+          "id": "project",
+          "words": "a project",
+          "ok": null,
+          "detail": ""
+        },
+        {
+          "id": "artifacts",
+          "words": "artifacts switched on in Settings",
+          "ok": true,
+          "detail": "artifacts are on",
+          "setup": "artifacts"
+        }
+      ],
+      "available": true,
+      "used_by": 0
+    },
+    {
+      "id": "write_memory",
+      "label": "Write a memory note",
+      "category": "battlelab",
+      "description": "Leaves a short note in a project's memory; BattleLab reviews it before other sessions see it.",
+      "effect": "write-battlelab",
+      "executor": "write_memory",
+      "triggers": [
+        "once",
+        "schedule",
+        "manual",
+        "webhook"
+      ],
+      "inputs": [
+        {
+          "name": "project_id",
+          "type": "project",
+          "label": "Project",
+          "required": true
+        },
+        {
+          "name": "title",
+          "type": "text",
+          "label": "Title",
+          "required": true
+        },
+        {
+          "name": "message",
+          "type": "message",
+          "label": "Note",
+          "required": true
+        }
+      ],
+      "outputs": [
+        {
+          "name": "note",
+          "type": "note",
+          "label": "The note"
+        }
+      ],
+      "requires": [
+        {
+          "id": "project",
+          "words": "a project",
+          "ok": null,
+          "detail": ""
+        },
+        {
+          "id": "memory",
+          "words": "project memory switched on for the project",
+          "ok": null,
+          "detail": ""
+        }
+      ],
+      "available": true,
+      "used_by": 0
+    },
+    {
+      "id": "run_command",
+      "label": "Run a command",
+      "category": "run_locally",
+      "description": "Runs a program you name with the arguments you list, in a project folder, contained and never through a shell.",
+      "effect": "run-local",
+      "executor": "run_command",
+      "triggers": [
+        "once",
+        "schedule",
+        "manual",
+        "webhook"
+      ],
+      "inputs": [
+        {
+          "name": "project_id",
+          "type": "project",
+          "label": "Runs in project",
+          "required": true
+        },
+        {
+          "name": "argv",
+          "type": "arguments",
+          "label": "Program and arguments",
+          "required": true
+        },
+        {
+          "name": "env",
+          "type": "environment",
+          "label": "Environment variables",
+          "required": false
+        },
+        {
+          "name": "timeout_minutes",
+          "type": "duration",
+          "label": "Time limit",
+          "required": false
+        },
+        {
+          "name": "outputs",
+          "type": "output_fields",
+          "label": "Output fields",
+          "required": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "exit_code",
+          "type": "number",
+          "label": "Exit code"
+        },
+        {
+          "name": "fields",
+          "type": "fields",
+          "label": "Typed fields from its last line"
+        }
+      ],
+      "requires": [
+        {
+          "id": "project",
+          "words": "a project",
+          "ok": null,
+          "detail": ""
+        },
+        {
+          "id": "containment",
+          "words": "a contained process scope for commands (systemd-run --user)",
+          "ok": true,
+          "detail": "commands run in their own process scope"
+        }
+      ],
+      "available": true,
+      "used_by": 0
+    },
+    {
+      "id": "run_script",
+      "label": "Run a script",
+      "category": "run_locally",
+      "description": "Runs one script file from a project folder directly, contained, pinned by its checksum, never through a shell.",
+      "effect": "run-local",
+      "executor": "run_script",
+      "triggers": [
+        "once",
+        "schedule",
+        "manual",
+        "webhook"
+      ],
+      "inputs": [
+        {
+          "name": "project_id",
+          "type": "project",
+          "label": "Project",
+          "required": true
+        },
+        {
+          "name": "script",
+          "type": "file",
+          "label": "Script file",
+          "required": true
+        },
+        {
+          "name": "args",
+          "type": "arguments",
+          "label": "Extra arguments",
+          "required": false
+        },
+        {
+          "name": "env",
+          "type": "environment",
+          "label": "Environment variables",
+          "required": false
+        },
+        {
+          "name": "timeout_minutes",
+          "type": "duration",
+          "label": "Time limit",
+          "required": false
+        },
+        {
+          "name": "outputs",
+          "type": "output_fields",
+          "label": "Output fields",
+          "required": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "exit_code",
+          "type": "number",
+          "label": "Exit code"
+        },
+        {
+          "name": "fields",
+          "type": "fields",
+          "label": "Typed fields from its last line"
+        }
+      ],
+      "requires": [
+        {
+          "id": "project",
+          "words": "a project",
+          "ok": null,
+          "detail": ""
+        },
+        {
+          "id": "containment",
+          "words": "a contained process scope for commands (systemd-run --user)",
+          "ok": true,
+          "detail": "commands run in their own process scope"
+        }
+      ],
+      "available": true,
+      "used_by": 0
+    }
+  ],
+  "categories": [
+    {
+      "id": "battlelab",
+      "label": "BattleLab"
+    },
+    {
+      "id": "messaging",
+      "label": "Messaging"
+    },
+    {
+      "id": "files",
+      "label": "Files"
+    },
+    {
+      "id": "run_locally",
+      "label": "Run locally"
+    },
+    {
+      "id": "web",
+      "label": "Web"
+    }
+  ],
+  "effects": [
+    {
+      "id": "read",
+      "level": 1,
+      "label": "Read"
+    },
+    {
+      "id": "notify",
+      "level": 2,
+      "label": "Notify"
+    },
+    {
+      "id": "write-battlelab",
+      "level": 3,
+      "label": "Write · BattleLab"
+    },
+    {
+      "id": "write-external",
+      "level": 4,
+      "label": "Write · external"
+    },
+    {
+      "id": "run-local",
+      "level": 5,
+      "label": "Run · local"
+    }
+  ]
+}

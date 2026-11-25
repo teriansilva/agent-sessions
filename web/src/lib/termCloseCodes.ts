@@ -1,0 +1,16 @@
+/** The terminal socket's deliberate close codes that the PANE reads (#1502), in their own module
+ *  so a component can name them without importing the transport (tests replace `termSocket`). The
+ *  full taxonomy and the retry policy live in `termSocket.ts`. */
+
+/** No such session (or it has ended): the id did not parse, or nothing can attach or launch it. */
+export const CLOSE_NOT_FOUND = 4404;
+/** Not a terminal session: the engine runs as `api` / `chat`, so the page drew the wrong pane. */
+export const CLOSE_NOT_A_TERMINAL = 4415;
+/** #1728: a fresh launch named its family's AUTOMATIC default, which has moved since the form
+ *  showed it. Nothing was launched; the reason names the new default. */
+export const CLOSE_STALE_DEFAULT = 4412;
+/** #1819: the session limit is reached. Nothing was launched; the operator frees a slot and retries. */
+export const CLOSE_SESSION_LIMIT = 4429;
+/** #2064: the session is archived, so it is frozen and nothing may start it. Terminal for the
+ *  client — never retried — and the pane shows its archived state with Unarchive. */
+export const CLOSE_ARCHIVED = 4410;

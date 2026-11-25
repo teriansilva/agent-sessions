@@ -1,0 +1,67 @@
+/* MISSIONS — the route shell (#878, NIGHTJAR #1531 Phase 8): the page's one heading, its read
+ * error and the orchestrator-health banner's place above the console. Everything inside the
+ * console is mission.module.css. Tokens only; the h1 and the error are the NIGHTJAR primitives
+ * (`nj-h1`, `nj-error`), so the route reads like every other section.
+ *
+ * The card grid, the Ask panel, the scan controls and the filters that used to live here went
+ * with the grid (#878), the header's scan vocabulary (#929) and the rail (#948); their rules went
+ * with them (#1573). */
+
+.pulse {
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: var(--sp-4);
+  color: var(--text-1);
+}
+
+/* --- header ------------------------------------------------------------------ */
+.head {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-2);
+}
+.headLeft {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.h1 {
+  composes: nj-h1 from global;
+}
+
+/* --- the overview read failed --------------------------------------------------- */
+/* The NIGHTJAR error line, with its retry beside the words: a read that failed is a state with a
+ * fix, not a dead end. */
+.err {
+  composes: nj-error from global;
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+  margin: 0 0 var(--sp-3);
+}
+.errText {
+  flex: 1 1 18ch;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 800px) {
+  .pulse {
+    padding: var(--sp-2);
+  }
+  /* Shown on a phone too (#2146): the in-page view strip that used to say "Missions" is gone and
+   * the top bar is icon-only here, so the header is what names the view. */
+  .head {
+    margin-bottom: var(--sp-1);
+  }
+}

@@ -1,0 +1,92 @@
+<!doctype html>
+<html data-theme="dark"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>#1951 · consent, refusals, rework, grants</title>
+<link rel="stylesheet" href="base.css">
+<body>
+<h1>#1951 · standing consent, a refused launch, rework exhausted, a lost grant</h1>
+<p class="sub">Frames 5–9 and 3m. Slice A builds frames 1–6; frames 7–9 come with slice B (#1581's step runner). Standing consent is inert until an automation uses it (#1901 / P7b); it is the Commander's tap on server-written scope lines, never model prose, and HQ cannot create or widen it.</p>
+<div class="board">
+
+<div><div class="label">5 · STANDING CONSENT — SCOPE LINES, EXPIRY, REVOKE</div>
+<section class="frame">
+ <div class="mhead"><b>Apply: Data analyst, Example GmbH</b><span class="mstate">PLANNED</span></div>
+ <div class="appr">
+  <div class="thead"><span class="ttl">Standing consent</span><span class="rev">for automations · inert until one uses it</span></div>
+  <p class="tsum">An automation may start this mission from your approval without asking you each time, only within these lines:</p>
+  <ol class="scope">
+   <li>Launch plan revision 6 of “Apply: Data analyst, Example GmbH”, exactly as approved (digest 9f3c41d0…).</li>
+   <li>Only the 7 agent steps listed, on their pinned specialists and models.</li>
+   <li>Only Synthetic Project's 3 equipment items.</li>
+   <li>The floor and the playbook's gates (approve, submit) still ask you on every run.</li>
+   <li>Any change to the plan, playbook, specialists or equipment voids this consent.</li>
+  </ol>
+  <div class="field"><label for="exp">Expires after</label><span class="select" id="exp">7 days ▾</span><span class="code">at most 30 days</span></div>
+  <div class="foot"><span class="digest">scope sha256:4be0c2f9…77d1</span><button class="nj-plate btn ghost">Cancel</button><button class="nj-plate btn primary">Give consent</button></div>
+ </div>
+</section></div>
+
+<div><div class="label">6 · CONSENT STATES — ACTIVE, EXPIRED, REVOKED, VOID</div>
+<section class="frame">
+ <div class="appr">
+  <div class="thead"><span class="ttl">Standing consent</span></div>
+  <ul class="pins">
+   <li class="pin"><span class="k"><span class="stamp live">ACTIVE</span></span><span class="v">Expires 20 Nov 10:45 (in 6 days). Nothing has used it yet.</span><span class="b"><button class="nj-plate btn ghost">Revoke</button></span></li>
+   <li class="pin bad"><span class="k"><span class="stamp warn">EXPIRED</span></span><span class="v">Expired 20 Nov 10:45. A launch from it is refused.</span><span class="b code">approval_expired</span></li>
+   <li class="pin bad"><span class="k"><span class="stamp">REVOKED</span></span><span class="v">You revoked it 15 Nov 08:02. A launch from it is refused.</span><span class="b code">approval_revoked</span></li>
+   <li class="pin bad"><span class="k"><span class="stamp warn">VOID</span></span><span class="v">The plan changed since you consented: <b>cv-writer</b> <s>v2</s> → v3. Give consent again to use it.</span><span class="b code">specialist_version_changed</span></li>
+  </ul>
+  <p class="ann" style="margin:0">Importing a plan, or approving one, never creates standing consent.</p>
+ </div>
+</section></div>
+
+<div><div class="label">7 · A REFUSED LAUNCH — THE ONE DECISION</div>
+<section class="frame">
+ <div class="mhead"><b>Apply: Data analyst, Example GmbH</b><span class="mstate">RUNNING</span></div>
+ <div class="q">
+  <p class="alert"><b>REFUSED</b>Plan changed since you approved it: <strong>cv-writer</strong> changed from v2 to v3. Review again.</p>
+  <ul class="pins">
+   <li class="pin bad"><span class="k">o1.cv · launch</span><span class="v">nothing was reserved, given or started</span><span class="b code">specialist_version_changed</span></li>
+  </ul>
+  <p class="tsum">Running sessions keep running. Each step is asked once per change; this one will not ask again until something else changes.</p>
+  <div class="foot"><button class="nj-plate btn ghost">Stop mission</button><button class="nj-plate btn primary">Review again</button></div>
+ </div>
+</section></div>
+
+<div><div class="label">8 · REWORK EXHAUSTED — ONE QUESTION, NOTHING LAUNCHED</div>
+<section class="frame">
+ <div class="mhead"><b>Apply: Data analyst, Example GmbH</b><span class="mstate">RUNNING</span></div>
+ <div class="q">
+  <p class="alert"><b>QUESTION</b>The review asked for changes a 4th time. Your approval covers 3 rework rounds (review → cv), so nothing was launched.</p>
+  <ul class="pins">
+   <li class="pin"><span class="k">round 4 of 3</span><span class="v">o1.review: “The review passes” not met</span><span class="b code">rework_exhausted</span></li>
+  </ul>
+  <div class="foot"><button class="nj-plate btn ghost">Stop mission</button><button class="nj-plate btn ghost">Waive the review</button><button class="nj-plate btn primary">Open the review</button></div>
+ </div>
+</section></div>
+
+<div><div class="label">9 · A SESSION LOST ITS ACCESS AFTER A RESTART</div>
+<section class="frame">
+ <div class="mhead"><b>Apply: Data analyst, Example GmbH</b><span class="mstate">RUNNING</span></div>
+ <div class="q">
+  <p class="alert"><b>ACCESS REVOKED</b>BattleLab restarted and could not prove o1.cv's session was still live, so its equipment was revoked: secret GITHUB_TOKEN, project memory. The session was not stopped.</p>
+  <p class="tsum">A relaunch gets new grants after a new reservation, and never replays a turn.</p>
+  <div class="foot"><button class="nj-plate btn ghost">Stop session</button><button class="nj-plate btn primary">Relaunch step</button></div>
+ </div>
+</section></div>
+
+<div><div class="label">3m · A STALE BINDING, COMPACT (PHONE WIDTH)</div>
+<section class="frame narrow" style="max-width:390px">
+ <div class="mhead"><b>Apply: Data analyst…</b><span class="mstate">PLANNED</span></div>
+ <div class="appr">
+  <div class="thead"><span class="ttl">Plan approval</span><span class="stamp warn">STALE</span></div>
+  <p class="alert"><b>PLAN CHANGED</b>Plan changed since you approved it: review it again.</p>
+  <ul class="pins">
+   <li class="pin bad"><span class="k">o1.cv</span><span class="v"><b>cv-writer</b> changed: <s>v2</s> → v3</span><span class="b code">specialist_version_changed</span></li>
+   <li class="pin bad"><span class="k">equipment</span><span class="v">added secret <b>STRIPE_KEY</b></span><span class="b code">equipment_changed</span></li>
+  </ul>
+  <div class="foot"><button class="nj-plate btn ghost">Revoke</button><button class="nj-plate btn primary">Review again</button></div>
+ </div>
+</section></div>
+
+</div>
+<script src="head.js"></script>
+</body></html>

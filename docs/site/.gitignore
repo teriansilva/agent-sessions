@@ -1,0 +1,15 @@
+node_modules
+
+# VitePress build artefacts. `dist/` is already ignored repo-wide, but the cache and the
+# generated build stamp are not — stamp.json is written by scripts/build-docs-site into the
+# SNAPSHOT at build time and must never be a tracked file, or a stale commit would claim
+# provenance the build did not compute.
+.vitepress/cache
+.vitepress/dist
+.vitepress/stamp.json
+
+# playwright
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/

@@ -1,0 +1,1174 @@
+/* HQ's cards (#1443 Phase 2, NIGHTJAR #1531): the question, proposal and session cards inside a
+ * turn, and the one block of followed sessions at the thread's end (#1755). A card is a chamfered
+ * plate (`nj-frame-sm` on --bg-2, the rail along its top) that deploys in (fade + rise, never a scale); its head is a
+ * callsign (notch + display caps); its one filled control is the effect (the shared primary); state
+ * is an LED plus a word, never colour alone, and an LED flashes once when its state changes
+ * (`Led`). Tokens only. Overrides of the frame's own custom properties use doubled selectors so
+ * they win whatever order the stylesheets load in. */
+
+.card {
+  composes: nj-frame-sm nj-deploy nj-fade-ok from global;
+  margin-top: var(--sp-3);
+}
+.card.card {
+  --nj-face: var(--bg-2);
+  --nj-edge: var(--line-strong);
+}
+.edgeWarn.edgeWarn {
+  border-left: 3px solid var(--status-degraded);
+}
+.edgeBad.edgeBad {
+  border-left: 3px solid var(--status-down);
+}
+
+/* The callsign head: a hazard notch, the kind in display caps, the state on the right. */
+.head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-display);
+  font-size: var(--fs-label);
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+.head::before {
+  content: "";
+  flex: none;
+  width: 18px;
+  height: 8px;
+  background: repeating-linear-gradient(-45deg, var(--hud) 0 3px, transparent 3px 6px);
+  opacity: 0.85;
+}
+.k {
+  color: var(--text-1);
+}
+.st {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  color: var(--hud-text);
+  letter-spacing: 0.12em;
+}
+
+.body {
+  padding: var(--sp-3);
+}
+.muted {
+  opacity: 0.72;
+}
+.lead {
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-row);
+  line-height: 1.45;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 5px var(--sp-3);
+  margin: 0;
+  font-size: var(--fs-meta);
+}
+.kv dt {
+  padding-top: 3px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.kv dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-1);
+}
+
+.blockLabel {
+  margin: var(--sp-3) 0 var(--sp-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+/* The nudge's exact bytes, verbatim: mono, an inset well, nothing elided. */
+.verbatim {
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--hud-dim);
+  background: var(--surface-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  line-height: 1.55;
+  color: var(--text-1);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.note {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: flex-start;
+  margin-top: var(--sp-2);
+  font-size: var(--fs-label);
+  line-height: 1.45;
+  color: var(--text-2);
+}
+.note svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--text-3);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border-top: 1px solid var(--line);
+}
+/* The effect is the shared primary; the rest are the shared ghost (#967). */
+.cta {
+  composes: primary from "../ui/actionButton.module.css";
+}
+/* A destructive operation's confirm (#1559): the shared danger fill — red only where the tap
+ * destroys (design.md §6, §7). */
+.ctaDanger {
+  composes: dangerFilled from "../ui/actionButton.module.css";
+}
+.ghost {
+  composes: ghost from "../ui/actionButton.module.css";
+}
+/* An answer option: a chamfered plate that lights its edge on hover. */
+.opt {
+  composes: nj-plate from global;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 0 var(--sp-3);
+  border: 1px solid transparent;
+  color: var(--text-1);
+  font-size: var(--fs-meta);
+  cursor: pointer;
+  transition: color var(--t-fast) var(--ease-out);
+}
+.opt.opt {
+  --nj-face: var(--bg-1);
+  --nj-edge: var(--line-strong);
+}
+.opt.opt:hover:not(:disabled) {
+  --nj-edge: var(--hud);
+}
+.cta:disabled,
+.ctaDanger:disabled,
+.ghost:disabled,
+.opt:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+/* Focus is the inset reticle (docs/design.md v2 §6): the chamfer would clip an outer ring. */
+.opt:focus-visible,
+.freeRow input:focus-visible,
+.switchRow input:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+
+.opts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+.freeRow {
+  display: flex;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+/* The free-text answer: the `nj-field` look (composes cannot reach a descendant selector). */
+.freeRow input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border);
+  background: var(--bg-1);
+  color: var(--text-1);
+  font-size: var(--fs-meta);
+  transition: border-color var(--t-fast) var(--ease-out);
+}
+.freeRow input:hover {
+  border-color: var(--hud-dim);
+}
+.freeRow input:focus {
+  border-color: var(--hud);
+}
+
+/* The outcome row replaces the actions once decided: an LED (the `Led` primitive, which flashes
+ * once on a change) and the outcome's word in its AA text tone. */
+.outcome {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border-top: 1px solid var(--line);
+}
+.ow {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.ow_ok {
+  color: var(--ok-text);
+}
+.ow_warn {
+  color: var(--warn-text);
+}
+.ow_bad {
+  color: var(--danger-text);
+}
+.ow_neutral {
+  color: var(--text-2);
+}
+.od {
+  flex: 1 1 140px;
+  min-width: 0;
+  font-size: var(--fs-label);
+  color: var(--text-2);
+}
+
+/* The session card's permission-bypass control: a real switch, a word for its state, and what it
+ * means — never colour alone. The whole row is the target, at the 44px floor. */
+.switchRow {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  min-height: 44px;
+  margin-top: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line);
+  cursor: pointer;
+}
+.switchRow input {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+.switchText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.switchName {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+.switchRisk {
+  font-size: var(--fs-label);
+  line-height: 1.4;
+  color: var(--text-2);
+}
+.ways {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-left: auto;
+}
+
+/* The sessions a conversation follows, as one block at the thread's end (#1755): a card with a
+ * row per session, hairlines between rows. Title first; the state word, detail, time and change
+ * count on the mono meta line; Open and Unfollow on the right (below the text at ≤800px). */
+.follows.follows {
+  margin-top: var(--sp-3);
+}
+.follow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border-top: 1px solid var(--line);
+}
+.head + .follow {
+  border-top: 0;
+}
+.followBody {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 200px;
+  min-width: 0;
+}
+.followTitle {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--fs-meta);
+  color: var(--text-1);
+}
+.followMeta {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+}
+.ow_hud {
+  color: var(--hud-text);
+}
+
+/* An `assemble` card's team (#2130): the count line, then one row per step in plan order. */
+.teamHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px var(--sp-3);
+  margin: var(--sp-3) 0 var(--sp-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.teamLbl {
+  color: var(--text-3);
+}
+.teamCnt {
+  white-space: nowrap;
+}
+.teamCnt b {
+  font-weight: 600;
+  color: var(--text-1);
+}
+.team {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+}
+/* A plan past ~8 rows scrolls INSIDE the card: the card and its actions never grow past it. The
+ * region wraps the list, so the list keeps its own semantics. */
+.teamScroll {
+  max-height: 368px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+/* Focus is the inset reticle (docs/design.md v2 §6), as on the card's other focusables. */
+.teamScroll:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.teamRow {
+  display: grid;
+  grid-template-columns: 22px 104px minmax(0, 1fr) minmax(0, 1.55fr);
+  grid-template-areas: "n st step pick";
+  gap: 2px var(--sp-3);
+  align-items: start;
+  padding: 7px var(--sp-3);
+  border-top: 1px solid var(--line);
+}
+.teamRow:first-child {
+  border-top: 0;
+}
+.teamN {
+  grid-area: n;
+  padding-top: 2px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+/* The state is a marker + a WORD, never colour alone. */
+.teamState {
+  grid-area: st;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-top: 2px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.teamMk {
+  flex: none;
+  width: 7px;
+  height: 7px;
+}
+.teamS_assembled {
+  color: var(--hud-text);
+}
+.teamS_assembled .teamMk {
+  background: var(--hud);
+}
+.teamS_kept {
+  color: var(--text-2);
+}
+.teamS_kept .teamMk {
+  border: 1px solid var(--text-2);
+}
+.teamS_unassigned {
+  color: var(--warn-text);
+}
+.teamStep {
+  grid-area: step;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.teamPick {
+  grid-area: pick;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.teamSpec {
+  min-width: 0;
+  font-size: var(--fs-row);
+  line-height: 1.4;
+  font-weight: 500;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.teamVer {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--line-strong);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  color: var(--text-2);
+  vertical-align: 1px;
+  white-space: nowrap;
+}
+.teamModel,
+.teamWhy {
+  min-width: 0;
+  font-size: var(--fs-label);
+  line-height: 1.45;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.teamModel {
+  font-family: var(--font-mono);
+}
+.teamNone {
+  font-size: var(--fs-row);
+  color: var(--text-1);
+}
+/* A stale card says whose rows these are, above them. */
+.staged {
+  margin: var(--sp-2) 0 0;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--status-degraded);
+  font-size: var(--fs-label);
+  line-height: 1.45;
+  color: var(--text-2);
+}
+.staged b {
+  color: var(--text-1);
+  font-weight: 600;
+}
+
+/* ≤800px: actions stack full width at the 44px floor; cards take the column. */
+@media (max-width: 800px) {
+  .actions {
+    flex-direction: column;
+  }
+  .actions > * {
+    width: 100%;
+    justify-content: center;
+  }
+  .kv {
+    grid-template-columns: 64px minmax(0, 1fr);
+  }
+  .teamRow {
+    grid-template-columns: 20px minmax(0, 1fr);
+    grid-template-areas: "n st" ". step" ". pick";
+    gap: 3px var(--sp-2);
+    padding: 8px 10px;
+  }
+  .teamPick {
+    margin-top: 2px;
+  }
+  .teamScroll {
+    max-height: 420px;
+  }
+}
+/* A followed session's row (#1443 Phase 4): not a state, so a flat HUD square, never an LED. */
+.bullet {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  background: var(--hud);
+}
+
+/* A Library card's content (#1611): each file a framed block under a mono path head, the text in
+ * the verbatim well, folded after 12 lines behind a full-width "Show all" row (44px). A diff keeps
+ * its + and − signs: added and removed differ by sign first, tone second. */
+.file {
+  margin-top: var(--sp-2);
+  border: 1px solid var(--line);
+}
+.file .verbatim {
+  border: 0;
+  border-left: 2px solid var(--hud-dim);
+}
+.fileHead {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+  padding: 6px var(--sp-3);
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.08em;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.fileLines {
+  margin-left: auto;
+  flex: none;
+  color: var(--text-3);
+}
+.more {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 44px;
+  padding: 0 var(--sp-3);
+  border: 0;
+  border-top: 1px solid var(--line);
+  background: transparent;
+  color: var(--accent-text);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-align: left;
+  cursor: pointer;
+}
+.more:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.diff {
+  background: var(--surface-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.diff > div {
+  padding: 0 var(--sp-3);
+  color: var(--text-1);
+}
+.diff > .hunk {
+  color: var(--text-3);
+}
+.diff > .add {
+  color: var(--ok-text);
+  background: color-mix(in srgb, var(--status-up) 10%, transparent);
+}
+.diff > .del {
+  color: var(--danger-text);
+  background: color-mix(in srgb, var(--status-down) 10%, transparent);
+}
+.scope {
+  margin: var(--sp-2) 0 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--line);
+}
+.scope li {
+  padding: 7px var(--sp-3);
+  border-top: 1px solid var(--line);
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.scope li:first-child {
+  border-top: 0;
+}
+.statusLine {
+  margin-top: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--hud-dim);
+  font-size: var(--fs-label);
+  color: var(--text-2);
+}
+.libraryLink {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent-text);
+}
+/* A card's Open mission (#1950): the same link, pushed to the end of its row. */
+.missionLink {
+  margin-left: auto;
+}
+.libraryLink:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
+
+/* A secret's write-only value (#1786): typed on the card, never shown again. The `nj-field` look,
+ * as the free-text answer. */
+.secretField {
+  display: grid;
+  gap: var(--sp-1);
+  margin-top: var(--sp-2);
+  font-size: var(--fs-label);
+  color: var(--text-2);
+}
+.secretField input {
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border);
+  background: var(--bg-1);
+  color: var(--text-1);
+  font-size: var(--fs-meta);
+  transition: border-color var(--t-fast) var(--ease-out);
+}
+.secretField input:hover {
+  border-color: var(--hud-dim);
+}
+.secretField input:focus {
+  border-color: var(--hud);
+}
+.secretField input:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.secretFile {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--text-1);
+}
+
+/* A mission card's flow (#2152, mockup B/B2): the steps in order, who does each, and an agent
+   step's role (skills + MINIMUM grade). Tokens only, square, hairline rows. */
+.flowHead {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  align-items: baseline;
+  justify-content: space-between;
+}
+.flowChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--hud);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--hud-text);
+}
+.flowChip i {
+  width: 6px;
+  height: 6px;
+  background: var(--accent);
+}
+.flowTitle {
+  margin: var(--sp-1) 0 var(--sp-2);
+  font-weight: 600;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.flowDim {
+  font-weight: 400;
+  color: var(--text-2);
+}
+.flowSteps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--line);
+}
+.flowStep {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  gap: var(--sp-3);
+  align-items: baseline;
+  padding: var(--sp-2) 0;
+  border-bottom: 1px solid var(--line);
+}
+.flowN {
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  font-weight: 700;
+  color: var(--text-3);
+}
+.flowWhat {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+}
+.flowStepTitle {
+  font-weight: 600;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.flowBrief {
+  font-size: var(--fs-label);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.flowRole,
+.flowRoleOp {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  line-height: 1.4;
+  text-align: right;
+  color: var(--hud-text);
+  overflow-wrap: anywhere;
+}
+.flowRoleOp {
+  color: var(--accent-text);
+}
+@media (max-width: 700px) {
+  .flowStep {
+    grid-template-columns: 22px minmax(0, 1fr);
+  }
+  .flowRole,
+  .flowRoleOp {
+    grid-column: 2;
+    text-align: left;
+  }
+}
+
+/* A specialist card (#1938). "The specialist, in full": one hairline row per field, in a fixed
+ * order, the label in the card's own mono column. */
+.spec {
+  margin: 0;
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+}
+.specRow {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 2px var(--sp-3);
+  align-items: baseline;
+  padding: 8px var(--sp-3);
+  border-top: 1px solid var(--line);
+}
+.specRow:first-child {
+  border-top: 0;
+}
+.specRow dt {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  line-height: 1.5;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.specRow dd {
+  margin: 0;
+  min-width: 0;
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.specHint {
+  display: block;
+  font-size: var(--fs-label);
+  color: var(--text-2);
+}
+/* The grade is derived: a chip (the Specialists page's own), never a control. */
+.specGrade {
+  composes: grade from "../specialists/specialists.module.css";
+  margin-right: var(--sp-2);
+}
+.specUngraded {
+  composes: ungraded from "../specialists/specialists.module.css";
+  margin-right: var(--sp-2);
+}
+.specSkills {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.specSkills li {
+  padding: 0 var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  line-height: 1.55;
+  color: var(--text-1);
+  white-space: pre-wrap;
+}
+.specRev {
+  color: var(--text-2);
+}
+.specCap {
+  font-weight: 600;
+}
+/* An edit: how many fields change, then every changed row first. A changed row keeps its sign
+ * (− before, + after) and the diff's own tones; an unchanged one is quiet, never faded. */
+.specCounts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px var(--sp-3);
+  margin: var(--sp-3) 0 var(--sp-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  line-height: 1.5;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.specCounts b {
+  font-weight: 600;
+  color: var(--text-1);
+}
+.specChg {
+  border-left: 2px solid var(--hud);
+}
+.specChg dt {
+  color: var(--hud-text);
+}
+.specSame dd,
+.specSame .specSkills li {
+  color: var(--text-2);
+}
+.specD {
+  padding: 0 var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+.specSign {
+  display: inline-block;
+  width: 2ch;
+}
+.specD.add,
+.specSkills .add {
+  color: var(--ok-text);
+  background: color-mix(in srgb, var(--status-up) 10%, transparent);
+}
+.specD.del,
+.specSkills .del {
+  color: var(--danger-text);
+  background: color-mix(in srgb, var(--status-down) 10%, transparent);
+}
+.specSkills .specKeep {
+  color: var(--text-2);
+}
+/* A pin that moved since the card was made: `!` and what the Library holds now. */
+.specSkills .specWarn,
+.specSkills .specWarn .specRev {
+  color: var(--warn-text);
+}
+.specSkills .specWarn {
+  background: color-mix(in srgb, var(--status-degraded) 10%, transparent);
+}
+/* A playbook card's "Specialists it relies on": the team rows, a state word per row. The detail
+ * sits under the name, so the list reads the same in the narrow HQ sidebar as on the HQ page. */
+.relies .teamRow {
+  grid-template-columns: 22px 148px minmax(0, 1fr);
+  grid-template-areas: "n st step" ". . pick";
+  align-items: baseline;
+}
+.relies .teamState {
+  white-space: nowrap;
+}
+.reliesName {
+  font-family: inherit;
+  font-size: var(--fs-row);
+  font-weight: 500;
+}
+/* What a tap does NOT do, said quietly under the content. */
+.quiet {
+  margin-top: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--hud-dim);
+  font-size: var(--fs-label);
+  line-height: 1.45;
+  color: var(--text-2);
+}
+/* "Ask HQ again" on an out-of-date card: at the row's end, the full width on a phone. */
+.askAgain {
+  margin-left: auto;
+}
+/* Several specialist cards in one turn: each folds to one row (ordinal, title, what it runs on,
+ * capacity). The row is the card's only control until it is open. */
+.fold {
+  margin-top: var(--sp-2);
+}
+.foldRow {
+  display: grid;
+  grid-template-columns: 22px 16px minmax(0, 0.8fr) minmax(0, 1.7fr) auto auto;
+  gap: 2px var(--sp-3);
+  align-items: center;
+  width: 100%;
+  min-height: 48px;
+  padding: 6px var(--sp-3);
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.foldRow:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.foldRow[aria-expanded="true"] {
+  border-bottom: 1px solid var(--line);
+}
+.foldN {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.foldChevron {
+  color: var(--hud-text);
+  transition: transform var(--t-fast) var(--ease-out);
+}
+.foldRow[aria-expanded="true"] .foldChevron {
+  transform: rotate(90deg);
+}
+.foldTitle {
+  min-width: 0;
+  font-size: var(--fs-row);
+  font-weight: 600;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.foldMeta,
+.foldCap {
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  line-height: 1.4;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.foldCap {
+  white-space: nowrap;
+}
+.foldGo {
+  min-width: 56px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  text-align: right;
+  color: var(--accent-text);
+}
+.foldOutcome {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+@media (max-width: 800px) {
+  .specRow {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 8px 10px;
+  }
+  .relies .teamRow {
+    grid-template-columns: 20px minmax(0, 1fr);
+    grid-template-areas: "n st" ". step" ". pick";
+  }
+  .askAgain {
+    width: 100%;
+    margin-left: 0;
+    justify-content: center;
+  }
+  .foldRow {
+    grid-template-columns: 20px 14px minmax(0, 1fr) auto;
+    grid-template-areas: "n ch t go" ". . m go" ". . c go";
+    min-height: 64px;
+    padding: 8px 10px;
+  }
+  .foldN {
+    grid-area: n;
+  }
+  .foldChevron {
+    grid-area: ch;
+  }
+  .foldTitle {
+    grid-area: t;
+  }
+  .foldMeta {
+    grid-area: m;
+  }
+  .foldCap {
+    grid-area: c;
+  }
+  .foldGo {
+    grid-area: go;
+  }
+}
+/* #2251: the Changed line on a card that replaced another — that card's trace once it is gone. */
+.changed {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--line);
+  background: var(--hud-tint);
+  font-size: var(--fs-row);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.changed b {
+  flex: none;
+  font: 600 var(--fs-micro) / 1 var(--font-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--hud-text);
+}
+.changed s {
+  color: var(--text-3);
+}
+/* A skill imported from a repository (#2145): the pinned source in mono, a fixed-layout files
+ * table (a long third-party path wraps anywhere inside its cell, never ellipsized: every byte of a
+ * path is part of what the operator reviews), flags in words, and the caution note on the
+ * degraded edge, never red: nothing failed. */
+.mono {
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+}
+.ftab {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  border: 1px solid var(--line);
+  font-size: var(--fs-label);
+}
+.ftab th {
+  padding: 6px var(--sp-3);
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 400;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  text-align: left;
+  color: var(--text-3);
+}
+.ftab td {
+  padding: 6px var(--sp-3);
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+  font-family: var(--font-mono);
+  color: var(--text-1);
+}
+.ftab tr:last-child td {
+  border-bottom: 0;
+}
+.ftab .num {
+  width: 76px;
+  white-space: nowrap;
+  text-align: right;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.pathCell {
+  overflow-wrap: anywhere;
+}
+.flag,
+.flagWarn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: var(--sp-2);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.flagWarn {
+  color: var(--warn-text);
+}
+.caution {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: flex-start;
+  margin-top: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 3px solid var(--status-degraded);
+  background: var(--surface-3);
+  font-size: var(--fs-label);
+  line-height: 1.45;
+  color: var(--text-2);
+}
+.caution svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--warn-text);
+}
+.caution strong {
+  color: var(--text-1);
+}
+.caution code {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+@media (max-width: 800px) {
+  .ftab .num {
+    width: 64px;
+    padding-inline: var(--sp-2);
+  }
+}

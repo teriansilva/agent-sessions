@@ -1,0 +1,26 @@
+/* The shell's own states (#1531 Phase 4): a lazy route that is still loading, and one that failed
+ * to load. Centred in the pane, NIGHTJAR loader / alert panel. Tokens only. */
+.state {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: var(--sp-3);
+  height: 100%;
+  padding: var(--sp-5);
+  text-align: center;
+}
+.failed {
+  composes: nj-frame from global;
+  --nj-edge: color-mix(in srgb, var(--status-down) 60%, transparent);
+  max-width: min(440px, 100%);
+  padding: var(--sp-4) var(--sp-5);
+  display: grid;
+  gap: var(--sp-3);
+  justify-items: center;
+  border-top-color: var(--status-down);
+  color: var(--text-1);
+  font-size: var(--fs-body);
+}
+.reload {
+  composes: primary from "../components/ui/actionButton.module.css";
+}

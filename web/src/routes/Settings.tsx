@@ -1,0 +1,1910 @@
+import { HqSettings } from "./HqSettings";
+import { ResourceLimits } from "../components/settings/ResourceLimits";
+import encodeQR from "@paulmillr/qr";
+import {
+  Archive,
+  ArrowLeft,
+  ChevronRight,
+  Code2,
+  Coffee,
+  Copy,
+  Download,
+  KeyRound,
+  LogOut,
+  Mail,
+  RefreshCw,
+  ShieldCheck,
+  Sparkles,
+  Trash2,
+} from "lucide-react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import {
+  Link,
+  Navigate,
+  useLocation,
+  useParams,
+} from "react-router-dom";
+import { useConfig, useConfigRefresh } from "../app/config";
+import { ProfileSettings } from "./ProfileSettings";
+import { EnableLoginDetails } from "../components/EnableLoginDetails";
+import { api, ApiError } from "../lib/api";
+import {
+  ANALYTICS_DOCS_URL,
+  consentSaveError,
+  saveAnalyticsConsent,
+} from "../lib/analyticsConsent";
+import { humanBytes, humanDuration } from "../lib/format";
+import { AiActivityPanel } from "./AiActivityPanel";
+import { AppearanceApi } from "./AppearanceApi";
+import { AppearanceInterface } from "./AppearanceInterface";
+import { AppearanceTerminal } from "./AppearanceTerminal";
+import { AgentDefaultsPage, AgentDetail, AgentsRoster } from "./AgentsSettings";
+import { AiEndpointSetup } from "./AiEndpointSetup";
+import { AiReviewSettings } from "./AiReviewSettings";
+import { AutoSortSettings } from "./AutoSortSettings";
+import { ClustersSettings } from "./ClustersSettings";
+import { PromptsSettings } from "./PromptsSettings";
+import { ArchiveMissionsCard, PruneCard } from "./MaintenanceCards";
+import { ConfirmDialog } from "../components/templates/ConfirmDialog";
+import type {
+  AnalyticsState,
+  SystemInfo,
+  TwoFactorEnrollment,
+  UpdateInfo,
+  UpdateSettings,
+} from "../types/api";
+import {
+  ENDPOINT_LED_CLASS,
+  ENDPOINT_LED_LABEL,
+  useEndpointLed,
+} from "../lib/aiEndpointStatus";
+import { useIsMobile } from "../lib/useIsMobile";
+import {
+  AGENT_DEFAULTS_SEGMENT,
+  agentPath,
+  DEFAULT_SETTINGS_SECTION,
+  isSettingsSection,
+  legacySettingsTarget,
+  SETTINGS_GROUPS,
+  SETTINGS_PATH,
+  SETTINGS_SECTIONS,
+  settingsGroup,
+  settingsPath,
+  settingsSection,
+  type SettingsGroupId,
+  type SettingsSectionId,
+} from "./settingsTabs";
+import styles from "./Settings.module.css";
+import { UpdateProgressPanel } from "../components/updates/UpdateProgressPanel";
+import { UpdateWhatsNew } from "../components/updates/UpdateWhatsNew";
+import { SOURCE_URL } from "../lib/links";
+import { SESSIONS_PATH } from "../lib/routes";
+import { whatsNewLabel } from "../whatsnew/due";
+import { useOpenWhatsNew } from "../whatsnew/WhatsNewContext";
+import { engineLabel, useEngineRoster } from "../app/engineRoster";
+import { SharingSettings } from "../components/shares/SharingSettings";
+import { PeersSettings } from "../components/federation/PeersSettings";
+import { ArtifactsSettings } from "../components/artifacts/ArtifactsSettings";
+import { BrandLockup } from "../components/brand/Brand";
+
+const BUY_ME_A_COFFEE = "https://buymeacoffee.com/teriansilva";
+// AGPL-3.0 §13: a network-served build must offer its users the Corresponding Source. The
+// About panel already links SOURCE_URL; naming the license next to it makes the offer legible
+// rather than implied — and tells an operator running a *modified* build what they owe their
+// own users (repoint both at your fork).
+const LICENSE = "AGPL-3.0-or-later";
+const LICENSE_URL = `${SOURCE_URL}/blob/main/LICENSE`;
+// Contact address kept out of the markup as a literal string (basic spam-scraper
+// defence): assembled from the user + domain parts at runtime, so neither the served
+// HTML nor a naive grep for the joined address finds it.
+const CONTACT_USER = "contact";
+const CONTACT_DOMAIN = "superstatus.io";
+const contactAddr = () => `${CONTACT_USER}@${CONTACT_DOMAIN}`;
+
+/** One group's sections, in registry order. A group holding a single section of the same name
+ *  (About) renders without a group label — "ABOUT / About" would say the same word twice. */
+function groupSections(group: SettingsGroupId) {
+  const items = SETTINGS_SECTIONS.filter((s) => s.group === group);
+  const label = settingsGroup(group).label;
+  const showLabel = !(items.length === 1 && items[0].label === label);
+  return { items, label, showLabel };
+}
+
+/** The Endpoint & model LED (#956). Status, not decoration: it reports the last check of the
+ *  SAVED connection (`useEndpointLed`), and it carries its state as an accessible label so colour
+ *  is never the only signal (docs/design.md §8). */
+function EndpointLed() {
+  const led = useEndpointLed(useConfig()?.ai_review);
+  return (
+    <span
+      className={`hud-led ${ENDPOINT_LED_CLASS[led]} ${styles.navLed}`}
+      role="img"
+      aria-label={`AI endpoint: ${ENDPOINT_LED_LABEL[led]}`}
+      title={ENDPOINT_LED_LABEL[led]}
+    />
+  );
+}
+
+/** The desktop settings sidebar (#956): grouped links, one per section, rendered from the
+ *  registry. Links, not an ARIA tablist — each section is its own URL, so this is navigation
+ *  between pages and the browser's own Tab order and history apply. The router state (the #155
+ *  `returnTo`) rides along, so the back link survives every section switch. */
+function SettingsNav({
+  active,
+  agentId = null,
+}: {
+  active: SettingsSectionId;
+  /** On an agent's own page (#1128): the agent, listed under All agents as the current page. */
+  agentId?: string | null;
+}) {
+  const location = useLocation();
+  return (
+    <nav className={styles.nav} aria-label="Settings">
+      {SETTINGS_GROUPS.map((g) => {
+        const { items, label, showLabel } = groupSections(g.id);
+        return (
+          <div key={g.id} className={styles.navGroup}>
+            {showLabel && (
+              <p className={styles.navGroupLabel} id={`settings-nav-${g.id}`}>
+                {label}
+              </p>
+            )}
+            <ul
+              className={styles.navList}
+              {...(showLabel
+                ? { "aria-labelledby": `settings-nav-${g.id}` }
+                : { "aria-label": label })}
+            >
+              {items.map((s) => (
+                <li key={s.id}>
+                  <Link
+                    to={settingsPath(s.id)}
+                    state={location.state}
+                    className={styles.navLink}
+                    aria-current={
+                      s.id === active && !agentId ? "page" : undefined
+                    }
+                  >
+                    <span data-section-label="">{s.label}</span>
+                    {s.id === "ai-endpoint" && <EndpointLed />}
+                  </Link>
+                  {s.id === "agents" && agentId && (
+                    <Link
+                      to={agentPath(agentId)}
+                      state={location.state}
+                      className={`${styles.navLink} ${styles.navSub}`}
+                      aria-current="page"
+                    >
+                      <span>· {engineLabel(agentId)}</span>
+                    </Link>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        );
+      })}
+    </nav>
+  );
+}
+
+/** The active model and the LED on the phone index's Endpoint & model row (#956). */
+function IndexEndpointMeta() {
+  const model = useConfig()?.ai_review?.model;
+  return (
+    <>
+      {model && <small className={styles.indexModel}>{model}</small>}
+      <EndpointLed />
+    </>
+  );
+}
+
+/** The phone settings index (#956): a phone has no room for a sidebar, so bare `/settings` is
+ *  the grouped list and each section opens full-width with a back link to it. */
+function SettingsIndex({ returnTo }: { returnTo: string }) {
+  const location = useLocation();
+  return (
+    <div className={styles.wrap}>
+      <header className={styles.head}>
+        <Link
+          to={returnTo}
+          className={styles.back}
+          aria-label="Back to sessions"
+        >
+          <ArrowLeft size={18} />
+        </Link>
+        <h1>Settings</h1>
+      </header>
+      <nav className={styles.index} aria-label="Settings">
+        {SETTINGS_GROUPS.map((g) => {
+          const { items, label, showLabel } = groupSections(g.id);
+          return (
+            <div key={g.id} className={styles.indexGroup}>
+              {showLabel && (
+                <p
+                  className={styles.indexGroupLabel}
+                  id={`settings-index-${g.id}`}
+                >
+                  {label}
+                </p>
+              )}
+              <ul
+                className={styles.indexList}
+                {...(showLabel
+                  ? { "aria-labelledby": `settings-index-${g.id}` }
+                  : { "aria-label": label })}
+              >
+                {items.map((s) => (
+                  <li key={s.id}>
+                    <Link
+                      to={settingsPath(s.id)}
+                      state={location.state}
+                      className={styles.indexLink}
+                    >
+                      <span data-section-label="">{s.label}</span>
+                      {s.id === "ai-endpoint" && <IndexEndpointMeta />}
+                      <ChevronRight size={16} aria-hidden="true" />
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          );
+        })}
+      </nav>
+    </div>
+  );
+}
+
+/** System: a tidy definition list of host capacity (fail-soft — any field may be absent). */
+function SystemCard() {
+  const [sys, setSys] = useState<SystemInfo | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .system()
+      .then((d) => alive && setSys(d))
+      .catch(() => {
+        /* unauthenticated/offline — leave it blank */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const rows: { label: string; value: string | null }[] = sys
+    ? [
+        { label: "OS", value: sys.os ?? null },
+        {
+          label: "Platform",
+          value: [sys.platform, sys.arch].filter(Boolean).join(" · ") || null,
+        },
+        {
+          label: "CPU",
+          value:
+            sys.cpus != null
+              ? sys.load
+                ? `${sys.cpus} cores · load ${sys.load["1"].toFixed(2)}`
+                : `${sys.cpus} cores`
+              : null,
+        },
+        {
+          label: "Memory",
+          value:
+            sys.mem_total != null
+              ? sys.mem_available != null
+                ? `${humanBytes(sys.mem_total - sys.mem_available)} / ${humanBytes(sys.mem_total)}`
+                : humanBytes(sys.mem_total)
+              : null,
+        },
+        {
+          label: "Disk",
+          value:
+            sys.disk_total != null && sys.disk_free != null
+              ? `${humanBytes(sys.disk_free)} free / ${humanBytes(sys.disk_total)}`
+              : null,
+        },
+        {
+          label: "Uptime",
+          value:
+            sys.uptime_seconds != null
+              ? humanDuration(sys.uptime_seconds)
+              : null,
+        },
+        { label: "Python", value: sys.python ?? null },
+      ]
+    : [];
+
+  return (
+    <section className={styles.section} aria-labelledby="system-h">
+      <h2 id="system-h">Host</h2>
+      {sys === null ? (
+        <p className={styles.hint}>…</p>
+      ) : (
+        <dl className={styles.meta}>
+          {rows
+            .filter((r) => r.value != null)
+            .map((r) => (
+              <div key={r.label} className={styles.metaRow}>
+                <dt>{r.label}</dt>
+                <dd>{r.value}</dd>
+              </div>
+            ))}
+        </dl>
+      )}
+    </section>
+  );
+}
+
+/** Usage analytics (#1009): the operator's consent. The checkbox shows what the SERVER holds — after
+ *  a failed save, the reconciled state, never the click — and is disabled while a save is in flight
+ *  or when the server has analytics turned off wholesale. */
+function AnalyticsCard() {
+  const config = useConfig();
+  const refresh = useConfigRefresh();
+  // What the last save learned, shown until the config it asks for arrives. ANY newer config
+  // replaces it: the setting can change elsewhere in this tab (a setup replay from Help saves over
+  // this page while it stays mounted underneath), and a snapshot that outlived that would show the
+  // wrong state for as long as the page is open. It cannot be rolled back by a stale read either:
+  // the refresh below is issued in the same tick the snapshot is set, and ConfigContext applies
+  // only the latest ISSUED read, so every config that lands after this point postdates the save.
+  const [override, setOverride] = useState<{
+    state: AnalyticsState | null;
+  } | null>(null);
+  const [seenConfig, setSeenConfig] = useState(config);
+  if (config !== seenConfig) {
+    setSeenConfig(config);
+    if (override) setOverride(null);
+  }
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const state = override?.state ?? config?.analytics ?? null;
+
+  const save = async (value: boolean) => {
+    setBusy(true);
+    setErr(null);
+    const r = await saveAnalyticsConsent(value);
+    setBusy(false);
+    setOverride({ state: r.state });
+    if (!r.ok) setErr(consentSaveError(r.state));
+    refresh();
+  };
+
+  const available = state?.available ?? false;
+  return (
+    <section className={styles.section} aria-labelledby="analytics-h">
+      <h2 id="analytics-h">Usage analytics</h2>
+      {state && !available && (
+        <p className={styles.warn}>
+          Turned off for this server by AGENT_SESSIONS_ANALYTICS=0 — nothing is
+          sent, and this setting can&apos;t be changed here.
+        </p>
+      )}
+      <label className={styles.aiToggle}>
+        <input
+          type="checkbox"
+          checked={available && !!state?.enabled}
+          disabled={!state || !available || busy}
+          onChange={(e) => void save(e.currentTarget.checked)}
+        />
+        <span>Share usage analytics</span>
+      </label>
+      {err && (
+        <p className={styles.err} role="alert">
+          {err}
+        </p>
+      )}
+      <p className={styles.hint}>
+        When on, BattleLab sends a daily active-install report on days you open
+        it, with up to three delivery attempts: a random install ID (not derived
+        from this machine, your account or your network), the BattleLab version
+        and your operating system. Nothing about your sessions, prompts, code,
+        files, projects or hosts is sent.
+      </p>
+      <p className={styles.hint}>
+        It goes to the BattleLab team&apos;s self-hosted Umami server, which uses
+        your IP address to estimate an approximate location and does not store
+        the address; the web server in front of it keeps standard access logs,
+        which include it, for up to 52 days. Switching it off deletes the install
+        ID and stops future reports — one already under way may still arrive;
+        switching it back on creates a new ID.{" "}
+        <a
+          className={styles.inlineLink}
+          href={ANALYTICS_DOCS_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          What exactly is sent
+        </a>
+      </p>
+    </section>
+  );
+}
+
+/** Updates: compare the running version to the channel's latest and apply (re-runs the
+ *  installer). Only meaningful for installer-managed deploys; in a dev/source checkout
+ *  apply returns 503 (surfaced). On the default `stable` channel with no release tags
+ *  yet, the check reports "up to date" (no `latest`).
+ *
+ *  #538: the card also owns the persisted update settings — automatic updates and the release
+ *  channel. Both load from the cheap `/api/update/settings` (no remote hit on mount) and save
+ *  optimistically; the server applies them live. The last-automatic-check line is recent
+ *  runtime status only (in-memory server-side — it resets when the service restarts).
+ *
+ *  #1994: automatic updates are ON by default and cover BattleLab AND its installed agents.
+ *  There is no opt-in toggle: one status line, Pause behind a confirmation, Resume. */
+function UpdatesCard() {
+  const [info, setInfo] = useState<UpdateInfo | null>(null);
+  // Bumped when this card starts an update, so the progress panel polls at once (#1085).
+  const [startedGen, setStartedGen] = useState(0);
+  const openWhatsNew = useOpenWhatsNew();
+  const [current, setCurrent] = useState<string | null>(null);
+  const [settings, setSettings] = useState<UpdateSettings | null>(null);
+  const [state, setState] = useState<
+    "idle" | "checking" | "applying" | "applied" | "error"
+  >("idle");
+  const [msg, setMsg] = useState<string | null>(null);
+  const [saveErr, setSaveErr] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  // The Pause button that opened the confirmation: focus returns there on Cancel, or to Resume
+  // (which replaces it) once paused.
+  const [pauseOpener, setPauseOpener] = useState<HTMLElement | null>(null);
+  // Bumped on every channel switch: an in-flight check that started under the previous
+  // channel must not repopulate `info` under the new one (Hermes #539 race).
+  const checkGen = useRef(0);
+
+  // Show the running version + persisted settings immediately; the remote compare (a git
+  // ls-remote) only runs when the user clicks "Check for updates".
+  useEffect(() => {
+    let alive = true;
+    api
+      .version()
+      .then((v) => alive && setCurrent(v.version))
+      .catch(() => {});
+    api
+      .updateSettings()
+      .then((s) => alive && setSettings(s))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const save = async (patch: { auto_update?: boolean; channel?: string }) => {
+    const prev = settings;
+    if (prev) setSettings({ ...prev, ...patch });
+    if (patch.channel) {
+      // Invalidate the previous channel's compare NOW (not after the POST resolves): the
+      // shown "update available" belonged to the old channel, and any check still in
+      // flight for it must land in the void.
+      checkGen.current++;
+      setInfo(null);
+    }
+    setSaveErr(null);
+    setSaving(true);
+    try {
+      setSettings(await api.setUpdateSettings(patch));
+    } catch {
+      setSettings(prev);
+      setSaveErr("Couldn’t save update settings.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const check = async () => {
+    const gen = checkGen.current;
+    setState("checking");
+    setMsg(null);
+    try {
+      const result = await api.updateCheck();
+      if (gen === checkGen.current) setInfo(result); // stale-channel response → dropped
+      setState("idle");
+    } catch {
+      setState("error");
+      setMsg("Couldn’t check for updates.");
+    }
+  };
+
+  const apply = async () => {
+    setState("applying");
+    setMsg(null);
+    try {
+      await api.updateApply();
+      setState("applied");
+      // The progress panel below says the rest — step by step, through the restart (#1085).
+      setStartedGen((g) => g + 1);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 422) {
+        // Refused by release verification (#612/#832). The reason lives on the check result
+        // (`blocked`), so fetch it — check() resets the message, hence it is set afterwards.
+        await check();
+        setState("error");
+        setMsg("The update was refused — the reason is shown above.");
+        return;
+      }
+      setState("error");
+      setMsg(
+        e instanceof ApiError && e.status === 503
+          ? "Self-update isn’t available for this install."
+          : e instanceof ApiError && e.status === 409
+            ? "An update is already in progress."
+            : "Update failed to start.",
+      );
+    }
+  };
+
+  const channel = settings?.channel ?? info?.channel ?? "stable";
+  return (
+    <section className={styles.section} aria-labelledby="updates-h">
+      <h2 id="updates-h">Updates</h2>
+      <dl className={styles.meta}>
+        <div className={styles.metaRow}>
+          <dt>Current</dt>
+          <dd>{info?.current ?? current ?? "—"}</dd>
+        </div>
+      </dl>
+      {settings && (
+        <>
+          {/* #1994: a status line, not a switch. An LED and a word, never colour alone. */}
+          <p className={styles.updateStatus} data-testid="auto-update-status" role="status">
+            <span
+              className={`hud-led ${settings.auto_update ? "up" : "idle"}`}
+              aria-hidden="true"
+            />
+            Automatic updates: {settings.auto_update ? "on" : "paused"}
+          </p>
+          <p className={styles.hint}>
+            {settings.auto_update
+              ? `BattleLab and your installed agents update themselves daily. ${
+                  settings.last_auto
+                    ? `Last check: ${new Date(settings.last_auto.ts * 1000).toLocaleString()} — ${settings.last_auto.result}.`
+                    : "No automatic check yet since the last restart."
+                }`
+              : "Nothing installs until you resume; the catalog is still checked."}
+          </p>
+          <div className={styles.updateActions}>
+            {settings.auto_update ? (
+              <button
+                type="button"
+                className={styles.updateBtn}
+                onClick={(e) => setPauseOpener(e.currentTarget)}
+                disabled={saving}
+                data-testid="auto-update-pause"
+              >
+                Pause
+              </button>
+            ) : (
+              <button
+                type="button"
+                className={`${styles.updateApply} shine`}
+                onClick={() => void save({ auto_update: true })}
+                disabled={saving}
+                data-testid="auto-update-resume"
+              >
+                Resume
+              </button>
+            )}
+          </div>
+        </>
+      )}
+      {pauseOpener && (
+        <ConfirmDialog
+          tag="AUTOMATIC UPDATES"
+          title="Pause automatic updates?"
+          confirmLabel="Pause updates"
+          busy={saving}
+          returnFocusTo={pauseOpener}
+          fallbackFocusSelector='[data-testid="auto-update-resume"]'
+          markers={{ dialog: { "data-testid": "auto-update-pause-dialog" } }}
+          onCancel={() => setPauseOpener(null)}
+          onConfirm={() =>
+            void save({ auto_update: false }).finally(() => setPauseOpener(null))
+          }
+        >
+          BattleLab and your agents stay on their current versions until you
+          resume. The catalog is still checked, so you’ll still hear if it
+          expires.
+        </ConfirmDialog>
+      )}
+      <div
+        className={styles.themes}
+        role="radiogroup"
+        aria-label="Release channel"
+      >
+        {[
+          {
+            id: "stable",
+            label: "stable",
+            description: "Tagged releases (recommended)",
+          },
+          {
+            id: "main",
+            label: "main",
+            description: "Development branch — expect rough edges",
+          },
+        ].map((o) => (
+          <button
+            key={o.id}
+            type="button"
+            role="radio"
+            aria-checked={channel === o.id}
+            disabled={!settings}
+            className={
+              channel === o.id
+                ? `${styles.themeCard} ${styles.active}`
+                : styles.themeCard
+            }
+            onClick={() => void save({ channel: o.id })}
+          >
+            <span className={styles.themeName}>{o.label}</span>
+            <span className={styles.themeDesc}>{o.description}</span>
+          </button>
+        ))}
+      </div>
+      <p className={styles.hint}>
+        Switching back to stable waits for the next tagged release (it never
+        downgrades on its own).
+      </p>
+      {saveErr && <p className={styles.err}>{saveErr}</p>}
+      {/* THREE VERDICTS, NOT TWO (#931). "We could not tell" used to render as "You’re on the
+          latest", which is the sentence a frozen install showed for 26 days while it sat on a
+          release tag and `main` moved on without it. `undetermined` is reported separately so
+          the panel can say so; `update_available` stays false either way, because uncertainty
+          must never start an install on its own. */}
+      {/* A REFUSED update (#612 moved tag, #832 signature) is not "up to date" and not "no
+          self-update here": say what was refused and why, above the verdict. */}
+      {info?.blocked && (
+        <p className={styles.err} role="alert" data-testid="update-blocked">
+          Update refused: {info.blocked}
+        </p>
+      )}
+      {info &&
+        (info.undetermined ? (
+          <p className={styles.hint} data-testid="update-undetermined">
+            Couldn’t determine whether an update is available
+            {info.latest ? ` (${info.channel} is at ${info.latest})` : ""}. Not
+            updating.
+          </p>
+        ) : info.update_available ? (
+          <p className={styles.hint}>Update available: {info.latest}</p>
+        ) : (
+          <p className={styles.hint}>
+            {info.latest
+              ? `You’re on the latest (${info.latest}).`
+              : "You’re up to date."}
+          </p>
+        ))}
+      {msg && <p className={styles.hint}>{msg}</p>}
+      <div className={styles.updateActions}>
+        <button
+          type="button"
+          className={styles.updateBtn}
+          onClick={check}
+          disabled={state === "checking" || state === "applying" || saving}
+        >
+          <RefreshCw size={15} />{" "}
+          {state === "checking" ? "Checking…" : "Check for updates"}
+        </button>
+        {/* ALWAYS REACHABLE, AND HONESTLY NAMED (#931).
+            Gating this on `update_available` meant a wrong verdict was terminal: the only
+            control that could move the install was hidden by the same predicate that had just
+            failed, so an operator with a frozen install had nothing to press and no way to
+            discover why. It is offered whenever the app is running.
+
+            It is NOT called "Update now" when no update is offered, because `apply()` is not a
+            no-op: the installer rebuilds the release, flips `current` and restarts the service
+            (open terminals reconnect). Naming it for what it does is the honest half of making
+            it reachable — #932 is what would let it become a true no-op. */}
+        {info && (
+          <button
+            type="button"
+            className={`${styles.updateApply} shine`}
+            onClick={apply}
+            disabled={state === "applying" || state === "applied" || saving}
+            data-testid="update-apply"
+          >
+            <Download size={15} />{" "}
+            {state === "applying"
+              ? "Updating…"
+              : info.update_available
+                ? "Update now"
+                : "Reinstall latest"}
+          </button>
+        )}
+      </div>
+      {/* Stated where the control is, not in a tooltip: a reinstall is a real interruption and
+          the operator should know before pressing, not after (#931). Only when no update is
+          offered — when one is, the restart is the thing they came for. */}
+      {info && !info.update_available && (
+        <p className={styles.hint} data-testid="update-restart-cost">
+          Reinstalls the current release and restarts the service — open
+          terminals reconnect.
+        </p>
+      )}
+      <UpdateProgressPanel started={startedGen} />
+      <UpdateWhatsNew
+        channel={channel}
+        current={info?.current ?? current}
+        available={info?.update_available ? info.latest : null}
+        onOpen={openWhatsNew ?? undefined}
+      />
+    </section>
+  );
+}
+
+/** A read-once recovery-code panel: list + copy + download. The codes live only in
+ *  component state and are never persisted by the SPA (issue #116). */
+function RecoveryCodes({ codes, label }: { codes: string[]; label: string }) {
+  const [copied, setCopied] = useState(false);
+  const text = codes.join("\n");
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* clipboard blocked — the codes are visible to copy by hand */
+    }
+  };
+  const download = () => {
+    const url = URL.createObjectURL(
+      new Blob([`${text}\n`], { type: "text/plain" }),
+    );
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "battlelab-recovery-codes.txt";
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+  return (
+    <div className={styles.recoveryBox}>
+      <p className={styles.warn}>{label}</p>
+      <ul className={styles.recoveryList} aria-label="Recovery codes">
+        {codes.map((c) => (
+          <li key={c}>{c}</li>
+        ))}
+      </ul>
+      <div className={styles.twofaActions}>
+        <button type="button" className={styles.secBtnGhost} onClick={copy}>
+          <Copy size={14} /> {copied ? "Copied" : "Copy"}
+        </button>
+        <button type="button" className={styles.secBtnGhost} onClick={download}>
+          <Download size={14} /> Download
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** A free-text proof field that resolves to a current TOTP code and/or the account
+ *  password. We always send it as a password, and *also* as a code when it looks like a
+ *  6-digit TOTP — so a genuine 6-digit account password can still authorize the action
+ *  (the server tries the code first, then the password). */
+function proofPayload(value: string): { code?: string; password?: string } {
+  const v = value.trim();
+  return /^\d{6}$/.test(v) ? { code: v, password: value } : { password: value };
+}
+
+/** Two-factor authentication (#116): enable (QR + manual key + confirm + recovery codes),
+ *  disable, and regenerate recovery codes. Hidden when there is no login (auth_mode=none).
+ *  The TOTP secret/recovery codes are shown once and never re-fetched. */
+function TwoFactorCard() {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [enroll, setEnroll] = useState<TwoFactorEnrollment | null>(null);
+  const [confirmed, setConfirmed] = useState(false);
+  const [confirmCode, setConfirmCode] = useState("");
+  const [showDisable, setShowDisable] = useState(false);
+  const [showRegen, setShowRegen] = useState(false);
+  const [proof, setProof] = useState("");
+  const [regenCodes, setRegenCodes] = useState<string[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .config()
+      .then((c) => {
+        if (alive) setEnabled(!!c.two_factor_enabled);
+      })
+      .catch(() => {
+        /* unauthenticated/offline — leave it blank */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // Client-side QR from the otpauth:// URI (bundled lib, no CDN). SVG scales to the box.
+  const qrSvg = useMemo(
+    () => (enroll ? encodeQR(enroll.otpauth_uri, "svg", { border: 2 }) : null),
+    [enroll],
+  );
+
+  const reset = () => {
+    setEnroll(null);
+    setConfirmed(false);
+    setConfirmCode("");
+    setShowDisable(false);
+    setShowRegen(false);
+    setProof("");
+    setRegenCodes(null);
+    setError(null);
+  };
+
+  const begin = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      setEnroll(await api.enroll2fa());
+      setConfirmed(false);
+    } catch {
+      setError("Couldn’t start enrollment.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirm = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.confirm2fa(confirmCode.trim());
+      setEnabled(true);
+      setConfirmed(true);
+    } catch (e) {
+      setError(
+        e instanceof ApiError && e.status === 400
+          ? "That code didn’t match — check your authenticator and try again."
+          : "Couldn’t confirm the code.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const disable = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.disable2fa(proofPayload(proof));
+      setEnabled(false);
+      reset();
+    } catch (e) {
+      setError(
+        e instanceof ApiError && e.status === 403
+          ? "Enter a current authenticator code or your password."
+          : "Couldn’t disable 2FA.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const regenerate = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await api.regenerate2fa(proofPayload(proof));
+      setRegenCodes(r.recovery_codes);
+      setShowRegen(false);
+      setProof("");
+    } catch (e) {
+      setError(
+        e instanceof ApiError && e.status === 403
+          ? "Enter a current authenticator code or your password."
+          : "Couldn’t regenerate recovery codes.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className={styles.section} aria-labelledby="twofa-h">
+      <h2 id="twofa-h">Two-factor authentication</h2>
+      <p className={styles.hint}>
+        Require a 6-digit code from an authenticator app (Google Authenticator,
+        Authy, 1Password, Aegis…) in addition to your password.
+      </p>
+
+      {enabled !== null && (
+        <p className={styles.twofaStatus}>
+          <ShieldCheck size={15} />
+          <span
+            className={`${styles.twofaBadge} ${enabled ? styles.twofaOn : styles.twofaOff}`}
+          >
+            {enabled ? "On" : "Off"}
+          </span>
+        </p>
+      )}
+
+      {error && <p className={styles.err}>{error}</p>}
+
+      {/* Disabled, not mid-enrollment → offer Enable. */}
+      {enabled === false && !enroll && (
+        <button
+          type="button"
+          className={`${styles.secBtn} shine`}
+          onClick={begin}
+          disabled={busy}
+        >
+          <ShieldCheck size={15} />{" "}
+          {busy ? "Starting…" : "Enable two-factor auth"}
+        </button>
+      )}
+
+      {/* Enrollment in progress: QR + manual key + recovery codes + confirm. */}
+      {enroll && !confirmed && (
+        <div className={styles.enrollPanel}>
+          <p className={styles.hint}>
+            1. Scan this with your authenticator app:
+          </p>
+          {qrSvg && (
+            <img
+              className={styles.qr}
+              alt="TOTP QR code"
+              src={`data:image/svg+xml,${encodeURIComponent(qrSvg)}`}
+            />
+          )}
+          <p className={styles.hint}>…or enter this key manually:</p>
+          <code className={styles.manualKey}>{enroll.secret}</code>
+          <p className={styles.hint}>
+            2. Save these recovery codes somewhere safe — each works once if you
+            lose your device. They’re shown only now.
+          </p>
+          <RecoveryCodes
+            codes={enroll.recovery_codes}
+            label="Recovery codes (shown once)"
+          />
+          <p className={styles.hint}>
+            3. Enter the current 6-digit code to finish:
+          </p>
+          <input
+            className={styles.codeInput}
+            inputMode="numeric"
+            autoComplete="one-time-code"
+            placeholder="6-digit code"
+            value={confirmCode}
+            onChange={(e) => setConfirmCode(e.target.value)}
+          />
+          <div className={styles.twofaActions}>
+            <button
+              type="button"
+              className={styles.secBtn}
+              onClick={confirm}
+              disabled={busy || confirmCode.trim().length < 6}
+            >
+              {busy ? "Confirming…" : "Confirm & enable"}
+            </button>
+            <button
+              type="button"
+              className={styles.secBtnGhost}
+              onClick={reset}
+              disabled={busy}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Just enabled: confirm the recovery codes were saved, then dismiss. */}
+      {enroll && confirmed && (
+        <div className={styles.enrollPanel}>
+          <p className={styles.twofaStatus}>
+            <ShieldCheck size={15} /> Two-factor authentication is on.
+          </p>
+          <RecoveryCodes
+            codes={enroll.recovery_codes}
+            label="Make sure you’ve saved your recovery codes — they won’t be shown again."
+          />
+          <button type="button" className={styles.secBtn} onClick={reset}>
+            Done
+          </button>
+        </div>
+      )}
+
+      {/* Enabled: manage (regenerate codes / disable). */}
+      {enabled === true && !enroll && (
+        <div className={styles.twofaActions}>
+          <button
+            type="button"
+            className={styles.secBtnGhost}
+            onClick={() => {
+              setShowRegen((v) => !v);
+              setShowDisable(false);
+              setProof("");
+              setError(null);
+            }}
+          >
+            <RefreshCw size={14} /> Regenerate recovery codes
+          </button>
+          <button
+            type="button"
+            className={styles.secBtnGhost}
+            onClick={() => {
+              setShowDisable((v) => !v);
+              setShowRegen(false);
+              setProof("");
+              setError(null);
+            }}
+          >
+            Disable
+          </button>
+        </div>
+      )}
+
+      {/* Fresh-proof prompt shared by disable + regenerate. */}
+      {enabled === true && !enroll && (showDisable || showRegen) && (
+        <div className={styles.enrollPanel}>
+          <p className={styles.hint}>
+            Enter a current authenticator code or your password to{" "}
+            {showDisable
+              ? "disable two-factor auth"
+              : "regenerate your recovery codes"}
+            .
+          </p>
+          <input
+            className={styles.codeInput}
+            type="password"
+            autoComplete="off"
+            placeholder="6-digit code or password"
+            value={proof}
+            onChange={(e) => setProof(e.target.value)}
+          />
+          <div className={styles.twofaActions}>
+            <button
+              type="button"
+              className={styles.secBtn}
+              onClick={showDisable ? disable : regenerate}
+              disabled={busy || !proof}
+            >
+              {busy ? "Working…" : showDisable ? "Disable" : "Regenerate"}
+            </button>
+            <button
+              type="button"
+              className={styles.secBtnGhost}
+              onClick={() => {
+                setShowDisable(false);
+                setShowRegen(false);
+                setProof("");
+              }}
+              disabled={busy}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Newly regenerated codes (shown once). */}
+      {regenCodes && (
+        <div className={styles.enrollPanel}>
+          <RecoveryCodes
+            codes={regenCodes}
+            label="New recovery codes — the old ones no longer work. Shown only now."
+          />
+          <button
+            type="button"
+            className={styles.secBtn}
+            onClick={() => setRegenCodes(null)}
+          >
+            Done
+          </button>
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** The server's floor for a new password (`_apply_password_change`): checked here first so the
+ *  button says why it is off instead of the request failing. */
+export const MIN_PASSWORD_LENGTH = 12;
+
+/** Change password: the signed-in operator changes their own login password with the current
+ *  one and a new one typed twice (`POST /api/password`). Only ever mounted by `SecurityPanel` for a
+ *  login-on install. This session stays signed in; the new password applies from the next
+ *  sign-in, and to the 2FA card's "or your password" proof at once. */
+function PasswordCard() {
+  const config = useConfig();
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [changed, setChanged] = useState(false);
+
+  const tooShort = next.length > 0 && next.length < MIN_PASSWORD_LENGTH;
+  const mismatch = confirm.length > 0 && next !== confirm;
+  const ready =
+    !busy &&
+    current.length > 0 &&
+    next.length >= MIN_PASSWORD_LENGTH &&
+    next === confirm;
+
+  const submit = async () => {
+    if (!ready) return;
+    setBusy(true);
+    setError(null);
+    setChanged(false);
+    try {
+      await api.changePassword(current, next);
+      setCurrent("");
+      setNext("");
+      setConfirm("");
+      setChanged(true);
+    } catch (e) {
+      setError(
+        e instanceof ApiError && e.status === 403
+          ? "Your current password is incorrect."
+          : e instanceof ApiError && e.status === 422
+            ? `The new password must be at least ${MIN_PASSWORD_LENGTH} characters.`
+            : "Couldn’t change the password.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className={styles.section} aria-labelledby="password-h">
+      <h2 id="password-h">Password</h2>
+      <p className={styles.hint}>
+        Change the password you sign in with. Devices already signed in stay
+        signed in.
+      </p>
+      <form
+        aria-labelledby="password-h"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void submit();
+        }}
+      >
+        {/* For password managers: which account this new password belongs to. */}
+        <input
+          type="text"
+          name="username"
+          autoComplete="username"
+          value={config?.username ?? ""}
+          readOnly
+          hidden
+        />
+        <div className={styles.aiField}>
+          <label className={styles.aiFieldLabel} htmlFor="password-current">
+            Current password
+          </label>
+          <input
+            id="password-current"
+            className={styles.aiInput}
+            type="password"
+            name="current-password"
+            autoComplete="current-password"
+            value={current}
+            onChange={(e) => {
+              setCurrent(e.target.value);
+              setError(null);
+              setChanged(false);
+            }}
+          />
+        </div>
+        <div className={styles.aiField}>
+          <label className={styles.aiFieldLabel} htmlFor="password-new">
+            New password
+          </label>
+          <input
+            id="password-new"
+            className={styles.aiInput}
+            type="password"
+            name="new-password"
+            autoComplete="new-password"
+            aria-describedby="password-new-rule"
+            aria-invalid={tooShort || undefined}
+            value={next}
+            onChange={(e) => {
+              setNext(e.target.value);
+              setError(null);
+              setChanged(false);
+            }}
+          />
+          <span
+            id="password-new-rule"
+            className={`${styles.fieldNote} ${tooShort ? styles.fieldNoteErr : ""}`}
+          >
+            At least {MIN_PASSWORD_LENGTH} characters.
+          </span>
+        </div>
+        <div className={styles.aiField}>
+          <label className={styles.aiFieldLabel} htmlFor="password-confirm">
+            Confirm new password
+          </label>
+          <input
+            id="password-confirm"
+            className={styles.aiInput}
+            type="password"
+            name="confirm-password"
+            autoComplete="new-password"
+            aria-describedby={mismatch ? "password-confirm-err" : undefined}
+            aria-invalid={mismatch || undefined}
+            value={confirm}
+            onChange={(e) => {
+              setConfirm(e.target.value);
+              setError(null);
+              setChanged(false);
+            }}
+          />
+          {mismatch && (
+            <span
+              id="password-confirm-err"
+              className={`${styles.fieldNote} ${styles.fieldNoteErr}`}
+            >
+              The passwords don’t match.
+            </span>
+          )}
+        </div>
+        {error && (
+          <p className={styles.err} role="alert">
+            {error}
+          </p>
+        )}
+        {changed && (
+          <p className={styles.ok} role="status">
+            Password changed. Use the new one the next time you sign in.
+          </p>
+        )}
+        <button type="submit" className={styles.secBtn} disabled={!ready}>
+          <KeyRound size={15} /> {busy ? "Changing…" : "Change password"}
+        </button>
+      </form>
+    </section>
+  );
+}
+
+/** Account (#141): a Sign out button. Hidden when there's no login (auth_mode=none), like
+ *  the 2FA card. Sign out clears the session server-side, then navigates to /login. */
+/** Sign out. Only ever mounted by `SecurityPanel` for a login-on install, which is what makes a
+ *  second `auth_mode` check here dead code (#956). */
+function AccountCard() {
+  const [busy, setBusy] = useState(false);
+
+  return (
+    <section className={styles.section} aria-labelledby="account-h">
+      <h2 id="account-h">Account</h2>
+      <p className={styles.hint}>You’re signed in to this BattleLab.</p>
+      <button
+        type="button"
+        className={styles.secBtnGhost}
+        disabled={busy}
+        onClick={() => {
+          setBusy(true);
+          // logout hard-navigates on success; only re-enable if it threw.
+          api.logout().catch(() => setBusy(false));
+        }}
+      >
+        <LogOut size={16} /> {busy ? "Signing out…" : "Sign out"}
+      </button>
+    </section>
+  );
+}
+
+/** Login-off explainer (#682): in Home Free / `auth_mode=none` there's no password or 2FA to
+ *  manage, so the 2FA + Account cards hide and the Security tab would otherwise render empty.
+ *  Show what login-off means plus the (verified) recipe to turn a password login on instead. */
+function LoginOffCard() {
+  return (
+    <section className={styles.section} aria-labelledby="loginoff-h">
+      <h2 id="loginoff-h">Login</h2>
+      <p className={styles.blurb}>
+        Login is off — you’re running <strong>Home Free</strong>. The app is
+        bound to loopback and reached only through the blind relay with your
+        access key, so there’s no in-app password or two-factor to manage here.
+      </p>
+      <EnableLoginDetails />
+    </section>
+  );
+}
+
+/** Security tab body, driven by the shared config so it never flashes the single-user cards
+ *  before resolving to login-off (#682). `useConfig()` is `null` while loading — render nothing
+ *  then, never assume `single-user`. */
+function SecurityPanel() {
+  const config = useConfig();
+  if (!config) return null; // still loading — avoid a single-user flash
+  if (config.auth_mode === "none") return <LoginOffCard />;
+  return (
+    <>
+      <PasswordCard />
+      <TwoFactorCard />
+      <AccountCard />
+    </>
+  );
+}
+
+/** Maintenance (#142): bulk-archive sessions older than N hours. Reversible (archived
+ *  sessions can be unarchived); a two-step confirm guards the bulk action. */
+function CleanupCard() {
+  const [hours, setHours] = useState(168); // default: a week
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+
+  const run = async () => {
+    setBusy(true);
+    setResult(null);
+    try {
+      const r = await api.archiveOlder(hours);
+      setResult(
+        `Archived ${r.archived} session${r.archived === 1 ? "" : "s"}` +
+          (r.skipped ? ` (${r.skipped} skipped).` : "."),
+      );
+    } catch {
+      setResult("Couldn’t archive — please try again.");
+    } finally {
+      setBusy(false);
+      setConfirming(false);
+    }
+  };
+
+  const valid = Number.isFinite(hours) && hours > 0;
+
+  return (
+    <section className={styles.section} aria-labelledby="cleanup-h">
+      <h2 id="cleanup-h">Archive old sessions</h2>
+      <p className={styles.hint}>
+        Archive sessions you haven’t touched in a while. Archived sessions are
+        hidden from the list but can be unarchived — nothing is deleted.
+      </p>
+      <div className={styles.cleanupRow}>
+        <label className={styles.cleanupLabel}>
+          Older than
+          <input
+            className={styles.hoursInput}
+            type="number"
+            min={1}
+            value={hours}
+            onChange={(e) => setHours(Number(e.target.value))}
+            aria-label="Age in hours"
+          />
+          hours
+        </label>
+        {confirming ? (
+          <span className={styles.confirmRow}>
+            <button
+              type="button"
+              className={styles.danger}
+              disabled={busy}
+              onClick={run}
+            >
+              <Archive size={16} /> {busy ? "Archiving…" : "Confirm archive"}
+            </button>
+            <button
+              type="button"
+              className={styles.secBtnGhost}
+              onClick={() => setConfirming(false)}
+              disabled={busy}
+            >
+              Cancel
+            </button>
+          </span>
+        ) : (
+          <button
+            type="button"
+            className={styles.secBtnGhost}
+            disabled={!valid}
+            onClick={() => {
+              setResult(null);
+              setConfirming(true);
+            }}
+          >
+            <Archive size={16} /> Archive older
+          </button>
+        )}
+      </div>
+      {result && <p className={styles.hint}>{result}</p>}
+    </section>
+  );
+}
+
+/** Scrollback cache (#206): the per-session terminal-history files that make scrollback
+ *  survive restarts. Shows the cache size and lets the user reclaim it — either just the
+ *  archived sessions' caches, or everything. A two-step confirm guards each clear. */
+function ScrollbackCacheCard() {
+  const [info, setInfo] = useState<{ bytes: number; files: number } | null>(
+    null,
+  );
+  const [confirming, setConfirming] = useState<"all" | "archived" | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+
+  const refresh = () =>
+    api
+      .scrollbackInfo()
+      .then(setInfo)
+      .catch(() => setInfo(null));
+
+  useEffect(() => {
+    void refresh();
+  }, []);
+
+  const clear = async (scope: "all" | "archived") => {
+    setBusy(true);
+    setResult(null);
+    try {
+      const r = await api.clearScrollback(scope);
+      setResult(
+        `Cleared ${r.removed} cache file${r.removed === 1 ? "" : "s"} (${humanBytes(r.bytes_freed)} freed).`,
+      );
+      await refresh();
+    } catch {
+      setResult("Couldn’t clear the cache — please try again.");
+    } finally {
+      setBusy(false);
+      setConfirming(null);
+    }
+  };
+
+  return (
+    <section className={styles.section} aria-labelledby="scrollback-h">
+      <h2 id="scrollback-h">Scrollback cache</h2>
+      <p className={styles.hint}>
+        Terminal history is cached on disk per session so scrollback survives
+        restarts.
+        {info
+          ? ` Currently ${humanBytes(info.bytes)} across ${info.files} session${info.files === 1 ? "" : "s"}.`
+          : ""}{" "}
+        Clearing only drops cached scrollback — sessions and their on-disk
+        transcripts are untouched.
+      </p>
+      {confirming ? (
+        <span className={styles.confirmRow}>
+          <button
+            type="button"
+            className={styles.danger}
+            disabled={busy}
+            onClick={() => void clear(confirming)}
+          >
+            <Trash2 size={16} />{" "}
+            {busy
+              ? "Clearing…"
+              : confirming === "all"
+                ? "Confirm clear all"
+                : "Confirm clear archived"}
+          </button>
+          <button
+            type="button"
+            className={styles.secBtnGhost}
+            onClick={() => setConfirming(null)}
+            disabled={busy}
+          >
+            Cancel
+          </button>
+        </span>
+      ) : (
+        <div className={styles.cleanupRow}>
+          <button
+            type="button"
+            className={styles.secBtnGhost}
+            onClick={() => {
+              setResult(null);
+              setConfirming("archived");
+            }}
+          >
+            <Archive size={16} /> Clear archived sessions’ cache
+          </button>
+          <button
+            type="button"
+            className={styles.secBtnGhost}
+            onClick={() => {
+              setResult(null);
+              setConfirming("all");
+            }}
+          >
+            <Trash2 size={16} /> Clear all cache
+          </button>
+        </div>
+      )}
+      {result && <p className={styles.hint}>{result}</p>}
+    </section>
+  );
+}
+
+/** Settings (#109, tabbed in #357): a keyboard-accessible tab shell over the existing
+ *  sections — Appearance, Projects, AI Review (#356 placeholder), Security, System,
+ *  Maintenance, About. Deep-linkable as /settings/:tab. Reached via the gear in the topbar. */
+export function Settings() {
+  // Compose default (#254): persisted via /api/prefs; applies to sessions opened after the
+  // next config load. Seed from the loaded config and reflect external changes (other device).
+  const configCompose = useConfig()?.compose_default ?? "auto";
+  const [composeMode, setComposeMode] = useState<string>(configCompose);
+  const [syncedCompose, setSyncedCompose] = useState(configCompose);
+  if (configCompose !== syncedCompose) {
+    setSyncedCompose(configCompose);
+    setComposeMode(configCompose);
+  }
+  const chooseCompose = (mode: string) => {
+    const prev = composeMode;
+    setComposeMode(mode);
+    api.setPrefs({ compose_default: mode }).catch(() => setComposeMode(prev));
+  };
+  // Session list order (#506): persisted via /api/prefs; the server sorts the list. Optimistic
+  // with rollback, like the others. A successful save refreshes the shared config (#548): the
+  // sidebar list watches the config's order and re-sorts in place — no waiting for the poll.
+  const configOrder = useConfig()?.session_list_order ?? "recent_activity";
+  const refreshConfig = useConfigRefresh();
+  const [listOrder, setListOrder] = useState<string>(configOrder);
+  const [syncedOrder, setSyncedOrder] = useState(configOrder);
+  if (configOrder !== syncedOrder) {
+    setSyncedOrder(configOrder);
+    setListOrder(configOrder);
+  }
+  const chooseOrder = (mode: string) => {
+    const prev = listOrder;
+    setListOrder(mode);
+    api
+      .setPrefs({ session_list_order: mode })
+      .then(() => refreshConfig())
+      .catch(() => setListOrder(prev));
+  };
+  const [version, setVersion] = useState<string | null>(null);
+  // What's new (#971): reopened from About; null outside the shell (no dialog to open).
+  const openWhatsNew = useOpenWhatsNew();
+  const whatsNewButton = openWhatsNew ? whatsNewLabel() : null;
+  // Return to wherever the gear was tapped from (#155) — the session, overview, or landing —
+  // instead of always dropping to the new-session landing. Only trust an in-app path, and
+  // never Settings itself (any tab URL) — no loop (#357).
+  const location = useLocation();
+  const returnTo = (() => {
+    const r = (location.state as { returnTo?: unknown } | null)?.returnTo;
+    return typeof r === "string" &&
+      r.startsWith("/") &&
+      !r.startsWith("//") &&
+      r !== "/settings" &&
+      !r.startsWith("/settings/")
+      ? r
+      : // "Back to sessions" means the sessions: `/` is the dashboard since #1525.
+        SESSIONS_PATH;
+  })();
+  // Canonical section from the URL (#956): /settings/:section. On desktop, bare /settings and
+  // unknown sections replace-redirect to the first section; on a phone bare /settings IS the
+  // index. State rides along every hop so the #155 back link survives.
+  const { tab: tabParam, agent } = useParams<{ tab: string; agent: string }>();
+  // `/settings/agents/:agent` (#1128) is the Defaults page or one agent's own page; both live in
+  // the AGENTS group, under the roster's URL.
+  const tab =
+    agent === undefined
+      ? tabParam
+      : agent === AGENT_DEFAULTS_SEGMENT
+        ? "agents-defaults"
+        : "agents";
+  const agentId =
+    agent !== undefined && agent !== AGENT_DEFAULTS_SEGMENT ? agent : null;
+  const isMobile = useIsMobile();
+  // The crumb and the sidebar name an agent by its roster label.
+  useEngineRoster();
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .version()
+      .then((v) => alive && setVersion(v.version))
+      .catch(() => {
+        /* unauthenticated/offline — leave it blank */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const legacy = legacySettingsTarget(tab, location.hash);
+  if (legacy) {
+    // A target may carry its own query (`/projects?tab=folders`, #2143); otherwise the old one rides.
+    const [pathAndSearch, targetHash = ""] = legacy.split("#");
+    const [pathname, targetSearch] = pathAndSearch.split("?");
+    return <Navigate to={{ pathname, search: targetSearch ? `?${targetSearch}` : location.search, hash: targetHash ? `#${targetHash}` : "" }} replace state={location.state} />;
+  }
+  if (agent === undefined && tab === "agents-defaults") {
+    // Canonical form is /settings/agents/defaults.
+    return (
+      <Navigate
+        to={settingsPath("agents-defaults")}
+        replace
+        state={location.state}
+      />
+    );
+  }
+  if (tab === undefined && isMobile) {
+    return <SettingsIndex returnTo={returnTo} />;
+  }
+  if (!isSettingsSection(tab)) {
+    return (
+      <Navigate
+        to={
+          isMobile && tab !== undefined
+            ? SETTINGS_PATH
+            : settingsPath(DEFAULT_SETTINGS_SECTION)
+        }
+        replace
+        state={location.state}
+      />
+    );
+  }
+  const section = tab;
+  const meta = settingsSection(section);
+  const crumb =
+    meta.group === "about"
+      ? "Settings"
+      : `Settings // ${settingsGroup(meta.group).label}`;
+
+  return (
+    <div className={isMobile ? styles.wrap : styles.split}>
+      {isMobile ? (
+        <header className={styles.head}>
+          <Link
+            to={agentId ? settingsPath("agents") : SETTINGS_PATH}
+            state={location.state}
+            className={styles.back}
+            aria-label={agentId ? "Back to agents" : "Back to settings"}
+          >
+            <ArrowLeft size={18} />
+          </Link>
+          <h1>Settings</h1>
+        </header>
+      ) : (
+        <aside className={styles.sidebar}>
+          <header className={styles.head}>
+            <Link
+              to={returnTo}
+              className={styles.back}
+              aria-label="Back to sessions"
+            >
+              <ArrowLeft size={18} />
+            </Link>
+            <h1>Settings</h1>
+          </header>
+          <SettingsNav active={section} agentId={agentId} />
+        </aside>
+      )}
+
+      <div className={isMobile ? styles.panel : styles.page}>
+        <p
+          className={`${styles.crumb} ${meta.group === "agents" ? styles.crumbWide : ""}`}
+        >
+          {crumb} // <b>{agentId ? engineLabel(agentId) : meta.label}</b>
+        </p>
+        {section === "profile" && <ProfileSettings />}
+        {section === "appearance" && <AppearanceInterface />}
+
+        {section === "terminal-appearance" && <AppearanceTerminal />}
+
+        {section === "api-appearance" && <AppearanceApi />}
+
+        {section === "session-defaults" && (
+          <>
+            <section
+              className={styles.section}
+              aria-labelledby="session-defaults-h"
+            >
+              <h2 id="session-defaults-h">Session defaults</h2>
+              <p className={styles.hint}>
+                How a session opens and how the sidebar lists them.
+              </p>
+
+              <h3 className={styles.subhead} id="compose-h">
+                Compose box
+              </h3>
+              <p className={styles.hint}>
+                Default state when a session opens. Applies after the next
+                reload.
+              </p>
+              <div
+                className={styles.themes}
+                role="radiogroup"
+                aria-labelledby="compose-h"
+              >
+                {[
+                  {
+                    id: "auto",
+                    label: "Auto",
+                    description: "Open on touch, collapsed on desktop",
+                  },
+                  {
+                    id: "open",
+                    label: "Open",
+                    description: "Always expanded on load",
+                  },
+                  {
+                    id: "collapsed",
+                    label: "Collapsed",
+                    description: "Always collapsed to the bar",
+                  },
+                ].map((o) => (
+                  <button
+                    key={o.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={composeMode === o.id}
+                    className={
+                      composeMode === o.id
+                        ? `${styles.themeCard} ${styles.active}`
+                        : styles.themeCard
+                    }
+                    onClick={() => chooseCompose(o.id)}
+                  >
+                    <span className={styles.themeName}>{o.label}</span>
+                    <span className={styles.themeDesc}>{o.description}</span>
+                  </button>
+                ))}
+              </div>
+
+              <h3 className={styles.subhead} id="listorder-h">
+                Session list order
+              </h3>
+              <p className={styles.hint}>
+                How sessions are sorted in the sidebar. Favorites always pin to
+                the top.
+              </p>
+              <div
+                className={styles.themes}
+                role="radiogroup"
+                aria-labelledby="listorder-h"
+              >
+                {[
+                  {
+                    id: "recent_activity",
+                    label: "Recent activity",
+                    description: "Newest update first (default)",
+                  },
+                  {
+                    id: "created_at",
+                    label: "Creation date",
+                    description:
+                      "Newest-created first; order stays put as sessions update",
+                  },
+                ].map((o) => (
+                  <button
+                    key={o.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={listOrder === o.id}
+                    className={
+                      listOrder === o.id
+                        ? `${styles.themeCard} ${styles.active}`
+                        : styles.themeCard
+                    }
+                    onClick={() => chooseOrder(o.id)}
+                  >
+                    <span className={styles.themeName}>{o.label}</span>
+                    <span className={styles.themeDesc}>{o.description}</span>
+                  </button>
+                ))}
+              </div>
+            </section>
+          </>
+        )}
+
+        {/* The AI pages (#956). These eight panels used to stack in ONE column under a single
+            "AI" tab; each now has the page its job warrants. */}
+        {section === "ai-endpoint" && <AiEndpointSetup />}
+        {section === "ai-session-review" && <AiReviewSettings />}
+        {section === "ai-auto-sort" && <AutoSortSettings />}
+        {section === "ai-clusters" && <ClustersSettings />}
+        {section === "ai-hq" && <HqSettings />}
+        {section === "ai-prompts" && <PromptsSettings />}
+        {section === "ai-activity" && <AiActivityPanel />}
+
+        {section === "agents" &&
+          (agentId ? <AgentDetail id={agentId} /> : <AgentsRoster />)}
+        {section === "agents-defaults" && <AgentDefaultsPage />}
+        {section === "security" && <SecurityPanel />}
+        {section === "sharing" && <SharingSettings />}
+        {section === "peers" && <PeersSettings />}
+        {section === "artifacts" && <ArtifactsSettings />}
+        {section === "updates" && <UpdatesCard />}
+        {section === "analytics" && <AnalyticsCard />}
+        {section === "system" && <SystemCard />}
+        {section === "resources" && <ResourceLimits />}
+        {section === "maintenance" && (
+          <>
+            <CleanupCard />
+            <ArchiveMissionsCard />
+            <ScrollbackCacheCard />
+            <PruneCard />
+          </>
+        )}
+
+        {section === "about" && (
+          <>
+            <section className={styles.section} aria-labelledby="support-h">
+              <h2 id="support-h">Support</h2>
+              <p className={styles.blurb}>
+                If BattleLab saves you time, you can support its development.
+              </p>
+              <a
+                className={`${styles.coffee} shine`}
+                href={BUY_ME_A_COFFEE}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <Coffee size={16} /> Buy me a coffee
+              </a>
+            </section>
+
+            <section className={styles.section} aria-labelledby="about-h">
+              <h2 id="about-h">About</h2>
+              <p className={styles.brandLine}>
+                <BrandLockup height={48} tagline label="BattleLab — Command & Code" />
+              </p>
+              <p className={styles.blurb}>
+                The mobile-first organizer for your AI-coding sessions — every agent you
+                run, all in one place.
+              </p>
+              <dl className={styles.meta}>
+                <dt>Version</dt>
+                <dd>{version ?? "…"}</dd>
+                <dt>License</dt>
+                <dd>
+                  <a
+                    className={styles.nameLink}
+                    href={LICENSE_URL}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    {LICENSE}
+                  </a>
+                </dd>
+                <dt>Created by</dt>
+                <dd>
+                  <a
+                    className={styles.nameLink}
+                    href="https://superstatus.io"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Marcus Braun
+                  </a>
+                </dd>
+              </dl>
+              <div className={styles.aboutLinks}>
+                {openWhatsNew && whatsNewButton && (
+                  <button
+                    type="button"
+                    className={`${styles.aboutLink} ${styles.aboutLinkButton}`}
+                    onClick={openWhatsNew}
+                  >
+                    <Sparkles size={15} aria-hidden="true" /> {whatsNewButton}
+                  </button>
+                )}
+                <a
+                  className={styles.aboutLink}
+                  href={SOURCE_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <Code2 size={15} /> Source code
+                </a>
+                <a
+                  className={styles.aboutLink}
+                  href={`mailto:${contactAddr()}`}
+                  onClick={(e) => {
+                    // Assemble the mailto at click time so the literal address is never in the DOM at rest.
+                    (e.currentTarget as HTMLAnchorElement).href =
+                      `mailto:${contactAddr()}`;
+                  }}
+                >
+                  <Mail size={15} /> {CONTACT_USER}&#64;{CONTACT_DOMAIN}
+                </a>
+              </div>
+            </section>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}

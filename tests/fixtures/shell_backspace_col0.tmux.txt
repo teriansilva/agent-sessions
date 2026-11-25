@@ -1,0 +1,3 @@
+$ printf '\b\bab\b\b\b\bX\n'
+Xb
+$

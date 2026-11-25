@@ -1,0 +1,46 @@
+@import url('../plan-approval-1951-b/base.css');
+/* Artifact public-link options: password, expiry, header (agent-sessions issue) */
+.dialog{max-width:560px}
+.dtag{font:600 10px "Liberation Mono",monospace;letter-spacing:.16em;text-transform:uppercase;color:var(--hud-text)}
+.warnbox{display:flex;flex-direction:column;gap:6px;padding:10px 12px;border-left:3px solid var(--warn-text);background:color-mix(in srgb,var(--status-degraded) 8%,transparent);font-size:13px}
+.opts2{display:flex;flex-direction:column;gap:10px;padding:10px 12px;border:1px solid var(--line);background:var(--bg-2)}
+.orow{display:grid;grid-template-columns:120px minmax(0,1fr);gap:4px 12px;align-items:center}
+.orow .k{font:600 10px "Liberation Mono",monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--text-2)}
+.orow .d{grid-column:2;font-size:12px;color:var(--text-2);margin:0}
+.input{display:flex;align-items:center;gap:8px;min-height:44px;padding:0 4px 0 12px;border:1px solid var(--border);background:var(--bg-0);font:13px "Liberation Mono",monospace;min-width:0}
+.input .ph{color:var(--text-3);flex:1}
+.input .val{flex:1;letter-spacing:.2em}
+.input .eye{display:inline-flex;align-items:center;justify-content:center;width:44px;height:44px;color:var(--text-2);font:11px "Liberation Mono",monospace}
+.segs{display:flex;flex-wrap:wrap;gap:0}
+.seg{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:0 12px;border:1px solid var(--border);margin-left:-1px;background:var(--bg-0);font:12px "Liberation Mono",monospace;color:var(--text-2)}
+.seg:first-child{margin-left:0}
+.seg.sel{border-color:var(--accent);color:var(--accent-text);position:relative;background:color-mix(in srgb,var(--accent) 10%,var(--bg-0))}
+.toggle{display:inline-flex;align-items:center;gap:10px;min-height:44px;font-size:13px}
+.toggle .box{flex:none}
+.target{display:flex;flex-direction:column;gap:2px;font-size:12px}
+.target .lbl{font:600 10px "Liberation Mono",monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--text-2)}
+.mono{font:12px "Liberation Mono",monospace;overflow-wrap:anywhere}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{font:600 10px "Liberation Mono",monospace;letter-spacing:.12em;padding:2px 6px;border:1px solid var(--line-strong);color:var(--text-2);text-transform:uppercase}
+.chip.live{border-color:var(--status-up);color:var(--ok-text)}
+.chip.warn{border-color:var(--warn-text);color:var(--warn-text)}
+.pub{display:flex;flex-direction:column;gap:8px;padding:12px 16px 14px}
+/* the public viewer */
+.viewer{height:420px;display:flex;flex-direction:column;border:1px solid var(--border);background:var(--bg-0);position:relative;overflow:hidden}
+.pbar{display:flex;align-items:center;gap:12px;min-height:48px;padding:0 14px;border-bottom:1px solid var(--line);background:var(--bg-1)}
+.pbar .mark{font:700 12px "Liberation Mono",monospace;letter-spacing:.18em;color:var(--accent-text)}
+.pbar .t{font-weight:600;font-size:13px}
+.vcenter{flex:1;display:grid;place-items:center;padding:16px}
+.gate{width:min(380px,100%);display:flex;flex-direction:column;gap:10px;padding:16px;border:1px solid var(--border);background:var(--bg-1)}
+.gate h2{margin:0;font:600 16px "Liberation Sans",sans-serif}
+.gate p{margin:0;font-size:13px;color:var(--text-2)}
+.err{margin:0;padding:6px 8px;border-left:3px solid var(--status-down);font-size:12px;color:var(--text-1)}
+.content{flex:1;background:#fff;color:#1b1b1b;padding:28px 32px;font:15px/1.6 "Liberation Serif",serif}
+.content h3{margin:0 0 8px;font:700 22px "Liberation Sans",sans-serif;color:#1b1b1b}
+.content .fake{height:10px;background:#e6e6e6;margin:8px 0}
+.content .fake.s{width:60%}
+.mobile .orow{grid-template-columns:minmax(0,1fr)}
+.mobile .orow .d{grid-column:1}
+.mobile .board{grid-template-columns:minmax(0,1fr)}
+.mobile .viewer{height:520px}
+.mobile .content{padding:18px}

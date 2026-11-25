@@ -1,0 +1,80 @@
+/* The adopt dialog (#948 P5). The chrome is THE dialog (../HudDialog.module.css, NIGHTJAR #1531);
+   this sheet holds only what is adoption's own: the search box, the two-line mission rows with
+   their refusal reason, Load more, and the load error with its Retry. Tokens only. */
+
+.searchWrap {
+  composes: nj-frame-sm from global;
+  --nj-face: var(--bg-2);
+  --nj-edge: var(--border);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-3);
+  padding: 0 var(--sp-3);
+  min-height: 44px;
+  border-top-width: 1px;
+  border-top-color: var(--border);
+  color: var(--text-3);
+}
+.searchWrap:focus-within {
+  --nj-edge: var(--hud);
+  border-color: var(--hud);
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+
+.search {
+  flex: 1;
+  min-width: 0;
+  min-height: 42px;
+  appearance: none;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+}
+.search::placeholder {
+  color: var(--text-3);
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+/* The mission's state, session count and age are INFORMATION on a row the operator can pick, not a
+   decorative label, so they take --text-2: --text-3 at this size is below the 4.5:1 small-text
+   floor on the row (#961 review 4813). */
+.meta,
+.why {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+/* The refusal is a sentence the operator has to read, so it keeps its case. */
+.why {
+  letter-spacing: 0.02em;
+  text-transform: none;
+}
+
+.more {
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.loadError {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+}

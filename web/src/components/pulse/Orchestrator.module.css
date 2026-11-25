@@ -1,0 +1,492 @@
+/* Pulse orchestrator decisions (#726): the decision row, its evidence, the session's menu and
+ * the permission dialog, and the health line (#772). Tactical-HUD vocabulary (#211): 1px borders, no
+ * radii, mono tags, semantic-colour state. Every colour comes from the shared tokens so theme
+ * + custom accent cascade.
+ *
+ * Status colour is load-bearing (docs/design.md): `--status-degraded` (amber) is the
+ * "needs a human" signal, `--status-down` (red) is reserved for errors and failure. An
+ * escalation wants a DECISION — it must never render as an incident.
+ *
+ * NIGHTJAR (#1573): a decision in the mission console is a small chamfered frame that deploys in,
+ * its edge and rail in the decision's tone; the verb is a stamp; the session's own menu and the
+ * permission dialog's options are 44 px row plates; text never reads a raw status hue (`--warn-text`).
+ * Tokens only (docs/nightjar-ledger.md). */
+
+/* --- action rows ---------------------------------------------------------------- */
+.act {
+  composes: nj-frame-sm nj-deploy nj-fade-ok from global;
+  --nj-face: var(--bg-1);
+  padding: var(--sp-3) var(--sp-4);
+  margin: var(--sp-3) var(--sp-4) 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+/* Embedded in a session card (#781): NO box. The border, left stripe, background and padding
+ * exist because the row used to stand alone in the Activity list, where it had to read as its
+ * own object. Inside a card it already is inside one, so the frame drew a second boundary
+ * around content that belongs to the card — a box in a box, each with its own footer, one
+ * session rendering as two nested things.
+ *
+ * The status colour the left stripe carried is not lost: the LED and the amber verb chip both
+ * still carry it, so `docs/design.md`'s rule holds (status colour load-bearing, never the sole
+ * signal). Spacing comes from the card's own column `gap`. */
+.actEmbedded {
+  border: 0;
+  background: none;
+  clip-path: none;
+  padding: 0;
+  margin: 0;
+  animation: none;
+}
+/* Evidence disclosure + decision controls share one row (#781) — the ✕ on a line of its own was
+ * pure vertical waste. The controls sit beside the RECAP *head*; the disclosure BODY still
+ * renders full width beneath it, which is why they go in the head row rather than wrapping the
+ * whole block. */
+.evdHeadRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.evdHeadRow .evdHead {
+  width: auto;
+}
+.evdHeadRow .btns {
+  margin-top: 0;
+}
+.toneDegraded {
+  --nj-edge: color-mix(in srgb, var(--status-degraded) 45%, transparent);
+  border-top-color: var(--status-degraded);
+}
+/* The tone stripe is the box's left edge; with no box there is nothing to tint. */
+.actEmbedded.toneDegraded,
+.actEmbedded.toneUp,
+.actEmbedded.toneDown,
+.actEmbedded.toneIdle {
+  border-left-color: transparent;
+}
+.toneUp {
+  --nj-edge: color-mix(in srgb, var(--status-up) 45%, transparent);
+  border-top-color: var(--status-up);
+}
+.toneDown {
+  --nj-edge: color-mix(in srgb, var(--status-down) 50%, transparent);
+  border-top-color: var(--status-down);
+}
+.toneIdle {
+  --nj-edge: var(--line-strong);
+  border-top-color: var(--status-unknown);
+}
+
+.actTop {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+.verb {
+  padding: 3px 7px;
+  border: 1px solid var(--hud-dim);
+  font: 600 var(--fs-micro) / 1 var(--font-mono);
+  letter-spacing: 0.16em;
+  color: var(--hud-text);
+}
+.verbEsc {
+  color: var(--warn-text);
+  border-color: color-mix(in srgb, var(--status-degraded) 60%, transparent);
+}
+.sname {
+  font-size: var(--fs-body);
+  font-weight: 600;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.eng {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--text-3);
+  border: 1px solid var(--line);
+  padding: 1px 4px;
+}
+.conf {
+  font: 400 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.1em;
+  color: var(--text-3);
+  margin-left: auto;
+}
+.why {
+  margin: var(--sp-2) 0 0;
+  font-size: var(--fs-body);
+  line-height: 1.5;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+
+/* --- an API session's waiting requests (#1900) ------------------------------------ */
+/* One card per API session: the count in the corner (must-read, so `--text-2`), up to three
+ * requests as rows, and one primary plate to the conversation where each is decided. */
+.confPlain {
+  color: var(--text-2);
+}
+.pend {
+  margin: var(--sp-2) 0 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--line);
+}
+.pendItem {
+  display: flex;
+  gap: var(--sp-3);
+  align-items: baseline;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+  min-width: 0;
+  font-size: var(--fs-meta);
+}
+.pendKind {
+  flex: 0 0 74px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.pendCode {
+  font-family: var(--font-mono);
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.pendLabel {
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.pendMore {
+  margin-top: var(--sp-2);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.pendOpen {
+  composes: primary from "../ui/actionButton.module.css";
+  align-self: flex-start;
+  margin-top: var(--sp-3);
+}
+@media (max-width: 800px) {
+  .pendOpen {
+    align-self: stretch;
+  }
+}
+
+/* --- evidence -------------------------------------------------------------------- */
+/* The frame belongs to the disclosure's own parts, not to this wrapper (#781). It used to sit
+ * here, which was fine while the wrapper held nothing but the disclosure — but now the decision
+ * controls share the head's row, and a border on the wrapper drew one big box around the button
+ * AND the controls AND the empty space after them. That is the same box-in-a-box defect this
+ * issue is about, one level down. */
+.evd {
+  margin-top: 7px;
+}
+.evdHead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: var(--sp-1) var(--sp-2);
+  min-height: 30px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  font: 600 var(--fs-micro) / 1 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  cursor: pointer;
+}
+.evdHead:hover {
+  color: var(--text-2);
+}
+.chevOpen {
+  transform: rotate(180deg);
+}
+/* Stacks under the head as one box: the head keeps its border, the body drops the shared edge. */
+.evdBody {
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line);
+  border-top: 0;
+  background: var(--term-bg);
+}
+.pre {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  line-height: 1.5;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  /* Wide screens scroll INSIDE the block — the page itself never scrolls sideways (#494). */
+  max-height: 220px;
+  overflow-y: auto;
+}
+.muted {
+  font-size: var(--fs-meta);
+  color: var(--text-3);
+}
+
+/* --- footer ----------------------------------------------------------------------- */
+.proj {
+  color: var(--accent-text);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  /* A long project name must not push `Open session` off the row at 320px. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 40%;
+}
+.repeats {
+  border: 1px solid var(--line);
+  padding: 0 4px;
+  color: var(--text-2);
+}
+.actFoot {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  margin-top: var(--sp-3);
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--line);
+  font: 400 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.08em;
+  color: var(--text-3);
+}
+.state {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.jump {
+  margin-left: auto;
+  color: var(--accent-text);
+  text-decoration: none;
+  padding: 4px 0;
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.jump:hover {
+  text-decoration: underline;
+}
+
+/* Mobile: touch targets reach 44px. */
+@media (max-width: 800px) {
+  .conf {
+    margin-left: 0;
+  }
+  .jump {
+    min-height: 44px;
+  }
+  .evdHead {
+    min-height: 44px;
+  }
+}
+
+/* --- approve / reject (#726 Phase 2) -------------------------------------------- */
+.btns {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 8px;
+}
+.approve {
+  composes: primary compact from "../ui/actionButton.module.css";
+}
+.reject {
+  composes: ghost compact from "../ui/actionButton.module.css";
+  min-width: 34px;
+}
+
+/* A stale verdict is information, not an incident — degraded, never `--status-down`. */
+.stale {
+  margin: var(--sp-2) 0 0;
+  font-size: var(--fs-meta);
+  color: var(--warn-text);
+}
+
+@media (max-width: 800px) {
+  .approve {
+    flex: 1;
+  }
+  .reject {
+    min-width: 44px;
+  }
+}
+
+/* Configured-but-failing (#772). Amber, not red: the feature is degraded, not destroyed — the
+ * sessions and their history are all still there, only the watching has stopped. Status colour
+ * is load-bearing here, so the icon and the wording carry it too. */
+.degraded {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border: 1px solid var(--status-degraded);
+  background: color-mix(in srgb, var(--status-degraded) 8%, transparent);
+  color: var(--text-1);
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+}
+.degraded svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--status-degraded);
+}
+.degraded a {
+  color: var(--accent-text);
+}
+
+/* --- #1060 P3: the session's own menu, answerable from the card -----------------------------------
+ * The question in the row's body text, then one button per option in the reject button's quiet
+ * shape. The armed option takes the approve shape ("Send 2") — the same two-step an approval has. */
+.menu {
+  margin: 7px 0 0;
+}
+.menuQ {
+  margin: 0 0 6px;
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.menuLead {
+  color: var(--text-2);
+}
+.menuBtns {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.menuOpt {
+  composes: nj-plate from global;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 44px;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid transparent;
+  color: var(--text-1);
+  font: inherit;
+  font-size: var(--fs-row);
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.menuOpt:hover:not(:disabled) {
+  --nj-edge: var(--hud);
+}
+.menuOpt:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.menuOpt:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.menuBtns .approve {
+  min-height: 44px;
+  align-self: flex-start;
+}
+.menuHint {
+  margin: 6px 0 0;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+
+/* --- #1213: an agent's tool-permission dialog, answerable from the card --------------------------
+ * The dialog's own words in a framed block: who asks and for which tool, then the command / pattern /
+ * path in mono (wrapping, never overflowing), then one button per option in the menu's quiet shape.
+ * An option that grants more than this call is dashed; armed, it adds a degraded-tone warning. */
+.perm {
+  margin: var(--sp-2) 0 0;
+  border: 1px dashed color-mix(in srgb, var(--status-degraded) 60%, transparent);
+  background: color-mix(in srgb, var(--status-degraded) 5%, transparent);
+  min-width: 0;
+}
+.permHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px var(--sp-2);
+  padding: var(--sp-2) var(--sp-3) 0;
+}
+.permKind {
+  font: 600 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.permTool {
+  font-size: var(--fs-row);
+  font-weight: 600;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.permDetail {
+  margin: var(--sp-2) var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--term-bg);
+  border: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  color: var(--text-1);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 14em;
+  overflow-y: auto;
+}
+.permQ {
+  margin: 0 var(--sp-3) var(--sp-2);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.permBtns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-3) var(--sp-3);
+}
+.permBtns .approve {
+  min-height: 44px;
+}
+.permPersistent {
+  border-style: dashed;
+}
+.perm .menuHint,
+.perm .stale {
+  margin: 0 var(--sp-3) var(--sp-2);
+}
+.permWarn {
+  margin: 0 var(--sp-3) var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 2px solid var(--status-degraded);
+  background: color-mix(in srgb, var(--status-degraded) 8%, transparent);
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+  color: var(--text-1);
+}
+.permWarn strong {
+  color: var(--text-1);
+}
+.permDone {
+  margin: 0 9px 9px;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.permDone strong {
+  color: var(--text-1);
+}

@@ -1,0 +1,21 @@
+/* The public artifact viewer's own block (#2068). The page, the notices and the facts are the
+ * share viewer's (ShareViewer.module.css), the header is PublicBar's; this is only the frame,
+ * which fills what the header leaves. Tokens only. */
+
+.main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+/* The artifact's own page: a plain light ground, like any web page that paints none of its own
+ * (the system Canvas colour in the light scheme, not a palette literal), so unstyled agent HTML
+ * never reads as black text on the dark atmosphere. */
+.frame {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  border: 0;
+  color-scheme: light;
+  background: Canvas;
+}

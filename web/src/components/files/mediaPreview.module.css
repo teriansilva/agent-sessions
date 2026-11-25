@@ -1,0 +1,166 @@
+/* The Files viewer's media stage (#1530): the browser's own <img>/<video>/<audio> under a type
+ * strip. Tokens only, no radius, every control on the 44px floor. The checker behind an image is a
+ * static pattern INSIDE the content stage — content, not chrome, the exemption design.md §3 grants
+ * the API-look backgrounds — so transparency is visible. */
+
+.media {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.strip {
+  display: flex;
+  align-items: center;
+  gap: 8px 12px;
+  flex-wrap: wrap;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-1);
+}
+.tag {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.tag b {
+  color: var(--text-2);
+  font-weight: 600;
+}
+.spacer {
+  flex: 1;
+}
+
+.btn {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  text-decoration: none;
+  cursor: pointer;
+}
+.btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+.btn:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
+.btn[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+.btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.seg {
+  display: inline-flex;
+}
+.seg .btn + .btn {
+  margin-left: -1px;
+}
+
+.stage {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  overflow: auto;
+  padding: 16px;
+  background: var(--surface-3);
+}
+.checker {
+  background-color: var(--surface-3);
+  background-image:
+    linear-gradient(45deg, var(--line) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--line) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--line) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--line) 75%);
+  background-size: 16px 16px;
+  background-position:
+    0 0,
+    0 8px,
+    8px -8px,
+    -8px 0;
+}
+/* 1:1 lets a big image scroll the stage instead of being scaled down. */
+.actual {
+  place-items: start;
+}
+.img {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border: 1px solid var(--line-strong);
+}
+.actual .img {
+  max-width: none;
+  max-height: none;
+}
+.video {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  background: var(--surface-3);
+  border: 1px solid var(--line-strong);
+}
+.audioCard {
+  width: min(560px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--line-strong);
+  background: var(--bg-1);
+}
+.audioName {
+  font-weight: 600;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.audio {
+  width: 100%;
+}
+
+/* Not previewable / can't play / busy / Home Free states: what happened, what the file is, what
+ * you can do. Never a broken player and never a spinner that does not end. */
+.note {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: 560px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.note .tag {
+  color: var(--text-3);
+}
+.noteBad {
+  padding-left: 10px;
+  border-left: 3px solid var(--status-degraded);
+}
+.row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}

@@ -1,0 +1,310 @@
+{
+  "commands": {
+    "/probe-sub": {
+      "asked": 1,
+      "child_model_calls": 2,
+      "child_ran": true,
+      "returned": true,
+      "stop": "end_turn",
+      "subagent_started": true
+    },
+    "/review": {
+      "asked": 0,
+      "child_model_calls": 1,
+      "child_ran": false,
+      "returned": false,
+      "stop": null,
+      "subagent_started": true
+    }
+  },
+  "guarded_permission_sha256": "272b80420c3ec603ada851cb5ff0e4bbfb18b00efed0845e87c5b452e3c9810d",
+  "offered": [
+    "bash",
+    "edit",
+    "fixture_labels",
+    "glob",
+    "grep",
+    "read",
+    "skill",
+    "todowrite",
+    "webfetch",
+    "write"
+  ],
+  "operator": "allow everything: global config, project config, build and general agents",
+  "probe": "tests/fixtures/opencode_tool_routes_probe.py",
+  "tools": {
+    "bash": {
+      "asked": 1,
+      "invalid": false,
+      "kinds": [
+        "execute"
+      ],
+      "offered": true,
+      "ran": false,
+      "statuses": [
+        "failed",
+        "in_progress",
+        "pending"
+      ],
+      "stop": "end_turn"
+    },
+    "codesearch": {
+      "asked": 0,
+      "invalid": true,
+      "kinds": [
+        "other"
+      ],
+      "offered": false,
+      "ran": false,
+      "statuses": [
+        "completed",
+        "in_progress",
+        "pending"
+      ],
+      "stop": "end_turn"
+    },
+    "edit": {
+      "asked": 1,
+      "invalid": false,
+      "kinds": [
+        "edit"
+      ],
+      "offered": true,
+      "ran": false,
+      "statuses": [
+        "failed",
+        "in_progress",
+        "pending"
+      ],
+      "stop": "end_turn"
+    },
+    "fixture_labels": {
+      "asked": 1,
+      "invalid": false,
+      "kinds": [
+        "other"
+      ],
+      "offered": true,
+      "ran": false,
+      "statuses": [
+        "failed",
+        "in_progress",
+        "pending"
+      ],
+      "stop": "end_turn"
+    },
+    "glob": {
+      "asked": 1,
+      "invalid": false,
+      "kinds": [
+        "search"
+      ],
+      "offered": true,
+      "ran": false,
+      "statuses": [
+        "failed",
+        "in_progress",
+        "pending"
+      ],
+      "stop": "end_turn"
+    },
+    "grep": {
+      "asked": 1,
+      "invalid": false,
+      "kinds": [
+        "search"
+      ],
+      "offered": true,
+      "ran": false,
+      "statuses": [
+        "failed",
+        "in_progress",
+        "pending"
+      ],
+      "stop": "end_turn"
+    },
+    "list": {
+      "asked": 0,
+      "invalid": true,
+      "kinds": [
+        "other"
+      ],
+      "offered": false,
+      "ran": false,
+      "statuses": [
+        "completed",
+        "in_progress",
+        "pending"
+      ],
+      "stop": "end_turn"
+    },
+    "lsp": {
+      "asked": 0,
+      "invalid": true,
+      "kinds": [
+        "other"
+      ],
+      "offered": false,
+      "ran": false,
+      "statuses": [
+        "completed",
+        "in_progress",
+        "pending"
+      ],
+      "stop": "end_turn"
+    },
+    "multiedit": {
+      "asked": 0,
+      "invalid": true,
+      "kinds": [
+        "other"
+      ],
+      "offered": false,
+      "ran": false,
+      "statuses": [
+        "completed",
+        "in_progress",
+        "pending"
+      ],
+      "stop": "end_turn"
+    },
+    "patch": {
+      "asked": 0,
+      "invalid": true,
+      "kinds": [
+        "edit",
+        "other"
+      ],
+      "offered": false,
+      "ran": false,
+      "statuses": [
+        "completed",
+        "in_progress",
+        "pending"
+      ],
+      "stop": "end_turn"
+    },
+    "question": {
+      "asked": 0,
+      "invalid": true,
+      "kinds": [
+        "other"
+      ],
+      "offered": false,
+      "ran": false,
+      "statuses": [
+        "completed",
+        "in_progress",
+        "pending"
+      ],
+      "stop": "end_turn"
+    },
+    "read": {
+      "asked": 1,
+      "invalid": false,
+      "kinds": [
+        "read"
+      ],
+      "offered": true,
+      "ran": false,
+      "statuses": [
+        "failed",
+        "in_progress",
+        "pending"
+      ],
+      "stop": "end_turn"
+    },
+    "skill": {
+      "asked": 1,
+      "invalid": false,
+      "kinds": [
+        "other"
+      ],
+      "offered": true,
+      "ran": false,
+      "statuses": [
+        "failed",
+        "in_progress",
+        "pending"
+      ],
+      "stop": "end_turn"
+    },
+    "task": {
+      "asked": 0,
+      "invalid": true,
+      "kinds": [
+        "other",
+        "think"
+      ],
+      "offered": false,
+      "ran": false,
+      "statuses": [
+        "completed",
+        "in_progress",
+        "pending"
+      ],
+      "stop": "end_turn"
+    },
+    "todowrite": {
+      "asked": 1,
+      "invalid": false,
+      "kinds": [
+        "other"
+      ],
+      "offered": true,
+      "ran": false,
+      "statuses": [
+        "failed",
+        "in_progress",
+        "pending"
+      ],
+      "stop": "end_turn"
+    },
+    "webfetch": {
+      "asked": 1,
+      "invalid": false,
+      "kinds": [
+        "fetch"
+      ],
+      "offered": true,
+      "ran": false,
+      "statuses": [
+        "failed",
+        "in_progress",
+        "pending"
+      ],
+      "stop": "end_turn"
+    },
+    "websearch": {
+      "asked": 0,
+      "invalid": true,
+      "kinds": [
+        "other"
+      ],
+      "offered": false,
+      "ran": false,
+      "statuses": [
+        "completed",
+        "in_progress",
+        "pending"
+      ],
+      "stop": "end_turn"
+    },
+    "write": {
+      "asked": 1,
+      "invalid": false,
+      "kinds": [
+        "edit"
+      ],
+      "offered": true,
+      "ran": false,
+      "statuses": [
+        "failed",
+        "in_progress",
+        "pending"
+      ],
+      "stop": "end_turn"
+    }
+  },
+  "version": "1.18.35"
+}

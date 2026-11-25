@@ -1,0 +1,66 @@
+[
+  {
+    "payload": {
+      "tool_name": "Bash",
+      "input": {
+        "command": "rm -rf build"
+      },
+      "permission_suggestions": [
+        {
+          "type": "addDirectories",
+          "directories": [
+            "/srv/data"
+          ],
+          "destination": "session"
+        }
+      ]
+    },
+    "risk": {
+      "level": "risky",
+      "reasons": [
+        "deletes files recursively or forcibly"
+      ]
+    },
+    "always": [
+      {
+        "id": "g5ee6c71b1ae4eae6",
+        "label": "Allow access to `/srv/data` · this session only · RISKY: deletes files recursively or forcibly",
+        "scope": "session",
+        "rules": [
+          "directory: /srv/data"
+        ]
+      }
+    ]
+  },
+  {
+    "payload": {
+      "tool_name": "Bash",
+      "input": {
+        "command": "echo 'unterminated"
+      },
+      "permission_suggestions": [
+        {
+          "type": "addDirectories",
+          "directories": [
+            "/srv/data"
+          ],
+          "destination": "session"
+        }
+      ]
+    },
+    "risk": {
+      "level": "unknown",
+      "reasons": []
+    },
+    "always": [
+      {
+        "id": "g5ee6c71b1ae4eae6",
+        "label": "Allow access to `/srv/data` · this session only · not classified",
+        "scope": "session",
+        "rules": [
+          "directory: /srv/data"
+        ]
+      }
+    ]
+  }
+]

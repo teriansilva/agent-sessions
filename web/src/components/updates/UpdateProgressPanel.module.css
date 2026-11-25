@@ -1,0 +1,101 @@
+/* The Updates card's progress panel (#1085; NIGHTJAR #1574). A small frame; the bar is the HUD
+ * fill, and while the installer runs the shared Acquiring strip scans under it. Green and red are
+ * STATUS (finished / failed), as docs/design.md §3 reserves them. */
+
+.panel {
+  composes: nj-frame-sm from global;
+  margin: var(--sp-3) 0;
+  padding: var(--sp-3) var(--sp-4);
+}
+
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px 16px;
+  margin-bottom: 8px;
+  font: 400 var(--fs-label) var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.head svg {
+  vertical-align: -2px;
+}
+
+.time {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-3);
+}
+
+.ok {
+  color: var(--status-up);
+}
+
+.bad {
+  color: var(--status-down);
+}
+
+.track {
+  height: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+}
+
+.fill {
+  height: 100%;
+  background: var(--hud);
+  transition: width var(--t-slow) var(--ease-out);
+}
+.acquire {
+  composes: nj-acquire from global;
+  margin-top: var(--sp-1);
+}
+
+.fillBad {
+  background: var(--status-down);
+}
+
+.steps {
+  display: flex;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.steps span {
+  flex: 1;
+  height: 3px;
+  background: var(--line-strong);
+}
+
+.steps .stepDone {
+  background: var(--hud);
+}
+
+.steps .stepNow {
+  background: color-mix(in srgb, var(--hud) 45%, var(--line-strong));
+}
+
+.hint {
+  margin: 8px 0 0;
+  font-size: var(--fs-row);
+  color: var(--text-2);
+}
+
+.reload {
+  composes: primary from "../ui/actionButton.module.css";
+  margin-top: 10px;
+}
+
+.spin {
+  animation: global(nj-spin) 1.2s linear infinite;
+}
+
+/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
+:root:not([data-motion="full"]) .fill {
+  transition: none;
+}
+:root:not([data-motion="full"]) .spin {
+  animation: none;
+}

@@ -1,0 +1,261 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>#1726 API rail + background strip — mockup</title>
+<link rel="stylesheet" href="base.css">
+<script src="icons.js"></script>
+<style>
+.pw { position: relative; }
+.num.abs { position: absolute; z-index: 6; }
+.notes { width: 1240px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 18px; margin-top: 16px; }
+.notes .note { max-width: none; }
+.empty { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 18px 6px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.empty b { font: 600 11px var(--font-mono); letter-spacing: .14em; text-transform: uppercase; color: var(--text-2); }
+.empty span { font-size: 13px; color: var(--text-3); line-height: 1.5; }
+/* map */
+.map { position: relative; width: 1180px; height: 640px; background-color: var(--ground); overflow: hidden; }
+.map .unit { position: absolute; display: flex; align-items: center; gap: 7px; padding: 6px 10px; border: 1px solid var(--hud-dim); background: var(--bg-1); font: 600 10px var(--font-mono); letter-spacing: .14em; color: var(--text-2); }
+.win { position: absolute; --c: 21px; }
+.win .frame { position: absolute; inset: 0; padding: 1px; background: var(--hud); clip-path: polygon(var(--c) 0,100% 0,100% calc(100% - var(--c)),calc(100% - var(--c)) 100%,0 100%,0 var(--c)); }
+.win .face { display: flex; flex-direction: column; height: 100%; overflow: hidden; background: var(--bg-1); clip-path: polygon(20.4px 0,100% 0,100% calc(100% - 20.4px),calc(100% - 20.4px) 100%,0 100%,0 20.4px); }
+.win .wrail { position: absolute; top: 0; left: 23px; width: 34%; height: 2px; background: var(--hud); box-shadow: var(--glow-rail); z-index: 3; }
+.whead { flex: 0 0 30px; display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 22px 0 19px; font: 600 12px/1 var(--font-mono); color: var(--text-1); background: repeating-linear-gradient(to bottom, color-mix(in srgb, var(--hud) 5%, transparent) 0 1px, transparent 1px 3px), rgba(255,255,255,.035); border-bottom: 1px solid var(--line); }
+.whead .call { font-size: 10px; font-weight: 700; letter-spacing: .14em; color: var(--hud-text); }
+.whead .wt { color: var(--text-2); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.whead .btns { margin-left: auto; display: flex; gap: 2px; }
+.whead .wb { width: 26px; height: 24px; display: inline-flex; align-items: center; justify-content: center; color: var(--text-2); }
+.whead .wb svg { width: 14px; height: 14px; }
+.whead .wb.open { background: color-mix(in srgb, var(--hud) 18%, transparent); color: var(--hud-text); box-shadow: inset 0 -2px 0 var(--hud); }
+.wfoot { flex: 0 0 20px; border-top: 1px solid var(--line); font: 10px/20px var(--font-mono); letter-spacing: .12em; color: var(--text-3); padding: 0 24px; }
+.menu { position: absolute; z-index: 20; width: 248px; background: var(--bg-1); border: 1px solid var(--hud-dim); border-top: 2px solid var(--hud); box-shadow: var(--shadow-menu); padding: 4px 0; clip-path: polygon(8px 0,100% 0,100% calc(100% - 8px),calc(100% - 8px) 100%,0 100%,0 8px); }
+.menu .g { font: 600 10px var(--font-mono); letter-spacing: .16em; color: var(--text-3); padding: 8px 12px 4px; }
+.menu .mi { display: flex; align-items: center; gap: 10px; min-height: 32px; padding: 0 12px; font-size: 13px; color: var(--text-1); }
+.menu .mi .k { margin-left: auto; }
+.menu .mi.hl { background: var(--row-hover); box-shadow: inset 2px 0 0 var(--hud); }
+.menu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
+.mapnote { position: absolute; }
+.sqm { display: inline-block; flex: none; width: 7px; height: 7px; border: 1px solid var(--text-3); background: transparent; }
+.win .activity ul { display: none; }
+.win .activity .sum { white-space: nowrap; overflow: hidden; }
+.win .activity .sum svg { transform: rotate(-90deg); }
+</style></head>
+<body>
+<div id="root"></div>
+<script>
+const head = ({ phone = false, railOn = true, pin = false } = {}) => `
+<div class="phead">
+  <span class="facts"><span class="led up"></span><span class="word w-ok">Working</span></span>
+  <span class="badge">CLAUDE</span>
+  <span class="ptitle">Fix paging drops rows under a filter</span>
+  <span class="pmeta">
+    ${phone ? '' : '<span class="chip">opus</span><span class="chip">CTX 48.2K</span>'}
+    <span class="ibtn plate ${phone ? 'lg' : ''}" title="Files">${I('folder')}</span>
+    <span class="pw"><span class="ibtn plate ${phone ? 'lg' : ''} ${railOn ? 'on' : ''}" title="Plan and tools">${I('rail')}</span>${pin ? '<span class="num abs" style="top:40px;left:7px">1</span>' : ''}</span>
+    <span class="ibtn plate ${phone ? 'lg' : ''}" title="More">${I('more')}</span>
+  </span>
+</div>`;
+
+const transcript = ({ short = false } = {}) => `
+<div class="user"><div class="who">You <span class="ts">14:01</span></div>
+  <div class="txt">The session list drops rows when a filter is active and you page past 50. Find out why and fix it, and keep the facet counts right.</div></div>
+<div class="reply"><div class="who">Claude <span class="ts">14:02 · 38 s</span></div>
+  <div class="txt"><p>Found it. <code>/api/sessions</code> paged the raw list first and filtered each page, so a filtered page came back short and the next cursor skipped rows.</p>
+  ${short ? '' : '<p>I\'m moving the filter ahead of paging and keeping facets computed before filters. The paging suite runs in the background while I write the snapshot-pin test.</p>'}</div>
+  <div class="activity"><div class="sum">${I('cd', 'style="width:12px;height:12px"')} 4 calls · latest <b style="color:var(--text-1)">EDIT</b> routes/sessions.py</div>
+  <ul>
+    <li class="tool"><span class="tverb">Read</span><span class="tpath">src/agent_sessions/routes/sessions.py</span><span class="tdet">412 lines</span></li>
+    <li class="tool"><span class="tverb">Grep</span><span class="tpath">"def page_sessions" src/</span><span class="tdet">3 matches</span></li>
+    ${short ? '' : '<li class="tool"><span class="tverb">Bash</span><span class="tpath">pytest tests/test_session_filters.py -x</span><span class="tdet">1 failed</span></li>'}
+    <li class="tool"><span class="tverb">Edit</span><span class="tpath">src/agent_sessions/routes/sessions.py</span><span class="tdet">+18 −7</span></li>
+  </ul></div>
+</div>`;
+
+const strip = (pin) => `
+<div class="strip pw">${pin ? '<span class="num abs" style="top:-9px;left:6px">4</span>' : ''}
+  <div class="strip-bar"><span class="led up"></span><span class="k">2 background jobs</span>
+    <span class="sep">·</span><span class="job">npm run dev</span><span class="age">14m</span>
+    <span class="sep">·</span><span class="job">pytest -x</span><span class="age">2m</span>
+    <span class="tog">SHOW ${I('cu')}</span></div>
+</div>`;
+
+const comp = (phone) => `
+<div class="comp"><div class="ta">Message Claude…</div>
+${phone ? `<span class="ibtn plate lg">${I('mic')}</span>` : ''}<span class="btn plate primary">Send</span></div>`;
+
+const planBody = ({ pins = false } = {}) => `
+<div class="cs"><span class="notch"></span><span class="t">Plan</span><span>// <span class="v">2 of 5</span> done</span><span class="m"><span class="pips"><i class="on"></i><i class="on"></i><i></i><i></i><i></i></span></span></div>
+<p class="rnote">Paging dropped rows because the filter ran per page. Fix the order first, then pin it with a test.</p>
+<ul class="plist pw">${pins ? '<span class="num abs" style="top:-9px;right:-6px">2</span>' : ''}
+  <li class="pi done"><span class="mk"><span class="chk">${I('check')}</span></span><span class="it">Reproduce the gap with a 120-session fixture</span><span class="st word w-ok">Done</span></li>
+  <li class="pi done"><span class="mk"><span class="chk">${I('check')}</span></span><span class="it">Filter the full set before paging</span><span class="st word w-ok">Done</span></li>
+  <li class="pi now"><span class="mk"><span class="led up"></span></span><span class="it">Keep facets computed before filters</span><span class="st word w-ok">In progress</span></li>
+  <li class="pi"><span class="mk"><span class="led hollow"></span></span><span class="it">Add the snapshot-pin regression test</span><span class="st word w-mute">Pending</span></li>
+  <li class="pi"><span class="mk"><span class="led hollow"></span></span><span class="it">Update session-list-filtering.md</span><span class="st word w-mute">Pending</span></li>
+</ul>
+<div class="disc pw">${pins ? '<span class="num abs" style="top:-9px;right:-6px">3</span>' : ''}${I('cr')} Plan document <span class="dm">38 lines · 14:01</span></div>`;
+
+const toolsBody = () => `
+<div class="tsec"><div class="cs"><span class="notch"></span><span class="t">MCP servers</span><span>// <span class="v">4</span></span><span class="m">calls</span></div>
+  <div class="trow"><span class="n"><span class="led up"></span>battlelab_memory</span><span class="word w-ok">Connected</span><span class="c">4</span></div>
+  <div class="trow"><span class="n"><span class="led up"></span>forgejo</span><span class="word w-ok">Connected</span><span class="c">11</span></div>
+  <div class="trow"><span class="n"><span class="led down"></span>nextcloud</span><span class="word w-down">Failed</span><span class="c z">0</span></div>
+  <div class="trow"><span class="n"><span class="sqm"></span>github</span><span class="word w-mute">Configured</span><span class="c z">—</span></div>
+</div>
+<div class="tsec"><div class="cs"><span class="notch"></span><span class="t">Skills</span><span>// <span class="v">5</span> available · <span class="v">1</span> used</span></div>
+  <div class="srow used">code-review<span class="stamp">${I('check', 'style="width:10px;height:10px"')} Used this session</span></div>
+  <div class="srow">simplify</div><div class="srow">security-review</div><div class="srow">dataviz</div><div class="srow">update-config</div>
+</div>
+<div class="tsec"><div class="cs"><span class="notch"></span><span class="t">Slash commands</span><span>// <span class="v">8</span></span></div>
+  <div class="cmds"><span class="cmd">/compact</span><span class="cmd">/review</span><span class="cmd">/init</span><span class="cmd">/cost</span><span class="cmd">/memory</span><span class="cmd">/mcp</span><span class="cmd">/context</span><span class="cmd">/agents</span></div>
+</div>
+<div class="tsec"><div class="cs"><span class="notch"></span><span class="t">Built-in tools used</span><span>// <span class="v">42</span> calls</span></div>
+  <div class="urow"><span>Read</span><span class="bar"><i style="width:100%"></i></span><span class="c">22</span></div>
+  <div class="urow"><span>Bash</span><span class="bar"><i style="width:64%"></i></span><span class="c">14</span></div>
+  <div class="urow"><span>Edit</span><span class="bar"><i style="width:27%"></i></span><span class="c">6</span></div>
+</div>`;
+
+const tabs = (which, big) => `
+<div class="tabs"><span class="tab ${which === 'plan' ? 'on' : ''}">Plan <span class="cnt">2/5</span></span><span class="tab ${which === 'tools' ? 'on' : ''}">Tools <span class="cnt">4</span></span>
+<span class="ibtn ${big ? 'lg' : ''} x">${I('x')}</span></div>`;
+
+const rail = (which, w, opts = {}) => `
+<div class="gutter"><i></i></div>
+<aside class="rail" style="width:${w}px"><span class="nj-rail is-short"></span>
+  ${tabs(which)}
+  <div class="rbody">${which === 'plan' ? planBody(opts) : toolsBody()}</div>
+  <div class="rfoot"><span>Updated 14:03:12</span><span style="margin-left:auto">${which === 'plan' ? 'live' : 'this session'}</span></div>
+</aside>`;
+
+const desktop = (theme, which, n, caption) => `
+<section class="board board-grid ${theme}" id="b${n}">
+  <p class="cap"><b>#1726 · board ${n}</b> desktop · ${theme === 't-dark' ? 'dark' : 'light'} <span>${caption}</span></p>
+  <div class="nj-panel is-hero" style="width:1240px;height:720px"><div class="nj-face"><span class="nj-rail is-short"></span>
+    <div class="pane">${head({ pin: n === 1 })}
+      <div class="split"><div class="main"><div class="log">${transcript()}</div>${strip(n === 1)}${comp()}</div>
+      ${rail(which, 340, { pins: n === 1 })}</div>
+    </div></div></div>
+  ${n === 1 ? `<div class="notes">
+    <div class="note"><span class="num">1</span><b>Rail toggle</b> is a head action (pressed = open). The rail shares the dock slot with Files: one open at a time.</div>
+    <div class="note"><span class="num">2</span><b>Plan</b>: the live checklist, each row an LED or check paired with its word. It survives a reload and stays at the last plan after the turn ends.</div>
+    <div class="note"><span class="num">3</span><b>Plan document</b>: a collapsed &lt;Disclosure&gt; holding the proposed plan as Markdown. It expands with grid-rows, 180 ms.</div>
+    <div class="note"><span class="num">4</span><b>Background strip</b>: one 44 px line glued above the composer while any job runs. It replaces the inline BackgroundWork block. SHOW expands it (board 3).</div>
+  </div>` : `<div class="notes">
+    <div class="note"><b>MCP servers</b>: a measured status (connected / failed / pending) gets an LED + word. <b>Configured</b> is <i>unmeasured</i> (e.g. opencode, read from its config), so it gets no LED: a neutral hollow square and the word only. Calls this session per server. Names and status only, never command lines, URLs or env.</div>
+    <div class="note"><b>Skills</b>: what's available, with a "used this session" stamp derived from the tool rows.</div>
+    <div class="note"><b>Slash commands</b>: the agent's available commands, read-only. Toggling servers or skills is out of scope.</div>
+    <div class="note"><b>Built-in tools used</b>: counts derived from the existing tool rows. The bars are neutral meters (no status colour, no glow).</div>
+  </div>`}
+</section>`;
+
+const phoneSheet = (th = 't-dark') => `
+<div class="phone ${th}">
+  <div class="ptop"><span class="ibtn lg">${I('menu')}</span><span class="mark">BATTLELAB</span></div>
+  <div class="pane">${head({ phone: true })}
+    <div class="log">${transcript({ short: true })}</div>${strip(false)}${comp(true)}</div>
+  <div class="scrim"></div>
+  <div class="sheet" style="height:560px">
+    <div class="grab"></div>
+    ${tabs('plan', true)}
+    <div class="rbody">${planBody()}</div>
+    <div class="rfoot"><span>Updated 14:03:12</span><span style="margin-left:auto">live</span></div>
+  </div>
+</div>`;
+
+const phoneJobs = (th = 't-dark') => `
+<div class="phone ${th}">
+  <div class="ptop"><span class="ibtn lg">${I('menu')}</span><span class="mark">BATTLELAB</span></div>
+  <div class="pane">${head({ phone: true, railOn: false })}
+    <div class="log" style="opacity:.9">${transcript({ short: true })}</div>
+    <div class="strip" style="border-top:2px solid var(--hud)">
+      <div class="strip-bar"><span class="led up"></span><span class="k">3 background jobs</span>
+        <span class="tog">HIDE ${I('cd')}</span></div>
+      <div class="jobs">
+        <div class="jobrow"><div class="top"><span class="led up"></span><span class="word w-ok">Running</span><span class="word w-mute">· agent task</span><span class="age">started 14:02:11 · 14m</span></div>
+          <div class="name">npm run dev</div><div class="desc">Vite dev server for the web app</div>
+          <div class="rep"><span class="rl">LATEST REPORT</span>ready in 812 ms · hmr update /src/App.tsx</div></div>
+        <div class="jobrow"><div class="top"><span class="led up"></span><span class="word w-ok">Running</span><span class="word w-mute">· agent task</span><span class="age">started 14:14:40 · 2m</span></div>
+          <div class="name">pytest -x tests/test_session_filters.py</div><div class="desc">Paging suite, stops at the first failure</div>
+          <div class="rep"><span class="rl">LATEST REPORT</span>38 passed · running test_paging_snapshot_pin</div></div>
+        <div class="jobrow"><div class="top"><span class="led up"></span><span class="word w-ok">Running</span><span class="word w-mute">· process</span><span class="age">started 13:12:40 · 1h</span></div>
+          <div class="name">cargo watch</div><div class="desc">Spawned by the agent · pid 48211 (no report: process floor)</div></div>
+        <div class="foot">Runs outside a conversation turn. Stop ends the session's worker.</div>
+      </div>
+    </div>
+    ${comp(true)}</div>
+</div>`;
+
+const empties = () => `
+<div class="col t-dark" style="width:340px">
+  <p class="lbl">Empty · Plan tab, no plan</p>
+  <aside class="rail" style="width:340px;height:250px;border:1px solid var(--line)"><span class="nj-rail is-short"></span>${tabs('plan')}
+    <div class="rbody"><div class="cs"><span class="notch"></span><span class="t">Plan</span><span>// none</span></div>
+      <div class="empty"><b>No plan yet</b><span>The agent hasn't shared one. It appears here when the agent writes a plan or a todo list.</span></div></div></aside>
+  <p class="lbl" style="margin-top:10px">Empty · No background jobs</p>
+  <div style="border:1px solid var(--line)">${comp(false)}</div>
+  <div class="note">No background jobs: the strip is <b>not rendered</b>. There's no empty bar, and the composer sits on the log as it does today.</div>
+</div>`;
+
+const phones = `
+<section class="board t-dark" id="b3">
+  <p class="cap"><b>#1726 · board 3</b> phone 390 px · dark <span>rail as a bottom sheet · strip expanded · empty states</span></p>
+  <div class="row">
+    <div class="col"><p class="lbl">A · Rail as a sheet (Plan)</p>${phoneSheet()}
+      <div class="note" style="max-width:390px">The pane is too narrow to dock (measured width, the <i>filePanelLayout</i> rule), so the rail opens as the one sheet chrome. The sheet slides up 180 ms · Reduced: 120 ms fade · Off: instant (interaction motion ≤ 180 ms, design.md §8). Tabs and ✕ are 44 px.</div></div>
+    <div class="col"><p class="lbl">B · Background strip expanded</p>${phoneJobs()}
+      <div class="note" style="max-width:390px">SHOW expands the strip with <i>grid-template-rows 0fr → 1fr</i>: name, native state, description, latest report and start time. The strip lists <b>live jobs only</b>. Jobs cut off when a worker ends are transcript history rows (#1724), never strip rows.</div></div>
+    ${empties()}
+  </div>
+</section>`;
+
+const mapBoard = `
+<section class="board t-dark" id="b4">
+  <p class="cap"><b>#1726 · board 4</b> map window · desktop · dark <span>640 px window: the rail docks inside, and its toggle is in the merged ⋯ menu (#1109)</span></p>
+  <div class="map board-grid">
+    <div class="unit" style="left:60px;top:70px"><span class="led up"></span>CLAUDE-7F3A</div>
+    <div class="unit" style="left:40px;top:470px"><span class="led idle"></span>CODEX-21C0 · IDLE</div>
+    <div class="unit" style="left:980px;top:520px"><span class="led att"></span>OPENCODE-9B · NEEDS YOU</div>
+    <div class="win" style="left:250px;top:60px;width:640px;height:540px">
+      <div class="frame"><div class="face">
+        <div class="whead"><span style="color:var(--text-3);letter-spacing:-1px">⠿</span><span class="led up"></span><span class="call">CLAUDE-7F3A</span><span class="wt">Fix paging drops rows under a filter</span>
+          <span class="btns"><span class="wb open">${I('more')}</span><span class="wb">${I('min')}</span><span class="wb">${I('max')}</span><span class="wb">${I('x')}</span></span></div>
+        <div class="split" style="background:var(--bg-0)">
+          <div class="main" style="flex:1"><div class="pane"><div class="log" style="padding:14px 14px;gap:12px">${transcript({ short: true })}</div>${strip(false).replace('2 background jobs', '2 jobs').replace(/<span class="sep">·<\/span><span class="job">pytest -x<\/span><span class="age">2m<\/span>/, '')}${comp(false)}</div></div>
+          <aside class="rail" style="width:280px"><span class="nj-rail is-short"></span>${tabs('plan')}<div class="rbody" style="padding:12px">${planBody()}</div></aside>
+        </div>
+        <div class="wfoot">640 × 540 · RAIL DOCKED · 280 = 640 − 360</div>
+      </div></div>
+      <span class="wrail"></span>
+      <div class="menu" style="right:14px;top:30px">
+        <div class="g">PANE</div>
+        <div class="mi">${I('folder', 'style="width:14px;height:14px"')} Files</div>
+        <div class="mi hl">${I('rail', 'style="width:14px;height:14px"')} Plan &amp; tools <span class="k word w-2">Shown ${I('check', 'style="width:10px;height:10px"')}</span></div>
+        <div class="mi">Recap</div><div class="mi">Hand off…</div>
+        <hr><div class="g">SESSION</div>
+        <div class="mi">Rename…</div><div class="mi">Archive</div>
+      </div>
+    </div>
+    <div class="mapnote note" style="left:916px;top:84px;width:240px;background:var(--bg-0)"><b>Rail toggle in ⋯</b>. The window has ONE bar (#1109), so the head action folds into the merged menu's PANE group. Hand off and Recap stay menu-first.</div>
+    <div class="mapnote note" style="left:916px;top:250px;width:240px;background:var(--bg-0)"><b>Docked, measured</b>: the body is 640 px, which spares the 360 px minimum plus a rail of 260 or more, so it docks. A narrower window shows a <i>contained sheet</i> inside the window, the same as Files.</div>
+    <div class="mapnote note" style="left:916px;top:410px;width:240px;background:var(--bg-0)"><b>Strip in a window</b>: one line, with the lead job only when the column is narrow ("2 jobs · npm run dev 14m").</div>
+  </div>
+</section>`;
+
+
+const lightPhones = `
+<section class="board t-light board-grid" id="b5">
+  <p class="cap"><b>#1726 · board 5</b> phone 390 px · light <span>rail as a bottom sheet · strip expanded into live jobs</span></p>
+  <div class="row">
+    <div class="col"><p class="lbl">A · Rail as a sheet (Plan)</p>${phoneSheet('t-light')}</div>
+    <div class="col"><p class="lbl">B · Background strip expanded</p>${phoneJobs('t-light')}</div>
+    <div class="col" style="width:260px;margin-top:22px">
+      <div class="note">Same chrome as board 3 on the light ground: <i>--hud</i> is the darker light-mode line, there's no glow, and the status words use the light <i>--ok-text</i>.</div>
+      <div class="note">The sheet slides up 180 ms · Reduced: 120 ms fade · Off: instant. The strip expands with grid-rows in 180 ms with a content fade (Reduced 120 ms, Off instant).</div>
+      <div class="note">The strip lists <b>live jobs only</b>. Cut-off jobs are transcript history rows (#1724).</div>
+    </div>
+  </div>
+</section>`;
+document.getElementById('root').innerHTML =
+  desktop('t-dark', 'plan', 1, 'full-screen API session · rail DOCKED on Plan · background strip collapsed') +
+  desktop('t-light', 'tools', 2, 'same layout · rail on Tools: MCP servers, skills, slash commands, built-in tools') +
+  phones + mapBoard + lightPhones;
+</script>
+</body></html>

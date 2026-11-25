@@ -1,0 +1,24 @@
+# refuse: origin.fixed must be an origin, without a path
+contract = 1
+
+[identity]
+id = "forgejo"
+label = "Forgejo"
+publisher = "battlelab"
+version = "1"
+category = "versioning"
+
+[adapter]
+kind = "forgejo-api"
+
+[origin]
+mode = "fixed"
+fixed = "https://api.example/v1"
+
+[auth]
+kind = "token-header"
+scheme = "token"
+scopes = ["read:issue", "read:repository"]
+
+[capabilities]
+read = ["repos", "issues", "pulls", "ci", "files"]

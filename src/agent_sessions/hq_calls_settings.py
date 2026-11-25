@@ -1,0 +1,573 @@
+"""Settings → AI → HQ calls (#1397): the `hq_calls` prefs block.
+
+Speech is configured like the HQ model: STT and TTS are each an OpenAI-compatible endpoint, a base
+URL, an optional token and a model. The token rules are the AI key's (`docs/invariants/
+ai-key-origin.md`), applied to each side on its own:
+
+- a stored token is only ever sent to the ORIGIN it was saved for; a patch that moves a side's URL
+  to another origin must carry that origin's token or clear it (`api_key: null`). Blank,
+  whitespace and the mask mean "keep the stored token", so none of them authorizes a move;
+- the check runs inside `prefs.mutate_block`'s lock against the lock-current block;
+- tokens never leave the server: the public view says `api_key_set`.
+
+Unlike the AI endpoint, a token is OPTIONAL: a self-hosted speech server usually needs none.
+"""
+
+from __future__ import annotations
+
+import copy
+import hashlib
+import threading
+from pathlib import Path
+
+from . import hq_contacts, prefs
+
+BLOCK = "hq_calls"
+SIDES = ("stt", "tts")
+VOICE_GROUPS = ("woman", "man")
+TURN_TAKING = ("quick", "natural", "patient")
+MIC_MODES = ("open", "push")
+ANSWERS = ("brief", "detailed")
+#: How much HQ's model thinks before it answers a SPOKEN turn (#1996): its own setting, apart
+#: from the level Settings → AI holds for typed turns. `off` is the default, because the
+#: Commander is waiting on the line; `hq` follows the typed level.
+CALL_THINKING = ("off", "low", "medium", "high", "auto", "hq")
+
+MODEL_MAX = prefs.AI_REVIEW_MODEL_MAX
+VOICE_MAX = 120
+KEY_MAX = prefs.AI_REVIEW_KEY_MAX
+MASK = prefs.AI_REVIEW_KEY_MASK
+
+_SIDE_DEFAULTS = {"base_url": "", "api_key": "", "model": ""}
+_DEFAULTS: dict = {
+    "stt": dict(_SIDE_DEFAULTS),
+    "tts": dict(_SIDE_DEFAULTS),
+    "voices": {"woman": "", "man": ""},
+    "turn_taking": "natural",
+    "interrupt": True,
+    "mic": "open",
+    "answers": "brief",
+    # #1996: thinking and model for spoken turns only. `hq_model` empty: HQ's own model.
+    "thinking": "off",
+    "hq_model": "",
+    # Off unless turned on (operator, 2026-11-13): a call shows cards that need a decision, not
+    # a running transcript.
+    "captions": False,
+    # P3 (#1623): per-contact overrides, the call language, and what the TTS server advertised.
+    "contacts": {},
+    "language": "auto",
+    "tts_styles": [],
+    "tts_languages": [],
+    "tts_voices": [],
+    # Does the STT endpoint report the language it heard? True / False once TESTED; None until
+    # then. Unknown fails spoken confirmation closed; only a tested False means "assume English".
+    "stt_detects_language": None,
+    # Did the TTS server accept a `language` field in the conformance probe? Only then is one sent.
+    "tts_accepts_language": False,
+}
+SPEED_MIN, SPEED_MAX = 0.75, 1.5
+STYLE_MAX = 40
+LANGUAGE_VOICES_MAX = 12  # a voice per language, per contact (#1397 P3)
+LANG_RE = __import__("re").compile(r"^[a-z]{2}\Z")  # `$` would also match "de\n"
+#: What a side's server advertised or the conformance probe proved — true of THAT server, with
+#: THAT credential, only (#1635 reviews). A save may make a NEW claim only as far as this process
+#: observed it of the endpoint being saved (`observe`, from the test and discovery routes); a claim
+#: the settings already hold for an unchanged endpoint stands (a restart never downgrades it). A
+#: side whose URL, model or token changes loses the claims the save does not make.
+_PROBED = {
+    "stt": ("stt_detects_language",),
+    "tts": ("tts_accepts_language", "tts_styles", "tts_languages", "tts_voices"),
+}
+#: (side, base_url, model, token digest) → what the server itself observed there. In memory:
+#: after a restart a new claim needs a new test, and a stored one stays until its endpoint changes.
+_OBSERVED: dict[tuple[str, str, str, str], dict] = {}
+_OBSERVED_MAX = 32
+_OBSERVED_LOCK = threading.Lock()
+
+
+def _ep_key(side: str, base_url: str, model: str, api_key: str) -> tuple[str, str, str, str]:
+    digest = hashlib.sha256((api_key or "").encode()).hexdigest()[:16]
+    return (side, (base_url or "").strip(), (model or "").strip(), digest)
+
+
+def observe(side: str, base_url: str, model: str, api_key: str, **facts) -> None:
+    """Record what the server itself saw of an endpoint, as reached with `api_key` (keys from
+    `_PROBED[side]`). The token is kept only as a digest, only in memory."""
+    key = _ep_key(side, base_url, model, api_key)
+    clean = {k: v for k, v in facts.items() if k in _PROBED[side]}
+    with _OBSERVED_LOCK:
+        entry = _OBSERVED.pop(key, {})
+        entry.update(clean)
+        _OBSERVED[key] = entry  # newest last
+        while len(_OBSERVED) > _OBSERVED_MAX:
+            _OBSERVED.pop(next(iter(_OBSERVED)))
+
+
+def rotated_claims(side: str, block: dict, new_key: str) -> dict:
+    """`voice rotate` (#1397 P4): the SAME local server, verified answering with `new_key`, keeps
+    the claims `block` holds for it. Recorded as observed under the new token and returned for the
+    save, which would otherwise reset them (a token change is an endpoint change)."""
+    claims = {k: copy.deepcopy(block[k]) for k in _PROBED[side]}
+    ep = block[side]
+    observe(side, ep["base_url"], ep["model"], new_key, **claims)
+    return claims
+
+
+def forget_observations() -> None:
+    with _OBSERVED_LOCK:
+        _OBSERVED.clear()
+
+
+def _within_evidence(side: str, ep: dict, k: str, claim: object, held: object) -> object:
+    """A claim cut down to its evidence: what was observed of `ep`, or what the settings already
+    hold for it (`held`; the default when the endpoint changed).
+
+    - `stt_detects_language`: True or False only as observed or held — False relaxes the
+      spoken-confirmation gate ("assume English"), so it needs evidence too; else None (unknown).
+    - `tts_accepts_language`: True only with evidence; False always stands.
+    - lists: only the entries observed or held."""
+    with _OBSERVED_LOCK:
+        key = _ep_key(side, ep.get("base_url", ""), ep.get("model", ""), ep.get("api_key", ""))
+        seen = _OBSERVED.get(key, {}).get(k)
+    if k == "stt_detects_language":
+        return claim if isinstance(claim, bool) and claim in (seen, held) else None
+    if isinstance(claim, bool):
+        return claim and (seen is True or held is True)
+    have = [*(seen if isinstance(seen, list) else []), *(held if isinstance(held, list) else [])]
+    return [x for x in claim if x in have]
+
+
+class SettingsError(ValueError):
+    """A patch that may not be saved (→ 422)."""
+
+
+#: The settings that are one of a fixed set of words.
+_CHOICES = (
+    ("turn_taking", TURN_TAKING),
+    ("mic", MIC_MODES),
+    ("answers", ANSWERS),
+    ("thinking", CALL_THINKING),
+)
+
+
+def _is_model(value: object) -> bool:
+    """A model id as the AI endpoint lists it, or empty: one printable line of bounded length."""
+    return isinstance(value, str) and len(value) <= MODEL_MAX and value.strip().isprintable()
+
+
+def spoken(block: dict | None = None) -> dict:
+    """How HQ's model is asked on a SPOKEN turn (#1996), as `ai_providers.spoken_turn`'s
+    arguments: the thinking level for calls (``None``: the level Settings → AI holds) and the
+    model for calls (``None``: HQ's own). Read when the turn starts, so a setting changed during
+    a call applies from the next thing said."""
+    b = block if block is not None else get()
+    level = b.get("thinking")
+    model = (b.get("hq_model") or "").strip()
+    return {
+        "thinking": None if level == "hq" else level if level in CALL_THINKING else "off",
+        "model": model or None,
+    }
+
+
+def _coerce_side(raw: object) -> dict:
+    out = dict(_SIDE_DEFAULTS)
+    if isinstance(raw, dict):
+        for k in out:
+            if isinstance(raw.get(k), str):
+                out[k] = raw[k]
+    return out
+
+
+def coerce(raw: object) -> dict:
+    out = {
+        "stt": _coerce_side(None),
+        "tts": _coerce_side(None),
+        "voices": dict(_DEFAULTS["voices"]),
+        # A deep copy: the defaults hold a dict and lists, and a shared one would carry one
+        # read's contents into the next.
+        **copy.deepcopy({k: v for k, v in _DEFAULTS.items() if k not in ("stt", "tts", "voices")}),
+    }
+    if not isinstance(raw, dict):
+        return out
+    for side in SIDES:
+        out[side] = _coerce_side(raw.get(side))
+    if isinstance(raw.get("voices"), dict):
+        for g in VOICE_GROUPS:
+            v = raw["voices"].get(g)
+            if isinstance(v, str) and len(v) <= VOICE_MAX:
+                out["voices"][g] = v
+    for k, allowed in _CHOICES:
+        if raw.get(k) in allowed:
+            out[k] = raw[k]
+    if _is_model(raw.get("hq_model")):
+        out["hq_model"] = raw["hq_model"].strip()
+    for k in ("interrupt", "captions", "stt_detects_language", "tts_accepts_language"):
+        if isinstance(raw.get(k), bool):
+            out[k] = raw[k]
+    if raw.get("stt_detects_language") is None:
+        out["stt_detects_language"] = None  # untested (an older False stays a tested False)
+    if raw.get("language") == "auto" or (
+        isinstance(raw.get("language"), str) and LANG_RE.match(raw["language"])
+    ):
+        out["language"] = raw["language"]
+    for k in ("tts_styles", "tts_languages", "tts_voices"):
+        v = raw.get(k)
+        if isinstance(v, list):
+            out[k] = [x for x in v if isinstance(x, str) and len(x) <= STYLE_MAX][:200]
+    contacts = raw.get("contacts")
+    if isinstance(contacts, dict):
+        for cid, prof in contacts.items():
+            if cid in hq_contacts.IDS and isinstance(prof, dict):
+                clean = _coerce_profile(prof)
+                if clean:
+                    out["contacts"][cid] = clean
+    return out
+
+
+def _coerce_profile(prof: dict) -> dict:
+    out: dict = {}
+    if isinstance(prof.get("voice"), str) and 0 < len(prof["voice"]) <= VOICE_MAX:
+        out["voice"] = prof["voice"]
+    if isinstance(prof.get("style"), str) and 0 < len(prof["style"]) <= STYLE_MAX:
+        out["style"] = prof["style"]
+    sp = prof.get("speed")
+    if isinstance(sp, int | float) and not isinstance(sp, bool) and SPEED_MIN <= sp <= SPEED_MAX:
+        out["speed"] = float(sp)
+    lv = prof.get("language_voices")
+    if isinstance(lv, dict):
+        clean = {
+            k: v for k, v in list(lv.items())[:LANGUAGE_VOICES_MAX]
+            if isinstance(k, str) and LANG_RE.match(k) and isinstance(v, str)
+            and 0 < len(v) <= VOICE_MAX
+        }  # fmt: skip
+        if clean:
+            out["language_voices"] = clean
+    return out
+
+
+def default_voice(block: dict, contact: str) -> str:
+    """The voice a General speaks with when nothing is saved for them (#1859): the first of their
+    own `call_voices` the TTS server LISTS, else their group's. A server that lists no voices is
+    never sent one of those names. Calls (`profile`) and Settings (`public`) both read this."""
+    try:
+        c = hq_contacts.get(contact)
+        group, own_voices = c.voice_group or "woman", c.call_voices
+    except KeyError:
+        group, own_voices = "woman", ()
+    known = block.get("tts_voices") or []
+    own = next((v for v in own_voices if v in known), None)
+    return own or block["voices"].get(group) or block["voices"]["woman"]
+
+
+def profile(block: dict, contact: str) -> dict:
+    """The voice a contact speaks with on a call: its override, else its defaults
+    (`hq_contacts`), with the voice falling back to its group's (#1397 P3). The default voice is
+    the General's OWN (#1859): the first of their `call_voices` the TTS server lists. A server
+    that lists no voices is never sent one of those names, so it gets the group voice."""
+    try:
+        c = hq_contacts.get(contact)
+        style, speed = c.call_style, c.call_speed
+    except KeyError:
+        style, speed = "neutral", 1.0
+    over = block.get("contacts", {}).get(contact, {})
+    known = block.get("tts_voices") or []
+    default = default_voice(block, contact)
+    voice = over.get("voice") or default
+    if known and voice not in known:
+        voice = default  # the saved voice left the server: the default until re-picked
+    style = over.get("style", style)
+    # A voice per language: used while the call is in that language; one that left the server
+    # is dropped (the contact's own voice speaks instead).
+    saved = over.get("language_voices", {})
+    by_lang = {lang: v for lang, v in saved.items() if not known or v in known}
+    return {
+        "voice": voice,
+        "language_voices": by_lang,
+        # Shown, not silently lost: the languages whose saved voice left the server.
+        "language_voices_missing": sorted(set(saved) - set(by_lang)),
+        # Sent only to a server that advertised it: a strict server never sees an unknown field.
+        "style": style if style in block.get("tts_styles", []) else None,
+        "speed": over.get("speed", speed),
+    }
+
+
+def get(path: Path | None = None) -> dict:
+    """The full block, tokens INCLUDED. Server-side only."""
+    return coerce(prefs.read_block(BLOCK, path))
+
+
+def side_configured(side: dict) -> bool:
+    return bool(str(side.get("base_url") or "").strip())
+
+
+def configured(block: dict) -> bool:
+    """Calls are offered once both endpoints and both voices are set. A token is optional."""
+    return all(side_configured(block[s]) for s in SIDES) and all(
+        block["voices"][g].strip() for g in VOICE_GROUPS
+    )
+
+
+#: A General's preview line PER LANGUAGE (#1640 review): fixed text, never from the request, so a
+#: voice for German is heard speaking German. A language with no line here is refused, not
+#: previewed in English under its name. `public()` publishes the codes as `preview_languages`:
+#: they are the languages Settings offers when the TTS server lists none, and a server-listed
+#: language outside them shows no Preview.
+PREVIEW_CONTACT_LINES = {
+    "en": "Commander, this is {name}. All units report ready.",
+    "de": "Kommandant, hier spricht {name}. Alle Einheiten melden Bereitschaft.",
+    "fr": "Commandant, ici {name}. Toutes les unités sont prêtes.",
+    "es": "Comandante, le habla {name}. Todas las unidades están listas.",
+    "it": "Comandante, qui {name}. Tutte le unità sono pronte.",
+    "pt": "Comandante, aqui fala {name}. Todas as unidades estão prontas.",
+    "nl": "Commandant, hier spreekt {name}. Alle eenheden zijn gereed.",
+    "pl": "Dowódco, tu {name}. Wszystkie jednostki gotowe.",
+    "ru": "Командир, говорит {name}. Все подразделения готовы.",
+    "ja": "司令官、{name}です。全部隊、準備完了です。",
+    "zh": "指挥官，我是{name}。所有部队已准备就绪。",
+    "hi": "कमांडर, यह {name} है। सभी यूनिट तैयार हैं।",
+    "ko": "사령관님, {name}입니다. 모든 부대 준비 완료.",
+}
+
+
+def public(path: Path | None = None) -> dict:
+    block = get(path)
+    out = {k: v for k, v in block.items() if k not in SIDES}
+    for s in SIDES:
+        side = block[s]
+        out[s] = {
+            "base_url": side["base_url"],
+            "model": side["model"],
+            "api_key_set": bool(side["api_key"]),
+        }
+    out["configured"] = configured(block)
+    # Each General's own defaults (#1397 P3), so Settings can show an untouched row as it sounds:
+    # `voice` is the one a call would use with nothing saved (#1859).
+    out["contact_defaults"] = {
+        c.id: {
+            "group": c.voice_group or "woman",
+            "voice": default_voice(block, c.id),
+            "style": c.call_style,
+            "speed": c.call_speed,
+        }
+        for c in hq_contacts.CONTACTS
+    }
+    out["preview_languages"] = list(PREVIEW_CONTACT_LINES)
+    return out
+
+
+def _validate_side(name: str, patch: object) -> None:
+    if not isinstance(patch, dict):
+        raise SettingsError(f"{name} must be an object")
+    unknown = set(patch) - set(_SIDE_DEFAULTS)
+    if unknown:
+        raise SettingsError(f"unknown {name} fields: {sorted(unknown)}")
+    if "base_url" in patch and not prefs.is_valid_ai_base_url(patch["base_url"]):
+        raise SettingsError(f"{name}.base_url must be an http(s) URL")
+    if "api_key" in patch:
+        v = patch["api_key"]
+        if v is not None and not isinstance(v, str):
+            raise SettingsError(f"{name}.api_key must be a string or null")
+        if isinstance(v, str) and len(v) > KEY_MAX:
+            raise SettingsError(f"{name}.api_key is too long")
+    if "model" in patch and not (
+        isinstance(patch["model"], str) and len(patch["model"]) <= MODEL_MAX
+    ):
+        raise SettingsError(f"{name}.model must be a string of bounded length")
+
+
+def validate(patch: object) -> None:
+    if not isinstance(patch, dict):
+        raise SettingsError("the settings must be an object")
+    unknown = set(patch) - set(_DEFAULTS)
+    if unknown:
+        raise SettingsError(f"unknown fields: {sorted(unknown)}")
+    for s in SIDES:
+        if s in patch:
+            _validate_side(s, patch[s])
+    if "voices" in patch:
+        v = patch["voices"]
+        if not isinstance(v, dict) or set(v) - set(VOICE_GROUPS):
+            raise SettingsError("voices must be {woman, man}")
+        for g, name in v.items():
+            if not isinstance(name, str) or len(name) > VOICE_MAX:
+                raise SettingsError(f"voices.{g} must be a short string")
+    for k, allowed in _CHOICES:
+        if k in patch and patch[k] not in allowed:
+            raise SettingsError(f"{k} must be one of {list(allowed)}")
+    if "hq_model" in patch and not _is_model(patch["hq_model"]):
+        raise SettingsError("hq_model must be a model id, or empty for HQ's own model")
+    for k in ("interrupt", "captions", "stt_detects_language", "tts_accepts_language"):
+        if k in patch and not isinstance(patch[k], bool):
+            if k == "stt_detects_language" and patch[k] is None:
+                continue  # back to untested
+            raise SettingsError(f"{k} must be a boolean")
+    if "language" in patch and not (
+        patch["language"] == "auto"
+        or (isinstance(patch["language"], str) and LANG_RE.match(patch["language"]))
+    ):
+        raise SettingsError("language must be auto or a two-letter code")
+    for k in ("tts_styles", "tts_languages", "tts_voices"):
+        if k in patch and not (
+            isinstance(patch[k], list)
+            and all(isinstance(x, str) and 0 < len(x) <= STYLE_MAX for x in patch[k])
+            and len(patch[k]) <= 200
+        ):
+            raise SettingsError(f"{k} must be a list of short strings")
+    if "contacts" in patch:
+        c = patch["contacts"]
+        if not isinstance(c, dict) or set(c) - set(hq_contacts.IDS):
+            raise SettingsError("contacts must map HQ contact ids to profiles")
+        for cid, prof in c.items():
+            if prof is None:
+                continue  # reset to defaults
+            if not isinstance(prof, dict) or set(prof) - {
+                "voice",
+                "style",
+                "speed",
+                "language_voices",
+            }:
+                raise SettingsError(
+                    f"contacts.{cid} must be {{voice, style, speed, language_voices}}"
+                )
+            lv = prof.get("language_voices")
+            if lv is not None and not (
+                isinstance(lv, dict)
+                and len(lv) <= LANGUAGE_VOICES_MAX
+                and all(
+                    isinstance(k, str) and LANG_RE.match(k) and isinstance(v, str)
+                    and 0 < len(v) <= VOICE_MAX
+                    for k, v in lv.items()
+                )
+            ):  # fmt: skip
+                raise SettingsError(
+                    f"contacts.{cid}.language_voices must map two-letter codes to voices"
+                )
+            if "speed" in prof and (
+                not isinstance(prof["speed"], int | float)
+                or isinstance(prof["speed"], bool)
+                or not SPEED_MIN <= prof["speed"] <= SPEED_MAX
+            ):
+                raise SettingsError(f"contacts.{cid}.speed must be {SPEED_MIN}–{SPEED_MAX}")
+            for k in ("voice", "style"):
+                if k in prof and not (
+                    isinstance(prof[k], str)
+                    and len(prof[k]) <= (VOICE_MAX if k == "voice" else STYLE_MAX)
+                ):
+                    raise SettingsError(f"contacts.{cid}.{k} must be a short string")
+
+
+def token_origin_violation(name: str, stored: dict, patch: dict) -> str | None:
+    """The AI key's rule (`prefs.key_origin_violation`), for one speech side."""
+    why = prefs.key_origin_violation(stored, patch)
+    return f"{name}: {why}" if why else None
+
+
+def _merge_side(cur: dict, patch: dict) -> dict:
+    new = dict(cur)
+    for k in ("base_url", "model"):
+        if k in patch:
+            new[k] = patch[k].strip()
+    if "api_key" in patch:
+        v = patch["api_key"]
+        if v is None:
+            new["api_key"] = ""
+        elif prefs.is_new_api_key(v):
+            new["api_key"] = v.strip()
+    return new
+
+
+def save(patch: dict, path: Path | None = None) -> dict:
+    """Merge a validated patch under the prefs lock; returns the new full block."""
+    validate(patch)
+
+    def merge(raw: object) -> dict:
+        cur = coerce(raw)
+        for s in SIDES:
+            if s in patch:
+                why = token_origin_violation(s, cur[s], patch[s])
+                if why is not None:
+                    raise SettingsError(why)
+        new = dict(cur)
+        for s in SIDES:
+            if s in patch:
+                new[s] = _merge_side(cur[s], patch[s])
+        if "voices" in patch:
+            new["voices"] = {**cur["voices"], **{g: v.strip() for g, v in patch["voices"].items()}}
+        for k in (
+            "turn_taking", "mic", "answers", "interrupt", "captions", "language", "tts_styles",
+            "tts_languages", "tts_voices", "stt_detects_language", "tts_accepts_language",
+            "thinking",
+        ):  # fmt: skip
+            if k in patch:
+                new[k] = patch[k]
+        if "hq_model" in patch:
+            new["hq_model"] = patch["hq_model"].strip()
+        for s in SIDES:
+            moved = any(new[s].get(k) != cur[s].get(k) for k in ("base_url", "model", "api_key"))
+            for k in _PROBED[s]:
+                held = copy.deepcopy(_DEFAULTS[k]) if moved else cur[k]
+                if k in patch:
+                    new[k] = _within_evidence(s, new[s], k, patch[k], held)
+                else:
+                    new[k] = held
+        if "contacts" in patch:
+            merged = dict(cur.get("contacts", {}))
+            for cid, prof in patch["contacts"].items():
+                if prof is None:
+                    merged.pop(cid, None)
+                else:
+                    clean = _coerce_profile(prof)
+                    if clean:
+                        merged[cid] = clean
+                    else:
+                        merged.pop(cid, None)
+            new["contacts"] = merged
+        return new
+
+    return prefs.mutate_block(BLOCK, merge, path)
+
+
+TTS_LISTS = ("tts_voices", "tts_styles", "tts_languages")
+
+
+def fill_tts_lists(tts: dict, lists: dict, path: Path | None = None) -> bool:
+    """Save TTS lists read OUTSIDE the lock (`routes.voice.heal_tts_lists`), only while `tts` —
+    the endpoint they were read from — is still the stored one and all three lists are still
+    empty. A read that finishes after a switch, or after another save filled them, changes
+    nothing (Hermes 8957). True when it saved any."""
+    # What `validate` would accept, kept rather than refused: a server's odd entry drops alone.
+    lists = {k: [x for x in lists.get(k) or [] if isinstance(x, str) and 0 < len(x) <= STYLE_MAX]
+             [:200] for k in TTS_LISTS}  # fmt: skip
+    done = False
+
+    def merge(raw: object) -> dict:
+        nonlocal done
+        done = False
+        cur = coerce(raw)
+        same = all(cur["tts"].get(k) == tts.get(k) for k in ("base_url", "model", "api_key"))
+        if not same or any(cur[k] for k in TTS_LISTS):
+            return cur
+        new = dict(cur)
+        for k in TTS_LISTS:
+            new[k] = _within_evidence("tts", cur["tts"], k, lists[k], [])
+        done = any(new[k] for k in TTS_LISTS)
+        return new
+
+    prefs.mutate_block(BLOCK, merge, path)
+    return done
+
+
+def resolve_test_token(stored: dict, base_url: str, api_key: object) -> tuple[str, str | None]:
+    """The token a DRAFT test may send, from one snapshot: `(token, None)` or `("", reason)`.
+
+    A new token in the request wins. Otherwise the stored token, but only for its own origin; for
+    another origin the test runs WITHOUT a token (a self-hosted server may need none) — never with
+    the stored one."""
+    if prefs.is_new_api_key(api_key):
+        return str(api_key).strip(), None
+    stored_key = str(stored.get("api_key") or "")
+    if not stored_key:
+        return "", None
+    if prefs.endpoint_origin(base_url) == prefs.endpoint_origin(stored.get("base_url")):
+        return stored_key, None
+    return "", None

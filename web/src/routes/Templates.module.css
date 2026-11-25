@@ -1,0 +1,1051 @@
+/* TEMPLATES — the instruction-template gallery and editor (#905). NIGHTJAR (#1531 Phase 10, #1574):
+ * the Library's kicker + display title; the Templates | Suggested tabs slide one marker under the
+ * open tab and the panel cross-fades; tag chips light with the HUD edge; template cards are
+ * dossiers with a lit top edge that arrive once; fields are `nj-field` squares with an inset focus
+ * ring. Mobile reflows to a single column with ≥44px actions. Tokens only. */
+
+.page {
+  height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: var(--sp-4) var(--sp-5) var(--sp-6);
+  color: var(--text-1);
+}
+
+/* --- header ------------------------------------------------------------------ */
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-4);
+}
+/* The editor's head: the title and its meta on one baseline row. */
+.headLeft,
+.titleRow {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+/* The list's head: the notch kicker stacked over that row (#1574 board L1). */
+.headStack {
+  display: grid;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+.kicker {
+  margin: 0;
+}
+.h1 {
+  margin: 0;
+  font: 600 var(--fs-h1) / 1.1 var(--font-display);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--hud-text);
+  text-shadow: var(--glow-head);
+}
+.sl,
+.meta {
+  font: 400 var(--fs-label) / 1.2 var(--font-mono);
+  color: var(--text-3);
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+}
+.headRight {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Flat CTA + ghost — the Settings pair, restated in mono so they sit beside the chips. */
+.cta {
+  composes: primary from "../components/ui/actionButton.module.css";
+  white-space: nowrap;
+}
+.ghost {
+  composes: ghost from "../components/ui/actionButton.module.css";
+  white-space: nowrap;
+}
+.danger {
+  composes: danger from "../components/ui/actionButton.module.css";
+  white-space: nowrap;
+}
+
+.note {
+  margin: 0 0 var(--sp-3);
+  padding: var(--sp-1) var(--sp-3);
+  font-size: var(--fs-meta);
+  color: var(--warn-text);
+  border-left: 2px solid var(--status-degraded);
+}
+/* A failed read or a refused write: the `nj-error` edge. */
+.err {
+  margin: 0 0 var(--sp-3);
+  padding: var(--sp-1) var(--sp-3);
+  font: 400 var(--fs-meta) / 1.5 var(--font-mono);
+  color: var(--danger-text);
+  border-left: 2px solid var(--status-down);
+  background: color-mix(in srgb, var(--status-down) 8%, transparent);
+}
+
+/* --- tabs: TEMPLATES / SUGGESTED (#1090) ---------------------------------------- */
+/* Equal cells and ONE marker that slides under the open tab (CSS only: the tabs keep their own
+ * ids and selected state); the panel below cross-fades in on a switch. */
+.tabs {
+  position: relative;
+  display: inline-grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  border-bottom: 1px solid var(--line-strong);
+  margin: 0 0 var(--sp-4);
+  isolation: isolate;
+}
+.tabs::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 50%;
+  box-shadow: inset 0 -2px 0 var(--hud);
+  transform: translateX(calc(var(--at, 0) * 100%));
+  transition: transform var(--t-base) var(--ease-out);
+  pointer-events: none;
+  z-index: var(--z-under);
+}
+.tabs:has(> [role="tab"]:nth-child(2)[aria-selected="true"]) {
+  --at: 1;
+}
+.tabBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  min-height: 40px;
+  padding: 0 var(--sp-4);
+  border: 0;
+  background: transparent;
+  color: var(--text-3);
+  font: 500 var(--fs-label) / 1.2 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color var(--t-fast) var(--ease-out);
+}
+.tabBtn:hover {
+  color: var(--text-1);
+}
+.tabOn {
+  color: var(--hud-text);
+}
+/* The open tab's count is a lit chip (#1574 board L1). */
+.tabBtn .chipN {
+  margin-left: 0;
+  padding: 1px 5px;
+  border: 1px solid var(--line-strong);
+  font-variant-numeric: tabular-nums;
+}
+.tabOn .chipN {
+  border-color: var(--hud);
+  background: var(--hud);
+  color: var(--bg-0);
+}
+.tabPanel {
+  animation: global(nj-fade-in) var(--t-fast) var(--ease-out) both;
+}
+
+/* --- toolbar: search + tag chips --------------------------------------------- */
+.tools {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  margin: 0 0 var(--sp-4);
+}
+.search {
+  flex: 1 1 220px;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 40px;
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--text-3);
+  min-width: 0;
+  transition: border-color var(--t-fast) var(--ease-out);
+}
+.search:hover {
+  border-color: var(--hud-dim);
+}
+.search input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  color: var(--text-1);
+  font: inherit;
+  font-size: var(--fs-body);
+  outline: none;
+}
+.search:focus-within {
+  border-color: var(--hud);
+  box-shadow: inset 0 0 0 1px var(--hud);
+}
+.chips {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+.chip {
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: var(--sp-1) var(--sp-3);
+  min-height: 40px;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    border-color var(--t-fast) var(--ease-out),
+    background-color var(--t-fast) var(--ease-out);
+}
+.chip:hover {
+  color: var(--text-1);
+}
+.chipOn {
+  border-color: var(--hud);
+  color: var(--hud-text);
+  background: var(--hud-tint);
+}
+.chipN {
+  color: var(--text-3);
+  margin-left: 4px;
+}
+.chipOn .chipN {
+  color: var(--hud-text);
+}
+
+/* --- cards -------------------------------------------------------------------- */
+.cards {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: var(--sp-3);
+}
+/* A dossier card (#1574 board L1): the chamfered NIGHTJAR frame with a SHORT lit rail, the stamp
+ * line, the title, the brief, plate chips, the meta line and the actions on plates. The edge
+ * brightens and the face warms on hover; it arrives once. */
+.card {
+  composes: nj-frame from global;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  border-top-width: 1px;
+  border-top-color: var(--nj-edge);
+  min-width: 0;
+  animation: global(nj-arrive) var(--t-base) var(--ease-out) both;
+  transition: border-color var(--t-fast) var(--ease-out);
+}
+.card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: calc(var(--cut) + 2px);
+  width: 34%;
+  height: 2px;
+  background: var(--hud);
+  box-shadow: var(--glow-rail);
+  pointer-events: none;
+}
+.card:hover,
+.card:focus-within {
+  --nj-edge: var(--hud);
+  --nj-face: color-mix(in srgb, var(--hud) 6%, var(--bg-1));
+}
+.dh {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-3) 0;
+  font: 500 var(--fs-micro) / 1 var(--font-mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.did {
+  margin-left: auto;
+  color: var(--hud-text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+/* The dashed New card: the way in, sharing the grid row (a role="none" item). */
+.newCard {
+  display: flex;
+  min-width: 0;
+}
+.newLink {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: var(--sp-2);
+  min-height: 168px;
+  padding: var(--sp-4);
+  border: 1px dashed var(--line-strong);
+  color: var(--text-2);
+  text-align: center;
+  text-decoration: none;
+  transition: border-color var(--t-fast) var(--ease-out), color var(--t-fast) var(--ease-out);
+}
+.newLink svg {
+  color: var(--hud-text);
+}
+.newLink:hover,
+.newLink:focus-visible {
+  border-color: var(--hud);
+  color: var(--text-1);
+}
+.newLink:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.newTitle {
+  font: 600 var(--fs-title) / 1.25 var(--font-display);
+  color: var(--text-1);
+}
+.newHint {
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+}
+.thumb {
+  position: relative;
+  height: 96px;
+  margin: var(--sp-2) var(--sp-3) 0;
+  border: 1px solid var(--line);
+  background: var(--surface-3);
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+/* A placeholder glyph, not a status colour: a text-only template has nothing to show. */
+.glyph {
+  font-family: var(--font-mono);
+  font-size: var(--fs-readout-sm);
+  letter-spacing: 0.1em;
+  color: var(--text-3);
+}
+.thumbN {
+  position: absolute;
+  right: 6px;
+  bottom: 5px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  background: var(--bg-0);
+  border: 1px solid var(--line);
+  padding: 1px 5px;
+}
+.cbody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-3) var(--sp-3) var(--sp-2);
+  flex: 1;
+  min-width: 0;
+}
+.cname {
+  margin: 0;
+  font: 600 var(--fs-title) / 1.3 var(--font-display);
+  letter-spacing: 0.02em;
+  overflow-wrap: anywhere;
+}
+.cname a {
+  color: var(--text-1);
+  text-decoration: none;
+}
+.cname a:hover {
+  color: var(--hud-text);
+}
+.cdesc {
+  margin: 0;
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+  color: var(--text-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.tags {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+/* Tag chips are small plates (the board's `.tg2`). */
+.tag {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  background: var(--bg-2);
+  border: 1px solid var(--line-strong);
+  padding: 2px 6px;
+}
+.cmeta {
+  margin-top: auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.acts {
+  display: flex;
+  flex-wrap: wrap; /* four actions (Use / Edit / Duplicate / Delete) never clip at 320px (#908 round 7) */
+  gap: var(--sp-1);
+  margin: 0 var(--sp-3);
+  padding: var(--sp-2) 0 var(--sp-3);
+  border-top: 1px solid var(--line);
+}
+.act {
+  composes: ghost compact from "../components/ui/actionButton.module.css";
+}
+/* Use is the card's lead action: the primary plate (#1574 board L1). */
+.actUse {
+  composes: primary compact from "../components/ui/actionButton.module.css";
+}
+.actIcon {
+  composes: icon compact from "../components/ui/actionButton.module.css";
+}
+/* Delete keeps its red edge at rest: a destructive plate reads as one before it is touched. */
+.actDanger {
+  --nj-edge: color-mix(in srgb, var(--status-down) 55%, transparent);
+  color: var(--danger-text);
+}
+
+/* --- empty state ---------------------------------------------------------------- */
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-3);
+  text-align: center;
+  padding: var(--sp-6) var(--sp-4);
+  border: 1px dashed var(--line-strong);
+  color: var(--text-2);
+}
+.emptyGlyph {
+  font-family: var(--font-mono);
+  font-size: var(--fs-readout);
+  color: var(--hud-dim);
+}
+.emptyTitle {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.emptyHint {
+  margin: 0;
+  font-size: var(--fs-row);
+  line-height: 1.5;
+  max-width: 52ch;
+}
+.emptyActs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+/* --- editor ---------------------------------------------------------------------- */
+.ed {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 380px);
+  gap: 20px;
+}
+.form {
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+.form:disabled {
+  opacity: 0.7;
+}
+.lbl {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin: var(--sp-3) 0 var(--sp-1);
+}
+.lbl:first-child {
+  margin-top: 0;
+}
+.lbl .tok {
+  color: var(--hud-text);
+  text-transform: none;
+  letter-spacing: 0.04em;
+}
+.lbl .over {
+  color: var(--danger-text);
+}
+.input,
+.area {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--text-1);
+  font: inherit;
+  font-size: var(--fs-body);
+  border-radius: 0;
+  padding: 0 var(--sp-3);
+  min-height: 40px;
+  transition: border-color var(--t-fast) var(--ease-out);
+}
+.input:hover,
+.area:hover {
+  border-color: var(--hud-dim);
+}
+/* `nj-field` focus: the edge lights and an inset ring, never an outset glow. */
+.input:focus,
+.area:focus {
+  outline: none;
+  border-color: var(--hud);
+  box-shadow: inset 0 0 0 1px var(--hud);
+}
+.area {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  line-height: 1.55;
+  padding: var(--sp-2) var(--sp-3);
+  min-height: 180px;
+  resize: vertical;
+}
+.tagRow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  flex-wrap: wrap;
+  min-height: 40px;
+  padding: 3px var(--sp-1);
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+}
+.tagRow:focus-within {
+  border-color: var(--hud);
+  box-shadow: inset 0 0 0 1px var(--hud);
+}
+.tagRow input {
+  flex: 1;
+  min-width: 90px;
+  background: transparent;
+  border: 0;
+  color: var(--text-1);
+  font: inherit;
+  font-size: var(--fs-body);
+  outline: none;
+  min-height: 26px;
+}
+.tagChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-1);
+  border: 1px solid var(--line-strong);
+  padding: 2px 4px 2px 6px;
+}
+.tagChip button {
+  background: transparent;
+  border: 0;
+  color: var(--text-3);
+  cursor: pointer;
+  font: inherit;
+  padding: 0 2px;
+  min-width: 18px;
+  min-height: 18px;
+}
+.tagChip button:hover {
+  color: var(--danger-text);
+}
+
+.fields {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-meta);
+}
+.fields th {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  text-align: left;
+  font-weight: 500;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--line);
+}
+.fields td {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+.fields td input[type="text"] {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 30px;
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--text-1);
+  font: inherit;
+  font-size: var(--fs-meta);
+  border-radius: 0;
+}
+.fields td input[type="text"]:focus {
+  outline: none;
+  border-color: var(--hud);
+  box-shadow: inset 0 0 0 1px var(--hud);
+}
+.fields td.tokCell input {
+  font-family: var(--font-mono);
+  color: var(--hud-text);
+}
+.reqHint {
+  display: none;
+}
+.checkWrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  min-height: 30px;
+  cursor: pointer;
+}
+.fields td input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+/* #1090: a field's source, and a library field's read-only value (or why it has none). */
+.sourceSel {
+  width: 100%;
+  min-height: 30px;
+  padding: 0 var(--sp-1);
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--text-1);
+  font: inherit;
+  font-size: var(--fs-meta);
+  border-radius: 0;
+}
+.sourceSel:focus {
+  outline: none;
+  border-color: var(--hud);
+  box-shadow: inset 0 0 0 1px var(--hud);
+}
+/* A secret field's kind select wears the HUD ink: it changes how the template is sent. */
+.kindSecret {
+  color: var(--hud-text);
+}
+.libVal,
+.libMissing {
+  display: block;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+}
+.libVal {
+  color: var(--text-2);
+}
+.libMissing {
+  color: var(--warn-text);
+}
+.rowErr {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--danger-text);
+  display: block;
+  margin-top: 2px;
+}
+.addRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 6px;
+  background: transparent;
+  border: 0;
+  color: var(--text-3);
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+  min-height: 30px;
+  padding: 0 var(--sp-1);
+}
+.addRow:hover {
+  color: var(--hud-text);
+}
+.iconBtn {
+  composes: icon compact from "../components/ui/actionButton.module.css";
+}
+
+.imgs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.im {
+  position: relative;
+  width: 96px;
+  height: 64px;
+  border: 1px solid var(--line);
+  background: var(--surface-3);
+  overflow: hidden;
+}
+.im img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.im .x {
+  position: absolute;
+  right: 0;
+  top: 0;
+  min-width: 26px;
+  min-height: 26px;
+  background: color-mix(in srgb, var(--bg-0) 70%, transparent);
+  border: 0;
+  color: var(--text-1);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.im .x:hover {
+  color: var(--danger-text);
+}
+.imAdd {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  width: 96px;
+  height: 64px;
+  border: 1px dashed var(--line-strong);
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  border-radius: 0;
+}
+.imAdd:hover {
+  color: var(--hud-text);
+  border-color: var(--hud);
+}
+.imAdd:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.preview {
+  border: 1px solid var(--line);
+  background: var(--term-bg);
+  padding: var(--sp-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  line-height: 1.55;
+  color: var(--text-1);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  min-height: 120px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.preview .path {
+  color: var(--status-draft);
+}
+.previewNote {
+  margin: var(--sp-2) 0 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  line-height: 1.6;
+}
+.previewWarn {
+  color: var(--warn-text);
+}
+.previewToggle {
+  background: transparent;
+  border: 0;
+  color: var(--hud-text);
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+  padding: 0;
+  min-height: 24px;
+}
+
+.foot {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+.foot .sp {
+  flex: 1;
+}
+
+.state {
+  padding: var(--sp-6) var(--sp-4);
+  text-align: center;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+/* --- mobile reflow ---------------------------------------------------------------- */
+/* The narrowest phones: three labelled tabs with counts need ~350px at the desktop spacing, and
+   the page hides horizontal overflow, so the last one was clipped rather than scrolled (#1110
+   review). Tighter spacing, never a smaller hit target (the 44px height below still applies). */
+@media (max-width: 420px) {
+  .tabs {
+    gap: 0;
+  }
+  .tabBtn {
+    padding: 0 7px;
+    letter-spacing: 0.05em;
+  }
+}
+@media (max-width: 800px) {
+  .page {
+    padding: var(--sp-3) var(--sp-3) var(--sp-6);
+  }
+  .h1 {
+    font-size: var(--fs-h2);
+  }
+  .cards {
+    grid-template-columns: 1fr;
+  }
+  .chip,
+  .tabBtn,
+  .cta,
+  .ghost,
+  .danger,
+  .search,
+  .act,
+  .imAdd,
+  .addRow {
+    min-height: 44px;
+  }
+  /* One row on a phone (the board's P1): Use and Edit share the width, the two icon plates keep
+   * their 44px square; the row still wraps at 320px rather than clip. */
+  .act,
+  .actUse {
+    flex: 1 1 0;
+    justify-content: center;
+    min-height: 44px;
+  }
+  .actIcon {
+    flex: none;
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .ed {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .foot .cta,
+  .foot .ghost {
+    flex: 1;
+  }
+  .foot .sp {
+    flex: 0 0 100%;
+  }
+  /* Every interactive control is a real touch target (docs/design.md §8), including the small
+   * ones the first cut left at 18-30px (Hermes on #907): tag remove, image remove, field remove,
+   * the preview toggle. */
+  .tagRow {
+    gap: 8px;
+  }
+  .tagChip {
+    min-height: 44px;
+    padding-right: 0;
+  }
+  .tagChip button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .im {
+    width: 132px;
+    height: 96px;
+  }
+  .im .x {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .imAdd {
+    width: 132px;
+    height: 96px;
+  }
+  .previewToggle {
+    min-height: 44px;
+    min-width: 44px;
+    padding: 0 12px;
+  }
+  .checkWrap {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .fields td input[type="checkbox"] {
+    width: 24px;
+    height: 24px;
+  }
+  /* Text inputs are touch targets too (docs/design.md §8): name, description, the tag input,
+   * the field cells. */
+  .input,
+  .tagRow input,
+  .fields td input[type="text"],
+  .sourceSel {
+    min-height: 44px;
+  }
+  /* Six columns do not fit a phone (#1090 added SOURCE): each field becomes a two-line grid —
+   * name · source · required · remove, then label · default — so no input is squeezed under
+   * its 44px floor. The header row is kept for screen readers only; every cell's control
+   * carries its own label. */
+  .fields thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+  .fields tbody tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto;
+    gap: 4px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .fields tbody td {
+    display: block;
+    padding: 0;
+    border-bottom: 0;
+  }
+  .reqHint {
+    display: inline;
+    margin-left: 4px;
+    font-family: var(--font-mono);
+    font-size: var(--fs-micro);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-3);
+  }
+  /* Cells: 1 name · 2 source · 3 kind · 4 label · 5 default · 6 required · 7 remove.
+   * Row 1: name, source, required, remove. Row 2: kind, label. Row 3: the value. */
+  .fields tbody td:nth-child(1) {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .fields tbody td:nth-child(2) {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .fields tbody td:nth-child(6) {
+    grid-column: 3;
+    grid-row: 1;
+  }
+  .fields tbody td:nth-child(7) {
+    grid-column: 4;
+    grid-row: 1;
+  }
+  .fields tbody td:nth-child(3) {
+    grid-column: 1;
+    grid-row: 2;
+  }
+  .fields tbody td:nth-child(4) {
+    grid-column: 2 / span 3;
+    grid-row: 2;
+  }
+  .fields tbody td:nth-child(5) {
+    grid-column: 1 / span 4;
+    grid-row: 3;
+    align-self: center;
+  }
+  .tagRow {
+    min-height: 44px;
+  }
+}
+
+/* --- addendum on #907: first-load retry, and the card title as a touch target ------------- */
+/* The first-load failure's Retry sits inside the alert: there is no list to show, so the
+ * action lives where the reason is. */
+.retry {
+  composes: ghost compact from "../components/ui/actionButton.module.css";
+  margin-left: 10px;
+}
+
+@media (max-width: 800px) {
+  .retry {
+    min-width: 44px;
+  }
+  /* The card title is a second edit link — a touch target like the rest (docs/design.md §8). */
+  .cname a {
+    display: flex;
+    align-items: center;
+    min-height: 44px;
+  }
+}

@@ -1,0 +1,253 @@
+.bar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 var(--sp-3) var(--sp-2);
+}
+/* THE FOLD (#1069 follow-up). One header row: a chevron, the word, and what is in force. The
+ * summary turns into a HUD count badge when a filter is narrowing the list, so a folded block
+ * cannot hide one. */
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  min-height: 32px;
+  padding: 0 2px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  color: var(--text-3);
+  cursor: pointer;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-label);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  text-align: left;
+}
+.toggle:hover {
+  color: var(--text-1);
+}
+.toggle:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -2px;
+}
+.toggle small {
+  margin-left: auto;
+  font-size: var(--fs-micro);
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+}
+.toggle small.summaryOn {
+  padding: 1px var(--sp-1);
+  border: 1px solid var(--hud-dim);
+  background: var(--hud-tint);
+  color: var(--hud-text);
+}
+/* The selected scope by name ("project › cluster"), so a folded block still says WHERE the list
+ * is narrowed to. It gives way first: it ellipsizes, the word and Active/Archived never do. */
+.toggle > span {
+  flex: none;
+}
+.toggle small.scope {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-transform: none;
+  letter-spacing: 0.02em;
+}
+.toggle small.scope + small {
+  flex: none;
+  margin-left: 0;
+}
+.chev {
+  flex: none;
+  transition: transform var(--t-fast) var(--ease-out);
+}
+.toggle[aria-expanded="true"] .chev {
+  transform: rotate(90deg);
+}
+/* THE EXPANSION (#1568, the nj-disclosure recipe): one grid row eases 0fr → 1fr — bounded layout
+ * cost on ONE container — and the inner box clips while it does. Folded, the block is
+ * `visibility: hidden` (after the ease), so its controls leave the tab order and the accessibility
+ * tree exactly as `hidden` took them out before; the bar's gap is taken back with it. Off and
+ * Reduced set the durations to 0 / 120 ms through the motion tokens. */
+.body {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition:
+    grid-template-rows var(--t-base) var(--ease-out),
+    margin-top var(--t-base) var(--ease-out),
+    visibility 0s linear 0s;
+}
+.body[hidden] {
+  display: grid;
+  grid-template-rows: 0fr;
+  margin-top: -6px;
+  visibility: hidden;
+  transition:
+    grid-template-rows var(--t-base) var(--ease-out),
+    margin-top var(--t-base) var(--ease-out),
+    visibility 0s linear var(--t-base);
+}
+.bodyInner {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* THE FIELD (nj-field's recipe, #1531): square, on the sunken ground, the HUD edge and the inset
+ * focus ring. Stated here rather than composed because the project / agent / mission selects are
+ * bare children (the mission rail's MissionFilters reuses `.selects`); the desktop keeps the
+ * sidebar's compact 30px metric and the touch floor below restores 44px. */
+.search,
+.selects select {
+  width: 100%;
+  background: var(--bg-2);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 6px 9px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-meta);
+  transition: border-color var(--t-fast) var(--ease-out);
+}
+.search:hover,
+.selects select:hover {
+  border-color: var(--hud-dim);
+}
+.search::placeholder {
+  color: var(--text-3);
+  letter-spacing: 0.04em;
+}
+.search:focus,
+.selects select:focus {
+  border-color: var(--hud);
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.selects {
+  display: flex;
+  gap: 6px;
+}
+.searchRow {
+  display: flex;
+  gap: 6px;
+}
+.searchRow .search {
+  flex: 1;
+  min-width: 0;
+}
+.selects:empty {
+  display: none;
+}
+.selects select {
+  flex: 1;
+  min-width: 0;
+}
+/* CLEAR is THE ghost action button. LOCAL MODIFIER: it sits in the search row, so on a desktop
+ * it takes the row's height instead of the shared 44px; the touch floor below restores it. */
+.clear {
+  composes: ghost from "../ui/actionButton.module.css";
+  flex: none;
+}
+button.clear {
+  min-height: 0;
+  padding: 0 var(--sp-3);
+  font-size: var(--fs-label);
+}
+/* Segmented Active/Archived/Shared on THE SEGMENT's look (nj-seg): one hairline box, square cells,
+ * the selected cell carries the HUD tint and the 2px marker line (no fill, no gloss — #211).
+ * Equal cells whatever they say (two, or three with Shared, #2198): `flex: 1 1 0` and
+ * `min-width: 0` divide the box, never the labels' widths. */
+.tabs {
+  display: flex;
+  border: 1px solid var(--line-strong);
+}
+.tabs button {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;
+  background: transparent;
+  border: 0;
+  color: var(--text-2);
+  border-radius: 0;
+  padding: 4px 0;
+  cursor: pointer;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-label);
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+.tabs button + button {
+  border-left: 1px solid var(--line-strong);
+}
+.tabs button:hover {
+  color: var(--text-1);
+}
+.tabs button:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.tabs button.on {
+  background: color-mix(in srgb, var(--hud) 18%, transparent);
+  box-shadow: inset 0 -2px 0 var(--hud);
+  color: var(--hud-text);
+  font-weight: 600;
+}
+/* How many sessions are shared, inside the Shared tab (#2198). Tighter tracking than the label,
+ * so a two-digit count still fits a third of the narrowest sidebar. */
+.tabCount {
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--text-1);
+}
+.tabs button.on .tabCount {
+  color: var(--hud-text);
+}
+/* Three cells in the narrowest sidebar (220px, `sidebarWidth.ts`) are under 60px each, and
+ * ARCHIVED at the label's size and tracking is wider than that. There, and only with three tabs,
+ * the label steps down to the type scale's floor and its tracking and gap give way, so every
+ * label and a two-digit count fit their cell. */
+.tabs {
+  container-type: inline-size;
+}
+@container (max-width: 220px) {
+  .tabs.three button {
+    gap: 3px;
+    font-size: var(--fs-micro);
+    letter-spacing: 0.02em;
+  }
+}
+
+/* TOUCH FLOOR (#948 P2, docs/design.md §8). The mission rail wears these classes too, and it used to
+ * hold every control at 44px at every width. Aligning the two sidebars must not shrink a touch
+ * target, so BOTH get the floor wherever a finger is the pointer; desktop keeps these metrics. */
+@media (pointer: coarse), (max-width: 800px) {
+  .toggle,
+  .search,
+  .selects select,
+  button.clear,
+  .tabs button {
+    min-height: 44px;
+  }
+}
+
+/* The mission filter could not be applied (#948). */
+.note {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-label);
+  color: var(--text-3);
+}

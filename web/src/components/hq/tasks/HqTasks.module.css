@@ -1,0 +1,356 @@
+/* HQ's tasks (#2103): the strip (one component, three hosts) and the shell's working mark.
+ * NIGHTJAR tokens and shared chrome only: the action plates are `ui/actionButton.module.css`,
+ * the LED is `.hud-led`, the running row's bar is `.nj-acquire`. No colour of its own. */
+
+.strip {
+  min-width: 0;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-1);
+}
+/* In the shell and the sidebar the host draws the edge. */
+.topbar {
+  border-bottom: 0;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 44px;
+  padding: 0 var(--sp-3);
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-1);
+}
+/* The shell's popover and sheet scroll as one box: Tasks, Stop all and Close stay in reach. */
+.topbar .head {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-raised);
+}
+.name {
+  margin: 0;
+  font: 600 var(--fs-meta) / 1 var(--font-display);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+.counts {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: 500 var(--fs-micro) / 1.3 var(--font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.square {
+  width: 9px;
+  height: 9px;
+  background: currentColor;
+  flex: none;
+}
+.stopAll,
+.stop {
+  composes: danger compact from "../../ui/actionButton.module.css";
+  flex: none;
+  gap: 6px;
+}
+.withdraw {
+  composes: ghost compact from "../../ui/actionButton.module.css";
+  flex: none;
+}
+.close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  margin-right: -10px;
+  flex: none;
+  background: transparent;
+  border: 0;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.close:hover {
+  color: var(--text-1);
+}
+.close:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+
+.rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+/* A row: LED | three lines | the action. Uniform, whatever its state. */
+.row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  gap: 3px var(--sp-2);
+  align-items: center;
+  min-height: 44px;
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--line);
+  box-sizing: border-box;
+}
+.rows > .row:last-child {
+  border-bottom: 0;
+}
+.row > :global(.hud-led) {
+  grid-column: 1;
+  grid-row: 1;
+  animation: none;
+}
+.state {
+  grid-column: 2 / span 2;
+  grid-row: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  font: 500 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.now {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-1);
+}
+.tally {
+  flex: none;
+  margin-left: auto;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.question {
+  grid-column: 2;
+  grid-row: 2;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-row);
+  color: var(--text-1);
+}
+.conv {
+  grid-column: 2;
+  grid-row: 3;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 500 var(--fs-micro) / 1.3 var(--font-mono);
+  letter-spacing: 0.08em;
+  color: var(--text-3);
+}
+.action {
+  grid-column: 3;
+  grid-row: 2 / span 2;
+  align-self: center;
+  display: flex;
+}
+
+/* Running: the HUD tint, the accent edge, the acquire rail on top. */
+.run {
+  background: var(--hud-tint);
+  box-shadow: inset 2px 0 0 var(--hud);
+}
+.bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+}
+.wait .question,
+.rec .question {
+  color: var(--text-2);
+}
+/* Parked on a question: the warn tone, in words as well as colour. */
+.ask {
+  box-shadow: inset 2px 0 0 var(--status-degraded);
+}
+.ask .now {
+  color: var(--warn-text);
+}
+.rec .now {
+  color: var(--text-2);
+}
+.rec .tally {
+  color: var(--text-3);
+}
+.rec.bad .now {
+  color: var(--danger-text);
+}
+.rec.warn .now {
+  color: var(--warn-text);
+  white-space: normal;
+}
+
+/* Answer / Open: the bell's Open (an accent-edged ghost): it is what resolves the row. */
+.open {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 4px 12px;
+  box-sizing: border-box;
+  font: 600 var(--fs-meta) / 1 var(--font-display);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-1);
+  border: 1px solid var(--hud-dim);
+  text-decoration: none;
+}
+.open svg {
+  color: var(--accent-text);
+}
+.open:hover {
+  border-color: var(--hud);
+}
+.open:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
+
+.sub {
+  display: flex;
+  align-items: center;
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3) 4px;
+  border-top: 1px solid var(--line-strong);
+  font: 600 var(--fs-micro) / 1 var(--font-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.empty {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 44px;
+  margin: 0;
+  padding: 0 var(--sp-3);
+  font-size: var(--fs-row);
+  color: var(--text-2);
+}
+.empty > :global(.hud-led) {
+  animation: none;
+}
+.failed {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--line);
+  font-size: var(--fs-row);
+  color: var(--danger-text);
+}
+.foot {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 var(--sp-3);
+  border-top: 1px solid var(--line-strong);
+}
+.foot a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  font: 500 var(--fs-micro) / 1 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--hud-text);
+  text-decoration: none;
+}
+.foot a:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
+
+/* ------------------------------------------------------------- the shell's working mark */
+
+/* Its own control beside the HQ icon: an LED and a count, a "?" when a task waits on the
+ * Commander. Lit while the strip is open. */
+.mark {
+  composes: nj-plate from global;
+  --nj-face: color-mix(in srgb, var(--text-1) 6%, var(--bg-1));
+  --nj-edge: var(--line-strong);
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-width: 40px;
+  height: 34px;
+  padding: 0 9px;
+  border: 1px solid transparent;
+  font: 600 var(--fs-micro) / 1 var(--font-mono);
+  letter-spacing: 0.1em;
+  color: var(--text-1);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.mark:hover {
+  --nj-edge: var(--hud-dim);
+}
+.mark:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.markOn {
+  --nj-edge: var(--hud);
+  --nj-face: color-mix(in srgb, var(--hud) 12%, var(--bg-1));
+  color: var(--hud-text);
+}
+.mark > :global(.hud-led) {
+  animation: none;
+}
+.markAsk {
+  color: var(--warn-text);
+}
+.markWrap {
+  position: relative;
+  display: inline-flex;
+}
+
+/* Desktop: an anchored popover, portalled out of the top bar's stacking context (the bell's
+ * own reason, #752). It scrolls as one box. */
+.pop {
+  composes: nj-frame nj-deploy nj-fade-ok from global;
+  --nj-face: var(--bg-1);
+  --nj-edge: var(--hud-dim);
+  position: fixed;
+  top: 56px;
+  right: 8px;
+  width: min(440px, calc(100vw - 24px));
+  max-height: min(78vh, 720px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  z-index: calc(var(--z-shell) + 10);
+}
+
+@media (pointer: coarse), (max-width: 800px) {
+  .stopAll,
+  .stop,
+  .withdraw,
+  .open {
+    min-height: 44px;
+    min-width: 64px;
+  }
+}
+@media (max-width: 800px) {
+  .mark {
+    height: 44px;
+    min-width: 44px;
+  }
+}

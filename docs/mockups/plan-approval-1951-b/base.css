@@ -1,0 +1,14 @@
+@import url('../mission-steps-1581/base.css');
+/* #1951 slice B: the board under an approval, refusals at launch, rework, a lost grant */
+.auth{font:600 10px "Liberation Mono",monospace;letter-spacing:.14em;padding:2px 6px;border:1px solid var(--accent);color:var(--accent-text);text-transform:uppercase}
+.round{font:11px "Liberation Mono",monospace;color:var(--text-2)}
+.bell{display:flex;flex-direction:column;gap:0;border:1px solid var(--line);background:var(--bg-1);max-width:520px}
+.brow{display:grid;grid-template-columns:10px minmax(0,1fr);gap:2px 10px;padding:10px 12px;border-bottom:1px solid var(--line)}
+.brow:last-child{border-bottom:0}
+.brow .dot{width:8px;height:8px;border-radius:50%;background:var(--warn-text);margin-top:5px}
+.brow .t{font-size:13px;font-weight:600}
+.brow .d{grid-column:2;font-size:12px;color:var(--text-2)}
+.push{display:grid;grid-template-columns:32px minmax(0,1fr);gap:2px 10px;padding:10px 12px;border-radius:14px;background:var(--surface-3);max-width:380px}
+.push .ic{width:32px;height:32px;border-radius:8px;background:var(--accent)}
+.push .t{font-size:13px;font-weight:600}
+.push .d{grid-column:2;font-size:12px;color:var(--text-1)}

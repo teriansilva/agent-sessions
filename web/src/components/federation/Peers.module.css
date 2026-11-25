@@ -1,0 +1,482 @@
+/* Settings → Peers (#1246 P2, #2052). Layout only: every surface is a NIGHTJAR primitive
+ * (components/hud: the panel, callsign, LED, stamp, readout, loader, field) and every button is
+ * THE action button (components/ui/actionButton.module.css). Tokens only: no literal colour,
+ * radius, shadow or off-scale font size (src/theme/cssGuard.test.ts, nightjarLedger.test.ts).
+ *
+ * Status colour follows docs/design.md: green only for "connected" and "confirmed here", amber
+ * with a word for a state that needs the operator, red only for a failed pairing and for the
+ * destructive actions, grey for everything quiet (offline, revoked, expired, read-only). Body text
+ * uses --text-1 / --text-2 and the *-text status tokens. */
+
+.card {
+  max-width: var(--settings-col, 640px);
+  margin: 0 0 var(--sp-5);
+}
+.pad {
+  padding: var(--sp-4) var(--sp-4) var(--sp-5);
+}
+.card .callsign {
+  margin: 0 0 var(--sp-3);
+}
+.callsign :global(.nj-title) {
+  white-space: normal;
+}
+/* A card's heading takes focus when the card arrives (a flow step replaced the control that had
+ * it); it is not a control, so it draws no ring. */
+.head:focus {
+  outline: none;
+}
+
+.lede {
+  margin: 0 0 var(--sp-3);
+  max-width: var(--prose-max);
+  font-size: var(--fs-row);
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.strong {
+  color: var(--text-1);
+}
+
+/* ---- key / value facts ---- */
+.kv {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: var(--sp-2) var(--sp-4);
+  align-items: baseline;
+  margin: 0;
+}
+.kv dt {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.kv dd {
+  min-width: 0;
+  margin: 0;
+  font-size: var(--fs-row);
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.kvStacked {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+}
+.kvStacked dd {
+  margin-bottom: var(--sp-2);
+}
+
+.state {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.wordOk {
+  color: var(--ok-text);
+}
+.wordWarn {
+  color: var(--warn-text);
+}
+
+/* A peer id: base32 in groups of four, which wrap group by group. */
+.peerId {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0 0.6em;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+
+/* ---- peer rows ---- */
+.rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) 0;
+  border-bottom: 1px solid var(--line);
+}
+.rows > .row:first-child {
+  border-top: 1px solid var(--line);
+}
+.rows > .row:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+.rowMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.rowTop {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+}
+.rowTitle {
+  font-size: var(--fs-row);
+  font-weight: 600;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.rowMeta {
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+  color: var(--text-2);
+}
+.rowActions {
+  flex: none;
+  display: flex;
+  gap: var(--sp-2);
+}
+/* A revoked peer stays listed so its key stays refused: quiet, never alarmed. */
+.revoked .rowTitle {
+  font-weight: 500;
+  color: var(--text-2);
+}
+.rowEditing {
+  flex-direction: column;
+  align-items: stretch;
+}
+.rename {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  width: 100%;
+}
+.rename :global(.nj-field) {
+  flex: 1 1 180px;
+  width: auto;
+  min-width: 0;
+}
+.empty {
+  padding: var(--sp-4) 0 var(--sp-1);
+  border-top: 1px solid var(--line);
+}
+.empty b {
+  display: block;
+  margin-bottom: var(--sp-1);
+  font-size: var(--fs-row);
+  color: var(--text-1);
+}
+
+/* ---- the two ways to pair ---- */
+.paths {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--sp-5);
+}
+.path {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-2);
+}
+.path + .path {
+  padding-left: var(--sp-5);
+  border-left: 1px solid var(--line);
+}
+.path h3 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-label);
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+.pathHint {
+  flex: 1;
+}
+.acceptForm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  width: 100%;
+  margin: 0;
+}
+.fieldLabel {
+  margin: 0;
+  color: var(--text-2);
+}
+.fieldRow {
+  display: flex;
+  gap: var(--sp-2);
+  width: 100%;
+}
+.fieldRow :global(.nj-field) {
+  flex: 1;
+  width: auto;
+  min-width: 0;
+}
+.fieldRow :global(.nj-field)::placeholder {
+  color: var(--text-2);
+  opacity: 1;
+}
+.fieldRow :global(.nj-field):disabled {
+  opacity: 0.55;
+}
+
+/* ---- notices: a quiet note by default; a status edge only when it states a status ---- */
+.notice {
+  margin: 0 0 var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  color: var(--text-1);
+  background: color-mix(in srgb, var(--text-1) 4%, var(--bg-1));
+  border-left: 3px solid var(--line-strong);
+}
+.noticeHead {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.noticeWarn {
+  background: color-mix(in srgb, var(--status-degraded) 10%, var(--bg-2));
+  border-left-color: var(--status-degraded);
+}
+.noticeWarn .noticeHead {
+  color: var(--warn-text);
+}
+.noticeDown {
+  background: color-mix(in srgb, var(--status-down) 8%, var(--bg-2));
+  border-left-color: var(--status-down);
+}
+.noticeDown .noticeHead {
+  color: var(--danger-text);
+}
+.noticeOk {
+  background: color-mix(in srgb, var(--status-up) 8%, var(--bg-1));
+  border-left-color: var(--status-up);
+}
+.noticeOk .noticeHead {
+  color: var(--ok-text);
+}
+
+/* ---- the pairing flow ---- */
+.flow {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+.flow .notice,
+.flow .lede {
+  margin: 0;
+}
+/* The invite: a well (--surface-3) with the string, selectable to its edge. */
+.invite {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-3);
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+}
+.invite code {
+  flex: 1;
+  min-width: 0;
+  padding: var(--sp-1) 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+/* The QR is content, not chrome (design.md §7): a white ground in both themes, so a scanner reads
+ * it. Its quiet zone is part of the drawing (qr.ts), on the same ground. */
+.qr {
+  align-self: center;
+  display: block;
+  width: 188px;
+  height: 188px;
+  background: var(--qr-ground);
+  border: 1px solid var(--border);
+}
+.qrGround {
+  fill: var(--qr-ground);
+}
+.countdown {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-1);
+}
+.codeWrap {
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.code {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35em;
+  padding: var(--sp-3) 0 var(--sp-2);
+  letter-spacing: 0.08em;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-top: var(--sp-1);
+}
+.confirmed {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-row);
+  color: var(--text-1);
+  background: color-mix(in srgb, var(--status-up) 8%, var(--bg-1));
+  border-left: 3px solid var(--status-up);
+}
+
+/* ---- phone (<=800px, the one breakpoint) ---- */
+@media (max-width: 800px) {
+  .kv {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+  .kv dd {
+    margin-bottom: var(--sp-2);
+  }
+  .row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .rowActions > button {
+    flex: 1;
+  }
+  .paths {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--sp-4);
+  }
+  .path + .path {
+    padding-left: 0;
+    border-left: 0;
+    padding-top: var(--sp-4);
+    border-top: 1px solid var(--line);
+  }
+  .path > button {
+    width: 100%;
+  }
+  .actions > button {
+    flex: 1 1 auto;
+  }
+  .rename :global(.nj-field) {
+    flex-basis: 100%;
+  }
+}
+
+/* ---- what is shared with a peer, and by it (#2055) ---- */
+/* The disclosure takes the row's full width, under the peer's own line and its actions. */
+.rowShares {
+  flex-wrap: wrap;
+}
+.shares {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+.shares :global(.nj-disclosure-toggle) {
+  padding: 0;
+  letter-spacing: 0.12em;
+}
+.shares :global(.nj-disclosure-toggle) b {
+  color: var(--text-1);
+  font-weight: 600;
+}
+.sharesBody {
+  display: grid;
+  gap: var(--sp-3);
+  margin: 0 0 var(--sp-2);
+  padding: var(--sp-1) 0 0 var(--sp-4);
+  border-left: 2px solid var(--line-strong);
+}
+.sharesHead {
+  margin: 0 0 var(--sp-1);
+  font: 500 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.grants {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.grant {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) 0;
+  border-bottom: 1px solid var(--line);
+}
+.grants > .grant:last-child {
+  border-bottom: 0;
+}
+.grantMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-3);
+}
+.grantTitle {
+  font-size: var(--fs-row);
+  font-weight: 600;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.level {
+  flex: none;
+  padding: 1px 6px;
+  font: 500 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  border: 1px solid var(--border);
+}
+.grantMeta {
+  font: 400 var(--fs-meta) / 1.4 var(--font-mono);
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.grantRevoke {
+  flex: none;
+}
+@media (max-width: 800px) {
+  .grant {
+    flex-wrap: wrap;
+  }
+  .grantRevoke {
+    flex: 1 1 100%;
+  }
+}
+.listLede {
+  margin: 0 0 var(--sp-3);
+  max-width: 68ch;
+}

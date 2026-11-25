@@ -1,0 +1,40 @@
+# A bundled action manifest (#2248 P1). Data only: every value is a member of a set in
+# actions/manifest.py, an unknown field anywhere refuses it, and `executor` names reviewed code in
+# actions/executors.py. Its inputs are the stored action's own fields, unchanged.
+contract = 1
+id = "start_session"
+label = "Start a session"
+category = "battlelab"
+description = "Starts a new agent session in a folder with your first message: one agent, one message."
+effect = "write-battlelab"
+executor = "start_session"
+requires = ["api_agent"]
+triggers = ["once", "schedule", "manual", "webhook"]
+
+[[inputs]]
+name = "engine"
+type = "agent"
+label = "Agent"
+required = true
+
+[[inputs]]
+name = "folder"
+type = "folder"
+label = "Folder"
+required = true
+
+[[inputs]]
+name = "message"
+type = "message"
+label = "First message"
+required = true
+
+[[inputs]]
+name = "bypass"
+type = "yes_no"
+label = "Skip permission prompts"
+
+[[outputs]]
+name = "session"
+type = "session"
+label = "The session it started"

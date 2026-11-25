@@ -1,0 +1,866 @@
+/** The BattleLab dashboard (#1123 Phase 2): the tiles around Ask's sections, in a real browser on
+ *  desktop and mobile, both themes. API mocked. What is pinned is what the issue asks for:
+ *  every tile loads and fails ON ITS OWN (a failing tile never blanks the page), a failed read is
+ *  never drawn as "0", the quota tile lists only quotas that were read (an unconfigured, stale or
+ *  refused agent is left off) and says when a pace runs out, counts open exactly what they count,
+ *  Recent work is optional, history has a single All sessions link, and running sessions keep
+ *  agent · project metadata on a phone. Ask opens the shared sidebar (#1294). */
+import { expect, test, type Page } from "@playwright/test";
+
+import { ASK_STREAM, fulfillAsk, mockAskConversations } from "./askStream";
+import { NEW_SESSION_PATH } from "../src/lib/routes";
+import { animationsSettled, storeMotionChoice } from "./nightjarShell";
+import { TOUCH_FLOOR } from "./touchTarget";
+
+const NOW = Math.floor(Date.now() / 1000);
+const A = "claude:aaaaaaaa-0000-4000-8000-00000000000a";
+const B = "codex:aaaaaaaa-0000-4000-8000-00000000000b";
+
+function liveRow(id: string, over: Record<string, unknown> = {}) {
+  return {
+    id,
+    title: `session ${id.slice(-1)}`,
+    engine: id.split(":")[0],
+    project: { id: "p1", name: "Alpha" },
+    working: true,
+    last_activity: NOW - 60,
+    state_line: "running the e2e suite",
+    ...over,
+  };
+}
+
+const DASH = {
+  live: {
+    health: "ok",
+    total: 7,
+    working: 3,
+    by_engine: {
+      claude: { live: 5, working: 2 },
+      codex: { live: 2, working: 1 },
+    },
+    rows: [liveRow(A), liveRow(B, { working: false })],
+  },
+  recent: {
+    total: 2,
+    rows: [
+      {
+        id: A,
+        title: "Newest session",
+        engine: "claude",
+        project: { id: "p1", name: "Alpha" },
+        band: "in_flight",
+        running: true,
+        last_activity: NOW - 30,
+      },
+      {
+        id: B,
+        title: "Older session",
+        engine: "codex",
+        project: { id: "p2", name: "Beta" },
+        band: "needs_you",
+        running: false,
+        last_activity: NOW - 3600,
+      },
+    ],
+  },
+};
+
+function mission(id: string, state: string) {
+  return {
+    id,
+    title: `mission ${id}`,
+    project_id: null,
+    cwd: null,
+    state,
+    created_at: NOW - 7200,
+    updated_at: NOW - 120,
+    closed_at: null,
+    archived_at: null,
+    outcome: null,
+    session_keys: [A],
+  };
+}
+
+const USAGE = {
+  budgets: {},
+  agents: [
+    {
+      engine: "claude",
+      source: "plan",
+      windows: [{ label: "weekly", used_pct: 82, resets_at: NOW + 86400 }],
+      at: NOW - 400,
+      checked_at: NOW - 400,
+      stale: false,
+      limit_tokens: 0,
+      manual_used: 0,
+      used_pct: 82,
+      forecast: {
+        state: "exhausts",
+        window: "weekly",
+        resets_at: NOW + 86400,
+        runs_out_at: NOW + 9 * 3600,
+        pct_at_reset: null,
+        rate_per_h: 2,
+      },
+    },
+    {
+      engine: "codex",
+      source: "plan",
+      windows: [{ label: "weekly", used_pct: 40, resets_at: NOW + 86400 }],
+      at: NOW - 12000,
+      checked_at: NOW - 60,
+      stale: true,
+      error: "not logged in",
+      limit_tokens: 0,
+      manual_used: 0,
+      used_pct: 40,
+    },
+    {
+      engine: "opencode",
+      source: "tokens",
+      windows: [],
+      tokens: { in: 1_000_000, out: 100_000 },
+      at: NOW - 300,
+      checked_at: NOW - 300,
+      stale: false,
+      limit_tokens: 5_000_000,
+      manual_used: 0,
+      used_pct: 99,
+      forecast: {
+        state: "ok",
+        window: null,
+        resets_at: null,
+        runs_out_at: null,
+        pct_at_reset: null,
+        rate_per_h: 0,
+      },
+    },
+    {
+      engine: "kimi",
+      source: "none",
+      windows: [],
+      at: 0,
+      checked_at: null,
+      stale: false,
+      limit_tokens: 0,
+      manual_used: 0,
+      used_pct: null,
+    },
+  ],
+};
+
+type Handler = { status?: number; json: unknown };
+
+async function mockAll(
+  page: Page,
+  over: {
+    dash?: Handler;
+    missions?: Handler;
+    usage?: Handler;
+    running?: Handler;
+  } = {},
+) {
+  await page.route("**/api/**", (r) => r.fulfill({ json: {} }));
+  await page.route("**/api/config", (r) =>
+    r.fulfill({
+      json: {
+        csrf: "x",
+        auth_mode: "none",
+        username: null,
+        terminal_backend: "ws",
+        pulse: { configured: true, window_days: 1 },
+        new_session_engines: ["claude"],
+        onboarded: true,
+      },
+    }),
+  );
+  await page.route("**/api/sessions**", (r) => {
+    const url = new URL(r.request().url());
+    if (url.searchParams.get("running") === "live") {
+      const h = over.running ?? {
+        json: {
+          sessions: Array.from({ length: 7 }, (_, i) => ({
+            id: `claude:aaaaaaaa-0000-4000-8000-00000000001${i}`,
+            title: `running ${i}`,
+            engine: "claude",
+            project: { kind: "project", id: "p1", name: "Alpha" },
+            working: i < 3,
+            last_mtime: NOW - i * 60,
+          })),
+          total: 7,
+          next_offset: null,
+          facets: { projects: [], engines: [] },
+        },
+      };
+      return r.fulfill({ status: h.status ?? 200, json: h.json });
+    }
+    return r.fulfill({
+      json: {
+        sessions: [],
+        total: 0,
+        next_offset: null,
+        facets: { projects: [], engines: [] },
+      },
+    });
+  });
+  await page.route("**/api/version", (r) =>
+    r.fulfill({ json: { version: "test" } }),
+  );
+  await page.route("**/api/pulse/notifications", (r) =>
+    r.fulfill({
+      json: { notifications: [], unread: 0, uncertain: 0, settled: [] },
+    }),
+  );
+  await page.route(/\/api\/pulse\/needs-you(\?.*)?$/, (r) =>
+    r.fulfill({
+      json: {
+        rows: [],
+        total: 0,
+        total_unfiltered: 0,
+        needs_you_ids: [],
+        truncated: false,
+        facets: { engines: [], projects: [] },
+        window_days: 1,
+      },
+    }),
+  );
+  await page.route(/\/api\/pulse\/recap(\?.*)?$/, (r) =>
+    r.fulfill({
+      json: {
+        window_days: 1,
+        source: "local",
+        generated_at: NOW,
+        stale: false,
+        configured: true,
+        error: null,
+        entries: [],
+      },
+    }),
+  );
+  await page.route(/\/api\/dashboard\/sessions/, (r) => {
+    const h = over.dash ?? { json: DASH };
+    return r.fulfill({ status: h.status ?? 200, json: h.json });
+  });
+  await page.route("**/api/missions**", (r) => {
+    if (over.missions)
+      return r.fulfill({
+        status: over.missions.status ?? 200,
+        json: over.missions.json,
+      });
+    const state = new URL(r.request().url()).searchParams.get("state");
+    const rows =
+      state === "running"
+        ? [mission("m1", "running")]
+        : state === "dispatching"
+          ? [mission("m2", "dispatching")]
+          : state === "review"
+            ? [mission("m3", "review")]
+            : [];
+    return r.fulfill({
+      json: {
+        missions: rows,
+        total: rows.length,
+        limit: 5,
+        offset: 0,
+        facets: { projects: [], states: [] },
+      },
+    });
+  });
+  await page.route("**/api/agents/usage", (r) => {
+    const h = over.usage ?? { json: USAGE };
+    return r.fulfill({ status: h.status ?? 200, json: h.json });
+  });
+  await mockAskConversations(page);
+}
+
+test("focused dashboard shows decisions and running sessions before optional details", async ({
+  page,
+}) => {
+  await mockAll(page);
+  let recapReads = 0;
+  let usageReads = 0;
+  let missionReads = 0;
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (request.method() === "GET" && path === "/api/agents/usage") {
+      usageReads++;
+    }
+    if (request.method() === "GET" && path === "/api/missions") {
+      missionReads++;
+    }
+    if (request.method() === "GET" && path === "/api/pulse/recap") {
+      recapReads++;
+    }
+  });
+  await page.goto("/dashboard");
+  await expect(page.getByTestId("needs-you")).toBeVisible();
+  await expect(page.getByTestId("dash-running")).toBeVisible();
+  await expect(page.getByTestId("running-row")).toHaveCount(2);
+  await expect(page.getByTestId("dash-kpis").getByRole("button")).toHaveCount(4);
+  await expect(page.getByTestId("dash-quota")).toBeVisible();
+  await expect(page.getByTestId("quota-row")).toHaveCount(2);
+  await expect(page.getByTestId("dash-missions")).toBeVisible();
+  await expect(page.getByTestId("mission-row")).toHaveCount(3);
+  expect(usageReads).toBeGreaterThan(0);
+  expect(missionReads).toBeGreaterThan(0);
+  await expect(page.getByTestId("dash-recent")).toHaveCount(0);
+  await expect(page.getByTestId("recent-session-row")).toHaveCount(0);
+  const details = page.getByTestId("dashboard-details-toggle");
+  await expect(details).toHaveAttribute("aria-expanded", "false");
+  await expect(details).toHaveText("Recent work");
+  await expect(page.getByTestId("recent-work")).toHaveCount(0);
+  expect(recapReads).toBe(0);
+  await details.click();
+  await expect(details).toHaveAttribute("aria-expanded", "true");
+  await expect(page.getByTestId("recent-work")).toBeVisible();
+  await expect.poll(() => recapReads).toBeGreaterThan(0);
+});
+
+test("every tile renders its own read, and the strip counts what the tiles show", async ({
+  page,
+}) => {
+  await mockAll(page);
+  await page.goto("/dashboard");
+  await expect(
+    page.getByRole("heading", { name: "Welcome, Commander." }),
+  ).toBeVisible();
+  await expect(page.getByTestId("kpi-agents")).toContainText("7");
+  await expect(page.getByTestId("kpi-agents")).toContainText("3 working");
+  await expect(page.getByTestId("kpi-agents")).toContainText("claude 5/2");
+  await expect(page.getByTestId("kpi-missions")).toContainText(
+    "2 active · 1 in review",
+  );
+  await expect(
+    page.getByTestId("dash-running").getByTestId("running-row"),
+  ).toHaveCount(2);
+  await expect(
+    page.getByTestId("dash-missions").getByTestId("mission-row"),
+  ).toHaveCount(3);
+  const running = page.getByTestId("running-row");
+  await expect(running.first()).toContainText("session a");
+  await expect(running.first()).toContainText("claude · Alpha · working");
+  await expect(running.nth(1)).toContainText("codex · Alpha · live, idle");
+  await expect(
+    page.getByTestId("dashboard-page").getByRole("link", { name: /all sessions/i }),
+  ).toHaveCount(1);
+});
+
+test("plan quota: the strip names the LOWEST plan window; tokens/manual never compete", async ({
+  page,
+}) => {
+  await mockAll(page);
+  await page.goto("/dashboard");
+  // claude has 18 % left (82 used); opencode's 99 % used is a token count, not a plan quota.
+  await expect(page.getByTestId("kpi-quota")).toContainText("18%");
+  await expect(page.getByTestId("kpi-quota")).toContainText("claude");
+});
+
+test("quota: an agent that is not configured, stale or refused is left off the tile", async ({
+  page,
+}) => {
+  // kimi is `none` (never configured), codex's figures went stale behind "not logged in", and
+  // gemini's vendor refuses the account: none of them has a quota that was read.
+  await mockAll(page, {
+    usage: {
+      json: {
+        ...USAGE,
+        agents: [
+          ...USAGE.agents,
+          {
+            engine: "gemini",
+            source: "plan",
+            windows: [{ label: "day", used_pct: 10, resets_at: NOW + 3600 }],
+            at: NOW - 60,
+            checked_at: NOW - 60,
+            stale: false,
+            limit_tokens: 0,
+            manual_used: 0,
+            used_pct: 10,
+            access: {
+              state: "denied",
+              message: "This client is no longer supported",
+              observed_at: NOW - 60,
+              checked_at: NOW - 60,
+            },
+          },
+        ],
+      },
+    },
+  });
+  await page.goto("/dashboard");
+  const rows = page.getByTestId("quota-row");
+  await expect(rows).toHaveCount(2);
+  await expect(rows.nth(0)).toHaveAttribute("data-engine", "claude");
+  await expect(rows.nth(1)).toHaveAttribute("data-engine", "opencode");
+  await expect(page.getByTestId("dash-quota")).not.toContainText(
+    "not measured",
+  );
+  await expect(page.getByTestId("dash-quota")).not.toContainText("no access");
+});
+
+test("quota: nothing readable says so, and points at where a limit is set", async ({
+  page,
+}) => {
+  await mockAll(page, {
+    usage: {
+      json: {
+        ...USAGE,
+        agents: USAGE.agents.filter((a) => a.source === "none"),
+      },
+    },
+  });
+  await page.goto("/dashboard");
+  await expect(page.getByTestId("quota-row")).toHaveCount(0);
+  await expect(page.getByTestId("dash-quota")).toContainText(
+    "No agent’s quota can be read right now",
+  );
+});
+
+for (const theme of ["dark", "light"] as const) {
+  test(`quota: the forecast says when a pace runs out, in the degraded colour — ${theme}`, async ({
+    page,
+  }) => {
+    await mockAll(page);
+    await page.goto("/dashboard");
+    await page.evaluate((t) => {
+      document.documentElement.dataset.theme = t;
+    }, theme);
+    const claude = page
+      .locator('[data-testid="quota-row"][data-engine="claude"]')
+      .getByTestId("quota-forecast");
+    await expect(claude).toContainText(/^weekly: runs out in ~9h \(.+\) at this pace/);
+    await expect(claude).toContainText("15h before the reset");
+    const colour = await claude.evaluate((el) => getComputedStyle(el).color);
+    const degraded = await page.evaluate(() => {
+      const probe = document.createElement("span");
+      probe.style.color = "var(--status-degraded)";
+      document.body.append(probe);
+      const c = getComputedStyle(probe).color;
+      probe.remove();
+      return c;
+    });
+    expect(colour).toBe(degraded);
+    // The line sits inside its row, never clipped by it.
+    const row = (await page
+      .locator('[data-testid="quota-row"][data-engine="claude"]')
+      .boundingBox())!;
+    const line = (await claude.boundingBox())!;
+    expect(line.x + line.width).toBeLessThanOrEqual(row.x + row.width + 1);
+    expect(line.y + line.height).toBeLessThanOrEqual(row.y + row.height + 1);
+    await expect(
+      page
+        .locator('[data-testid="quota-row"][data-engine="opencode"]')
+        .getByTestId("quota-forecast"),
+    ).toHaveText("on pace to stay under the limit");
+  });
+}
+
+test("quota: a week's forecast under a session meter says it is the week's", async ({
+  page,
+}) => {
+  // The meter shows the window nearest its limit (session); the forecast judges the one running
+  // out first (week). Unlabelled, the week's "runs out" read as the session's.
+  await mockAll(page, {
+    usage: {
+      json: {
+        ...USAGE,
+        agents: [
+          {
+            ...USAGE.agents[0],
+            windows: [
+              { label: "session", used_pct: 51, resets_at: NOW + 3 * 3600 },
+              { label: "week", used_pct: 13, resets_at: NOW + 6 * 86400 },
+            ],
+            used_pct: 51,
+            forecast: {
+              state: "exhausts",
+              window: "week",
+              resets_at: NOW + 6 * 86400,
+              runs_out_at: NOW + 33 * 3600,
+              pct_at_reset: null,
+              rate_per_h: 2.6,
+            },
+          },
+        ],
+      },
+    },
+  });
+  await page.goto("/dashboard");
+  const row = page.locator('[data-testid="quota-row"][data-engine="claude"]');
+  await expect(row).toContainText("49% left · session");
+  await expect(row.getByTestId("quota-forecast")).toHaveText(
+    /^week, 87% left: runs out in ~\d+h \(.+\) at this pace/,
+  );
+});
+
+test("a failing tile never blanks the page, and says it could not read — never '0'", async ({
+  page,
+}) => {
+  await mockAll(page, { dash: { status: 500, json: { detail: "boom" } } });
+  await page.goto("/dashboard");
+  await expect(
+    page.getByTestId("dash-running").getByTestId("tile-error"),
+  ).toBeVisible();
+  await expect(page.getByTestId("kpi-agents")).toContainText("couldn’t read");
+  await expect(page.getByTestId("kpi-agents")).not.toContainText("0 live");
+  // The others still stand.
+  await expect(
+    page.getByTestId("dash-missions").getByTestId("mission-row"),
+  ).toHaveCount(3);
+  await expect(page.getByTestId("quota-row")).toHaveCount(2);
+});
+
+test("an unreadable runtime is 'couldn't read', never '0 running'", async ({
+  page,
+}) => {
+  await mockAll(page, {
+    dash: { json: { ...DASH, live: { health: "unavailable" } } },
+  });
+  await page.goto("/dashboard");
+  await expect(page.getByTestId("running-unavailable")).toBeVisible();
+  await expect(page.getByTestId("running-empty")).toHaveCount(0);
+  await expect(page.getByTestId("kpi-agents")).toContainText("couldn’t read");
+});
+
+test("a mission store that won't answer is an error, never 'no missions'", async ({
+  page,
+}) => {
+  await mockAll(page, {
+    missions: {
+      json: {
+        missions: [],
+        total: 0,
+        limit: 5,
+        offset: 0,
+        facets: { projects: [], states: [] },
+        store_error: "locked",
+      },
+    },
+  });
+  await page.goto("/dashboard");
+  await expect(
+    page.getByTestId("dash-missions").getByTestId("tile-error"),
+  ).toBeVisible();
+  await expect(page.getByTestId("missions-empty")).toHaveCount(0);
+});
+
+test("'All N running' opens exactly the N the count said", async ({ page }) => {
+  await mockAll(page);
+  await page.goto("/dashboard");
+  await page.getByTestId("running-show-all").click();
+  await expect(
+    page.getByTestId("dash-running").getByTestId("running-row"),
+  ).toHaveCount(7);
+});
+
+test("a count is a way to what it counts: the agents number opens the running tile", async ({
+  page,
+}) => {
+  await mockAll(page);
+  await page.goto("/dashboard");
+  await page.getByTestId("kpi-agents").click();
+  await expect(page.getByTestId("dash-running")).toBeInViewport();
+});
+
+test("Ask opens the sidebar beside the tiles; the dashboard has no Ask field of its own (#1294)", async ({
+  page,
+}) => {
+  await mockAll(page);
+  await page.route(ASK_STREAM, (r) =>
+    fulfillAsk(r, {
+      answer: "Two sessions ran.",
+      matches: [],
+      mission_matches: [],
+    }),
+  );
+  await page.goto("/dashboard");
+  await expect(page.getByTestId("kpi-agents")).toContainText("7");
+  await expect(page.getByTestId("dashboard-page").getByTestId("composer-input")).toHaveCount(0);
+  await page.getByTestId("hq-primary-contact").click();
+  const panel = page.getByTestId("ask-sidebar");
+  await expect(panel).toHaveAttribute("data-open", "true");
+  await panel.getByTestId("composer-input").fill("what ran today?");
+  await panel.getByTestId("composer-send").click();
+  await expect(panel.getByTestId("ask-turn")).toHaveCount(1);
+  // The page under it did not move: still the dashboard, tiles and all.
+  await expect(page).toHaveURL(/\/dashboard$/);
+  await expect(page.getByTestId("dash-kpis")).toHaveCount(1);
+});
+
+test("New is a menu — session, mission, project — that opens on screen and goes where it says (#1294)", async ({
+  page,
+}) => {
+  await mockAll(page);
+  await page.goto("/dashboard");
+  const vw = page.viewportSize()!.width;
+  for (const [item, url] of [
+    ["New session", new RegExp(`${NEW_SESSION_PATH}$`)],
+    // HQ plans every mission (#2152): New mission opens HQ on a fresh conversation.
+    ["New mission", /\/hq$/],
+    ["New project", /\/projects\/new$/],
+  ] as const) {
+    await page.goto("/dashboard");
+    await page.getByTestId("dashboard-new").click();
+    const menu = page.getByTestId("dashboard-new-menu");
+    await expect(menu.getByRole("menuitem")).toHaveCount(3);
+    // Portalled and kept on screen: every item is inside the viewport and clickable.
+    const box = (await menu.boundingBox())!;
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(vw);
+    for (const it of await menu.getByRole("menuitem").all()) {
+      expect((await it.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+    }
+    await menu.getByRole("menuitem", { name: item }).click();
+    await expect(page).toHaveURL(url);
+  }
+});
+
+test("on a phone, a running session keeps agent · project under its title", async ({
+  page,
+}, info) => {
+  test.skip(info.project.name !== "mobile", "phone layout");
+  await mockAll(page);
+  await page.goto("/dashboard");
+  const row = page.getByTestId("running-row").first();
+  const title = row.getByText("session a", { exact: true });
+  const metadata = row.getByText("claude · Alpha · working", { exact: false });
+  await expect(title).toBeVisible();
+  await expect(metadata).toBeVisible();
+  const titleBox = (await title.boundingBox())!;
+  const metadataBox = (await metadata.boundingBox())!;
+  expect(metadataBox.y).toBeGreaterThanOrEqual(titleBox.y + titleBox.height);
+});
+
+test("Recent work opens and closes with the keyboard while focus stays on its button", async ({
+  page,
+}) => {
+  await mockAll(page);
+  await page.goto("/dashboard");
+  const toggle = page.getByTestId("dashboard-details-toggle");
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(toggle).toHaveAttribute("aria-controls", /.+/);
+  expect((await toggle.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+  await toggle.focus();
+  await page.keyboard.press("Enter");
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await expect(page.getByTestId("recent-work")).toBeVisible();
+  await expect(toggle).toBeFocused();
+  await page.keyboard.press("Space");
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByTestId("recent-work")).not.toBeVisible();
+  await expect(toggle).toBeFocused();
+});
+
+test("All sessions opens the session history without expanding Recent work", async ({
+  page,
+}) => {
+  await mockAll(page);
+  await page.goto("/dashboard");
+  const history = page
+    .getByTestId("dashboard-page")
+    .getByRole("link", { name: /all sessions/i });
+  await expect(page.getByTestId("dashboard-details-toggle")).toHaveAttribute(
+    "aria-expanded",
+    "false",
+  );
+  await expect(history).toHaveAttribute("href", NEW_SESSION_PATH);
+  expect((await history.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+  await history.click();
+  await expect(page).toHaveURL(new RegExp(`${NEW_SESSION_PATH}$`));
+});
+
+for (const theme of ["dark", "light"] as const) {
+  test(`renders in the ${theme} theme`, async ({ page }, info) => {
+    await mockAll(page);
+    await page.goto("/dashboard");
+    await page.evaluate((t) => {
+      document.documentElement.dataset.theme = t;
+    }, theme);
+    await expect(page.getByTestId("dash-kpis")).toBeVisible();
+    await expect(page.getByTestId("quota-row")).toHaveCount(2);
+    await page.screenshot({
+      path: `test-results/dashboard-${info.project.name}-${theme}.png`,
+      fullPage: true,
+    });
+  });
+}
+
+test("long agent-authored titles and project names never overflow the page sideways", async ({
+  page,
+}) => {
+  const long = "x".repeat(400);
+  await mockAll(page, {
+    dash: {
+      json: {
+        ...DASH,
+        live: {
+          ...DASH.live,
+          rows: [
+            liveRow(A, {
+              title: long,
+              state_line: long,
+              project: { id: "p", name: long },
+            }),
+          ],
+        },
+      },
+    },
+  });
+  await page.goto("/dashboard");
+  await expect(page.getByTestId("running-row")).toHaveCount(1);
+  const pane = page.getByTestId("dashboard-pane");
+  const [scroll, client] = await pane.evaluate((el) => [
+    el.scrollWidth,
+    el.clientWidth,
+  ]);
+  expect(scroll).toBeLessThanOrEqual(client + 1);
+});
+
+// NIGHTJAR Phase 5 (#1568). Rows arrive with the shared arrival (a slide and one tint flash on an
+// overlay). Reduced and Off remove that animation, so the overlay must REST invisible: before the
+// fix every row in Off stayed painted in the full tint.
+for (const motion of ["off", "reduced", "full"] as const) {
+  test(`arrived rows carry no tint at rest — ${motion}`, async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    await storeMotionChoice(page, motion);
+    await mockAll(page);
+    await page.goto("/dashboard");
+    await expect(page.getByTestId("running-row")).toHaveCount(2);
+    await animationsSettled(page);
+    for (const row of [
+      page.getByTestId("running-row").first(),
+      page.getByTestId("mission-row").first(),
+      page.getByTestId("quota-row").first(),
+    ]) {
+      expect(await row.evaluate((el) => getComputedStyle(el, "::after").opacity)).toBe("0");
+    }
+  });
+}
+
+test("a first read says Acquiring in words, and the KPI cards never show a number before one is read", async ({
+  page,
+}) => {
+  await mockAll(page);
+  // Hold every dashboard source: the first read is in flight for the whole test.
+  await page.route(/\/api\/(dashboard\/sessions|agents\/usage(\?|$)|missions(\?|$)|pulse\/needs-you(\?|$))/, () => {});
+  await page.goto("/dashboard");
+  for (const id of ["kpi-agents", "kpi-missions", "kpi-needs", "kpi-quota"]) {
+    const kpi = page.getByTestId(id);
+    await expect(kpi.getByRole("status")).toHaveText("Acquiring");
+    expect(await kpi.textContent()).not.toMatch(/\d/);
+  }
+  for (const tile of ["dash-running", "dash-missions", "dash-quota"]) {
+    await expect(page.getByTestId(tile).getByTestId("tile-loading")).toHaveText(/^Acquiring /);
+  }
+});
+
+// Tablets and small phones (operator report, 2026-10-22). The board drew 1440 and 390 only, and the
+// one breakpoint (800 px) handed an iPad in portrait the desktop layout: four KPI tiles at ~180 px,
+// two columns at ~400 / 300 px and the HQ card squeezed into the fourth column. Measured, not looked
+// at: the layout each width gets, and the tiles' height (a tall, mostly empty tile is the symptom).
+const DEVICES = [
+  { name: "tablet portrait", width: 834, height: 1112, cols: 1, kpiCols: 2 },
+  { name: "tablet landscape", width: 1180, height: 820, cols: 2, kpiCols: 4 },
+  { name: "small phone", width: 360, height: 780, cols: 1, kpiCols: 2 },
+] as const;
+for (const d of DEVICES) {
+  test(`the dashboard fits a ${d.name} (${d.width} px): its own layout, compact tiles, no sideways scroll`, async ({
+    browser,
+  }) => {
+    const ctx = await browser.newContext({
+      viewport: { width: d.width, height: d.height },
+      hasTouch: true,
+      isMobile: d.width <= 800,
+    });
+    const page = await ctx.newPage();
+    await mockAll(page);
+    await page.goto("/dashboard");
+    await expect(page.getByTestId("running-row")).toHaveCount(2);
+    await expect(page.getByTestId("needs-you")).toBeVisible();
+    await animationsSettled(page);
+
+    // KPI tiles: the columns this width gets, and none a tall, mostly empty plate.
+    const tiles = page.getByTestId("dash-kpis").locator(":scope > *");
+    const boxes = await tiles.evaluateAll((els) => els.map((e) => e.getBoundingClientRect().toJSON()));
+    expect(new Set(boxes.map((b) => Math.round(b.top))).size, "rows of KPI tiles").toBe(4 / d.kpiCols);
+    for (const b of boxes) expect(b.height, `KPI tile height at ${d.width}`).toBeLessThanOrEqual(150);
+
+    // The sections: one column on a portrait tablet and a phone, two where there is room.
+    const needs = (await page.getByTestId("needs-you").boundingBox())!;
+    const running = (await page.getByTestId("running-row").first().boundingBox())!;
+    const stacked = running.y > needs.y + needs.height - 1;
+    expect(stacked, "running sessions below needs-you").toBe(d.cols === 1);
+
+    // The HQ card is never a sliver beside the heading.
+    const card = (await page.getByTestId("hq-primary-contact").boundingBox())!;
+    // Four columns: by construction (#1525) the card is the Plan quota tile's column, which holds the
+    // name on one line from 1024 px. Narrower, it is a row of its own.
+    const minCard = d.kpiCols === 4 ? 240 : Math.min(300, d.width - 48);
+    expect(card.width, "HQ contact card width").toBeGreaterThanOrEqual(minCard);
+
+    const pane = page.getByTestId("dashboard-pane");
+    const [scroll, client] = await pane.evaluate((el) => [el.scrollWidth, el.clientWidth]);
+    expect(scroll).toBeLessThanOrEqual(client + 1);
+    await ctx.close();
+  });
+}
+
+test("quota (#2331): the row and the strip name the account new sessions start on, and the other windows", async ({
+  page,
+}) => {
+  // The server's claude row is the ACTIVE account's figures; the dashboard shows only that one,
+  // says whose they are, and lists the windows the headline does not name.
+  await mockAll(page, {
+    usage: {
+      json: {
+        ...USAGE,
+        agents: [
+          {
+            ...USAGE.agents[0],
+            account: { id: "a-1", label: "Personal", email: "op@personal.example" },
+            windows: [
+              { label: "session", used_pct: 12, resets_at: NOW + 3 * 3600 },
+              { label: "week (all models)", used_pct: 91, resets_at: NOW + 2 * 86400 },
+              { label: "week (Fable)", used_pct: 42, resets_at: NOW + 2 * 86400 },
+            ],
+            used_pct: 91,
+            forecast: null,
+          },
+          {
+            ...USAGE.agents[1],
+            stale: false,
+            error: null,
+            account: { id: "default", label: "Default login", email: null },
+          },
+        ],
+        accounts: {
+          claude: [
+            {
+              ...USAGE.agents[0],
+              account: { id: "default", label: "Default login", email: "op@work.example" },
+              active: false,
+            },
+          ],
+        },
+      },
+    },
+  });
+  await page.goto("/dashboard");
+  const row = page.locator('[data-testid="quota-row"][data-engine="claude"]');
+  await expect(row).toContainText("9% left · week (all models)");
+  await expect(row.getByTestId("quota-account")).toContainText("op@personal.example");
+  await expect(row.getByTestId("quota-also")).toHaveText(
+    "also: session 88% left · week (Fable) 58% left",
+  );
+  // The non-active account's figures are never on the dashboard.
+  await expect(page.getByTestId("dash-quota")).not.toContainText("op@work.example");
+  // A default login with no email to name stays unnamed rather than saying "Default login".
+  const codex = page.locator('[data-testid="quota-row"][data-engine="codex"]');
+  await expect(codex.getByTestId("quota-account")).toHaveCount(0);
+  await expect(page.getByTestId("kpi-quota")).toContainText("week (all models)");
+  await expect(page.getByTestId("kpi-quota")).toContainText("op@personal.example");
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - window.innerWidth,
+  );
+  expect(overflow).toBeLessThanOrEqual(1);
+});

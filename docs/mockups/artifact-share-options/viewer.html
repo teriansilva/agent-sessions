@@ -1,0 +1,62 @@
+<!doctype html>
+<html data-theme="dark"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Artifact public link options · visitor side</title>
+<link rel="stylesheet" href="base.css">
+<body>
+<h1>Public link options · what a visitor sees</h1>
+<p class="sub">/artifacts/p/&lt;id&gt;/. A password link shows its gate before anything about the artifact, title included. A headerless link frames the artifact edge to edge; its gate is the same card without the bar. An expired link is the existing “This link no longer works”, identical to a revoked or unknown one.</p>
+<div class="board">
+
+<div><div class="label">5 · PASSWORD GATE (HEADER ON)</div>
+<div class="viewer">
+ <div class="pbar"><span class="mark">BATTLELAB</span><span class="t">Shared artifact</span></div>
+ <div class="vcenter"><form class="gate">
+  <h2>This link needs a password</h2>
+  <p>Ask the person who shared it.</p>
+  <div class="input"><span class="ph">Password</span><button class="eye" type="button">SHOW</button></div>
+  <button class="nj-plate btn primary" type="button">Open</button>
+ </form></div>
+</div></div>
+
+<div><div class="label">6 · WRONG PASSWORD, THEN PAUSED</div>
+<div class="viewer">
+ <div class="pbar"><span class="mark">BATTLELAB</span><span class="t">Shared artifact</span></div>
+ <div class="vcenter"><form class="gate">
+  <h2>This link needs a password</h2>
+  <p class="err">Wrong password. 2 tries left.</p>
+  <div class="input"><span class="val">•••••</span><button class="eye" type="button">SHOW</button></div>
+  <button class="nj-plate btn primary" type="button">Open</button>
+  <p class="err">Too many wrong passwords. Try again in 15 minutes.</p>
+ </form></div>
+</div></div>
+
+<div><div class="label">7 · UNLOCKED, HEADER ON (TODAY'S VIEWER)</div>
+<div class="viewer">
+ <div class="pbar"><span class="mark">BATTLELAB</span><span class="t">Q3 load-test report</span><span class="chip">SITE</span><span class="chip">UPDATED 2H AGO</span></div>
+ <div class="content"><h3>Q3 load-test report</h3><div class="fake"></div><div class="fake"></div><div class="fake s"></div></div>
+</div></div>
+
+<div><div class="label">8 · HEADER OFF: THE ARTIFACT IS THE WHOLE PAGE</div>
+<div class="viewer">
+ <div class="content"><h3>Q3 load-test report</h3><div class="fake"></div><div class="fake"></div><div class="fake s"></div><div class="fake"></div></div>
+</div>
+<p class="ann">Tab title is the artifact's own title, without “· BattleLab”. Still framed sandboxed from ~/ (no allow-same-origin).</p></div>
+
+<div><div class="label">9 · HEADER OFF + PASSWORD: THE GATE WITHOUT THE BAR</div>
+<div class="viewer">
+ <div class="vcenter"><form class="gate">
+  <h2>This link needs a password</h2>
+  <p>Ask the person who shared it.</p>
+  <div class="input"><span class="ph">Password</span><button class="eye" type="button">SHOW</button></div>
+  <button class="nj-plate btn primary" type="button">Open</button>
+ </form></div>
+</div></div>
+
+<div><div class="label">10 · EXPIRED (= REVOKED = UNKNOWN)</div>
+<div class="viewer">
+ <div class="pbar"><span class="mark">BATTLELAB</span><span class="t">Shared artifact</span></div>
+ <div class="vcenter"><div class="gate"><span class="dtag">Link unavailable</span><h2>This link no longer works</h2><p>It may have been revoked. Ask the person who shared it for a new link.</p></div></div>
+</div></div>
+
+</div>
+<script src="head.js"></script>
+</body></html>

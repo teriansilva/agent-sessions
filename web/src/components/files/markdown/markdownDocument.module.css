@@ -1,0 +1,295 @@
+/* A Markdown file, rendered (#2114). A document, not a chat reply: prose in the system sans at the
+   base size, headings in the display face at real sizes, prose held to 80ch (design.md). BattleLab
+   grammar otherwise: flat surfaces, no radius, no gradients, square bullets, the accent only on
+   links, tokens only. */
+.doc {
+  max-width: 80ch;
+  margin: 0 auto;
+  padding: 18px 24px 32px;
+  font-size: var(--fs-body);
+  line-height: 1.6;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.doc > :first-child {
+  margin-top: 0;
+}
+.doc p,
+.doc ul,
+.doc ol,
+.doc blockquote,
+.doc details,
+.doc dl {
+  margin: 0 0 12px;
+}
+.doc h1,
+.doc h2,
+.doc h3,
+.doc h4,
+.doc h5,
+.doc h6 {
+  margin: 22px 0 10px;
+  font-family: var(--font-display);
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--text);
+  scroll-margin-top: 8px;
+}
+.doc h1 {
+  font-size: 24px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+}
+.doc h2 {
+  font-size: 19px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+}
+.doc h3 {
+  font-size: 16px;
+}
+.doc h4,
+.doc h5,
+.doc h6 {
+  font-size: var(--fs-body);
+}
+.doc h6 {
+  color: var(--text-muted);
+}
+.doc a {
+  color: var(--accent-text);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.doc ul,
+.doc ol {
+  padding-left: 24px;
+}
+.doc ul {
+  list-style: square;
+}
+.doc li {
+  margin: 3px 0;
+}
+.doc li::marker {
+  color: var(--text-muted);
+}
+.doc li > ul,
+.doc li > ol {
+  margin-bottom: 0;
+}
+/* GFM task lists: the checkbox is the bullet. */
+.doc :global(.contains-task-list) {
+  list-style: none;
+  padding-left: 4px;
+}
+.doc input[type="checkbox"] {
+  appearance: none;
+  width: 13px;
+  height: 13px;
+  margin: 0 8px 0 0;
+  vertical-align: -2px;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+}
+.doc input[type="checkbox"]:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.doc blockquote {
+  padding: 0 0 0 12px;
+  border-left: 2px solid var(--line-strong);
+  color: var(--text-muted);
+}
+.doc hr {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 18px 0;
+}
+.doc :not(pre) > code {
+  padding: 1px 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  font: 0.9em/1.4 var(--font-mono);
+}
+.doc kbd {
+  padding: 0 4px;
+  border: 1px solid var(--line-strong);
+  border-bottom-width: 2px;
+  font: 0.85em var(--font-mono);
+}
+.doc details > summary {
+  cursor: pointer;
+  min-height: 32px;
+}
+.doc img {
+  max-width: 100%;
+  height: auto;
+}
+.doc sup,
+.doc sub {
+  line-height: 0;
+}
+.doc del {
+  color: var(--text-muted);
+}
+/* Footnotes (remark-gfm): a quiet rule above, smaller text. */
+.doc :global(.footnotes) {
+  margin-top: 24px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  font-size: var(--fs-row);
+  color: var(--text-muted);
+}
+.doc :global(.sr-only) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.tableWrap {
+  margin: 0 0 14px;
+  overflow-x: auto;
+}
+.tableWrap table {
+  border-collapse: collapse;
+  font-size: var(--fs-row);
+}
+.tableWrap th,
+.tableWrap td {
+  border: 1px solid var(--line-strong);
+  padding: 5px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+.tableWrap th {
+  background: var(--surface-2);
+  font: 600 var(--fs-label) var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.tableWrap th[align="center"],
+.tableWrap td[align="center"] {
+  text-align: center;
+}
+.tableWrap th[align="right"],
+.tableWrap td[align="right"] {
+  text-align: right;
+}
+
+/* Fenced code and diagrams share one frame. */
+.block {
+  margin: 4px 0 14px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  min-width: 0;
+}
+.blockHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 28px;
+  padding: 0 4px 0 10px;
+  border-bottom: 1px solid var(--line);
+  font: 600 var(--fs-micro) var(--font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.copy {
+  min-height: 28px;
+  padding: 0 8px;
+  background: none;
+  border: 0;
+  color: var(--text-muted);
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+.copy:hover,
+.copy:focus-visible {
+  color: var(--text);
+}
+.blockCode {
+  margin: 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font: 12.5px/1.5 var(--font-mono);
+  white-space: pre;
+  tab-size: 4;
+}
+.blockWait,
+.blockError {
+  margin: 0;
+  padding: 10px 12px;
+  font-size: var(--fs-row);
+  color: var(--text-muted);
+}
+.blockError {
+  color: var(--danger-text);
+  white-space: pre-wrap;
+  border-bottom: 1px solid var(--line);
+}
+.diagram {
+  padding: 12px;
+  overflow-x: auto;
+  text-align: center;
+}
+.diagram img {
+  max-width: 100%;
+  height: auto;
+}
+
+.imageSlot {
+  display: inline-block;
+  max-width: 100%;
+}
+.imageAlt,
+.deadLink {
+  color: var(--text-muted);
+}
+.remoteImage {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin: 2px 0;
+  padding: 8px 10px;
+  border: 1px dashed var(--line-strong);
+  color: var(--text-muted);
+  font-size: var(--fs-row);
+}
+.tag {
+  font: 600 var(--fs-micro) var(--font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border: 1px solid var(--line-strong);
+}
+
+@media (max-width: 800px) {
+  .doc {
+    padding: 14px 16px 28px;
+  }
+  .doc h1 {
+    font-size: 21px;
+  }
+  .doc h2 {
+    font-size: 17px;
+  }
+  /* Phone: every control the preview adds holds the 44px floor (design.md §8). */
+  .copy,
+  .doc details > summary {
+    min-height: 44px;
+  }
+  .remoteImage a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+}

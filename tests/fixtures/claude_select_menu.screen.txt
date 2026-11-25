@@ -1,0 +1,19 @@
+ ☐ Merge order
+
+│ Earlier the instruction was to hold every merge until the review finished, even for approved work. Is that hold lifted now? and carefully
+
+❯ 1. Merge both ready branches
+     Merge both reviewed branches — each is approved, green and clean against main and each other. The third stays held until its open and each branch is checked against main once carefully
+     question is answered. Squash each, delete the branch, close its issue by hand, and recheck main after every merge and each branch is checked against reviews
+  2. Keep the hold — no merges
+     Change nothing. The review above stands as the report; every branch stays held until you say reviews
+  3. Merge only the backend fix
+     Merge the smallest change only — server-side, no web surface. The two interface branches and the held one stay and each branch again
+  4. Merge everything, held too
+     Also resolve the one conflict against main and merge the held branch. Note this publishes copy that is not meant to be and each branch is checked against main once more before carefully
+     live yet, and the held branch still has an unanswered question. and carefully
+  5. Type something.
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  6. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel

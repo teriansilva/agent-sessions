@@ -1,0 +1,352 @@
+.compose {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: var(--sp-2);
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  /* Cap the bar's own height and scroll internally so a tall compose shrinks the
+   * terminal (the flex:1 sibling) rather than pushing the action row off-screen (#7). */
+  max-height: 50dvh;
+  overflow-y: auto;
+  container: composer / inline-size;
+}
+.fields {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+/* THE FIELD (nj-field, #1531): square, on the sunken ground, the inset focus ring and an amber
+ * edge while it holds the caret. It keeps its own two-row metrics and auto-grow cap. */
+.textarea {
+  composes: nj-field from global;
+}
+textarea.textarea {
+  max-height: 28vh;
+  min-height: 0;
+  resize: none;
+  background: var(--bg);
+  color: var(--text);
+  padding: var(--sp-2);
+  font: inherit;
+  line-height: 1.35;
+}
+/* Attachment pills: square mono tags on the raised ground, the ✕ a glyph inside the pill. */
+.pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  max-width: 70%;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--hud-dim);
+  border-radius: 0;
+  padding: 2px var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  color: var(--text-1);
+}
+.pn {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pill button {
+  background: none;
+  border: 0;
+  color: var(--text-3);
+  cursor: pointer;
+  font-size: var(--fs-body);
+  line-height: 1;
+  padding: 0 2px;
+}
+.pill button:hover,
+.pill button:focus-visible {
+  color: var(--danger-text);
+}
+.pill button:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -2px;
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+/* Single non-wrapping row (#234): takes the row's slack (flex:1) so the available width is
+   layout-driven and stable to measure; KeyBar collapses the overflow into the "…" menu rather
+   than wrapping. position:relative anchors the popover. */
+.keys {
+  position: relative;
+  display: flex;
+  flex: 1 1 0;
+  min-width: 0;
+  align-items: center;
+  gap: var(--sp-1);
+}
+/* Key + toggle chips below the console (↑ ↓ ↵ tab 📎 ✕ in the collapsible group): THE CHIP
+   (nj-chip, #1531) — a painted chamfer, mono caps, so its corners stay pressable; the HUD tint on
+   hover and an amber face while pressed. 32px on a desktop; the chip's own §8 floor (44px)
+   under a coarse pointer and at ≤800px, where the row is 44px tall for Talk / Send anyway. */
+.key,
+.moreKey,
+.toggle {
+  composes: nj-chip from global;
+  justify-content: center;
+  min-width: 32px;
+  padding: 0 var(--sp-2);
+  color: var(--text-2);
+}
+.key:hover:not(:disabled),
+.moreKey:hover,
+.toggle:hover {
+  --nj-face: color-mix(in srgb, var(--hud) 14%, var(--bg-1));
+  color: var(--hud-text);
+}
+.key:active:not(:disabled),
+.moreKey:active,
+.toggle:active {
+  --nj-face: var(--accent);
+  color: var(--on-accent);
+}
+.key:focus-visible,
+.moreKey:focus-visible,
+.toggle:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+/* Inert chips (the API composer's tools while a send is in flight) grey out like a disabled Send. */
+.key:disabled,
+.keyMenuItem:disabled,
+.mic:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+/* The "…" overflow trigger never shrinks; it sits right after the last visible chip. */
+.moreKey {
+  flex: none;
+}
+/* Overflow popover (#234): pops UP from the more button (terminal is above). On THE menu chrome
+   (ui/menu.module.css, #1531). Portalled to <body> with position:fixed (#500): bottom/left are set
+   inline from the "…" trigger, so .compose's overflow-y:auto and .terminal-pane's overflow:hidden
+   can't clip it. At ≤800px it docks full width above the key bar — a sheet that keeps the compose
+   bar (and the keyboard) in view, because these keys are sent WHILE typing. */
+.keyMenu {
+  composes: panel from "../ui/menu.module.css";
+  position: fixed;
+  z-index: var(--z-shell);
+  display: flex;
+  flex-direction: column;
+  min-width: 168px;
+  max-width: calc(100vw - 16px);
+}
+.keyMenuItem {
+  composes: item from "../ui/menu.module.css";
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.keyMenuIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  flex: none;
+}
+/* A key drawn as text rather than an icon (the "esc" chip), inline and in the menu (#1531: the
+ * class KeyBar always named and no sheet ever defined). */
+.txt {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+@media (max-width: 800px) {
+  .keyMenu {
+    left: 0 !important;
+    right: 0;
+    width: 100%;
+    max-width: none;
+    border-left: none;
+    border-right: none;
+    background: var(--bg-1);
+    clip-path: polygon(var(--cut) 0, 100% 0, 100% 100%, 0 100%, 0 var(--cut));
+    animation: global(nj-sheet-up) var(--t-slow) var(--ease-out) both;
+  }
+  .keyMenuItem {
+    min-height: 48px;
+    font-size: var(--fs-row);
+  }
+}
+/* The readiness / delivery note beside the actions (the session's "waiting for the agent…"). */
+.spacer {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.04em;
+  color: var(--text-3);
+  text-align: right;
+  overflow: hidden;
+  white-space: nowrap;
+}
+/* SEND and TALK on THE ACTION BUTTON (ui/actionButton.module.css, #1531 Phase 6). Send is the
+ * `primary` plate (an amber face, the display caps); the global .shine class adds the rare HUD
+ * glitch (#211). Talk is the `ghost` plate.
+ *
+ * Send is also the MISSION Send (#967): MissionComposer and the mission landing's ASK form use this
+ * class and its paper-plane icon, so the two Sends are identical by construction. That brings two
+ * rules the session pane never needed on its own: a disabled look, because the mission Send is
+ * disabled on an empty draft and the session Send never is; and the §8 44px floor under a coarse
+ * pointer and at ≤800px, the condition the sidebars use (e2e/mission-console.spec.ts).
+ *
+ * LOCAL MODIFIER: the shared variants are 44px at every width, and this row is 36px on a desktop
+ * (the compose bar's own metric since #1478), so the height and padding are restated here on top
+ * of the composed variant (as `button.send`, so it outranks the variant whichever sheet loads
+ * last); everything visible comes from the variant. */
+.send {
+  composes: primary from "../ui/actionButton.module.css";
+}
+.mic {
+  composes: ghost from "../ui/actionButton.module.css";
+}
+/* Both session composers share Talk/Send geometry and typography (#1478). The mic keeps its
+ * hold/release behavior and recording colors; its label, weight and dimensions match Send (the
+ * ghost variant alone is 500, the primary 700). */
+button.send,
+button.mic {
+  font-weight: 700;
+  flex: 0 0 auto;
+  justify-content: center;
+  min-width: 88px;
+  min-height: 0;
+  height: 36px;
+  padding: 0 var(--sp-3);
+}
+.send:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+@media (pointer: coarse), (max-width: 800px) {
+  button.send,
+  button.mic {
+    height: 44px;
+  }
+}
+.toggle {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 34px;
+}
+
+/* Push-to-talk mic (#483). Idle is the ghost plate; recording (.micOn) switches to the recording-red
+   `--rec` (tokens.css: a recording red, NOT the brand accent or a status LED, darkened on light),
+   edge and ink, and the mic glyph pulses — an opacity step on the text-free icon, never a ring
+   around the plate. The Talk label stays alongside the icon; its title and accessible name explain
+   the hold. `touch-action`/`user-select`/`-webkit-touch-callout` keep a long press a HOLD rather
+   than a text-selection drag or an iOS callout. Width is intrinsic and the label text never
+   changes between states: a control being physically held must not resize under the finger. */
+.mic {
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+.micLabel {
+  white-space: nowrap;
+}
+/* Released, engine still delivering: the mic is OFF (so never the recording red), and the chip
+   refuses the next hold until the tail lands — a dimmed edge and muted ink say "not yours yet". */
+button.micFinalizing,
+button.micFinalizing:hover {
+  --nj-edge: var(--line);
+  color: var(--text-3);
+  cursor: default;
+}
+button.micOn,
+button.micOn:hover,
+button.micOn:active,
+button.micOn:focus-visible {
+  --nj-edge: var(--rec);
+  --nj-face: color-mix(in srgb, var(--rec) 16%, var(--bg-1));
+  color: var(--rec);
+}
+.micOn > svg {
+  animation: micPulse 1.4s steps(2, jump-none) infinite;
+}
+@keyframes micPulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
+:root:not([data-motion="full"]) .micOn > svg {
+  animation: none;
+}
+
+/* ARCHIVED · READ-ONLY (#2064): the compose bar's archived state, shared by the terminal pane and
+ * the API-session pane (`session/ArchivedStrip.tsx`). The bar's own ground and top edge, a title in
+ * the display caps, one line of copy, and UNARCHIVE on THE ACTION BUTTON's primary plate (the 44px
+ * floor at every width). A failure is `--danger-text`; nothing here is a status colour otherwise.
+ * In a narrow pane (a phone, a small map window) the button drops under the text, full width. */
+.archived {
+  flex: 0 0 auto;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  container: archived / inline-size;
+}
+.archivedInner {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+}
+.archivedText {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.archivedTitle {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-label);
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+.archivedCopy {
+  margin: 0;
+  font-size: var(--fs-meta);
+  line-height: 1.4;
+  color: var(--text-2);
+}
+.archivedError {
+  color: var(--danger-text);
+}
+.archivedBtn {
+  composes: primary from "../ui/actionButton.module.css";
+  flex: 0 0 auto;
+  min-width: 9rem;
+}
+@container archived (max-width: 560px) {
+  .archivedInner {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .archivedBtn {
+    width: 100%;
+  }
+}

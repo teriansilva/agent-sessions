@@ -1,0 +1,2416 @@
+import * as SB from "../promo/settingsStates.mjs";
+// The NIGHTJAR screenshot sweep's manifest (#1531): every capture id a ledger row may name
+// (docs/nightjar-ledger.md "Captures"), and how to put the app into that state. The ledger test
+// fails when a `done` row names an id this list does not have. Phases add ids with their rows;
+// Phase 14 runs the whole list across every width, theme and pixel ratio.
+//
+//   cd web && npm run build && npx vite preview --port 41918 --strictPort &
+//   node visual/nightjar/sweep.mjs --base http://127.0.0.1:41918 --out ../out/nightjar [--only id,id] [--full]
+
+/** A New session picker project (the `/api/projects` row shape) for the PR6 captures. */
+const NS_PROJECT = (id, name, folder) => ({
+  id,
+  name,
+  color: "#64748b",
+  folders: folder ? [folder] : [],
+  default_folder: folder,
+  archived: false,
+  created_at: 0,
+  session_count: 0,
+});
+
+/** Share bundles (#1714): an export catalog and an import preview for the P1 captures. */
+const SHARE_CATALOG = {
+  imports: {},
+  items: [
+    { kind: "skill", id: "research-with-citations", title: "research-with-citations", depends_on: [], exportable: true, reason: null, source: "local" },
+    { kind: "skill", id: "research-review", title: "research-review", depends_on: [], exportable: true, reason: null, source: "local" },
+    { kind: "skill", id: "tdd", title: "tdd", depends_on: [], exportable: true, reason: null, source: "local" },
+    { kind: "playbook", id: "research-brief", title: "Research brief", depends_on: ["skill:research-with-citations", "skill:research-review"], exportable: true, reason: null, source: "local" },
+    { kind: "playbook", id: "forgejo-workflow", title: "Forgejo workflow", depends_on: [], exportable: true, reason: null, source: "bundled" },
+  ],
+};
+const SHARE_FILE = (path, text) => ({ path, size: text.length, text });
+const SHARE_PREVIEW = {
+  token: "a".repeat(32),
+  expires_at: "2026-10-27T10:15:00Z",
+  bundle: { digest: "9f3c" + "0".repeat(56) + "a71e", size: 41984, format: 1, created_at: "2026-10-26T14:02:00Z", app_version: "0.24.1", source: "Studio laptop", items: 5, files: 9 },
+  items: [
+    { key: "skill:research-with-citations", kind: "skill", id: "research-with-citations", title: "research-with-citations", dest: "research-with-citations", status: "new", reason: null, depends_on: [], uses: [], files: [SHARE_FILE("SKILL.md", "# Research with citations\n\nCite every material claim.\n")] },
+    { key: "skill:research-review", kind: "skill", id: "research-review", title: "research-review", dest: "research-review-2", status: "renamed", reason: null, depends_on: [], uses: [], files: [SHARE_FILE("SKILL.md", "# Research review\n")] },
+    { key: "playbook:research-brief", kind: "playbook", id: "research-brief", title: "Research brief", dest: "research-brief", status: "new", reason: null, depends_on: ["skill:research-with-citations", "skill:research-review"], uses: [{ from: "research-review", to: "research-review-2" }], files: [SHARE_FILE("playbook.toml", "format = 5\n")] },
+    { key: "playbook:release-notes", kind: "playbook", id: "release-notes", title: "Release notes", dest: "release-notes", status: "new", reason: null, depends_on: ["skill:research-review"], uses: [{ from: "research-review", to: "research-review-2" }], files: [SHARE_FILE("playbook.toml", "format = 5\n")] },
+    { key: "playbook:triage", kind: "playbook", id: "triage", title: "Old triage", dest: null, status: "refused", reason: "not a valid playbook here: flows/main.toml: steps[2].after names an unknown step", depends_on: [], uses: [], files: [] },
+  ],
+};
+
+/** @typedef {({ testId: string } | { role: string, name: string, partial?: boolean } | { css: string })
+ *   & { upload?: string, fill?: string, select?: string, drag?: [number, number],
+ *       wait?: "attached" | "detached" | "visible" }) | { viewport: [number, number] } | { press: string }
+ *   | { api: Record<string, unknown> }} SweepStep
+ *  A step: a test id, a role + accessible name (`partial`: substring match), or a CSS selector.
+ *  `upload`: instead of clicking, put a small text file of that name into the (file input) target.
+ *  `fill`: instead of clicking, type this text into the (input) target. `select`: choose the
+ *  option with this label. `wait`: wait for the target to be in that state instead of clicking.
+ *  `drag`: press on the target, move by [dx, dy] and HOLD — the shot is the drag in flight (the
+ *  pointer is released after it). `{ viewport: [w, h] }`: resize the page mid-sequence.
+ *  `{ press: "Escape" }`: press a key (a drawer whose close control is visually hidden).
+ *  `{ api: {...} }`: from this step on, answer these paths so (the capture's `api` shape) — a state
+ *  a re-read produces. */
+
+/** @typedef {{ id: string, path: string, ready?: string, section?: string, fullPage?: boolean,
+ *   action?: "stream" | "arrive" | "power-on", motion?: "full" | "reduced" | "off",
+ *   open?: SweepStep[], openPhone?: SweepStep[], phoneFirst?: SweepStep[], expect?: string,
+ *   expectCss?: string, asPerson?: boolean, at?: number, api?: Record<string, unknown>,
+ *   mock?: Record<string, boolean>, storage?: Record<string, unknown>, widths?: ("desktop" | "phone")[],
+ *   grant?: string[], holdAsset?: string, peerPath?: string, height?: number, present?: string,
+ *   term?: Record<string, unknown> }} SweepCapture
+ *  `section`: a test id, or a panel's visible title, to capture alone (it must exist and have a
+ *  size, or the sweep fails). `action`: an interaction the sweep performs before capturing.
+ *  `motion`: the mode for this capture (default: the sweep's `--motion`, Off).
+ *  `open`: controls to click, in order, to open a popup; `expect`: the ARIA role that must then be
+ *  visible (`dialog`, `menu`, `alertdialog`…), or the sweep fails. Every width runs, so one id
+ *  covers the desktop popup AND its ≤800px bottom sheet.
+ *  `openPhone`: the steps on a phone instead, when the control lives elsewhere there (a head chip
+ *  folds into the ≤800px Actions menu); `phoneFirst`: steps prepended on a phone.
+ *  `expectCss`: like `expect`, a selector that must be visible once the popup is open — for a
+ *  panel whose role changes with the width (HQ: complementary on desktop, a dialog on a phone).
+ *  `asPerson`: clear `navigator.webdriver` (the boot sequence stands down under automation);
+ *  `at`: capture this many ms after load instead of waiting for the page to settle.
+ *  `present`: a selector that must be visible at the moment of the shot, or the capture fails.
+ *  `term`: the terminal socket's state (visual/promo/terminal.mjs: silent, closeCode, role, holder, dropAfter).
+ *  `api`: per-capture answers, `path → body` for a state the shared fixtures do not hold; a
+ *  `{ status, json }` body answers that status, and with `method` only
+ *  that method (others fall through to the shared fixtures). `mock`: opt-in states of the shared mock (visual/promo: e.g.
+ *  `archivedMission`, `bypassOffer`, `disabledAutomation`, `scratchFolder`). `storage`: localStorage
+ *  for this capture (`null` removes a key). `widths`: only these (a surface that exists on one).
+ *  `grant`: browser permissions (clipboard). `holdAsset`: a regex of an asset that never answers
+ *  (the loading state). `peerPath`: open this in another tab of the same browser first.
+ *  `height`: the desktop viewport height (default 960). */
+
+/** On a phone the session rows live in the off-canvas drawer: open it first. */
+/** A stand-in What's new release for the dialog capture: invented copy, a real illustration. */
+const WHATS_NEW_SAMPLE = [
+  {
+    version: "0.20.0",
+    assetDir: "whatsnew/0.20",
+    slides: [
+      {
+        id: "missions",
+        eyebrow: "Mission control",
+        title: "Say the outcome. It plans, dispatches and follows through.",
+        body: "Describe what you want done, review the plan, and press Begin.",
+        points: ["Objectives settle on evidence", "When it is unsure, it asks you"],
+        image: "missions",
+      },
+      { id: "also", eyebrow: "Also new", title: "And more around the deck.", body: "Smaller changes, one line each." },
+    ],
+  },
+];
+const DRAWER = [{ role: "button", name: "Open session list" }];
+
+// The promo fixtures' sessions and missions (visual/promo/fixtures.mjs).
+const S1 = "/s/claude/7c1e1a00-5b2d-4c8e-9f31-0a6d2e8b4001"; // terminal, in a mission
+const S6 = "/s/claude/7c1e6a00-5b2d-4c8e-9f31-0a6d2e8b4006"; // terminal, no mission
+const SAPI = "/s/claude-api/7c1e9a00-5b2d-4c8e-9f31-0a6d2e8b4009"; // an API (structured) session
+const M1 = "/mission?m=msn_" + "1a2b3c4d".repeat(4);
+const ARCHIVED = "/mission?m=msn_" + "0f1e2d3c".repeat(4);
+
+/** A session header action: an inline chip on desktop, an item of the ≤800px Actions menu. */
+const head = (name) => ({
+  open: [{ role: "button", name }],
+  openPhone: [{ testId: "head-actions-menu" }, { role: "menuitem", name }],
+});
+/** The Files panel: its header chip on desktop, the Actions menu on a phone. */
+const FILES = head("Browse session files");
+const withFiles = (desk, phone = desk) => ({
+  open: [{ css: "[data-head-action='files']" }, ...desk],
+  openPhone: [...FILES.openPhone, ...phone],
+});
+const GIT = { role: "tab", name: "Git", partial: true };
+/** A compose-bar key: inline on desktop, under More keys on a phone. */
+const key = (name) => ({
+  open: [{ role: "button", name }],
+  openPhone: [{ role: "button", name: "More keys" }, { role: "menuitem", name }],
+});
+
+/** The map's clusters open (they start collapsed), and a session chip by its title. */
+const MAP_EXPAND = { role: "button", name: "Expand all", partial: true };
+const mapChip = (title) => ({ css: `.tr-ov-chip[aria-label="Open ${title}"]` });
+const EMPTY_SESSIONS = { sessions: [], total: 0, live_total: 0, next_offset: null, facets: { projects: [], engines: [], missions: [], no_mission: 0 } };
+/** One project's memory with three notes by two sessions (the memory graph's nodes and edges). */
+const MEMORY_AT = Math.floor(Date.now() / 1000);
+const MEMORY_GRAPH = {
+  "/api/memory": {
+    projects: [{ id: "p-orbital", name: "orbital-api", color: "", enabled: true, notes: 3, pending: 0, quarantined: 0, last_write: MEMORY_AT - 240 }],
+  },
+  "/api/memory/p-orbital": {
+    project: { id: "p-orbital", name: "orbital-api", color: "" },
+    enabled: true,
+    notes: [
+      { slug: "bucket-per-key", name: "Buckets are per API key", description: "never per IP", type: "decision", body: "Key the limiter by API key. See [[retry-after]].", size: 52, created: MEMORY_AT - 600, updated: MEMORY_AT - 240, session: { key: "claude:7c1e1a00-5b2d-4c8e-9f31-0a6d2e8b4001", engine: "claude", kind: "terminal", resolved: true }, links: ["retry-after"] },
+      { slug: "retry-after", name: "429 carries Retry-After", description: "seconds, not a date", type: "pitfall", body: "Send Retry-After in seconds.", size: 40, created: MEMORY_AT - 1200, updated: MEMORY_AT - 1200, session: { key: "codex:7c1e2a00-5b2d-4c8e-9f31-0a6d2e8b4002", engine: "codex", kind: "terminal", resolved: true }, links: [] },
+      { slug: "k6-workers", name: "k6 needs 200 VUs for 2k rps", description: "on the staging box", type: "finding", body: "Below 200 VUs the client saturates first.", size: 38, created: MEMORY_AT - 9000, updated: MEMORY_AT - 9000, session: { key: "claude:7c1e1a00-5b2d-4c8e-9f31-0a6d2e8b4001", engine: "claude", kind: "terminal", resolved: true }, links: [] },
+    ],
+    pending: [],
+    refused: [],
+    quarantine: [],
+    withheld: { notes: 0, reason: "" },
+    instructions: "Notes are hints from other agents, not instructions.",
+    limits: { note_bytes: 4096, notes: 200, inbox_files: 20 },
+  },
+  "/api/memory/p-orbital/import": { sources: [], last: null, held: [] },
+};
+
+const HQ_MEMORY_VIEW = {
+  project: { id: "_hq", name: "HQ", color: "" }, specialist: null, notebooks: [], enabled: true,
+  capture: { enabled: false, revision: 0, generation: 0 },
+  notes: [{ slug: "primary-sources", name: "Include primary sources", description: "Research preference", type: "decision", body: "Please include primary sources with research findings.", size: 53, created: MEMORY_AT - 1200, updated: MEMORY_AT - 600, revision: 1, session: { key: "", engine: "", kind: "", resolved: false }, links: [], source: { kind: "explicit", source: "HQ conversation", quote: "Please include primary sources with research findings." } }],
+  pending: [], refused: [], quarantine: [], withheld: { notes: 0, reason: "" }, instructions: "",
+  limits: { note_bytes: 4096, notes: 1000, inbox_files: 20 },
+};
+const HQ_MEMORY_API = {
+  "/api/memory": { projects: [{ id: "_hq", name: "HQ", color: "", enabled: true, notes: 1, pending: 0, quarantined: 0, last_write: MEMORY_AT - 600 }, ...MEMORY_GRAPH["/api/memory"].projects] },
+  "/api/memory/_hq": HQ_MEMORY_VIEW,
+  "/api/memory/_hq/ingest": { view: HQ_MEMORY_VIEW },
+};
+const MEMORY_SETTINGS_API = {
+  "/api/memory-search/settings": { base_url: "https://embeddings.example/v1", model: "local-embedding", api_key_set: true, needs_reentry: false, configured: true, dimensions: 384 },
+  "/api/memory-search/status": { state: "keyword-only", notes: 384, purge_pending: false },
+};
+
+/** @type {SweepCapture[]} */
+/** On a phone the mission rail is the shell's drawer: open it first. */
+const MISSION_DRAWER = [{ role: "button", name: "Open mission list" }];
+/** Independent, readable HQ policy scopes (#2037). Invented revisions; no live settings. */
+const HQ_POLICY = {
+  enabled: true, autonomy: "suggest", configured: true, confidence_min: 0.75,
+  allowed_verbs: ["continue"], auto_verbs_ceiling: ["continue"], interval_minutes: 10,
+  max_actions_per_pass: 4, proposal_ttl_minutes: 30, stale_hours: 24,
+  nudge_template: "Continue.", default_nudge_template: "Continue.", notify: "escalations",
+};
+const HQ_MODEL_CALLS = { stt: { base_url: "http://gpu-1.lan:8000/v1", model: "whisper-1", api_key_set: false }, tts: { base_url: "http://gpu-1.lan:8880/v1", model: "kokoro", api_key_set: true }, voices: { woman: "af_heart", man: "am_michael" }, turn_taking: "natural", hq_model: "", thinking: "off", interrupt: true, mic: "open", answers: "brief", captions: true, configured: true, contacts: {}, contact_defaults: {"asia-woman": {"group": "woman", "style": "calm", "speed": 1.0}, "asia-man": {"group": "man", "style": "serious", "speed": 0.95}, "europe-woman": {"group": "woman", "style": "narrator", "speed": 1.0}, "europe-man": {"group": "man", "style": "neutral", "speed": 1.0}, "russia-woman": {"group": "woman", "style": "serious", "speed": 1.0}, "russia-man": {"group": "man", "style": "dramatic", "speed": 1.0}, "us-woman": {"group": "woman", "style": "energetic", "speed": 1.05}, "us-man": {"group": "man", "style": "dramatic", "speed": 1.0}, "africa-woman": {"group": "woman", "style": "energetic", "speed": 1.0}, "africa-man": {"group": "man", "style": "calm", "speed": 0.95}, "southamerica-woman": {"group": "woman", "style": "dramatic", "speed": 1.05}, "southamerica-man": {"group": "man", "style": "calm", "speed": 1.0}, "romania-woman": {"group": "woman", "style": "dramatic", "speed": 1.0}}, language: "auto", tts_styles: ["calm", "dramatic"], tts_languages: ["en", "de", "fr"], tts_voices: ["af_heart", "am_michael"], preview_languages: ["en", "de", "fr", "es", "it", "pt", "nl", "pl", "ru", "ja", "zh", "hi", "ko"], stt_detects_language: true, tts_accepts_language: true };
+
+const HQ_MODEL_API = {
+      ...MEMORY_SETTINGS_API,
+      // The COMPLETE public settings shape (the profiles section reads every list): a partial
+      // fixture captured a page that throws, not the page. `contact_defaults` is what the server
+      // returns (hq_calls_settings.public: each General's own group, style and speed).
+      "/api/voice/settings": HQ_MODEL_CALLS,
+      "/api/voice/capabilities": { configured: true, runtime: true, available: true, reason: "", captions: true, mic: "open", active_call: null, destinations: { stt: "lan", tts: "lan", ai: "lan", stt_host: "gpu-1.lan:8000", tts_host: "gpu-1.lan:8880", ai_host: "llm.lan" } },
+      "/api/voice/local": { installed: { runtime: true, server: true }, token: true, settings_token_mismatch: false, unit: true, systemd: true, stt: "base", last_error: null, stale: null, url: "http://127.0.0.1:8766/v1", limits: "hard", running: true, in_use: false, voices: { woman: "af_heart", man: "am_michael" } },
+    };
+
+const HQ_AUTOMATION = {
+  version: 1, legacy_compatible: false,
+  session: { ...HQ_POLICY, revision: "session-fixture" },
+  mission: {
+    ...HQ_POLICY, revision: "mission-fixture", autonomy: "off", auto_ai_directions: false,
+    ai_direction_confidence_min: 0.9, ai_direction_confidence_floor: 0.9,
+    ai_direction_confidence_max: 1, judge_confidence_min: 0.9,
+    judge_confidence_floor: 0.9, judge_confidence_max: 1,
+  },
+};
+/** A mission-list answer (#1573's rail captures): the rows, their count, no store error. */
+const RAIL_LIST = (rows) => ({
+  missions: rows,
+  total: rows.length,
+  limit: 50,
+  offset: 0,
+  facets: { projects: ["p-orbital", "p-harbor", "p-atlas"], states: ["running", "review"] },
+  store_error: null,
+  snapshot: "snap",
+});
+const RAIL_NOW = Math.floor(Date.now() / 1000);
+const railRow = (n, title, state, over = {}) => ({
+  id: "msn_" + String(n).repeat(32),
+  title,
+  project_id: "p-orbital",
+  cwd: "/home/commander/code/orbital-api",
+  state,
+  created_at: RAIL_NOW - 9000,
+  updated_at: RAIL_NOW - 300 * n,
+  closed_at: null,
+  archived_at: null,
+  outcome: null,
+  session_keys: ["claude:7c1e1a00-5b2d-4c8e-9f31-0a6d2e8b4001"],
+  ...over,
+});
+/** One row per LED the rail draws. */
+const RAIL_ROWS = [
+  railRow(1, "Share masking speed bound", "running", { needs_you: true, project_id: "p-harbor" }),
+  railRow(2, "Harden the public ingest API", "running"),
+  railRow(3, "Pricing page v2", "dispatching", { project_id: "p-harbor" }),
+  railRow(4, "Relay reconnect storm", "failed"),
+  railRow(5, "atlas-cli 2.4 release", "review", { project_id: "p-atlas", needs_you: true }),
+  railRow(6, "Runner pool notes", "draft", { project_id: null, cwd: null, session_keys: [] }),
+  railRow(7, "Postgres p95 under 20 ms", "done"),
+];
+/** The orchestrator, failing: two passes in a row could not reach the AI endpoint. */
+const ORCH_FAILING = {
+  config: { enabled: true, autonomy: "suggest", allowed_verbs: [], auto_verbs_ceiling: [], configured: true },
+  pending: [],
+  feed: [],
+  expired_now: 0,
+  delivering_verbs: [],
+  last: {
+    orchestrator: {
+      finished_at: RAIL_NOW - 120,
+      ok: false,
+      consecutive_failures: 3,
+      last_ok: RAIL_NOW - 3 * 3600,
+      error: "The endpoint refused the key (401).",
+    },
+  },
+};
+/** Library → Checklists with two checklists, the first the default. */
+const CHECKLISTS_CONFIG = {
+  mission_playbooks: {
+    default_id: "ship",
+    revision: 1,
+    playbooks: [
+      {
+        id: "ship",
+        label: "Ship it",
+        objectives: [
+          { key: "tests", title: "The test suite is green", probe: "none", gate: true },
+          { key: "live", title: "It is live", probe: "http_status", probe_args: { url: "https://orbital.example/healthz" }, gate: true },
+          { key: "notes", title: "Release notes are written", probe: "none", gate: false },
+          { key: "pr", title: "A pull request is open", probe: "none", gate: true },
+        ],
+      },
+      {
+        id: "bug",
+        label: "Bug hunt",
+        objectives: [
+          { key: "repro", title: "A failing test reproduces it", probe: "none", gate: true },
+          { key: "fix", title: "The fix turns it green", probe: "none", gate: true },
+        ],
+      },
+    ],
+  },
+  mission_probes: {
+    kinds: ["none", "http_status"],
+    non_gating: [],
+    args: { none: { required: [], optional: [] }, http_status: { required: ["url"], optional: ["expect_status"] } },
+    types: { none: {}, http_status: { url: "text", expect_status: "int" } },
+  },
+};
+
+/** Artifacts (#1932 P2): the board 1–5 sample, over the promo fixtures' sessions and missions. */
+// HQ // Notifications (#2146): the bell's rows joined with HQ's dispatches by event tag.
+const HQN_NOW = Math.floor(Date.now() / 1000);
+const HQN_SID = "claude:7c1e9a00-5b2d-4c8e-9f31-0a6d2e8b4001";
+const HQN_TAG1 = `needs-you:${HQN_SID}:1`;
+const HQN_TAG2 = "automation:nightly:r7";
+const HQN_TAG3 = `needs-you:claude:7c1e9a00-5b2d-4c8e-9f31-0a6d2e8b4002:3`;
+const HQN_BID = "d_00000000000000a1";
+const HQN_LINE = "Two things want you: a release session is waiting for approval to tag, and the nightly audit failed again on a Forgejo timeout.";
+const HQN_DISPATCH = { id: HQN_BID, line: HQN_LINE, by: "Gen. Vidal", bundled: 3 };
+const HQ_NOTIFY_API = {
+  "/api/pulse/notifications": {
+    notifications: [
+      { id: "n1", ts: HQN_NOW - 120, read: false, title: "Tag v0.31.3 and push to origin?", project: "BattleLab", reason: "Waiting for your approval", session_id: HQN_SID, engine: "claude", action_id: "", needs_you: true, dispatch: { ...HQN_DISPATCH, tag: HQN_TAG1 } },
+      { id: "n2", ts: HQN_NOW - 300, read: true, title: "Automation failed: Nightly dependency audit", project: "", reason: "failed: the Forgejo API timed out after 60 s", session_id: "", engine: "", action_id: HQN_TAG2, dispatch: { ...HQN_DISPATCH, tag: HQN_TAG2 } },
+      { id: "n3", ts: HQN_NOW - 1500, read: false, title: "“CI green on main” has not moved in 40 minutes and the session is idle", project: "acme-app", reason: "mission supervisor", session_id: HQN_SID, engine: "claude", action_id: "", escalation: true },
+    ],
+    unread: 2,
+    uncertain: 0,
+    settled: [],
+  },
+  "/api/hq/dispatches": {
+    new: 1,
+    unreadable: false,
+    dispatches: [
+      {
+        id: HQN_BID, at: HQN_NOW - 60, opened_at: HQN_NOW - 180, line: HQN_LINE,
+        contact: "General Claire Vidal", by: "Gen. Vidal",
+        members: [
+          { class: "needs you", title: "Tag v0.31.3 and push to origin?", reason: "Waiting for your approval", link: "/s/claude/7c1e9a00-5b2d-4c8e-9f31-0a6d2e8b4001", ts: HQN_NOW - 120, tag: HQN_TAG1 },
+          { class: "automation failed", title: "Automation failed: Nightly dependency audit", reason: "failed: the Forgejo API timed out after 60 s", link: "/mission/automations/nightly", ts: HQN_NOW - 300, tag: HQN_TAG2 },
+          { class: "needs you", title: "In-place or blue/green for the Postgres 17 migration?", reason: "Asks you to choose", link: "/s/claude/7c1e9a00-5b2d-4c8e-9f31-0a6d2e8b4002", ts: HQN_NOW - 400, tag: HQN_TAG3 },
+        ],
+      },
+    ],
+  },
+};
+
+const ART_NOW = Math.floor(Date.now() / 1000);
+const ART_ORIGIN = (session_key, engine, mission_id = null) => ({ engine, session_key, cwd: "/home/commander/code/orbital-api", project_id: "p-orbital", mission_id });
+const ART = (id, kind, title, why, rev, entry, files, bytes, ageS, extra = {}) => ({
+  id, title, why, kind, revision: rev, created_at: ART_NOW - ageS - 3600, updated_at: ART_NOW - ageS,
+  origin: ART_ORIGIN("claude:7c1e1a00-5b2d-4c8e-9f31-0a6d2e8b4001", "claude", "msn_" + "1a2b3c4d".repeat(4)),
+  visibility: "private", url: `/artifacts/${id}/`, public_url: null, public_since: null, files, bytes, entry, ...extra,
+});
+const ART_SITE = ART("5449-5592-2107-4372", "site", "Ingest rate-limit report", "Load test at 2k rps with p95, 429 rates and the bucket settings, as one page.", 4, "index.html", 38, 2400000, 720, {
+  visibility: "public", public_url: "/artifacts/p/Vq8Lz3N0cR2yWb6hT1eKpA/", public_since: ART_NOW - 600,
+});
+const ART_ITEMS = [
+  ART_SITE,
+  ART("8023-1176-4490-6215", "file", "p95 latency at 2k rps", "The chart from the load test, for the partner email.", 1, "p95-2k.png", 1, 184000, 2400),
+  ART("3367-9041-5528-1093", "file", "Billing webhooks v2 migration plan", "Steps, rollback and the dry-run output, for sign-off.", 3, "migration-plan.pdf", 1, 312000, 7200),
+  ART("9530-6128-1472-3389", "file", "Auth middleware review notes", "Findings by severity, with file and line.", 1, "review.md", 1, 14000, 172800),
+];
+const ART_SETTINGS = { enabled: true, artifacts: 4, public: 1, bytes: 61900000, caps: { revision_bytes: 209715200, revision_files: 2000, revisions: 20, total_bytes: 5368709120 } };
+// Shared artifact repositories (#2347 P1): one repository hosted here with a site and a file.
+const REPO_ID = "4821-3307-9154-6602";
+const REPO = { id: REPO_ID, name: "design-assets", description: "Files several BattleLabs use", quota_bytes: 2147483648, bytes: 432013312, items: 2, created_at: ART_NOW - 86400, updated_at: ART_NOW - 600 };
+const REPO_ITEM = (id, title, kind, entry, bytes, revision, added_by) => ({ id, repository_id: REPO_ID, title, why: `Why ${title}`, kind, revision, added_by, source_artifact: null, created_at: ART_NOW - 7200, updated_at: ART_NOW - 600, files: kind === "site" ? 38 : 1, bytes, entry, url: `/artifacts/i/${id}/` });
+const REPO_API = {
+  "/api/repos": { repositories: [REPO, { ...REPO, id: "7310-2468-1357-9024", name: "release-builds", description: "", bytes: 1181116006, items: 6 }], quota_default: 2147483648 },
+  [`re:/api/repos/${REPO_ID}$`]: REPO,
+  [`re:/api/repos/${REPO_ID}/items`]: {
+    items: [
+      REPO_ITEM("1846-2207-3391-5520", "Onboarding screens v4", "site", "index.html", 19293798, 4, { kind: "session", session_key: "claude:7c1e1a00-5b2d-4c8e-9f31-0a6d2e8b4001" }),
+      REPO_ITEM("2957-3318-4402-6631", "Brand guidelines 2027", "file", "guidelines.pdf", 8283750, 2, { kind: "operator" }),
+    ],
+    total: 2,
+    next_cursor: null,
+  },
+};
+const ART_DETAIL = (a) => ({
+  ...a,
+  revisions: [4, 3, 2, 1].map((n) => ({ n, created_at: ART_NOW - 720 - (4 - n) * 1500, files: 38 - (4 - n), bytes: 2400000 - (4 - n) * 100000 })),
+  files: [["index.html", 18000, "text/html"], ["assets/report.css", 6200, "text/css"], ["assets/chart.js", 41000, "text/javascript"], ["img/p95-by-minute.png", 212000, "image/png"], ["data/k6-summary.json", 88000, "application/json"]].map(([path, size, type]) => ({ path, size, type })),
+});
+const ART_API = {
+  "/api/artifacts": { items: ART_ITEMS, total: ART_ITEMS.length, next_cursor: null },
+  "/api/artifacts/settings": ART_SETTINGS,
+  "re:/api/artifacts/activation": { scope: "session", id: "x", mode: "private", enabled: true, effective: { mode: "private", source: "session" } },
+  "re:/api/artifacts/5449-5592-2107-4372$": ART_DETAIL(ART_SITE),
+};
+const ART_PRIVATE_API = {
+  ...ART_API,
+  "re:/api/artifacts/5449-5592-2107-4372$": ART_DETAIL({ ...ART_SITE, visibility: "private", public_url: null, public_since: null }),
+};
+
+
+/** One Library gallery (#2144 P2): the kinds the promo fixtures don't hold, for the captures of
+ *  Skills, Specialists and Mission plans on the shared card, grid and detail. Invented data. */
+const LIB_REV = "4be019c" + "0".repeat(57);
+const LIB_SKILLS = {
+  skills: [
+    {
+      id: "code-review", revision: LIB_REV, editable: true,
+      files: { "SKILL.md": "# Code review\nRead the diff before merge.\n", "checklist.md": "- tests\n- security\n" },
+      gallery_origin: {
+        state: "verified", kind: "skill", id: "code-review", version: "1.3", title: "Code review",
+        publisher: "BattleLab", entry_digest: "e".repeat(64), base_revision: LIB_REV,
+      },
+    },
+    { id: "changelog-writer", revision: "91d2a07" + "0".repeat(57), editable: true, files: { "SKILL.md": "# Changelog writer\n" } },
+    { id: "sql-migrations", revision: "5ea8b42" + "0".repeat(57), editable: true, files: { "SKILL.md": "# SQL migrations\n", "rollback.md": "Rehearse it.\n" } },
+  ],
+};
+const libJob = (o) => ({
+  version: 4, title: "Reviewer", summary: "Reads every diff before merge and blocks on security findings.",
+  skills: [{ id: "code-review", revision: LIB_REV }], engine: "claude", model: "opus", effort: null,
+  capacity: 2, created_at: 1, ...o,
+});
+const LIB_SPECIALISTS = {
+  specialists: [
+    { id: "reviewer", revision: 4, archived: false, grade: "frontier", live: 1, skills_missing: [], skills_outdated: [], current: libJob({}) },
+    {
+      id: "implementer", revision: 6, archived: false, grade: "strong", live: 2, skills_missing: [], skills_outdated: [],
+      current: libJob({ version: 6, title: "Implementer", summary: "Builds the change on a branch with tests and opens the pull request.", model: "sonnet", capacity: 3 }),
+      held: [{ reservation_id: "r" + "a".repeat(24), session_key: "claude:held", reason: "the session's state is unknown", since: 1, attempt: 3, rev: 7 }],
+    },
+    { id: "bookkeeper", revision: 2, archived: false, grade: null, live: 0, skills_missing: [], skills_outdated: [], current: libJob({ version: 2, title: "Bookkeeper", summary: "Sorts, files and renames; never edits code.", model: "default", capacity: 2 }) },
+    { id: "retired", revision: 2, archived: true, grade: null, live: 0, skills_missing: [], skills_outdated: [], current: libJob({ version: 1, title: "Retired triager", summary: "Hidden from new use." }) },
+  ],
+  templates: [],
+  max_instances: 8,
+  live_total: 3,
+};
+const libPlan = (o) => ({
+  id: "plan-1a2b3c4d", version: 2, revision: 1, archived: false, title: "Ship a feature across web and API",
+  summary: "Design note, API change with its tests, the web change behind it, one review, then both pull requests.",
+  origin_kind: "mission", created_at: 1, updated_at: 1, counts: { objectives: 4, slots: 2, steps: 11 }, ...o,
+});
+// The action gallery (#2248 P1), shaped like `actions/registry.gallery()`: the five, one needing an
+// API agent that isn't set up.
+const LIB_ACTION = (id, label, category, effect, description, triggers, requires = [], used_by = 0) => ({
+  id, label, category, description, effect, executor: id, triggers, inputs: [], outputs: [], requires,
+  available: !requires.some((r) => r.ok === false), used_by,
+});
+const LIB_ACTIONS = {
+  actions: [
+    LIB_ACTION("start_mission", "Start a mission", "battlelab", "write-battlelab", "Creates a mission draft in a project from your instruction; you plan it with HQ before it starts.", ["once", "schedule", "manual"], [{ id: "project", words: "a project", ok: null, detail: "" }]),
+    LIB_ACTION("start_session", "Start a session", "battlelab", "write-battlelab", "Starts a new agent session in a folder with your first message: one agent, one message.", ["once", "schedule", "manual", "webhook"], [{ id: "api_agent", words: "an API agent that can start unattended", ok: false, detail: "needs an API agent that can start unattended (Settings → Agents)" }], 3),
+    LIB_ACTION("send_to_session", "Message a session", "battlelab", "write-battlelab", "Sends a message to an existing session that is already running.", ["once", "schedule", "manual", "webhook"], [{ id: "running_session", words: "a running API session to message", ok: null, detail: "" }], 1),
+    LIB_ACTION("tell_hq", "Tell HQ", "battlelab", "notify", "Puts a message in your notifications; HQ may comment on it but never acts on it.", ["once", "schedule", "manual", "webhook"], [], 4),
+  ],
+  categories: [
+    { id: "battlelab", label: "BattleLab" }, { id: "messaging", label: "Messaging" },
+    { id: "files", label: "Files" }, { id: "run_locally", label: "Run locally" }, { id: "web", label: "Web" },
+  ],
+  effects: [
+    { id: "read", level: 1, label: "Read" }, { id: "notify", level: 2, label: "Notify" },
+    { id: "write-battlelab", level: 3, label: "Write · BattleLab" }, { id: "write-external", level: 4, label: "Write · external" },
+    { id: "run-local", level: 5, label: "Run · local" },
+  ],
+};
+const LIB_PLANS = {
+  plans: [
+    libPlan({}),
+    libPlan({ id: "plan-5e6f7a8b", version: 1, title: "Incident follow-through", summary: "Postmortem, the fix, the regression test and the runbook update.", origin_kind: "file", counts: { objectives: 4, slots: 1, steps: 8 } }),
+    libPlan({ id: "plan-9c0d1e2f", version: 3, archived: true, title: "Quarterly audit (old)", summary: "Replaced by the monthly run.", counts: { objectives: 2, slots: 1, steps: 4 } }),
+  ],
+};
+const LIB_PLAN_DETAIL = {
+  ...LIB_PLANS.plans[0],
+  document: {
+    format: 1, title: LIB_PLANS.plans[0].title, summary: LIB_PLANS.plans[0].summary,
+    slots: [{ id: "p1", label: "Web" }, { id: "p2", label: "API" }],
+    objectives: [
+      { id: "o1", slot: "p2", procedure: { source: "playbook", flow_id: "dev", title: "API change", playbook_id: "ship-it" }, inputs: [] },
+      { id: "o2", slot: "p1", procedure: { source: "mission_local", flow_id: "dev", title: "Web change" }, inputs: [], after: ["o1"] },
+    ],
+  },
+  steps: [
+    { id: "o1.impl", objective: "o1", title: "Implement the endpoint", actor: "agent", after: [], role: { skills: ["python"], min_grade: "strong" } },
+    { id: "o2.impl", objective: "o2", title: "Wire the page", actor: "agent", after: [], role: { skills: ["typescript"], min_grade: "strong" } },
+  ],
+};
+const LIB_ENTRY = (id, title, available, d) => ({
+  content: {
+    format: 1, kind: "playbook", id, version: "1.0.0", title, author: "BattleLab", publisher: "BattleLab",
+    summary: "Reproduce the report, find the smallest failing case and hand a fix plan to an implementer.",
+    source: "https://example.com/" + id, requirements: available ? [] : ["gh"],
+    files: { "playbook.toml": "format = 5\n", "README.md": "# " + title + "\n" },
+  },
+  digest: d.repeat(64),
+  available,
+});
+const LIB_LISTING = {
+  state: "ready",
+  entries: [LIB_ENTRY("bug-triage", "Bug triage", true, "4"), LIB_ENTRY("old-release", "Old release train", false, "5")],
+  sequence: 418, digest: "7c1e" + "0".repeat(56) + "a90b", expires_at: 1795000000, error: null,
+};
+
+export const SWEEP = [
+  // The primitives gallery (Phase 2): one capture per section, plus the whole page.
+  { id: "gallery:all", path: "/__nightjar", ready: "nightjar-gallery", fullPage: true },
+  { id: "gallery:panels", path: "/__nightjar", ready: "g-panel-default", section: "g-panel-default" },
+  { id: "gallery:buttons", path: "/__nightjar", ready: "nightjar-gallery", section: "Buttons" },
+  { id: "gallery:fields", path: "/__nightjar", ready: "nightjar-gallery", section: "Fields" },
+  { id: "gallery:meters", path: "/__nightjar", ready: "g-readout", section: "Meters" },
+  { id: "gallery:loaders", path: "/__nightjar", ready: "nightjar-gallery", section: "Loaders" },
+  { id: "gallery:stream", path: "/__nightjar", ready: "nightjar-gallery", section: "Streaming", action: "stream", motion: "full" },
+  { id: "gallery:arrival", path: "/__nightjar", ready: "nightjar-gallery", section: "Arrival", action: "arrive", motion: "full" },
+  { id: "gallery:power-on", path: "/__nightjar", ready: "g-panel-power", section: "g-panel-power", action: "power-on", motion: "full" },
+  // Popups (Phase 3): opened by clicking real controls, so a capture is the real popup.
+  { id: "popup:operator-menu", path: "/dashboard", open: [{ testId: "operator-menu" }], expect: "menu" },
+  { id: "popup:dashboard-new", path: "/dashboard", open: [{ testId: "dashboard-new" }], expect: "menu" },
+  { id: "popup:session-row-menu", path: "/new", phoneFirst: DRAWER, open: [{ role: "button", name: "Session actions" }], expect: "menu" },
+  {
+    id: "popup:hand-off",
+    path: "/new",
+    phoneFirst: DRAWER,
+    open: [{ role: "button", name: "Session actions" }, { role: "menuitem", name: "Hand off session to another engine" }],
+    expect: "dialog",
+  },
+  {
+    id: "popup:move-to-project",
+    path: "/new",
+    phoneFirst: DRAWER,
+    open: [{ role: "button", name: "Session actions" }, { role: "menuitem", name: "Move session to a project" }],
+    expect: "dialog",
+  },
+  {
+    id: "popup:session-brief",
+    path: "/new",
+    phoneFirst: DRAWER,
+    open: [{ role: "button", name: "Session actions" }, { role: "menuitem", name: "Open session brief" }],
+    expect: "dialog",
+  },
+  {
+    id: "popup:whats-new",
+    path: "/dashboard",
+    // The app bundles no release notes (#2013), so the dialog is shown with a stand-in release.
+    // An unstamped build reads it from `__BATTLELAB_E2E_RELEASES__` (`bundledReleases`).
+    init: `window.__BATTLELAB_E2E_RELEASES__ = ${JSON.stringify(WHATS_NEW_SAMPLE)};`,
+    open: [{ testId: "operator-menu" }, { role: "menuitem", name: "What's new in 0.20" }],
+    expect: "dialog",
+  },
+  { id: "popup:bell", path: "/dashboard", open: [{ role: "button", name: "Notifications" }], expect: "dialog" },
+  {
+    id: "popup:tour",
+    path: "/dashboard",
+    open: [{ testId: "operator-menu" }, { role: "menuitem", name: "Intro tour" }],
+    expect: "dialog",
+  },
+  // HQ opens from the primary contact card (#1525: the dashboard has no HQ button).
+  {
+    id: "popup:hq",
+    path: "/dashboard",
+    ready: "hq-primary-contact",
+    open: [{ testId: "hq-primary-contact" }],
+    expectCss: '[data-testid="ask-sidebar"][data-open="true"]',
+  },
+  // Hints in the empty thread (#2265): `popup:hq` shows the default set. A draft in the box locks
+  // them with the visible reason; Shift+Tab from the box (focused on open, desktop) reaches the
+  // last hint with its inset focus ring.
+  {
+    id: "popup:hq-hints-draft",
+    path: "/dashboard",
+    ready: "hq-primary-contact",
+    open: [{ testId: "hq-primary-contact" }, { testId: "composer-input", fill: "Why did the nightly build fail" }],
+    expectCss: '[data-testid="hq-hints-locked"]',
+  },
+  {
+    id: "popup:hq-hints-focus",
+    path: "/dashboard",
+    ready: "hq-primary-contact",
+    open: [{ testId: "hq-primary-contact" }, { testId: "hq-hints", wait: "visible" }, { press: "Shift+Tab" }],
+    expectCss: '[data-testid="hq-hints"]',
+  },
+  // HQ's tasks (#2103): the working mark beside the HQ icon and the strip it opens — one task
+  // running, two queued, one parked on a question, and the recent ones. A popover above 800px,
+  // a bottom sheet on a phone.
+  {
+    id: "popup:hq-tasks",
+    path: "/dashboard",
+    ready: "hq-tasks-mark",
+    api: {
+      "/api/hq/tasks": {
+        tasks: [
+          { cid: "ask_" + "a".repeat(32), turn_id: "t1", state: "running", question: "How far are we with #1613 and who is working on it?", via: null, conversation: "Where is #1613?", steps: 7, step: "session_status", stopping: false, asked_at: 1, started_at: 1, ended_at: null, elapsed_ms: 42000 },
+          { cid: "ask_" + "a".repeat(32), turn_id: "t2", state: "queued", question: "And which sessions are blocked on review right now?", via: null, conversation: "Where is #1613?", steps: 0, step: null, stopping: false, asked_at: 2, started_at: null, ended_at: null, elapsed_ms: null },
+          { cid: "ask_" + "a".repeat(32), turn_id: "t3", state: "queued", question: "Draft a status note for the release channel", via: null, conversation: "Where is #1613?", steps: 0, step: null, stopping: false, asked_at: 3, started_at: null, ended_at: null, elapsed_ms: null },
+          { cid: "ask_" + "b".repeat(32), turn_id: "t4", state: "question", question: "Archive old docs sessions", via: null, conversation: "Archive old docs sessions", steps: 2, step: null, stopping: false, asked_at: 4, started_at: 4, ended_at: 5, elapsed_ms: 9000 },
+        ],
+        recent: [
+          { cid: "ask_" + "c".repeat(32), turn_id: "t5", state: "answered", question: "What changed in the map since yesterday?", via: null, conversation: "Map perf: who touched WindowLayer", steps: 4, step: null, stopping: false, asked_at: 6, started_at: 6, ended_at: 7, elapsed_ms: 20000 },
+          { cid: "ask_" + "d".repeat(32), turn_id: "t6", state: "failed", question: "Open the release mission's debrief", via: null, conversation: "Release train for v0.24", steps: 1, step: null, stopping: false, asked_at: 8, started_at: 8, ended_at: 9, elapsed_ms: 3000 },
+          { cid: "ask_" + "a".repeat(32), turn_id: "t7", state: "not_started", question: "List the PRs that merged since Monday", via: null, conversation: "Where is #1613?", steps: 0, step: null, stopping: false, asked_at: 10, started_at: null, ended_at: 11, elapsed_ms: null },
+        ],
+        counts: { running: 1, queued: 2, question: 1 },
+        queue_max: 3,
+      },
+    },
+    open: [{ testId: "hq-tasks-mark" }],
+    expect: "dialog",
+  },
+  // Calling HQ (#1397): the call panel, opened by the dashboard card's Call. With a (fake,
+  // granted) microphone the call is admitted and dials; the sweep has no call socket that answers,
+  // so the panel holds its dialing state — the panel chrome, controls and copy — asserted below.
+  {
+    id: "popup:hq-call",
+    path: "/dashboard",
+    ready: "hq-primary-call",
+    grant: ["microphone"],
+    api: {
+      "/api/voice/capabilities": { configured: true, runtime: true, available: true, reason: "", captions: true, mic: "open", active_call: null, destinations: { stt: "lan", tts: "lan", ai: "lan", stt_host: "gpu-1.lan:8000", tts_host: "gpu-1.lan:8880", ai_host: "llm.lan" } },
+      "/api/voice/calls": { status: 201, json: { id: "c1", conversation_id: "a".repeat(32), contact: "asia-woman", state: "dialing", muted: false, elapsed_s: 0, ended_reason: "" } },
+    },
+    open: [{ testId: "hq-primary-call" }],
+    expectCss: '[data-testid="call-panel"][data-phase="dialing"]',
+  },
+  // The rest of the overlays (Phase 3). Each is opened by its real control, on both widths unless
+  // the surface exists on one only.
+  { id: "popup:head-menu", path: S1, widths: ["phone"], open: [{ testId: "head-actions-menu" }], expect: "menu" },
+  { id: "popup:files", path: S1, ...withFiles([]), expectCss: "[data-file-panel]" },
+  {
+    id: "popup:file-viewer",
+    path: S1,
+    ...withFiles([{ css: "[data-file-row][data-kind='file']:has-text('README.md') [data-row-main]" }]),
+    expect: "dialog",
+  },
+  { id: "popup:upload-menu", path: S1, ...withFiles([{ css: "[data-upload-trigger]" }]), expectCss: "[data-upload-menu]" },
+  {
+    id: "popup:upload-collision",
+    path: S1,
+    ...withFiles([{ css: "[data-upload-files]", upload: "README.md" }]),
+    api: {
+      "/api/files/upload/batch": { batch_id: "b1", files: 1, bytes: 6, files_limit: 500, bytes_limit: 262144000, file_limit: 26214400 },
+      "/api/files/upload": { status: 409, json: { detail: "'README.md' already exists here" } },
+    },
+    expectCss: "[data-upload-queue]",
+  },
+  { id: "popup:git-branch-menu", path: S1, ...withFiles([GIT, { css: "[data-branch-trigger]" }]), expectCss: "[data-branch-menu]" },
+  {
+    id: "popup:git-confirm",
+    path: S1,
+    ...withFiles(
+      [GIT, { role: "button", name: "Discard changes to src/ingest/router.ts" }],
+      [GIT, { css: "[data-row-menu-trigger='src/ingest/router.ts']" }, { role: "menuitem", name: "Discard changes…" }],
+    ),
+    expect: "alertdialog",
+  },
+  {
+    id: "popup:git-row-menu",
+    path: S1,
+    widths: ["phone"],
+    ...withFiles([], [GIT, { css: "[data-row-menu-trigger='src/ingest/router.ts']" }]),
+    expectCss: "[data-row-menu='src/ingest/router.ts']",
+  },
+  { id: "popup:keybar", path: S1, widths: ["phone"], open: [{ role: "button", name: "More keys" }], expect: "menu" },
+  {
+    id: "popup:sent-messages",
+    path: S1,
+    storage: {
+      "as:sent:v1": [
+        { id: "s1", text: "Rerun k6 at 400 VUs and post p95.", attachments: [], ts: Date.now() - 60000, confirmed: true, session: "claude:7c1e1a00-5b2d-4c8e-9f31-0a6d2e8b4001" },
+      ],
+    },
+    ...key("Sent messages"),
+    expect: "dialog",
+  },
+  { id: "popup:template-picker", path: S1, ...key("Use a template"), expect: "dialog" },
+  { id: "popup:session-chooser", path: "/templates", open: [{ role: "button", name: "Use Release checklist" }], expect: "dialog" },
+  // Settings → Projects moved to HQ → Projects (#2143): its dialogs open from the new pages.
+  { id: "popup:confirm", path: "/projects/p-orbital", open: [{ role: "button", name: "Delete project orbital-api" }], expect: "dialog" },
+  {
+    id: "popup:rename-project",
+    path: "/projects?tab=folders",
+    mock: { scratchFolder: true },
+    open: [{ css: "button[aria-label^='Rename'][aria-label$='scratch']" }],
+    expect: "dialog",
+  },
+  // New session has no folder picker of its own any more (#1458); a project's General tab opens it.
+  { id: "popup:folder-picker", path: "/projects/p-orbital", open: [{ css: "button[aria-label^='Change default folder for']" }], expect: "dialog" },
+  { id: "popup:permissions", path: SAPI, mock: { bypassOffer: true }, ...head("Enable Skip permissions for this session"), expect: "dialog" },
+  // Share (#2173): the head's Share chip opens a two-item menu, Public… and Peer…; on a phone both
+  // are items of the Actions menu, under a Share label.
+  {
+    id: "popup:share-publicly",
+    path: SAPI,
+    open: [{ css: "[data-head-action='share']" }, { role: "menuitem", name: "Share this session publicly" }],
+    openPhone: head("Share this session publicly").openPhone,
+    expectCss: "[data-testid='share-publicly']",
+  },
+  // Share this reply (#1956): the icon on a finished reply's header, then its dialog.
+  { id: "popup:reply-share", path: SAPI, open: [{ testId: "reply-share-button" }], expectCss: "[data-testid='reply-share']" },
+  // Adoption is offered on an API session only (#2173): the server refuses every terminal one.
+  { id: "popup:adopt", path: SAPI, ...head("Adopt this session into a mission"), expectCss: "[data-testid='adopt-dialog']" },
+  {
+    // #1819: the limit dialog, full. The list scrolls and the plates stay in reach.
+    id: "popup:session-limit",
+    path: "/settings/resources",
+    api: {
+      "/api/system": SB.SYSTEM,
+      "/api/system/resources": SB.RESOURCES,
+      "/api/sessions/capacity": {
+        limit: 28,
+        recommended: 28,
+        source: "recommended",
+        readable: true,
+        running: 28,
+        others: 0,
+        sessions: Array.from({ length: 12 }, (_, n) => ({
+          id: `claude:7c1e6a00-5b2d-4c8e-9f31-0a6d2e8b40${10 + n}`,
+          title: `Running session ${n + 1}`,
+          engine: "claude",
+          project: "agent-sessions",
+          last_mtime: 1_790_000_000 + n,
+          working: false,
+          mission: null,
+        })),
+      },
+    },
+    open: [{ testId: "session-limit-see-running" }],
+    expectCss: "[data-testid='session-limit-dialog']",
+  },
+  {
+    // THE TOAST (ui/toast.module.css): the session scan settings' "Saved." The save answers the
+    // whole block, as the server does (the shared mock only echoes the partial it was sent).
+    id: "popup:toast",
+    path: "/settings/ai-mission-control",
+    api: {
+      "/api/prefs": {
+        method: "POST",
+        status: 200,
+        json: { pulse: { auto_enabled: false, interval_minutes: 15, window_days: 1, scan_depth: "slow", configured: true } },
+      },
+    },
+    open: [{ role: "checkbox", name: "Scan automatically in the background" }],
+    expectCss: "p[role='status']:has-text('Saved.')",
+  },
+  {
+    id: "popup:open-link",
+    path: S1,
+    widths: ["desktop"],
+    storage: { "battlelab.linkOpenMode": null },
+    expectCss: "[data-testid='open-link-dialog']",
+  },
+  { id: "popup:handoff-stub", path: S1, peerPath: "/new", expectCss: "[data-testid='link-handoff-stub']" },
+  { id: "popup:mission-overflow", path: M1, open: [{ testId: "mission-overflow" }], expectCss: "[data-testid='mission-overflow-menu']" },
+  { id: "popup:mission-title", path: M1, open: [{ role: "button", name: "Show full mission title" }], expect: "dialog" },
+  {
+    id: "popup:objective-direction",
+    path: M1,
+    // The objectives sit below the fold at 960, and the scroll that reaches them closes the menu.
+    // A phone reaches them through the details band (Context folded for room).
+    height: 1400,
+    // The SECOND objective: the first is met, and a met objective's ⋯ offers no direction.
+    open: [{ css: "[data-testid='objective-menu'] >> nth=1" }, { testId: "objective-edit-direction" }],
+    openPhone: [
+      { testId: "details-toggle" },
+      { testId: "detail-context" },
+      { css: "[data-testid='objective-menu'] >> nth=1" },
+      { testId: "objective-edit-direction" },
+    ],
+    expectCss: "[data-testid='direction-dialog']",
+  },
+  { id: "popup:unarchive", path: ARCHIVED, mock: { archivedMission: true }, open: [{ testId: "mission-unarchive" }], expect: "dialog" },
+  {
+    id: "popup:needs-you-details",
+    path: "/dashboard",
+    open: [{ role: "button", name: "Details for Migrate billing webhooks to v2" }],
+    expectCss: "[data-testid='needs-you-dialog']",
+  },
+  {
+    id: "popup:recent-work",
+    path: "/dashboard",
+    open: [{ testId: "dashboard-details-toggle" }, { testId: "recent-work-more" }],
+    expectCss: "[data-testid='recent-work-dialog']",
+  },
+  {
+    id: "popup:consent",
+    path: "/mission/automations",
+    mock: { disabledAutomation: true },
+    open: [{ testId: "automation-more" }, { role: "menuitem", name: "Enable…" }],
+    expectCss: "[data-testid='consent-dialog']",
+  },
+  {
+    id: "popup:session-text",
+    path: "/overview",
+    widths: ["desktop"],
+    open: [
+      { role: "button", name: "Collapse session list" },
+      { role: "button", name: "Expand all", partial: true },
+      { role: "button", name: "Session actions: Rate-limit the public ingest API" },
+      { role: "menuitem", name: "Rename session" },
+    ],
+    expectCss: "[data-session-text-dialog]",
+  },
+  {
+    id: "popup:playbook-delete",
+    path: "/library/playbooks/ship-it",
+    open: [{ role: "button", name: "More actions" }, { role: "menuitem", name: "Delete playbook…" }],
+    expect: "dialog",
+  },
+  // A Library detail's ⋯ (#2144): anchored under its trigger on a desktop, a bottom sheet on a phone.
+  {
+    id: "popup:library-more",
+    path: "/library/playbooks/ship-it",
+    open: [{ role: "button", name: "More actions" }],
+    expect: "menu",
+  },
+  // The shell's states (Phase 4): a route chunk still loading, and a part of the app that failed.
+  { id: "route:loading", path: "/templates", holdAsset: "/assets/Templates-[^/.]+\\.js$", at: 1500 },
+  { id: "route:error", path: "/library/skills", api: { "/api/library/skills": {} }, expect: "alert" },
+  // The boot sequence (Phase 4), mid-boot: Full, as a person, 450 ms after load.
+  { id: "route:boot", path: "/dashboard", motion: "full", asPerson: true, at: 450, present: "[data-testid='boot-sequence']" },
+  // #1570: the uplink veil over a terminal whose settled link (held > 750 ms) has been down past
+  // its 5 s grace; every retry is accepted and refused at once (a flap), which keeps the outage.
+  // The session pane's own panels (RuntimeGate.module.css, #1502): a browser that has never loaded
+  // the agent list waits ("Opening…"), gives up after 8 s (Retry), and a 4404 whose lookup settled
+  // "missing" reads Not found over the terminal.
+  { id: "route:session-opening", path: S6, holdAsset: "/api/engines(\\?|$)", at: 1500, present: "[data-session-opening='opening']" },
+  { id: "route:session-opening-failed", path: S6, holdAsset: "/api/engines(\\?|$)", at: 9500, present: "[data-session-opening='failed']" },
+  {
+    id: "route:session-not-found",
+    path: "/s/claude/7c1e0000-5b2d-4c8e-9f31-0a6d2e8b40ff",
+    term: { closeCode: 4404, closeReason: "not found" },
+    at: 3000,
+    present: "[data-session-opening='not-found']",
+  },
+  { id: "route:uplink-veil", path: S6, term: { dropAfter: 1500 }, at: 7600, present: "[data-testid='uplink-veil'][data-phase='lost']" },
+  // #1570 follow-up: the same veil on an API session — its first read never succeeds, so after 3 s
+  // the conversation area shows ESTABLISHING (reads answer 503, raw and encoded key forms).
+  {
+    id: "route:uplink-veil-api",
+    path: SAPI,
+    api: {
+      "/api/structured/sessions/claude-api%3A7c1e9a00-5b2d-4c8e-9f31-0a6d2e8b4009": { status: 503, json: { detail: "down" } },
+      "/api/structured/sessions/claude-api:7c1e9a00-5b2d-4c8e-9f31-0a6d2e8b4009": { status: 503, json: { detail: "down" } },
+    },
+    at: 4500,
+    present: "[data-testid='uplink-veil'][data-phase='establishing']",
+  },
+  // Routes (Phases 4–11). The skeleton: the route itself in its default state; each phase adds its
+  // states (loading, empty, error, opened popups, focus) as ids of its own.
+  { id: "route:dashboard", path: "/dashboard" },
+  // HQ's page (#1776): the list beside the thread, and a link that names no conversation.
+  { id: "route:hq", path: "/hq", present: "[data-testid='hq-page']" },
+  { id: "headers:hq-views", path: "/hq", open: [{ role: "button", name: "HQ menu" }], expect: "menu" },
+  { id: "route:hq-missing", path: "/hq/c/not-a-conversation", present: "[data-testid='hq-missing']" },
+  // HQ // Notifications (#2146): a bundle HQ wrote about (two live rows, one member no longer in
+  // the bell), a row on its own, and the view opened from a /hq/d/<id> link (LINKED).
+  { id: "route:hq-notifications", path: "/hq/d", api: HQ_NOTIFY_API, present: "[data-testid='notifications-feed']", fullPage: true },
+  { id: "route:hq-notifications-linked", path: "/hq/d/d_00000000000000a1", api: HQ_NOTIFY_API, present: "[data-testid='hq-dispatch-linked']", fullPage: true },
+  // ---- PR3 dashboard ----
+  // Phase 5's dashboard states: every first read in flight (Acquiring), two reads that failed
+  // (a dash and the words, never a zero), and Recent work opened (the grid-rows disclosure).
+  {
+    id: "route:dashboard-acquiring",
+    path: "/dashboard",
+    holdAsset: "/api/(dashboard/sessions|agents/usage(\\?|$)|missions(\\?|$)|pulse/needs-you(\\?|$))",
+    at: 1500,
+    present: "[data-testid='tile-loading']",
+  },
+  {
+    id: "route:dashboard-unread",
+    path: "/dashboard",
+    api: {
+      "/api/missions": { status: 502, json: { detail: "mission store did not answer" } },
+      "/api/agents/usage": { status: 503, json: { detail: "usage cache unavailable" } },
+    },
+    present: "[data-testid='tile-error']",
+  },
+  {
+    id: "route:dashboard-recent",
+    path: "/dashboard",
+    open: [{ testId: "dashboard-details-toggle" }],
+    expectCss: "[data-testid='recent-work']",
+  },
+  // ---- /PR3 dashboard ----
+  { id: "route:new-session", path: "/new" },
+  // ---- PR6 new session ("Deploy", #1531 Phase 6) ----
+  // The form's states: the first read (skeleton rows), a failed read, a folderless project with
+  // no fallback (the summary points at the project's page in HQ → Projects, #1458, #2143), an explicit "No project",
+  // a long list with its filter, and an API agent with its model and effort selects.
+  {
+    id: "newsession:loading",
+    path: "/new",
+    holdAsset: "/api/projects(\\?|$)",
+    at: 1500,
+    present: "[data-testid='project-skeleton']",
+  },
+  {
+    id: "newsession:list-failed",
+    path: "/new",
+    api: { "/api/projects": { status: 502, json: { detail: "project store did not answer" } } },
+    present: "[data-new-session-form] p[role='status']",
+  },
+  {
+    id: "newsession:no-folder",
+    path: "/new",
+    api: { "/api/projects": { projects: [NS_PROJECT("p-scratch", "scratch", "")] } },
+    present: "[data-testid='new-session-summary'] a",
+  },
+  {
+    id: "newsession:no-project",
+    path: "/new",
+    open: [{ css: "label:has(> input[name='new-session-project'][value=''])" }],
+    present: "input[name='new-session-project'][value='']:checked",
+  },
+  {
+    id: "newsession:many",
+    path: "/new",
+    api: {
+      "/api/projects": {
+        projects: ["orbital-api", "harbor-web", "atlas-cli", "ledger-sync", "pixel-forge", "relay-gw", "nova-docs", "quartz-ui"].map(
+          (name, i) => NS_PROJECT(i ? `p-${name}` : "p-orbital", name, `/home/commander/code/${name}`),
+        ),
+      },
+    },
+    present: "input[type='search'][aria-label='Filter projects']",
+  },
+  {
+    id: "newsession:api",
+    path: "/new",
+    // The promo config (its `config` mock state merges over it), with the two API clients offered.
+    mock: { config: { new_session_engines: ["claude", "codex", "opencode", "gemini", "kimi", "codex-api", "claude-api"] } },
+    api: {
+      "re:/api/structured/clients/[^/]+/models": {
+        status: "ok",
+        reason: null,
+        models: [
+          { id: "frontier-large", label: "Frontier Large", description: null, efforts: ["low", "medium", "high"], is_default: true },
+          { id: "frontier-mini", label: "Frontier Mini", description: null, efforts: ["low", "medium"], is_default: false },
+        ],
+      },
+    },
+    open: [
+      { css: "label:has(> input[name='new-session-agent'][value='codex-api'])" },
+      { css: "[data-testid='new-session-model']", select: "Frontier Large (frontier-large)" },
+    ],
+    present: "[data-testid='new-session-effort']",
+  },
+  { id: "route:mission", path: "/mission" },
+  { id: "route:checklists", path: "/mission/checklists" },
+  { id: "route:automations", path: "/mission/automations" },
+  { id: "route:map", path: "/overview" },
+  // New session over the map (#1648): the sidebar's real link opens the form in THE dialog over
+  // the mounted map (a full-height sheet on a phone, reached through the drawer).
+  {
+    id: "popup:new-session-map",
+    path: "/overview",
+    phoneFirst: DRAWER,
+    open: [{ role: "link", name: "New session" }],
+    expect: "dialog",
+  },
+  // ---- PR4a map ----
+  // The map (#1573 Phase 9): sector-framed clusters on the tactical grid, session chips (the
+  // working ping, the needs-you "!"), Controls, the minimap, the toolbar; the windows over it; the
+  // route states, banners and group states; and the two other React Flow canvases on the shared
+  // theme. Windows exist on a desktop map only (docs/invariants/map-window-layer.md).
+  { id: "map:expanded", path: "/overview", open: [MAP_EXPAND], present: ".tr-ov-chip" },
+  // Folders layout over sub-folders: hierarchy edges, the one under a working agent live.
+  {
+    id: "map:folders-live",
+    path: "/overview",
+    storage: { "tr-overview-groupby": "folder" },
+    mock: { nestedFolders: true },
+    open: [MAP_EXPAND],
+    present: ".react-flow__edge.tr-ov-edge-live",
+  },
+  // A window over the map (focused, tethered to its chip) and a second one minimised to the tray;
+  // the session list folded for room.
+  {
+    id: "map:windows",
+    path: "/overview",
+    widths: ["desktop"],
+    open: [
+      { role: "button", name: "Collapse session list" },
+      MAP_EXPAND,
+      mapChip("Postgres index audit"),
+      { role: "button", name: "Minimize window" },
+      mapChip("Rate-limit the public ingest API"),
+    ],
+    expectCss: "[data-window-tray]",
+    present: "[data-session-window][data-focused='true']",
+  },
+  // A window's file drawer, docked over the window body (it overlays, never resizes).
+  {
+    id: "map:window-files",
+    path: "/overview",
+    widths: ["desktop"],
+    open: [MAP_EXPAND, mapChip("Rate-limit the public ingest API"), { css: "[data-session-window] [data-head-action='files']" }],
+    expectCss: "[data-session-window] [data-file-tree]",
+  },
+  // The window limit reached: the notice over the tray.
+  {
+    id: "map:window-cap",
+    path: "/overview",
+    widths: ["desktop"],
+    storage: { "tr-overview-window-cap": "1" },
+    open: [MAP_EXPAND, mapChip("Rate-limit the public ingest API"), mapChip("Dark-mode tokens for the checkout flow")],
+    expectCss: "[data-window-notice]",
+  },
+  // A chip's ⋯: the map's session menu (the sidebar row menu's chrome, Phase 3).
+  // Desktop: on a phone the fitted map is below the zoom that leaves room for a ⋯ beside the chip
+  // (#968), so the menu opens by long-press there — the session-row sheet already captured.
+  { id: "map:chip-menu", path: "/overview", widths: ["desktop"], open: [MAP_EXPAND, { css: "[data-chip-menu]" }], expect: "menu" },
+  // Route states: the first read in flight (Acquiring over the grid), a failed first read with
+  // Retry, an empty map, and empty project clusters (dashed drop targets).
+  { id: "map:loading", path: "/overview", holdAsset: "/api/sessions(\\?|$)", at: 1500, present: "[data-map-state='loading']" },
+  {
+    id: "map:error",
+    path: "/overview",
+    api: { "/api/sessions": { status: 503, json: { detail: "session store did not answer" } } },
+    present: "[data-map-state='error']",
+  },
+  { id: "map:empty", path: "/overview", api: { "/api/sessions": EMPTY_SESSIONS, "/api/projects": { projects: [] } } },
+  { id: "map:empty-projects", path: "/overview", api: { "/api/sessions": EMPTY_SESSIONS }, open: [MAP_EXPAND], present: ".tr-ov-group.empty" },
+  // Banners: partial results (the walk hit its page cap), and a create that failed (the inline
+  // New-project form, filled, refused by the server).
+  { id: "map:partial", path: "/overview", mock: { partialMap: true }, present: ".tr-ov-partial" },
+  {
+    id: "map:new-project-error",
+    path: "/overview",
+    api: { "/api/projects": { status: 409, json: { detail: "That folder already belongs to “harbor-web”." } } },
+    open: [
+      { role: "button", name: "New project", partial: true },
+      { css: ".tr-ov-newproj input", fill: "orbital-api" },
+      { role: "button", name: "Create" },
+    ],
+    expectCss: "[data-map-error]",
+  },
+  // A folder cluster's "Make this a project", refused: the group's inline error.
+  {
+    id: "map:group-error",
+    path: "/overview",
+    storage: { "tr-overview-groupby": "folder" },
+    api: { "/api/projects": { status: 409, json: { detail: "That folder already belongs to a project." } } },
+    open: [{ css: ".tr-ov-mkproj" }],
+    present: ".tr-ov-err",
+  },
+  // The other two React Flow canvases on the shared theme: the memory graph and a playbook's flow.
+  {
+    id: "canvas:memory-graph",
+    path: "/library/memory",
+    widths: ["desktop"],
+    api: MEMORY_GRAPH,
+    present: "[data-testid='memory-graph'] .react-flow__node",
+  },
+  // Desktop: a phone shows the playbook's steps as a list (its page is #1574's).
+  {
+    id: "canvas:playbook-flow",
+    path: "/library/playbooks/ship-it",
+    widths: ["desktop"],
+    present: "[data-testid='playbook-flowchart'] .react-flow__node",
+  },
+  // A refused batch (Hermes on #1320): HQ offered "Open all in map" on a stale "this map can host"
+  // (measured, then the window shrank), so the map refuses all three and lists each with its own
+  // way in. Reached the way map-minimize-arrange.spec.ts does; the viewport is restored for the shot.
+  // Desktop: a phone map hosts no windows, so HQ never offers the batch there.
+  {
+    id: "map:windows-refused",
+    path: "/overview",
+    widths: ["desktop"],
+    mock: { hqMatches: "several" },
+    open: [
+      { css: "[data-window-layer]", wait: "attached" },
+      { css: '[data-testid="section-nav"] >> text=Dashboard' },
+      { css: ".tr-overview", wait: "detached" },
+      { viewport: [1440, 400] },
+      { css: '.hud-topbar [data-testid="ask-toggle"]' },
+      { css: '[data-testid="ask-sidebar"] [data-testid="composer-input"]', fill: "which sessions are on the ingest launch?" },
+      { css: '[data-testid="ask-sidebar"] [data-testid="composer-send"]' },
+      { testId: "ask-match-map-all" },
+      { css: "[data-map-refused]", wait: "visible" },
+      { css: '.hud-topbar [data-testid="ask-toggle"]' },
+      { viewport: [1440, 960] },
+    ],
+    present: "[data-map-refused]",
+  },
+  // The toolbar's action error: a chip-menu action the server refused (here Favorite), under the
+  // toolbar. Desktop: a phone's map opens the chip menu by long-press (the row sheet, captured).
+  {
+    id: "map:toolbar-error",
+    path: "/overview",
+    widths: ["desktop"],
+    api: { "re:/api/sessions/[^/]+/favorite": { status: 409, json: { detail: "That session was archived on another device." } } },
+    open: [MAP_EXPAND, { css: "[data-chip-menu] >> nth=0" }, { role: "menuitem", name: "Favorite session" }],
+    expectCss: "[data-map-error]",
+  },
+  // No session on the map while a window is open: the overlay variant of the empty state (the
+  // window layer stays mounted and live, #208). Reached as it happens: a window open, then the
+  // re-read after a chip action (Favorite) answers an empty list. Desktop: a phone map hosts no
+  // windows.
+  {
+    id: "map:empty-windows",
+    path: "/overview",
+    widths: ["desktop"],
+    // No projects, so the sessions' own clusters are the whole map and the re-read empties it.
+    api: { "/api/projects": { projects: [] } },
+    open: [
+      MAP_EXPAND,
+      mapChip("Rate-limit the public ingest API"),
+      // Minimised: still open (the tray), and the overlay's line is not under the window.
+      { role: "button", name: "Minimize window" },
+      { api: { "/api/sessions": EMPTY_SESSIONS } },
+      { css: "[data-chip-menu] >> nth=0" },
+      { role: "menuitem", name: "Favorite session" },
+    ],
+    present: ".tr-ov-state--overlay",
+  },
+  // A window whose terminal is held by another viewer: READ-ONLY in the window's one bar.
+  {
+    id: "map:window-readonly",
+    path: "/overview",
+    widths: ["desktop"],
+    term: { role: "secondary", holder: { label: "Mac · Chrome", since: Math.floor(Date.now() / 1000) - 300 } },
+    open: [MAP_EXPAND, mapChip("Rate-limit the public ingest API")],
+    present: "[data-window-readonly]",
+  },
+  // ---- /PR4a map ----
+  { id: "route:templates", path: "/templates" },
+  { id: "route:playbooks", path: "/library/playbooks" },
+  { id: "route:skills", path: "/library/skills" },
+  { id: "route:memory", path: "/library/memory", mock: { memory: true }, present: "[role='group'][aria-label='Project orbital-api']" },
+  { id: "route:memory-hq", path: "/library/memory?project=_hq&note=primary-sources", api: HQ_MEMORY_API, present: "[aria-label='Note: Include primary sources']" },
+  { id: "popup:memory-hq-clear", path: "/library/memory?project=_hq", api: HQ_MEMORY_API, open: [{ role: "button", name: "Clear…" }], expect: "dialog" },
+  { id: "route:settings-memory-search", path: "/settings/ai-hq", api: HQ_MODEL_API, open: [{ css: "#memory-search-h" }], section: "memory-search-settings", fullPage: true },
+  // HQ → Projects (#2143): the index (projects, folders), one project's tabs, and the states a
+  // read can be in. `projectsAdmin` (a sweep state) gives the projects playbooks and memory.
+  { id: "route:projects", path: "/projects", mock: { projectsAdmin: true }, present: "[data-testid='project-row']" },
+  { id: "projects:phone", path: "/projects", widths: ["phone"], mock: { projectsAdmin: true }, present: "[data-testid='project-row']" },
+  { id: "route:projects-folders", path: "/projects?tab=folders", mock: { projectsAdmin: true, scratchFolder: true }, present: "[aria-label='Folders in Unassigned']" },
+  { id: "projects:empty", path: "/projects", api: { "/api/projects": { projects: [] } }, present: "[data-testid='projects-empty']" },
+  {
+    id: "projects:read-failed",
+    path: "/projects",
+    api: { "/api/projects": { status: 503, json: { detail: "Service unavailable" } } },
+    present: "[data-testid='projects-read-failed']",
+  },
+  { id: "route:project-general", path: "/projects/p-orbital", mock: { projectsAdmin: true }, present: "#identity-h" },
+  { id: "route:project-defaults", path: "/projects/p-orbital?tab=defaults", mock: { projectsAdmin: true }, present: "[data-testid='project-session-defaults']" },
+  { id: "route:project-memory", path: "/projects/p-orbital?tab=memory", mock: { projectsAdmin: true, variables: true, automationsShowcase: true }, present: "#memory-h" },
+  // Project → Playbook (#1949): applied with an update waiting (and a verify run on open), the phone
+  // sheet, a project with none (the library), a current one, and a failed status read.
+  { id: "route:project-playbook", path: "/projects/p-orbital?tab=playbook", mock: { projectsAdmin: true }, present: "[data-testid='playbook-verify']" },
+  { id: "project-playbook:phone", path: "/projects/p-orbital?tab=playbook", widths: ["phone"], mock: { projectsAdmin: true }, present: "[data-testid='playbook-verify']", fullPage: true },
+  { id: "project-playbook:current", path: "/projects/p-harbor?tab=playbook", mock: { projectsAdmin: true }, present: "[data-testid='playbook-verify']" },
+  { id: "project-playbook:none", path: "/projects/p-atlas?tab=playbook", mock: { projectsAdmin: true }, present: "[aria-label='Playbook'][role='radiogroup']" },
+  {
+    id: "project-playbook:read-failed",
+    path: "/projects/p-orbital?tab=playbook",
+    mock: { projectsAdmin: true },
+    api: { "/api/projects/p-orbital/playbook": { status: 503, json: { detail: "Service unavailable" } } },
+    present: "[data-testid='playbook-read-failed']",
+  },
+  { id: "route:variables", path: "/library/variables", mock: { variables: true }, present: "article[aria-label='deploy_token']" },
+  // ---- PR4b library A ---- (#1574 Phase 10: templates, variables, memory)
+  // Suggestions on demand: the analysed result, its dossier cards and the withheld note.
+  {
+    id: "route:templates-suggestions",
+    path: "/templates",
+    mock: { suggestions: true },
+    open: [{ role: "tab", name: /Suggested/ }],
+    present: "[data-suggestion]",
+  },
+  // The editor: fields, the {{variable}} list, tags and the image strip.
+  { id: "route:template-editor", path: "/templates/tpl_review", present: "fieldset textarea" },
+  // Delete sits behind the Phase 3 confirm, the danger plate naming the thing.
+  {
+    id: "popup:template-delete",
+    path: "/templates",
+    open: [{ role: "button", name: "Delete Security review" }],
+    expect: "dialog",
+  },
+  // The variable form: a secret's edit form with its Advanced disclosure open.
+  {
+    id: "route:variables-form",
+    path: "/library/variables",
+    mock: { variables: true },
+    open: [{ role: "button", name: "Edit deploy_token" }, { css: "form details summary" }],
+    present: "form details[open]",
+  },
+  // Memory as a graph: the shared React Flow theme (#1573) with the page's legend.
+  {
+    id: "route:memory-graph",
+    path: "/library/memory",
+    mock: { memory: true },
+    open: [{ role: "button", name: "Graph" }],
+    openPhone: [{ role: "tab", name: "Graph" }],
+    present: ".react-flow__node",
+  },
+  // Quarantine: the amber edge (the page's only amber), with Release and Delete.
+  {
+    id: "route:memory-quarantine",
+    path: "/library/memory",
+    mock: { memory: true },
+    openPhone: [{ role: "tab", name: /Trays/ }],
+    present: "[aria-label='Quarantined deploy-notes.md']",
+  },
+  // Memory off: the quiet frame with the switch to turn it on.
+  {
+    id: "route:memory-off",
+    path: "/library/memory",
+    mock: { memory: true, memoryOff: true },
+    present: "button:has-text('Turn memory on')",
+  },
+  // The first read: Acquiring, in words.
+  {
+    id: "route:memory-acquiring",
+    path: "/library/memory",
+    mock: { memory: true },
+    holdAsset: "/api/memory(\\?|$)",
+    present: "[data-testid='memory-acquiring']",
+  },
+  // Clear behind the type-the-name confirm.
+  {
+    id: "popup:memory-erase",
+    path: "/library/memory",
+    mock: { memory: true },
+    open: [{ role: "button", name: "Clear…" }],
+    expect: "dialog",
+  },
+  // ---- /PR4b library A ----
+  // ---- PR4b library B ---- (#1574 Phase 10: automations, playbooks, skills and the gallery)
+  // The list with three automations (an enabled one, one waiting for consent, one off): counter
+  // tiles, LED rows, the consent row on its degraded edge.
+  {
+    id: "route:automations-list",
+    path: "/mission/automations",
+    mock: { automationsShowcase: true },
+    present: "[data-testid='automation-row']",
+  },
+  // The row ⋯ menu: anchored on a desktop, a sheet on a phone (Phase 3 chrome).
+  {
+    id: "popup:automation-menu",
+    path: "/mission/automations",
+    mock: { automationsShowcase: true },
+    open: [{ css: "[data-testid='automation-row'][data-id='a-nightly-audit'] [data-testid='automation-more']" }],
+    present: "[data-testid='automation-menu']",
+  },
+  // One automation's runs: the list and a failed run's detail with its timeline.
+  {
+    id: "route:automation-runs",
+    path: "/mission/automations/a-nightly-audit?run=run-26",
+    mock: { automationsShowcase: true },
+    present: "[data-testid='run-detail']",
+  },
+  // The editor on a weekly session: segments, the weekday group, square fields.
+  {
+    id: "route:automation-editor",
+    path: "/mission/automations/a-release-notes/edit",
+    mock: { automationsShowcase: true },
+    present: "[data-testid='editor-fields']",
+  },
+  // A playbook's detail: callsign sections, the flow (canvas on a desktop, the list on a phone),
+  // the stamps and the actions.
+  { id: "route:playbook-detail", path: "/library/playbooks/ship-it", present: "h1" },
+  // The editor: the page around the canvas and the step inspector.
+  { id: "route:playbook-editor", path: "/library/playbooks/ship-it/edit", present: "h1" },
+  // A step selected: the inspector with its fields, completion rules and prompts.
+  {
+    id: "route:playbook-step",
+    path: "/library/playbooks/ship-it/edit",
+    open: [{ css: ".react-flow__node" }],
+    present: "text=Prompts follow the step instructions",
+  },
+  // Review update: the three-way compare of a local skill behind the gallery's newer version.
+  {
+    id: "route:gallery-compare",
+    path: "/library/gallery/skills/" + "a".repeat(64) + "?update=my-skill",
+    mock: { galleryCompare: true },
+    present: "[aria-label^='Versions of']",
+  },
+  // The gallery's browse page: three skills as dossier cards (board G1).
+  {
+    id: "route:gallery-browse",
+    path: "/library/gallery/skills",
+    mock: { galleryShowcase: true },
+    present: "[data-testid='content-gallery'] article",
+  },
+  // Skills with nothing saved yet: the empty state (`route:skills` is the same page, unpinned).
+  { id: "route:skills-empty", path: "/library/skills", present: "h2:has-text('No skills yet')" },
+  // Share bundles (#1714): the export picker with a playbook's skills included, and the import
+  // preview with a rename, a refused dependency and an invalid playbook (boards A and B).
+  {
+    id: "popup:share-export",
+    // #2144: Export is each card's own (the header's Export… is gone); the picker is the same.
+    path: "/library/playbooks",
+    api: { "/api/share/catalog": { method: "GET", status: 200, json: SHARE_CATALOG } },
+    open: [{ css: "[data-testid='card-export']" }, { css: "[data-testid='share-export-row-playbook:research-brief'] input" }],
+    expect: "dialog",
+  },
+  {
+    id: "popup:share-import",
+    path: "/library/skills",
+    api: { "/api/share/import/preview": { method: "POST", status: 200, json: SHARE_PREVIEW } },
+    open: [
+      // #2144: Import from file closes the Library grid.
+      { testId: "library-import-tile" },
+      { testId: "share-file", upload: "research-kit.battlelab" },
+      { css: "[data-testid='share-preview-row-skill:research-review'] input" },
+    ],
+    expect: "dialog",
+  },
+  // One Library gallery (#2144 P2): Skills, Specialists and Mission plans on the shared card, grid
+  // and detail, with their empty, error, archived and withdrawn states.
+  { id: "route:skills-library", path: "/library/skills", api: { "/api/library/skills": LIB_SKILLS }, present: "[data-testid='skill-card-code-review']" },
+  {
+    id: "route:skill-detail",
+    path: "/library/skills/code-review",
+    // A copy from the gallery reads the listing for its update check: a real one, not the catch-all `{}`.
+    api: { "/api/library/skills/code-review": LIB_SKILLS.skills[0], "/api/gallery": LIB_LISTING, "/api/gallery/refresh": LIB_LISTING },
+    present: "[data-testid='skill-detail'] h1",
+  },
+  { id: "route:specialists", path: "/library/specialists", api: { "/api/specialists": LIB_SPECIALISTS }, present: "[data-testid='specialist-card-reviewer']" },
+  {
+    id: "route:specialists-archived",
+    path: "/library/specialists",
+    api: { "/api/specialists": LIB_SPECIALISTS },
+    open: [{ css: "[role='group'][aria-label='Show'] button:last-child" }],
+    present: "[data-testid='specialist-card-retired']",
+  },
+  { id: "route:specialists-empty", path: "/library/specialists", api: { "/api/specialists": { ...LIB_SPECIALISTS, specialists: [] } }, present: "[data-testid='library-import-tile']" },
+  // Library → Actions (#2248 P1): the gallery (cards, chips, effect pips, a requirement not met),
+  // its failed read, and the automation wizard's What step picking from it.
+  { id: "route:actions", path: "/library/actions", api: { "/api/actions": LIB_ACTIONS }, present: "[data-testid='action-card']" },
+  { id: "route:actions-error", path: "/library/actions", api: { "/api/actions": { status: 503, json: { detail: "The automations store is unavailable." } } }, expect: "alert" },
+  {
+    id: "route:automation-wizard-what",
+    path: "/mission/automations/new",
+    mock: { automationsShowcase: true },
+    api: { "/api/actions": LIB_ACTIONS },
+    open: [{ role: "button", name: "Next" }],
+    present: "[data-testid='action-kind']",
+  },
+  { id: "route:mission-plans", path: "/library/mission-plans", api: { "/api/mission-plans": LIB_PLANS }, present: "[data-testid='mission-plan-card-plan-1a2b3c4d']" },
+  { id: "route:mission-plans-empty", path: "/library/mission-plans", api: { "/api/mission-plans": { plans: [] } }, present: "[data-testid='mission-plans-empty']" },
+  { id: "route:mission-plan-detail", path: "/library/mission-plans/plan-1a2b3c4d", api: { "/api/mission-plans/plan-1a2b3c4d": LIB_PLAN_DETAIL }, present: "h1" },
+  { id: "route:playbooks-error", path: "/library/playbooks", api: { "/api/playbooks": { status: 503, json: { detail: "The playbook store is unavailable." } } }, expect: "alert" },
+  { id: "route:gallery-playbooks", path: "/library/gallery/playbooks", api: { "/api/gallery": LIB_LISTING, "/api/gallery/refresh": LIB_LISTING }, present: "[data-testid='gallery-card-old-release']" },
+  // ---- /PR4b library B ----
+  { id: "route:new-project", path: "/projects/new" },
+  // The wizard's later steps (#2143 restyled their content): colour, agent defaults and playbook.
+  ...(() => {
+    const name = { role: "textbox", name: "Project name", fill: "payments-api" };
+    const next = { role: "button", name: "Next" };
+    const folder = { testId: "np-folder-preview", wait: "visible" };
+    return [
+      { id: "new-project:colour", path: "/projects/new", open: [name, next, folder, next], present: "[role='radiogroup'][aria-label='Project colour']" },
+      { id: "new-project:agent", path: "/projects/new", open: [name, next, folder, next, next], present: "[data-testid='project-session-defaults']" },
+      { id: "new-project:playbook", path: "/projects/new", open: [name, next, folder, next, next, next] },
+    ];
+  })(),
+  { id: "route:settings-interface", path: "/settings/appearance" },
+  // ---- PR4b settings A ---- (#1574 Phase 11: the shell, Appearance and AI pages)
+  // Motion: the Interface page in each mode (Off is the sweep's default above).
+  { id: "route:settings-interface-full", path: "/settings/appearance", motion: "full" },
+  { id: "route:settings-interface-reduced", path: "/settings/appearance", motion: "reduced" },
+  // The phone grouped index (chevrons, the endpoint's model + LED); a desktop lands on a section.
+  { id: "route:settings-index", path: "/settings", widths: ["phone"], present: "a[href$='/settings/ai-endpoint']" },
+  { id: "route:settings-terminal", path: "/settings/terminal-appearance" },
+  { id: "route:settings-session-defaults", path: "/settings/session-defaults" },
+  { id: "route:settings-endpoint", path: "/settings/ai-endpoint" },
+  {
+    id: "route:settings-hq-connectors",
+    path: "/settings/ai-hq-connectors",
+    // One connector HQ reads through (#1825): the card, its tested line, the switch and the
+    // egress disclosure, above the catalog.
+    api: {"/api/connectors": {"catalog": [{"id": "forgejo", "label": "Forgejo", "publisher": "battlelab", "version": "1", "category": "versioning", "adapter": "forgejo-api", "origin_mode": "operator", "fixed_origin": null, "auth": {"kind": "token-header", "scopes": ["read:issue", "read:repository"]}, "capabilities": {"read": ["repos", "issues", "pulls", "ci", "files"]}, "setup": "Create a token in Forgejo under Settings → Applications with read:issue and read:repository."}], "instances": [{"id": "c_0123456789ab", "manifest_id": "forgejo", "origin": "https://git.example.com", "status": "ready", "token_set": true, "generation": 2, "tested_generation": 2, "tested": {"login": "commander", "repos": 7, "at": 1}, "last_test": {"generation": 2, "ok": true, "code": null, "at": 1}, "enabled": {"read": true}, "created_at": 1}], "disclosure": "What HQ reads through a connector is sent to your AI endpoint (https://llm.lan) as part of HQ's conversation. Read stays off until you enable it."}},
+    present: "[data-testid='connector-card']",
+  },
+  {
+    id: "route:settings-hq-calls",
+    path: "/settings/ai-hq-calls",
+    api: HQ_MODEL_API,
+    // The capture counts only once the route's own content rendered (each General's row).
+    present: "[data-testid='hq-calls-contacts']",
+  },
+  // A failed check: a new key (masked — a fake fixture value) and the endpoint refusing it.
+  {
+    id: "route:settings-endpoint-failed",
+    path: "/settings/ai-endpoint",
+    open: [
+      { role: "button", name: "Replace key" },
+      { css: "input[type='password']", fill: "sk-FAKE-fixture-0000000000000000" },
+      { role: "button", name: "Test", partial: false },
+    ],
+    api: { "/api/ai-review/endpoint/test": { status: 502, json: { detail: "The endpoint refused the key (HTTP 401)." } } },
+    present: "input[type='password']",
+  },
+  { id: "route:settings-mission-control", path: "/settings/ai-mission-control", mock: { config: { automation: HQ_AUTOMATION } }, present: "#session-orch-h" },
+  { id: "route:settings-hq", path: "/settings/ai-hq", api: HQ_MODEL_API, present: "nav[aria-label='HQ settings groups']" },
+  ...["defaults", "mixed", "catalog-unavailable", "save-failed", "mixed-route", "mixed-call", "mixed-mission"].map((state) => ({
+    id: `route:settings-hq-models-${state}`, path: "/settings/ai-hq#hq-models-h",
+    // A scrolling settings pane clips an over-tall element screenshot. Photograph real
+    // viewports; the additional phone frames show every row below the fold.
+    ...(state.startsWith("mixed-")
+      ? { widths: ["phone"], present: `fieldset:has(#hq-model-${state.slice(6)})` }
+      : { height: 1400, present: "#hq-models-h" }),
+    mock: { config: {
+      hq_contact: "off", ai_review: { model: "endpoint-model", thinking: "medium" },
+      hq_route: { enabled: true, model: "", thinking: "off" },
+      hq_models: {
+        typed: { model: state === "catalog-unavailable" ? "saved-unlisted" : "", thinking: "hq" },
+        mission: { model: state.startsWith("mixed") ? "mission-model" : "", thinking: "hq" },
+      },
+    } },
+    api: {
+      ...HQ_MODEL_API,
+      "/api/voice/settings": { ...HQ_MODEL_CALLS,
+        ...(state.startsWith("mixed") ? { hq_model: "call-fast", thinking: "high" } : {}) },
+      "/api/ai-review/models": state === "catalog-unavailable"
+        ? { status: 503, json: { detail: "Model list unavailable" } }
+        : { models: ["endpoint-model", "call-fast", "mission-model"] },
+      ...(state === "save-failed" ? {
+        "/api/prefs": { status: 503, json: { detail: "Could not save. Your confirmed choice is unchanged." } },
+      } : {}),
+    },
+    ...(state === "save-failed" ? { open: [
+      { css: "#hq-model-typed", select: "call-fast" },
+      { css: "[data-testid='hq-models-settings'] [role='alert']", wait: "visible" },
+    ] } : {}),
+  })),
+  { id: "route:settings-hq-autonomy", path: "/settings/ai-hq#orch-h", mock: { config: { automation: HQ_AUTOMATION } }, present: "#session-orch-h" },
+  {
+    id: "route:settings-hq-unavailable", path: "/settings/ai-hq#orch-h",
+    mock: { config: { automation: { ...HQ_AUTOMATION, mission: { ...HQ_AUTOMATION.mission, revision: "invalid" } } } },
+    present: "section[aria-labelledby='mission-orch-h'] [role='alert']",
+  },
+  // Prompts: the catalog with an edited row open, a guarded row and a default one…
+  {
+    id: "route:settings-prompts",
+    path: "/settings/ai-prompts",
+    api: { "/api/prompts": { prompts: [
+        {
+          id: "ai-review-prompt",
+          group: "Session review",
+          label: "Session review",
+          description: "Summarises a session and flags it when it needs you.",
+          contract: '{ "title": string, "summary": string, "needs_you": boolean }',
+          max_chars: 4000,
+          guarded: false,
+          guard_suffix: null,
+          value: "Review the session. Quote its own words for anything you flag.",
+          default: "Review the session.",
+          is_default: false,
+        },
+        {
+          id: "mission-judge",
+          group: "Mission control",
+          label: "Mission judge",
+          description: "Settles an objective on evidence quoted verbatim from the session.",
+          contract: '{ "met": boolean, "confidence": number, "evidence": [{ "quote": string }] }',
+          max_chars: 4000,
+          guarded: true,
+          guard_suffix: "Answer only from quotes; never invent evidence.",
+          value: "Settle the gate only with verbatim quotes from the session.",
+          default: "Settle the gate only with verbatim quotes from the session.",
+          is_default: true,
+        },
+        {
+          id: "auto-sort",
+          group: "Auto-sort",
+          label: "Project classifier",
+          description: "Assigns an unassigned session to a project.",
+          contract: '{ "project_id": string | null, "confidence": number }',
+          max_chars: 2000,
+          guarded: false,
+          guard_suffix: null,
+          value: "Pick the project this session belongs to.",
+          default: "Pick the project this session belongs to.",
+          is_default: true,
+        },
+      ] } },
+    open: [{ role: "button", name: "Session review", partial: true }],
+    present: "textarea",
+  },
+  // …and the catalog that would not load (Retry).
+  { id: "route:settings-prompts-error", path: "/settings/ai-prompts" },
+  { id: "route:settings-ai-review", path: "/settings/ai-session-review" },
+  { id: "route:settings-auto-sort", path: "/settings/ai-auto-sort" },
+  { id: "route:settings-activity", path: "/settings/ai-activity" },
+  // ---- /PR4b settings A ----
+
+  { id: "route:settings-agents", path: "/settings/agents", api: { "/api/plugins": SB.PLUGINS } },
+  { id: "route:settings-security", path: "/settings/security" },
+  // ---- PR4b settings B ---- (#1574 Phase 11: agents, system and about; FAKE secrets only,
+  // visual/promo/settingsStates.mjs)
+  { id: "route:settings-agents-defaults", path: "/settings/agents/defaults", api: { "/api/plugins": SB.PLUGINS } },
+  {
+    id: "route:agent-add",
+    path: "/settings/agents/setup/new",
+    api: { "/api/plugins": SB.PLUGINS },
+  },
+  // The gallery lives under HQ: the shot is scrolled to it (`present`), not a
+  // section crop — a phone's crop is taller than the screen and stitches the sticky top bar in.
+  {
+    id: "route:settings-hq-gallery",
+    path: "/settings/ai-hq#hq-contact",
+    present: "[data-testid='hq-gallery']",
+  },
+  {
+    id: "route:settings-2fa-setup",
+    path: "/settings/security",
+    mock: { config: { two_factor_enabled: false } },
+    api: { "/api/2fa/enroll": SB.TWOFA_ENROLL },
+    open: [{ role: "button", name: "Enable two-factor auth" }],
+    present: "[data-testid='twofa-enroll'], code",
+  },
+  {
+    id: "route:settings-loginoff",
+    path: "/settings/security",
+    mock: { config: { auth_mode: "none" } },
+  },
+  { id: "route:settings-sharing", path: "/settings/sharing", api: { "/api/shares": SB.SHARES } },
+  {
+    id: "route:settings-sharing-revoke-all",
+    path: "/settings/sharing",
+    api: { "/api/shares": SB.SHARES },
+    open: [{ role: "button", name: "Revoke all" }],
+  },
+  // Peers (#2052): the page at rest, and the revoke confirmation (focus on Cancel).
+  { id: "route:settings-peers", path: "/settings/peers", api: { "/api/federation": SB.FEDERATION } },
+  {
+    id: "popup:peers-revoke",
+    path: "/settings/peers",
+    api: { "/api/federation": SB.FEDERATION },
+    open: [{ role: "button", name: "Revoke gpu-box" }],
+    expect: "alertdialog",
+  },
+  {
+    id: "route:settings-updates",
+    path: "/settings/updates",
+    api: { "/api/update/settings": SB.UPDATE_SETTINGS, "/api/update/progress": SB.UPDATE_RUNNING },
+  },
+  { id: "route:settings-host", path: "/settings/system", api: { "/api/system": SB.SYSTEM } },
+  {
+    id: "route:settings-resources",
+    path: "/settings/resources",
+    api: { "/api/system": SB.SYSTEM, "/api/system/resources": SB.RESOURCES },
+  },
+  { id: "route:settings-analytics", path: "/settings/analytics" },
+  // The operator's avatar (#1931): the preview disc and its actions.
+  { id: "route:settings-profile", path: "/settings/profile" },
+  // ---- /PR4b settings B ----
+  // ---- brand (#1590) ---- the kit's lockup with its tagline on Settings → About.
+  { id: "route:settings-about", path: "/settings/about", expectCss: "[data-brand-lockup]" },
+  // ---- /brand ----
+  // ---- PR3 chrome ----
+  // Session chrome (#1568 Phase 6): the sidebar list and its states, the pane head, the terminal
+  // chrome and the compose bar. On a phone the list is in the drawer.
+  { id: "route:sidebar", path: S1, phoneFirst: DRAWER },
+  { id: "route:sidebar-folded", path: S1, phoneFirst: DRAWER, storage: { "tr-sidebar-filters-open": "0" } },
+  {
+    id: "route:sidebar-empty",
+    path: S1,
+    phoneFirst: DRAWER,
+    api: { "/api/sessions": { sessions: [], total: 0, live_total: 0, next_offset: null, facets: { projects: [], engines: [] } } },
+  },
+  {
+    id: "route:sidebar-error",
+    path: S1,
+    phoneFirst: DRAWER,
+    api: { "/api/sessions": { status: 500, json: { detail: "sessions unavailable" } } },
+  },
+  {
+    id: "route:sidebar-rename",
+    path: S1,
+    phoneFirst: DRAWER,
+    open: [{ role: "button", name: "Session actions" }, { role: "menuitem", name: "Rename session" }],
+    expectCss: "input[aria-label='Session title']",
+  },
+  // Session clusters (#1997): the project tree (in the Filters fold, #2187), a selected cluster's head (an AI
+  // title, then a kept one), the tree without an AI endpoint, the cluster's menu and the picker.
+  { id: "route:sidebar-clusters", path: S1, phoneFirst: DRAWER, mock: { clusters: true }, open: [{ role: "button", name: "Unfold orbital-api" }], present: "[data-testid='cluster-node']" },
+  {
+    id: "route:sidebar-cluster-head",
+    path: S1,
+    phoneFirst: DRAWER,
+    mock: { clusters: true },
+    open: [{ role: "button", name: "Unfold orbital-api" }, { role: "button", name: "Ingest rate limiting", partial: true }],
+    present: "[data-testid='cluster-head']",
+  },
+  // The Filters fold, folded with a cluster selected: the header still names the scope.
+  {
+    id: "route:sidebar-scope-folded",
+    path: S1,
+    phoneFirst: DRAWER,
+    mock: { clusters: true },
+    open: [
+      { role: "button", name: "Unfold orbital-api" },
+      { role: "button", name: "Ingest rate limiting", partial: true },
+      { testId: "filters-toggle" },
+    ],
+    present: "[data-testid='filters-scope']",
+  },
+  {
+    id: "route:sidebar-cluster-kept",
+    path: S1,
+    phoneFirst: DRAWER,
+    mock: { clusters: true },
+    open: [{ role: "button", name: "Unfold orbital-api" }, { role: "button", name: "Checkout theming", partial: true }],
+    present: "[data-testid='cluster-head']",
+  },
+  {
+    id: "route:sidebar-cluster-rename",
+    path: S1,
+    phoneFirst: DRAWER,
+    mock: { clusters: true },
+    open: [{ role: "button", name: "Unfold orbital-api" }, { role: "button", name: "Ingest rate limiting", partial: true }, { role: "button", name: "Rename" }],
+    expectCss: "input[aria-label='Cluster title']",
+  },
+  {
+    id: "route:sidebar-clusters-unconfigured",
+    path: S1,
+    phoneFirst: DRAWER,
+    mock: { clusters: "unconfigured" },
+    present: "[data-testid='cluster-tree-unconfigured']",
+  },
+  {
+    id: "popup:cluster-menu",
+    path: S1,
+    phoneFirst: DRAWER,
+    mock: { clusters: true },
+    open: [{ role: "button", name: "Unfold orbital-api" }, { role: "button", name: "Ingest rate limiting", partial: true }, { testId: "cluster-head-menu" }],
+    expect: "menu",
+  },
+  {
+    id: "popup:move-to-cluster",
+    path: S1,
+    phoneFirst: DRAWER,
+    mock: { clusters: true },
+    open: [{ css: "li:has([data-testid='row-cluster-tag']) button[aria-label='Session actions']" }, { role: "menuitem", name: "Move session to a cluster" }],
+    expect: "dialog",
+  },
+  {
+    id: "popup:cluster-merge",
+    path: S1,
+    phoneFirst: DRAWER,
+    mock: { clusters: true },
+    open: [{ role: "button", name: "Unfold orbital-api" }, { role: "button", name: "Ingest rate limiting", partial: true }, { testId: "cluster-head-menu" }, { role: "menuitem", name: "Merge this cluster into another" }],
+    expect: "dialog",
+  },
+  { id: "route:settings-ai-clusters", path: "/settings/ai-clusters", mock: { clusters: true } },
+  // The pane: the head's chips, the terminal and the folded compose bar (open on a phone).
+  { id: "route:session-pane", path: S1 },
+  // ---- headers ---- (#1589: the v5 top bar with the brand kit's logo, and the session head that
+  // folds into one Actions menu on a touch tablet). Sweep with `--widths 1440,1100,834,412,390,320`
+  // (touch at ≤1180) for the tablet and phone forms; the default 1440 / 390 covers both ends.
+  { id: "headers:topbar", path: S1, height: 140 },
+  { id: "headers:topbar-menu", path: S1, open: [{ role: "button", name: "Library menu" }] },
+  { id: "headers:session-head", path: S1, height: 200 },
+  // ---- /headers ----
+  // The compose bar open: textarea, key chips, Talk and Send.
+  { id: "route:session-compose", path: S1, open: [{ role: "button", name: "Open compose box" }], openPhone: [], present: "textarea" },
+  // The terminal's chrome states (#1568): reconnecting (the radar), refused, and a read-only
+  // viewer behind the take-over banner. Nothing is drawn over the xterm canvas itself.
+  // A busy master (4409) is retried: the pane shows the reconnecting chip with the radar.
+  { id: "route:term-reconnecting", path: S1, term: { closeCode: 4409 }, at: 1500 },
+  { id: "route:term-rejected", path: S1, term: { closeCode: 4403, closeReason: "forbidden" }, at: 2500 },
+  {
+    id: "route:term-readonly",
+    path: S1,
+    term: { role: "secondary", holder: { label: "Mac · Chrome", since: Math.floor(Date.now() / 1000) - 300 } },
+    expectCss: "[aria-label='Take over this session']",
+  },
+  // ---- /PR3 chrome ----
+  // ---- PR3 files ---- (#1568: the Files panel shell, tree and upload; the git tab and viewer are #950's)
+  {
+    id: "files:tree-open",
+    path: S1,
+    ...withFiles([{ css: "[data-file-row][data-kind='dir'] [data-row-main]" }]),
+    expectCss: "[data-file-row][data-kind='dir'] [aria-expanded='true']",
+  },
+  // The root listing held: the tree's skeleton (a scan band in Full; the sweep shoots Off).
+  { id: "files:tree-loading", path: S1, ...withFiles([]), holdAsset: "/api/files/list(\\?|$)", expectCss: "[data-file-tree] [role='status']" },
+  {
+    id: "files:tree-unavailable",
+    path: S1,
+    ...withFiles([]),
+    api: { "/api/files/list": { status: 503, json: { detail: "Could not read this folder." } } },
+    expectCss: "[data-file-tree] [role='alert']",
+  },
+  {
+    id: "files:tree-truncated",
+    path: S1,
+    ...withFiles([]),
+    api: {
+      "/api/files/list": {
+        path: "/home/commander/code/orbital-api",
+        parent: "/home/commander/code",
+        root: "/home/commander/code",
+        total: 900,
+        complete: false,
+        truncated: true,
+        entries: [
+          { name: "src", path: "/home/commander/code/orbital-api/src", kind: "dir", size: 4096, mtime: 0 },
+          { name: "package.json", path: "/home/commander/code/orbital-api/package.json", kind: "file", size: 1200, mtime: 0 },
+          { name: "README.md", path: "/home/commander/code/orbital-api/README.md", kind: "file", size: 3100, mtime: 0 },
+        ],
+      },
+    },
+    expectCss: "[data-file-tree] [data-file-row]",
+  },
+  {
+    id: "files:panel-unavailable",
+    path: S1,
+    ...withFiles([]),
+    api: { "/api/files/capabilities": { ok: false, reason: "The file service is not reachable from this box." } },
+    expectCss: "[data-file-panel] [role='alert']",
+  },
+  // A file mid-upload: the batch is accepted, the upload itself never answers, so the row stays SENDING.
+  {
+    id: "files:upload-queue",
+    path: S1,
+    ...withFiles([{ css: "[data-upload-files]", upload: "notes.md" }]),
+    api: { "/api/files/upload/batch": { batch_id: "b1", files: 1, bytes: 6, files_limit: 500, bytes_limit: 262144000, file_limit: 26214400 } },
+    holdAsset: "/api/files/upload(\\?|$)",
+    expectCss: "[data-upload-queue]",
+  },
+  // "Add the path to the message": the row's control lit for its acknowledgement window. Desktop
+  // only: on a phone the sheet closes on send (#792), so the flash is a dock state.
+  {
+    id: "files:send-flash",
+    path: S1,
+    widths: ["desktop"],
+    ...withFiles([{ css: "[data-file-row][data-kind='file'] button[aria-label^='Add ']" }]),
+    present: "[data-file-row][data-kind='file'] button[aria-label^='Add ']",
+  },
+  // ---- /PR3 files ----
+  // ---- PR4a rail ---- (#1573 Phase 8: the route shell, the mission rail, the new-mission page and
+  // Library → Checklists; the console is the console slice's block)
+  // Every LED the rail draws (needs you, running, starting, failed, review, draft, done) and the
+  // NEEDS YOU preview on the landing.
+  { id: "route:mission-needs-you", path: "/mission", api: { "/api/missions": RAIL_LIST(RAIL_ROWS) } },
+  // The same rows in the phone's drawer (the rail is the shell's drawer at ≤800px).
+  {
+    id: "route:mission-rail-drawer",
+    path: "/mission",
+    widths: ["phone"],
+    api: { "/api/missions": RAIL_LIST(RAIL_ROWS) },
+    phoneFirst: MISSION_DRAWER,
+    expect: "dialog",
+  },
+  // The first read, held: Acquiring over skeleton rows.
+  {
+    id: "route:mission-rail-loading",
+    path: "/mission",
+    holdAsset: "/api/missions(\\?|$)",
+    phoneFirst: MISSION_DRAWER,
+    at: 1500,
+  },
+  // The store would not answer: the rail's error with its Retry (and no NEEDS YOU claim).
+  {
+    id: "route:mission-rail-error",
+    path: "/mission",
+    phoneFirst: MISSION_DRAWER,
+    api: { "/api/missions": { ...RAIL_LIST([]), store_error: "the mission store is restarting" } },
+  },
+  // Nothing tracked yet.
+  { id: "route:mission-rail-empty", path: "/mission", phoneFirst: MISSION_DRAWER, api: { "/api/missions": RAIL_LIST([]) } },
+  // The rail's other empty wordings: a search that matches nothing, and an empty Archived scope.
+  {
+    id: "route:mission-rail-filtered-empty",
+    path: "/mission",
+    phoneFirst: MISSION_DRAWER,
+    api: { "/api/missions": RAIL_LIST([]) },
+    open: [{ css: "input[aria-label='Search missions']", fill: "no such mission" }],
+    present: "[data-testid='rail-no-missions']:has-text('match these filters')",
+  },
+  {
+    id: "route:mission-rail-archived-empty",
+    path: "/mission",
+    phoneFirst: MISSION_DRAWER,
+    api: { "/api/missions": RAIL_LIST([]) },
+    open: [{ testId: "rail-scope-archived" }],
+    present: "[data-testid='rail-no-missions']:has-text('Nothing archived yet')",
+  },
+  // More missions than the first page: "Load more — x of y" under the rows.
+  {
+    id: "route:mission-rail-more",
+    path: "/mission",
+    phoneFirst: MISSION_DRAWER,
+    api: { "/api/missions": { ...RAIL_LIST(RAIL_ROWS), total: RAIL_ROWS.length + 5 } },
+    present: "[data-testid='rail-load-more']",
+  },
+  // The Archived scope is a filter (#959): the landing's preview says "in current filters" and
+  // offers Clear filters — answered empty, still reading, and unreadable. On a phone the scope tabs
+  // are in the drawer: switch there and close it, so the landing is what the shot shows.
+  {
+    id: "route:mission-needs-filtered",
+    path: "/mission",
+    open: [{ testId: "rail-scope-archived" }],
+    openPhone: [...MISSION_DRAWER, { testId: "rail-scope-archived" }, { press: "Escape" }],
+  },
+  {
+    id: "route:mission-needs-loading",
+    path: "/mission",
+    holdAsset: "/api/missions(\\?|$)",
+    open: [{ testId: "rail-scope-archived" }],
+    openPhone: [...MISSION_DRAWER, { testId: "rail-scope-archived" }, { press: "Escape" }],
+    at: 1500,
+  },
+  {
+    id: "route:mission-needs-error",
+    path: "/mission",
+    api: { "/api/missions": { ...RAIL_LIST([]), store_error: "the mission store is restarting" } },
+    open: [{ testId: "rail-scope-archived" }],
+    openPhone: [...MISSION_DRAWER, { testId: "rail-scope-archived" }, { press: "Escape" }],
+  },
+  // The overview read failed: the route's error line with its Retry.
+  { id: "route:mission-overview-error", path: "/mission", api: { "/api/pulse": { status: 503, json: { detail: "restarting" } } } },
+  // The orchestrator has failed twice running: the read-only health banner above the console.
+  { id: "route:mission-health", path: "/mission", api: { "/api/pulse/orchestrator": ORCH_FAILING } },
+  // The template picker, opened from the brief's Template button.
+  { id: "popup:mission-template-picker", path: "/mission", open: [{ testId: "new-mission-template" }], expect: "dialog" },
+  // Library → Checklists with checklists: the cards, the default's lit rail, the dashed New card.
+  { id: "route:checklists-list", path: "/mission/checklists", mock: { config: CHECKLISTS_CONFIG } },
+  // One checklist: the tally, the numbered track, the first step open, the save bar.
+  {
+    id: "route:checklists-editor",
+    path: "/mission/checklists",
+    mock: { config: CHECKLISTS_CONFIG },
+    open: [{ testId: "playbook-card" }],
+    expectCss: "[data-testid='playbook']",
+  },
+  // Leaving with an unsaved draft asks first (#1221). Desktop: the rail is in the phone's drawer.
+  {
+    id: "popup:checklists-leave",
+    path: "/mission/checklists",
+    widths: ["desktop"],
+    mock: { config: CHECKLISTS_CONFIG },
+    open: [{ testId: "playbook-card" }, { testId: "playbook-remove" }, { testId: "rail-mission" }],
+    expect: "dialog",
+  },
+  // The server refuses a start: the brief and project stay, and the form says why in its own words.
+  {
+    id: "route:mission-start-refused",
+    path: "/mission",
+    api: {
+      "/api/missions": {
+        method: "POST",
+        status: 409,
+        json: { detail: "orbital-api already has a mission starting. Open it from the rail, or wait for it to start." },
+      },
+    },
+    open: [
+      { testId: "new-mission-instruction", fill: "Add a token-bucket limiter keyed by API key to the ingest router." },
+      { testId: "new-mission-project", select: "orbital-api" },
+      { testId: "new-mission-start" },
+    ],
+    present: "[data-testid='new-mission-error']",
+  },
+  // ---- /PR4a rail ----
+  // ---- PR4a console ---- (#1573: the mission console, its details, plan, decisions and thread)
+  // The running console: the frame (title, state chip, primary, ⋯), the Now strip, the thread and, at
+  // ≥1400, the details column (Context and Objectives open). On a phone the details are a band.
+  { id: "mission:console", path: M1 },
+  // Every thread row kind (the board's T8), a judged objective that did not hold, the supervisor's
+  // reading and Load older. Tall, so the whole thread is on screen.
+  { id: "mission:thread", path: M1, mock: { mission: "showcase" }, height: 2300 },
+  // The decisions waiting on the mission: a permission card, the session's own menu, a supervisor
+  // nudge and an AI-drafted direction (dashed).
+  { id: "mission:decisions", path: M1, mock: { mission: "decisions", missionDecisions: true }, height: 2100 },
+  // A question mission control is waiting on: options are 44 px rows.
+  { id: "mission:question", path: M1, mock: { mission: "question" } },
+  // The plan card: planning (pips + Acquiring), could not plan, ready (Review plan), and the armed
+  // launch confirmation (Required / Goal, Worth a look).
+  { id: "mission:planning", path: M1, mock: { mission: "planning" } },
+  { id: "mission:no-plan", path: M1, mock: { mission: "noplan" } },
+  { id: "mission:plan-manual", path: M1, mock: { mission: "noplan" }, open: [{ testId: "mission-plan-manually" }], present: "[data-testid='mission-plan-manual']" },
+  { id: "mission:plan-ready", path: M1, mock: { mission: "ready" }, open: [{ testId: "mission-plan-review" }], present: "[data-testid='mission-plan-fields']" },
+  { id: "mission:plan-armed", path: M1, mock: { mission: "ready" }, open: [{ testId: "mission-begin" }], present: "[data-testid='mission-launch-confirm']", height: 1300 },
+  // A start that failed: the failure block with Start again.
+  { id: "mission:failed", path: M1, mock: { mission: "failed" } },
+  // The mission shelf (#1740 P1a): every delivered kind, a changed and a missing file, verdicts.
+  {
+    id: "mission:shelf",
+    path: M1,
+    mock: { shelf: "showcase" },
+    open: [{ testId: "view-shelf" }],
+    present: "[data-testid='mission-shelf'] [data-shelf-tile]",
+    height: 1500,
+  },
+  // The debrief (#1740 P2): a mission in review opens on SHELF with it first; and out of date.
+  {
+    id: "mission:debrief",
+    path: M1,
+    mock: { shelf: "showcase", mission: "review" },
+    open: [{ testId: "view-shelf" }],
+    present: "[data-testid='mission-debrief'] [data-debrief-summary]",
+    height: 2200,
+  },
+  {
+    id: "mission:debrief-stale",
+    path: M1,
+    mock: { shelf: "showcase", mission: "review", debriefStale: true },
+    open: [{ testId: "view-shelf" }],
+    present: "[data-testid='mission-debrief'] [data-debrief-stale]",
+    height: 1600,
+  },
+  {
+    id: "mission:shelf-empty",
+    path: M1,
+    open: [{ testId: "view-shelf" }],
+    present: "[data-shelf-empty]",
+  },
+  {
+    id: "popup:shelf-lightbox",
+    path: M1,
+    mock: { shelf: "showcase" },
+    open: [{ testId: "view-shelf" }, { css: "[data-shelf-tile='shf_00000000000000000000000000000003']" }],
+    expect: "dialog",
+  },
+  {
+    id: "popup:shelf-lightbox-code",
+    path: M1,
+    mock: { shelf: "showcase" },
+    open: [{ testId: "view-shelf" }, { css: "[data-shelf-tile='shf_00000000000000000000000000000010']" }],
+    expect: "dialog",
+  },
+  {
+    id: "popup:shelf-lightbox-text",
+    path: M1,
+    mock: { shelf: "showcase" },
+    open: [{ testId: "view-shelf" }, { css: "[data-shelf-tile='shf_00000000000000000000000000000007']" }],
+    expect: "dialog",
+  },
+  // No AI endpoint: the notice, and the composer that says what it needs.
+  {
+    id: "mission:no-ai",
+    path: M1,
+    mock: { config: { pulse: { auto_enabled: false, interval_minutes: 15, window_days: 1, scan_depth: "slow", configured: false } } },
+  },
+  // Nothing has happened yet: the empty thread and the empty checklist.
+  { id: "mission:quiet", path: M1, mock: { mission: "quiet" } },
+  // Every objective met: the all-met state and the supervisor's proposal.
+  { id: "mission:all-met", path: M1, mock: { mission: "allmet" } },
+  // ≤1399: the details are ONE band under the head; open on a phone.
+  { id: "mission:details-band", path: M1, widths: ["phone"], openPhone: [{ testId: "details-toggle" }], present: "[data-testid='mission-details']" },
+  // Context: the git line's error, View screen (`<pre>`), the relay and Start sub-agent. On a phone
+  // Context is the details band's first section, open: the band, then the control.
+  {
+    id: "mission:context-git-error",
+    path: M1,
+    mock: { missionContext: "gitError" },
+    openPhone: [{ testId: "details-toggle" }],
+    present: "[data-testid='context-git-error']",
+  },
+  {
+    id: "mission:screen",
+    path: M1,
+    open: [{ testId: "view-screen" }],
+    openPhone: [{ testId: "details-toggle" }, { testId: "view-screen" }],
+    present: "[data-testid='mission-screen'] pre",
+    height: 1400,
+  },
+  {
+    id: "mission:spawn",
+    path: M1,
+    mock: { mission: "spawn" },
+    open: [{ testId: "spawn-open" }],
+    openPhone: [{ testId: "details-toggle" }, { testId: "spawn-open" }],
+    present: "[data-testid='spawn-card']",
+    height: 1500,
+  },
+  // Objectives: judged evidence with its verbatim quotes, the row menu, rename and the Follow-through
+  // and Timeline disclosures.
+  // On a phone each is in the details band, with the sections above it folded.
+  {
+    id: "mission:objective-evidence",
+    path: M1,
+    mock: { mission: "showcase" },
+    open: [{ testId: "objective-evidence-toggle" }],
+    openPhone: [{ testId: "details-toggle" }, { testId: "detail-context" }, { testId: "objective-evidence-toggle" }],
+    present: "[data-testid='objective-evidence']",
+    height: 1500,
+  },
+  {
+    id: "mission:follow-through",
+    path: M1,
+    mock: { mission: "showcase" },
+    open: [{ testId: "detail-context" }, { testId: "detail-objectives" }, { testId: "detail-followThrough" }],
+    openPhone: [{ testId: "details-toggle" }, { testId: "detail-context" }, { testId: "detail-objectives" }, { testId: "detail-followThrough" }],
+    present: "[data-testid='mission-auto-choose']",
+    height: 1300,
+  },
+  {
+    id: "mission:timeline",
+    path: M1,
+    mock: { mission: "showcase" },
+    open: [{ testId: "detail-context" }, { testId: "detail-objectives" }, { testId: "detail-timeline" }],
+    openPhone: [{ testId: "details-toggle" }, { testId: "detail-context" }, { testId: "detail-objectives" }, { testId: "detail-timeline" }],
+    // The first row, not the whole list: a list taller than the column would be scrolled to.
+    present: "[data-testid='timeline-row']",
+    height: 1300,
+  },
+  // An objective dragged by its handle: the row lifts on the dashed accent outline (shot mid-drag).
+  {
+    id: "mission:objective-drag",
+    path: M1,
+    open: [{ css: "[aria-label^='Reorder']:visible", drag: [0, 60] }],
+    openPhone: [{ testId: "details-toggle" }, { testId: "detail-context" }, { css: "[aria-label^='Reorder']:visible", drag: [0, 60] }],
+    present: "[class*='objRowDragging']",
+  },
+  // A reorder the server refused (409: the list changed): the rows settle on the saved order and the
+  // alert says so beside the list. Reached by the row menu's Move down, which sends the same op.
+  {
+    id: "mission:objective-refused",
+    path: M1,
+    api: { ["/api/missions/msn_" + "1a2b3c4d".repeat(4) + "/objectives"]: { method: "PATCH", status: 409, json: { detail: "The objectives changed since this list was read." } } },
+    open: [{ css: "[aria-label^='Actions for']:visible" }, { css: "[role='menuitem'][aria-label^='Move '][aria-label$=' down']" }],
+    openPhone: [
+      { testId: "details-toggle" },
+      { testId: "detail-context" },
+      { css: "[aria-label^='Actions for']:visible" },
+      { css: "[role='menuitem'][aria-label^='Move '][aria-label$=' down']" },
+    ],
+    present: "[data-testid='objectives-reorder-refused']",
+  },
+  // The objectives' four empty states (each says something different, #942): the read failed
+  // (unreadable), still being worked out (pending), could not be produced (unavailable), and none.
+  // Context is folded first (on a phone, in the details band) so the Objectives are in the shot.
+  {
+    id: "mission:objectives-unreadable",
+    path: M1,
+    open: [{ testId: "detail-context" }],
+    api: { ["/api/missions/" + M1.split("m=")[1] + "/objectives"]: { method: "GET", status: 503, json: { detail: "the mission store is restarting" } } },
+    openPhone: [{ testId: "details-toggle" }, { testId: "detail-context" }],
+    present: "[data-testid='objectives-unreadable']",
+  },
+  { id: "mission:objectives-pending", path: M1, open: [{ testId: "detail-context" }], mock: { mission: "planning" }, openPhone: [{ testId: "details-toggle" }, { testId: "detail-context" }], present: "[data-testid='objectives-pending']" },
+  { id: "mission:objectives-unavailable", path: M1, open: [{ testId: "detail-context" }], mock: { mission: "noplan" }, openPhone: [{ testId: "details-toggle" }, { testId: "detail-context" }], present: "[data-testid='objectives-unavailable']" },
+  { id: "mission:objectives-empty", path: M1, open: [{ testId: "detail-context" }], mock: { mission: "quiet" }, openPhone: [{ testId: "details-toggle" }, { testId: "detail-context" }], present: "[data-testid='objectives-empty']" },
+  // A title past the row's two-line clamp: clamped with its disclosure, then opened.
+  {
+    id: "mission:objective-clamped",
+    path: M1,
+    mock: { mission: "longobjective" },
+    open: [{ testId: "detail-context" }],
+    openPhone: [{ testId: "details-toggle" }, { testId: "detail-context" }],
+    present: "[data-testid='objective-title-toggle'][aria-expanded='false']",
+  },
+  {
+    id: "mission:objective-unclamped",
+    path: M1,
+    mock: { mission: "longobjective" },
+    open: [{ testId: "detail-context" }, { css: "[data-testid='objective-title-toggle'][aria-expanded='false']" }],
+    openPhone: [...[{ testId: "details-toggle" }, { testId: "detail-context" }], { css: "[data-testid='objective-title-toggle'][aria-expanded='false']" }],
+    present: "[data-testid='objective-title-toggle'][aria-expanded='true']",
+  },
+  // An objective's ⋯: the row menu (a sheet on a phone), and its Rename form open in the row. Tall:
+  // at 960 the objectives sit below the fold, and the scroll that reaches them closes a menu.
+  {
+    id: "popup:objective-menu",
+    path: M1,
+    height: 1400,
+    open: [{ css: "[data-testid='objective-menu'] >> nth=1" }],
+    openPhone: [...[{ testId: "details-toggle" }, { testId: "detail-context" }], { css: "[data-testid='objective-menu'] >> nth=1" }],
+    expectCss: "[role='menuitem']",
+  },
+  {
+    id: "mission:objective-rename",
+    path: M1,
+    height: 1400,
+    open: [{ css: "[data-testid='objective-menu'] >> nth=1" }, { testId: "objective-rename" }],
+    openPhone: [...[{ testId: "details-toggle" }, { testId: "detail-context" }], { css: "[data-testid='objective-menu'] >> nth=1" }, { testId: "objective-rename" }],
+    present: "[data-testid='objective-rename-input']",
+  },
+  // The ⋯ overflow's two-tap confirmations: the first tap arms the item and the menu says what the
+  // second will do.
+  {
+    id: "popup:mission-confirm-abandon",
+    path: M1,
+    open: [{ testId: "mission-overflow" }, { testId: "mission-abandon" }],
+    present: "[data-testid='mission-confirm-abandon']",
+  },
+  {
+    id: "popup:mission-confirm-archive",
+    path: M1,
+    open: [{ testId: "mission-overflow" }, { testId: "mission-archive" }],
+    present: "[data-testid='mission-confirm-archive']",
+  },
+  {
+    id: "popup:mission-confirm-failed",
+    path: M1,
+    open: [{ testId: "mission-overflow" }, { testId: "mission-failed" }],
+    present: "[data-testid='mission-failed']:has-text('Confirm mark failed')",
+  },
+  // Nothing on the timeline yet (Context and Objectives folded so it is in view).
+  {
+    id: "mission:timeline-empty",
+    path: M1,
+    mock: { mission: "quiet" },
+    open: [{ testId: "detail-context" }, { testId: "detail-objectives" }, { testId: "detail-timeline" }],
+    openPhone: [{ testId: "details-toggle" }, { testId: "detail-context" }, { testId: "detail-objectives" }, { testId: "detail-timeline" }],
+    present: "[data-testid='timeline-empty']",
+  },
+  // A turn in flight: the composer's message is the pending turn, `AskWorking` under it (its reply
+  // never arrives, so the shot holds the wait).
+  {
+    id: "mission:pending",
+    path: M1,
+    holdAsset: "/message/stream",
+    open: [{ testId: "composer-input", fill: "Which objective is furthest from done?" }, { testId: "composer-send" }],
+    present: "[data-testid='turn-pending']",
+  },
+  // ---- /PR4a console ----
+  // ---- PR5a outside ---- (#1596, Phase 12: the pages outside the SPA)
+  // The server's own pages (sign-in, TOTP, password, device link, the share placeholder) are
+  // rendered by the Python app: `served` ids are photographed by that spec's capture mode
+  // (NIGHTJAR_CAPTURE_DIR), at the same widths and themes, named like the sweep's.
+  ...[
+    "page:login",
+    "page:login-error",
+    "page:login-qr",
+    "page:totp",
+    "page:totp-error",
+    "page:password",
+    "page:password-error",
+    "page:link-confirm",
+    "page:link-approved",
+    "page:link-denied",
+    "page:link-invalid",
+    "page:share-placeholder",
+  ].map((id) => ({ id, path: "/login", served: "e2e/appmode-served-pages.spec.ts" })),
+  // The Home Free connect page, through its own harness seam (no relay): the form, the verified
+  // gate, the dialog, connecting, the error card (a relay `offline` frame on the real mount path),
+  // and the session bar over the streamed app.
+  ...(() => {
+    const harness = (mode) =>
+      `window.__battlelabConnectHarness = { holdMs: 60, makeWebSocket: () => { const ws = { binaryType: "arraybuffer", readyState: 1, onmessage: null, onopen: null, onclose: null, onerror: null, send(d) { if (${JSON.stringify(mode)} === "offline" && typeof d === "string" && d.includes('"hello"')) setTimeout(() => ws.onmessage && ws.onmessage({ data: JSON.stringify({ t: "error", code: "offline" }) }), 0); }, close() {} }; return ws; }, ${
+        mode === "paired"
+          ? `mountApp: async (_w, _k, _c, o) => { o && o.onEvent && o.onEvent({ type: "paired", deadline: Math.floor(Date.now() / 1000) + 14100, ttl: 14400 }); document.getElementById("app-root").textContent = "[ the streamed BattleLab app ]"; return { teardown() {} }; },`
+          : ""
+      } };`;
+    const ALTCHA = { "re:/altcha/challenge": { algorithm: "SHA-256", challenge: "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9", salt: "", signature: "s", maxnumber: 0 } };
+    const filled = [
+      { css: "#name", fill: "viper-8231" },
+      { css: "#key", fill: "stream-secret" },
+      { css: "#relay-options summary" },
+      { css: "#relay", fill: "https://relay.example" },
+      { css: "#relay-options summary" },
+      { hold: 400, css: "#gate-hold" },
+    ];
+    const go = [...filled, { css: "#connect" }];
+    return [
+      { id: "connect:signed-out", path: "/connect.html", ready: undefined, init: harness("") },
+      { id: "connect:verified", path: "/connect.html", init: harness(""), open: filled, present: '#verify-gate[data-state="verified"]' },
+      { id: "connect:dialog", path: "/connect.html", open: [{ css: "#how-it-works" }], expect: "dialog" },
+      { id: "connect:connecting", path: "/connect.html", init: harness("hang"), api: ALTCHA, open: go, present: "#connect-progress" },
+      { id: "connect:error", path: "/connect.html", init: harness("offline"), api: ALTCHA, open: go, present: "#connect-error" },
+      { id: "connect:connected", path: "/connect.html", init: harness("paired"), api: ALTCHA, open: go, present: "#session-box" },
+    ];
+  })(),
+  // The public share viewer at /p/<token> (share.html), one id per phase, `/api/public/*` answered
+  // per capture. The open conversation is e2e/public-share.spec.ts's full flow.
+  // Reply links (#1956): the sealed envelopes are web/src/reply/fixtures/envelopes.json's, so the
+  // capture opens real ciphertext with the real WebCrypto path.
+  ...(() => {
+    const ID = "Q3J9AAAAAAAAAAAAAAAAAA";
+    const plain = {"v": 1, "id": "Q3J9AAAAAAAAAAAAAAAAAA", "expires_at": null, "password": false, "salt": null, "nonce": "NXlyOB_jMi6dllhr", "ct": "wWo8nl9aGvr8qcK_48Hf4amTx8WAy-iMFiuDJBfmVA7wP0dIJMNdJWBnR479YL9mqgDUxzSsusd3XeyP0wvcMQuXJD_i2WcCZwneXKecgR6xPFAQXUUbCBWCgcKXSU8_rED6jzTWBqbbw7stYvgdY9Fv_6gT8sl-l5sCNqyrwxG_ap8Ktb_BwKU-BbO9JYuMMGGpaeTs5ij0HzZqorIEpbg6S2zmUnGzCBrKNzew0MI"};
+    const pw = {"v": 1, "id": "Q3J9AAAAAAAAAAAAAAAAAA", "expires_at": 1900000000, "password": true, "salt": "siMO-gqbKezssFf_51z5ZA", "nonce": "Nza9dIHave-rXrLx", "ct": "i8VVdSL7Pkhw4wBr75S-5gpBqcjGw3JsrusK76gMloi7glwpD7l0OMvlcwbBPd37xpXLQ5nTwV8imgUDW7eFuHpDcMyDVtaT2Ic9GfYxCkKq1mh3ZEMq1NyvjRtLO1uCBRWX6dxc7-SezfdABkU8nsNlnWpsCr2jXFtTQPWnCkIrahQNspdmHxSF2tWUjnbJByfzZhbXYz-wtfXAVaOr5MGPB78CnCVWw-rd1QrE1fo"};
+    const R = (key) => `/r/${ID}#k=${key}`;
+    return [
+      { id: "reply:open", path: R("tG5mUmIXNxb4z7VO2HEQvFHpU6aGDEASMzPB6uc5dOk"), document: "/reply.html", api: { [`/api/public/reply/${ID}`]: plain }, present: "[data-testid=reply-open]" },
+      { id: "reply:password", path: R("9zf74A-Nr9gDg3WHtK7vLFj_sJtGwnrWFbjF849gVUs"), document: "/reply.html", api: { [`/api/public/reply/${ID}`]: pw }, present: "[data-testid=reply-password-gate]" },
+      { id: "reply:unavailable", path: R("tG5mUmIXNxb4z7VO2HEQvFHpU6aGDEASMzPB6uc5dOk"), document: "/reply.html", api: { [`/api/public/reply/${ID}`]: { status: 404, json: { detail: "link unavailable" } } }, present: "[data-testid=reply-unavailable]" },
+      { id: "reply:incomplete", path: `/r/${ID}`, document: "/reply.html", present: "[data-testid=reply-incomplete]" },
+      { id: "reply:collapsed", path: R("tG5mUmIXNxb4z7VO2HEQvFHpU6aGDEASMzPB6uc5dOk"), document: "/reply.html", api: { [`/api/public/reply/${ID}`]: plain }, open: [{ css: "[data-testid=public-bar-toggle]" }], present: "[data-testid=public-bar][data-collapsed=true]" },
+    ];
+  })(),
+  // A publicly shared artifact (#2068) at /artifacts/p/<id>/ (artifact.html): the header over the
+  // artifact, framed from ~/ (answered here as a small static page, as the server would).
+  ...(() => {
+    const ID = "Ar7fQ2xAAAAAAAAAAAAAAA";
+    const P = `/artifacts/p/${ID}/`;
+    const meta = { title: "Q4 latency report", kind: "site", updated_at: Math.floor(Date.now() / 1000) - 7200 };
+    const page = "<!doctype html><meta charset=utf-8><title>Q4 latency report</title><style>body{font:16px/1.5 system-ui,sans-serif;margin:0;padding:32px;max-width:720px}h1{margin:0 0 8px}table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #ddd;padding:6px 8px;text-align:left}</style><h1>Q4 latency report</h1><p>p95 request latency by region, last 30 days.</p><table><tr><th>Region</th><th>p50</th><th>p95</th></tr><tr><td>eu-central</td><td>38 ms</td><td>112 ms</td></tr><tr><td>us-east</td><td>41 ms</td><td>131 ms</td></tr><tr><td>ap-south</td><td>66 ms</td><td>204 ms</td></tr></table>";
+    const open = { [`${P}~meta`]: meta, [`${P}~/`]: { status: 200, html: page } };
+    return [
+      { id: "artifact:loading", path: P, document: "/artifact.html", holdAsset: "~meta", at: 1200 },
+      { id: "artifact:open", path: P, document: "/artifact.html", api: open, present: "[data-testid=artifact-frame]" },
+      { id: "artifact:collapsed", path: P, document: "/artifact.html", api: open, open: [{ css: "[data-testid=public-bar-toggle]" }], present: "[data-testid=public-bar][data-collapsed=true]" },
+      { id: "artifact:unavailable", path: P, document: "/artifact.html", api: { [`${P}~meta`]: { status: 404, json: { detail: "Not Found" } } }, present: "[data-testid=artifact-unavailable]" },
+      { id: "artifact:offline", path: P, document: "/artifact.html", api: { [`${P}~meta`]: { status: 502, json: {} } }, present: "[data-testid=artifact-offline]" },
+    ];
+  })(),
+  ...(() => {
+    const P = "/p/tok" + "x".repeat(40);
+    const share = (kind) => ({ share: { link: "L1", kind, mode: "view", title: "Fix the auth redirect loop", expires_at: null, name: null, name_required: false }, csrf: "c" });
+    const pw = { "/api/public/unlock": { status: 401, json: { password_required: true, tries_left: 2 } } };
+    return [
+      { id: "share:loading", path: P, document: "/share.html", holdAsset: "/api/public/unlock", at: 1200 },
+      { id: "share:password", path: P, document: "/share.html", api: pw, present: "[data-testid=share-password-gate]" },
+      {
+        id: "share:password-error",
+        path: P,
+        document: "/share.html",
+        api: pw,
+        open: [{ css: "#share-pw", fill: "wrong one" }, { role: "button", name: "Open session" }],
+        present: "[data-testid=share-password-gate] [role=alert]",
+      },
+      {
+        id: "share:password-wait",
+        path: P,
+        document: "/share.html",
+        api: pw,
+        open: [
+          { api: { "/api/public/unlock": { status: 429, json: { detail: "too many tries" } } } },
+          { css: "#share-pw", fill: "wrong again" },
+          { role: "button", name: "Open session" },
+        ],
+        present: "[data-testid=share-password-gate] [role=alert]",
+      },
+      { id: "share:unavailable", path: P, document: "/share.html", api: { "/api/public/unlock": { status: 404, json: {} } }, present: "[data-testid=share-unavailable]" },
+      { id: "share:relink", path: "/p/", document: "/share.html", api: { "/api/public/share": { status: 401, json: {} } }, present: "[data-testid=share-relink]" },
+      {
+        id: "share:nocookie",
+        path: P,
+        document: "/share.html",
+        api: { "/api/public/unlock": share("api"), "re:/api/public/(session|events)": { status: 401, json: {} } },
+        present: "[data-testid=share-nocookie]",
+      },
+      { id: "share:offline", path: P, document: "/share.html", api: { "/api/public/unlock": { status: 503, json: { detail: "restarting" } } }, present: "[data-testid=share-offline]" },
+      { id: "share:terminal", path: P, document: "/share.html", api: { "/api/public/unlock": share("terminal") }, present: "[data-testid=share-terminal-pending]" },
+      {
+        id: "share:open",
+        path: P,
+        document: "/share.html",
+        api: {
+          "/api/public/unlock": { ...share("api"), share: { ...share("api").share, mode: "send", name: "Alex" } },
+          "/api/public/share": { ...share("api"), share: { ...share("api").share, mode: "send", name: "Alex" } },
+          "/api/public/session": {
+            link: "L1", revision: 3, event_cursor: 3, state: "idle", active_turn: null, model: "gpt-5-codex", omitted_turns: 0,
+            pending_requests: [], read_only: false, images: true, can_send: true, mission_held: false, background: false,
+            turns: [{ turn_id: "t1", state: "completed", delivery: null, text: "Login bounces between /login and / after the cookie refresh. Find out why.", text_truncated: false, reply: "The refresh middleware re-issues the cookie with `Path=/api`, so the SPA shell never sees it.", reply_ts: 1800000000, reply_truncated: false, attachments: [], tools: [{ name: "read", outcome: "ok", summary: "src/auth/middleware.py · 212 lines" }], tools_truncated: false, author: null, mine: false }],
+          },
+          "/api/public/events": { link: "L1", revision: 3, next_cursor: 3, events: [] },
+        },
+        present: "[data-testid=share-composer]",
+      },
+      {
+        id: "share:collapsed",
+        path: P,
+        document: "/share.html",
+        api: {
+          "/api/public/unlock": { ...share("api"), share: { ...share("api").share, mode: "send", name: "Alex" } },
+          "/api/public/share": { ...share("api"), share: { ...share("api").share, mode: "send", name: "Alex" } },
+          "/api/public/session": {
+            link: "L1", revision: 3, event_cursor: 3, state: "idle", active_turn: null, model: "gpt-5-codex", omitted_turns: 0,
+            pending_requests: [], read_only: false, images: true, can_send: true, mission_held: false, background: false,
+            turns: [{ turn_id: "t1", state: "completed", delivery: null, text: "Login bounces between /login and / after the cookie refresh. Find out why.", text_truncated: false, reply: "The refresh middleware re-issues the cookie with `Path=/api`, so the SPA shell never sees it.", reply_ts: 1800000000, reply_truncated: false, attachments: [], tools: [{ name: "read", outcome: "ok", summary: "src/auth/middleware.py · 212 lines" }], tools_truncated: false, author: null, mine: false }],
+          },
+          "/api/public/events": { link: "L1", revision: 3, next_cursor: 3, events: [] },
+        },
+        open: [{ css: "[data-testid=public-bar-toggle]" }],
+        present: "[data-testid=public-bar][data-collapsed=true]",
+      },
+    ];
+  })(),
+  // ---- /PR5a outside ----
+  // ---- sites ---- (#1597, Phases 12b and 12c: battlelabos.com's sub-pages and the docs site)
+  // Static sites outside the SPA: each is photographed by its own spec's capture mode
+  // (NIGHTJAR_CAPTURE_DIR). The public site is dark only; the docs site in both themes. `cwd` is
+  // relative to web/.
+  ...[
+    "site:legal",
+    "site:privacy",
+    "site:privacy-on",
+    "site:privacy-off",
+    "site:privacy-gpc",
+    "site:privacy-nojs",
+    "site:404",
+    "site:og",
+  ].map((id) => ({
+    id,
+    path: "/",
+    served: "e2e/landing-pages.spec.ts",
+  })),
+  ...["docs:home", "docs:page", "docs:search", "docs:404"].map((id) => ({
+    id,
+    path: "/",
+    served: "e2e/geometry.spec.ts",
+    cwd: "../docs/site",
+  })),
+  // ---- /sites ----
+  // ---- map v5 ---- (#1600: the map's v5 composition; windows for terminal AND API sessions)
+  // A terminal window beside an API (structured) window: the same armour frame, callsign bar and
+  // footer, each footer with its own readout (a grid; a model).
+  {
+    id: "map:window-api",
+    path: "/overview",
+    widths: ["desktop"],
+    storage: {
+      "tr-overview-workspace": [
+        {
+          key: "claude:7c1e1a00-5b2d-4c8e-9f31-0a6d2e8b4001",
+          engine: "claude",
+          id: "7c1e1a00-5b2d-4c8e-9f31-0a6d2e8b4001",
+          title: "Rate-limit the public ingest API",
+          x: 40,
+          y: 60,
+          w: 620,
+          h: 420,
+          z: 1,
+        },
+        {
+          key: "claude-api:5a9e0c11-2f3d-4e6a-8b7c-1d2e3f4a5b6c",
+          engine: "claude-api",
+          id: "5a9e0c11-2f3d-4e6a-8b7c-1d2e3f4a5b6c",
+          title: "Draft the ingest limits runbook",
+          x: 700,
+          y: 60,
+          w: 620,
+          h: 420,
+          z: 2,
+        },
+      ],
+    },
+    api: {
+      "re:/api/sessions/claude-api(?::|%3A)5a9e0c11-2f3d-4e6a-8b7c-1d2e3f4a5b6c$": {
+        id: "claude-api:5a9e0c11-2f3d-4e6a-8b7c-1d2e3f4a5b6c",
+        engine: "claude-api",
+        uuid: "5a9e0c11-2f3d-4e6a-8b7c-1d2e3f4a5b6c",
+        short_uuid: "5a9e0c11",
+        cwd: "/home/commander/code/orbital-api",
+        project: { kind: "folder", id: "/home/commander/code/orbital-api", name: "orbital-api" },
+        last_mtime: Math.floor(Date.now() / 1000) - 120,
+        title: "Draft the ingest limits runbook",
+        first_user_message: "Draft the ingest limits runbook",
+        sticky: false,
+        archived: false,
+        running: true,
+        model_configured: "claude-sonnet-4",
+      },
+      "re:/api/structured/sessions/claude-api(?::|%3A)5a9e0c11-2f3d-4e6a-8b7c-1d2e3f4a5b6c(\\?.*)?$": {
+        session_key: "claude-api:5a9e0c11-2f3d-4e6a-8b7c-1d2e3f4a5b6c",
+        revision: 1,
+        event_cursor: 1,
+        cwd: "/home/commander/code/orbital-api",
+        state: "idle",
+        active_turn: null,
+        model_requested: null,
+        model_effective: null,
+        turns: [],
+        omitted_turns: 0,
+        pending_requests: [],
+        native: { native_id: "n1", worker: "w1", background_active: false },
+        read_only: null,
+      },
+      "re:/api/structured/sessions/claude-api(?::|%3A)5a9e0c11-2f3d-4e6a-8b7c-1d2e3f4a5b6c/events": {
+        session_key: "claude-api:5a9e0c11-2f3d-4e6a-8b7c-1d2e3f4a5b6c",
+        revision: 1,
+        next_cursor: 1,
+        events: [],
+      },
+    },
+    open: [{ role: "button", name: "Collapse session list" }],
+    present: "[data-window-foot='api']",
+  },
+  // ---- Artifacts (#1932 P2) ----
+  { id: "route:artifacts", path: "/library/artifacts", api: ART_API, present: "[data-artifact]" },
+  {
+    id: "route:artifacts-off",
+    path: "/library/artifacts",
+    api: { ...ART_API, "/api/artifacts": { items: [], total: 0, next_cursor: null }, "/api/artifacts/settings": { ...ART_SETTINGS, enabled: false, artifacts: 0, public: 0, bytes: 0 } },
+    present: "[data-testid='artifacts-off']",
+  },
+  {
+    id: "route:artifacts-empty",
+    path: "/library/artifacts",
+    api: { ...ART_API, "/api/artifacts": { items: [], total: 0, next_cursor: null }, "/api/artifacts/settings": { ...ART_SETTINGS, artifacts: 0, public: 0, bytes: 0 } },
+    present: "[data-testid='artifacts-none']",
+  },
+  { id: "route:artifact-detail", path: "/library/artifacts/5449-5592-2107-4372", api: ART_PRIVATE_API, present: "[data-testid='artifact-preview']" },
+  { id: "route:artifact-public", path: "/library/artifacts/5449-5592-2107-4372", api: ART_API, present: "[data-testid='artifact-public-url']" },
+  // ---- Shared artifact repositories (#2347 P1) ----
+  { id: "route:artifact-repos", path: "/library/artifacts/repositories", api: REPO_API, present: "[data-repo]" },
+  {
+    id: "route:artifact-repos-empty",
+    path: "/library/artifacts/repositories",
+    api: { ...REPO_API, "/api/repos": { repositories: [], quota_default: 2147483648 } },
+    present: "[data-testid='repos-none']",
+  },
+  { id: "route:artifact-repo", path: `/library/artifacts/repositories/${REPO_ID}`, api: REPO_API, present: "[data-item]" },
+  {
+    id: "popup:artifact-share",
+    path: "/library/artifacts/5449-5592-2107-4372",
+    api: ART_PRIVATE_API,
+    mock: { config: { auth_mode: "single-user" } },
+    open: [{ testId: "artifact-share" }],
+    expect: "dialog",
+  },
+  {
+    id: "popup:artifact-public-off",
+    path: "/library/artifacts/5449-5592-2107-4372",
+    api: ART_PRIVATE_API,
+    mock: { config: { auth_mode: "none" } },
+    open: [{ testId: "artifact-share" }],
+    expectCss: "[data-testid='artifact-public-off']",
+  },
+  { id: "route:artifacts-tab", path: S1, api: ART_API, ...withFiles([{ role: "tab", name: "Artifacts", partial: true }]), present: "[data-testid='artifacts-tab']" },
+  {
+    id: "popup:artifact-activation-session",
+    path: S1,
+    api: ART_API,
+    ...withFiles([{ role: "tab", name: "Artifacts", partial: true }, { role: "button", name: "Change" }]),
+    expectCss: "[data-testid='artifact-activation-session']",
+  },
+  {
+    id: "popup:artifact-activation-mission",
+    path: M1,
+    api: ART_API,
+    open: [{ testId: "mission-overflow" }, { testId: "mission-artifacts" }],
+    expectCss: "[data-testid='artifact-activation-mission']",
+  },
+  { id: "route:settings-artifacts", path: "/settings/artifacts", api: ART_API, present: "[data-testid='artifacts-settings']" },
+  // ---- /map v5 ----
+];
+
+// 834: an iPad in portrait, the width the 800 px breakpoint used to hand the desktop layout.
+export const WIDTHS = [1440, 1100, 834, 390];
+export const THEMES = ["dark", "light"];
+export const PIXEL_RATIOS = [1, 2];

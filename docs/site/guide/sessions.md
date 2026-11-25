@@ -1,0 +1,272 @@
+# Sessions
+
+A BattleLab session runs an agent on your host. Terminal sessions use a `dtach` PTY that
+BattleLab owns; API sessions use the installed agent's native protocol.
+
+## Messages in API sessions
+
+Codex, Claude and opencode API sessions share the same conversation controls. You can keep
+typing while the agent works: **Send** queues your message without interrupting its response.
+
+For urgent guidance, choose **Send now** on the first queued message. Codex adds it to the
+current turn. Claude cuts the current reply for it but leaves the agent's background agents
+running. On a Claude version without its own Send now, it is refused while background agents run,
+and the message waits its turn. opencode stops the current reply and then sends the queue, in
+order. The
+hint beside the button explains which behavior applies. Only the first queued message offers Send
+now — the others say where they stand ("2nd in queue") — so the queue always runs in the order
+shown. A reply that Send now cut off says **Interrupted by Send now**. Guidance takes effect when the agent processes it; it cannot undo
+work already performed.
+
+The message shows whether it is queued, awaiting acknowledgement, delivered, or failed. If a
+connection fails during Send now, **Retry Send now** checks the same request without duplicating
+it. Messages still queued when a worker stops remain visibly not sent. After an application
+update, an already-running session may need a new worker before Send now becomes available.
+
+**Remove** takes a queued message out before it is sent; the agent never sees it and the
+messages after it keep their order. A message the agent has already received (or is receiving)
+can't be removed. If you pressed Send now for it and the agent is still stopping, removing it
+cancels the send, but the current reply still stops.
+
+**Always send now** sends the message now and keeps doing that for every message you send while
+the agent works, so you don't have to press Send now each time. The message box says what Send
+will do. The compact **Always send now** toggle beside the composer’s tools is highlighted
+while active; click it again to switch back to queueing. The setting
+belongs to this browser and acts while the session is open in it; with no BattleLab tab open,
+messages queue as usual. On Claude and opencode each new message stops the reply in progress.
+
+Commands and tools start collapsed under an activity summary; expand it to inspect the details.
+Agent replies have their own panel, and permission requests stay visible. The view follows new
+content while you are at the bottom; scrolling up keeps your reading position.
+
+The view opens on the newest 50 turns. Scroll up past the top and the turns before them load
+there, 50 at a time, while the turn you are reading stays put. Keep going and you reach
+**Beginning of conversation**. If a page can't load, **Retry** loads it again. One open view keeps
+up to 1,000 turns; past that it tells you older turns are not shown.
+
+Sometimes the agent works without a message from you — a scheduled wake-up, or a background
+task reporting back. That turn appears as **‹agent› · on its own**: its activity is collapsed,
+with the latest command in the summary, and what it says is kept as its reply. While it runs,
+**Interrupt** stops that turn (not the worker), as it does for your own running turn. A
+background task with no turn running shows in the background strip above the message box; there
+is nothing to interrupt there, and **Stop** in the header ends the worker. Workers started before an application update
+may not offer Interrupt on the agent's own turn until the next worker starts. With Claude, an
+interrupt pressed at the very moment a turn finishes may stop the agent's next turn instead,
+because Claude's interrupt applies to whatever it is running when it arrives; each turn shows how
+it actually ended.
+
+On a keyboard, **Esc** does the same as Interrupt while focus is in the conversation or the
+composer: it stops your running turn, or else the agent's own. Esc that closes a menu or a list
+only closes it, and Esc while composing text with an input method does nothing. Read-only
+conversations and shared links never interrupt.
+
+Your messages show their local date and time beside **you**, including while queued. This is
+when BattleLab recorded your submission; delivery or **Send now** does not change it.
+
+Each response shows its local date and time beside the agent name. This is when BattleLab first
+recorded response text, so it stays fixed as the response grows and after you reload. Hover over
+the timestamp for seconds and timezone; screen readers receive the same detail. Existing recorded
+conversations show their original times after updating. If the server has no usable timestamp,
+the message appears without one.
+
+## Plan, tools and background jobs in API sessions
+
+**Plan & tools** in the session header (in a map window, in its **⋯** menu) opens a side rail
+with two tabs. It docks beside the conversation when there is room and opens as a sheet over it
+otherwise, the same way the Files drawer does. Files and the rail share that place, so opening
+one closes the other.
+
+- **Plan** shows the agent's current checklist: each step is done, in progress or pending, with
+  the word beside its mark. When the agent proposes a plan document, it is under **Plan
+  document**. The plan stays after the turn ends, after a reload and after the session's worker is
+  replaced, and it is the same whichever part of the history you have scrolled to. Until the agent
+  shares one, the tab says so.
+- **Tools** lists what the running agent reports it works with: its MCP servers and their
+  status, its skills and its commands. A server only named in the agent's configuration says
+  **Configured**, without a status light, because nothing checked that it works. Beside each
+  server, and under **Tools used**, are the calls this whole conversation made, counted from the
+  session's record rather than from what the view shows. A skill counts as used only when the agent
+  reports using it; some agents never report that, and the tab says so. The tools belong to the
+  running worker: when it stops, the list clears until the next one reports.
+
+Claude, Codex and opencode each report a different part of this. opencode, for example, names
+its commands and configured servers but no status for them, and Codex reports no skill use.
+Shared links never show the plan or the tools.
+
+While the agent has background work running, a one-line strip above the message box says how
+many agent tasks and processes run and names the first. **Show** opens the list: each job's state,
+description, latest report and when it started. A long list scrolls inside the strip and never
+covers the message box. Work that ended with a worker is part of the conversation instead, and
+the strip goes away when nothing runs.
+
+## Close the tab, keep the work
+
+The browser is a **viewer**, not the process. Closing the tab, losing Wi-Fi, putting the phone in
+your pocket, or redeploying BattleLab itself does not stop the agent — the `dtach` master keeps
+running and you reattach mid-stream. For the agent engines a reboot is survivable too, because
+resume replays the engine's own conversation store.
+
+## One writer, always
+
+The invariant is `{engine}:{id}` ⇒ one `dtach` master ⇒ one writer, arbitrated by a single-writer
+advisory `flock` per session key in a shared lock directory. Every attach resolves to exactly one
+of three outcomes:
+
+| Outcome | Meaning |
+|---|---|
+| **ATTACH** | A live master exists — join it. |
+| **LAUNCH** | The lock was won — start the process. |
+| **BUSY** | The lock is held elsewhere — someone else has it. |
+
+Because the decision runs through a filesystem lock rather than in-process state, it holds **across
+multiple app instances** on the same host. There is no double-resume and no double-write even if
+you run two copies of BattleLab.
+
+One refusal can come before any of those three: if the configured runtime directory makes the
+`dtach` socket path longer than the kernel's `AF_UNIX` limit (107 bytes on Linux), the session is
+refused with a terminal error naming the length and the limit. BattleLab never launches a master
+whose socket it cannot reach, and it never answers **BUSY** for such a path — the pane shows the
+reason and does not retry.
+
+On LAUNCH the lock file descriptor is handed to the spawned `dtach` process, so the lock lives
+exactly as long as the master and survives BattleLab restarting or being redeployed underneath it.
+
+## Scroll-up is two mechanisms
+
+Scrolling up in a session combines:
+
+1. **The scrollback ring** — a raw-byte replay ring per session, capped by
+   `AGENT_SESSIONS_SCROLLBACK_BYTES` (default 8 MiB, floored at 256 KiB). This is what a plain
+   shell has, and all it has.
+2. **The transcript renderer** — a console-style render of the engine's *own* saved conversation,
+   which is what lets you scroll back past anything the ring ever held.
+
+Transcript rendering is bounded on three axes so a huge session cannot exhaust memory:
+`AGENT_SESSIONS_TRANSCRIPT_MAX_LINES` (default 20000),
+`AGENT_SESSIONS_TRANSCRIPT_MAX_MESSAGES` (default 2000) and
+`AGENT_SESSIONS_TRANSCRIPT_TAIL_BYTES` (default 8 MiB of the log's tail). Paging is
+**width-independent**: `AGENT_SESSIONS_HISTORY_PAGE_TURNS` (default 50) is the cursor step, so a
+page always consumes the same number of *turns* and the same cursor selects the same window at any
+terminal width. The two line/byte caps on a page truncate the rendered output only and never move
+the cursor.
+
+## Archiving frees runtime, never history
+
+Archiving a session reaps its **runtime footprint** first — terminates the `dtach` master and the
+agent's process group, clears the scrollback and VT mirror, releases the owner lease, and unlinks
+the stale socket under the single-writer lock — and only then records the archive.
+
+Releasing the lock is the point: it means a later unarchive-and-open is a clean **LAUNCH** rather
+than a **BUSY**. The on-disk transcript is preserved throughout, so unarchiving and opening
+relaunches from history. Archive frees resources; it never destroys conversation.
+
+Teardown is best-effort and never blocks the archive itself.
+
+## Opening links
+
+A BattleLab link from outside the app — a comment, a chat, a mail — opens in the BattleLab you
+already have instead of starting another copy.
+
+- **Installed app.** Install BattleLab from the browser and it claims its own links: a link opens
+  in the app's window, which moves to it. This works in Chrome and Edge on desktop and on
+  Android. Safari on iOS and macOS does not support it, so there a link opens in Safari.
+  The app claims the whole address, so its server pages — sign-in, and approving a linked
+  device — open in the app window too.
+- **Browser tab.** A link that opens in a new tab hands itself to the BattleLab tab that is already
+  open, and the new tab says so. A browser does not let a page switch to another tab or close a
+  tab it did not open, so you close the new one yourself — or pick **Open here instead**. With no
+  other BattleLab tab open, the link just opens where it landed.
+- **Full screen or map.** On a desktop, a session link asks whether to open it **full screen** or
+  **in the map**, and *Remember my choice* makes that the answer from then on. Change or reset it
+  in Settings → Appearance → Interface → Opening links. A phone always opens full screen, and a mission link
+  always opens in Missions.
+- **Share a reply.** In an API session, a finished reply has a small link icon in its header.
+  It makes a read-only link to **that reply only**: visitors need no account, see the reply and how
+  many commands and tools it used (never what they were), and nothing else of the session. The
+  reply is signed "Agent": visitors never see which agent or model wrote it. Pick an expiry and,
+  if you like, a password. The link holds its own key and is shown once; it opens on the address
+  you are using BattleLab on. Revoke reply links in Settings → Sharing.
+- **Who is here.** In an API session, each message has a small avatar beside it: your image (set in
+  Settings → General → Profile) or your initial, a visitor's initial in their own colour, and 🤖
+  for the agent. Once the session has a live public link, or anyone is on one, its head shows
+  **N connected**: everyone who has the session open, counted from the last 30 seconds. Hover it
+  to see who. Visitors see the same count in their page's top bar, but no names.
+
+## Organising the list
+
+Titles, project assignment, favourites and archive state all live in BattleLab's own metadata
+sidecar, keyed by the engine-qualified id — never in the engine's store. Favourited (`sticky`)
+sessions pin to the top of the list. `POST /api/sessions/archive-older` bulk-archives everything
+past a cutoff.
+
+### One session menu, wherever you open it
+
+A session's actions are one list: **Session brief**, **Hand off…**, **Share** (**Public…** and
+**Peer…**; for Peer… see [Sharing a session](/guide/federation#sharing-a-session)), its mission entry, **Artifacts…**, the AI-review entries where AI review is set up,
+**Favorite**, **Rename**, **Set tag…**, **Move to project…**, **Move to cluster…** and
+**Archive**. You reach it from the **⋯** on a sidebar row (or a right-click), from a chip or a
+window on the map, and from the session itself: the **…** at the end of the session header, or
+**Actions** on a phone.
+
+Opened from the session (or from a map window) the menu has two groups. **Session** is the list
+above. **Pane** holds the header's own buttons that did not fit on the bar, such as **Files**,
+**Repaint** and the text-size controls; on a phone that is all of them. A button that is already
+on the bar is not repeated in the menu. A change made here shows on the sidebar row at once.
+
+**Archive** from the session's own menu closes the session view and takes you to the new-session
+page, exactly as archiving the open session from the sidebar does.
+
+Filtering (`q`, `project`, `engine`) is applied to the **full** archived-scoped set *before*
+pagination, so `total` and "load more" describe the filtered result rather than a filtered view of
+one page. The dropdown facets are computed over the full set *before* filters, so they keep listing
+every option no matter how narrow the current filter is.
+
+### Active, Archived and Shared
+
+The tabs in the Filters block choose which sessions the list shows. **Active** and **Archived**
+are your own sessions. **Shared** appears once another instance you are paired with shares a
+session with you, and shows how many are shared. It lists those sessions and nothing else; they
+are not listed under Active or Archived.
+
+- A shared row shows the title, the instance that shares it, what you may do (view only, or
+  **Screen** for a terminal) and until when, or **offline** while that instance is not connected.
+  Clicking it opens the shared session.
+- Search is the only filter on this tab. It matches the title or the name of the instance. Your
+  project, agent and mission filters belong to your own sessions: they are not shown on Shared,
+  and they are in force again, unchanged, when you go back to Active or Archived.
+- When the last share ends while you are on the tab, the tab stays and says that nothing is
+  shared with you right now. It goes away when you leave it.
+- An owner shares a session from that session's **Share → Peer…**.
+
+Pairing, the three levels of access, what the other instance sees and what you can do in a
+shared session are in [Working with another BattleLab](/guide/federation).
+
+#### Leaving a share
+
+A share can be ended from both sides. The instance that shares a session revokes it (**Share →
+Peer…**, or Settings → Peers). You, on the receiving side, can **Leave** it: the button is in the
+shared session's banner, beside who shares it and until when, and beside each session under
+*Shared by …* in Settings → Peers.
+
+Leave asks first. The share then ends on both instances at once: you no longer see the session,
+and the other operator gets a bell entry saying that you left, with the session's title. They can
+share it with you again.
+
+Leaving needs the other instance, because the share ends there:
+
+- If it is **not connected**, nothing changes and the dialog says so. To stop everything from an
+  instance at once, revoke the peer in Settings → Peers.
+- If the dialog says it **could not confirm that you left**, the request was sent and no answer
+  came back, so the share may or may not have ended. The session stays in your list until the
+  other instance's own list says it is gone. **Check again** reads that list; it never sends
+  Leave a second time.
+- If the other instance **did not accept**, the share changed there a moment ago (its access or
+  its end date). It is still in your list; press Leave again if you still want to end it.
+
+A session is never hidden only on your side: while the other instance still shares it, it stays
+in your list. Why the app does not simply try again is in
+[When the app says it could not confirm](/guide/federation#when-the-app-says-it-could-not-confirm).
+
+::: info Verified against
+Commit `218cf3a` — `docs/session-handling.md`; `docs/reference.md § Runtime / storage`; `src/agent_sessions/sessionlock.py`; `src/agent_sessions/runtime_cleanup.py`.
+:::

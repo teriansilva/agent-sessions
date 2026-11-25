@@ -1,0 +1,511 @@
+/* The public share viewer (#1404 P4) in NIGHTJAR // OPS (#1596, epic #1531 Phase 12). The operator
+ * app's tokens, base rules and primitives (index.css → nightjar.css), nothing else of it: the bar
+ * carries the lit rail, every state is THE panel (nj-frame) with a hazard-notch callsign, fields are
+ * nj-field, buttons are the app's plates (actionButton → nj-plate). Tokens only (its ledger row is
+ * `done`); every control keeps the 44px floor; nothing scrolls sideways at 390px. */
+
+/* Above the atmosphere (Atmosphere.tsx, fixed at --z-base), so its ground is the page's. */
+.page {
+  position: relative;
+  z-index: var(--z-raised);
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  color: var(--text-1);
+  font-size: var(--fs-body);
+}
+
+/* The bar itself is PublicBar's (components/public, #2068); the facts it holds are these. */
+.sub {
+  font: 500 var(--fs-micro) / 1.2 var(--font-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.title {
+  min-width: 0;
+  flex: 1 1 160px;
+  font: 600 var(--fs-title) / 1.3 var(--font-display);
+  letter-spacing: 0.04em;
+  overflow-wrap: anywhere;
+}
+.facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+}
+.chip {
+  padding: 2px var(--sp-2);
+  font: 500 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.12em;
+  white-space: nowrap;
+  color: var(--text-2);
+  border: 1px solid var(--border);
+}
+.chipMode {
+  color: var(--hud-text);
+  border-color: var(--hud-dim);
+}
+/* #1931: the presence count — a fact, not a status: no LED, no status hue. */
+.chipPresent {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.status {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-4);
+  font: 500 var(--fs-micro) / 1.6 var(--font-mono);
+  letter-spacing: 0.14em;
+  color: var(--text-2);
+  border-bottom: 1px solid var(--line);
+}
+/* A status LED: green only while the agent works (status colour is the signal). */
+.led {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--status-unknown);
+}
+.led[data-state="up"] {
+  background: var(--status-up);
+  box-shadow: 0 0 var(--glow-led) var(--status-up);
+}
+.reconnecting {
+  color: var(--warn-text);
+  letter-spacing: 0.04em;
+}
+
+.center {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-5) var(--sp-4);
+}
+/* Every state is THE panel: chamfered, the rail along its top. */
+.card,
+.notice {
+  composes: nj-frame from global;
+  width: min(440px, 100%);
+  padding: var(--sp-5);
+}
+/* The callsign over each state: the hazard notch, then the words. */
+.tag {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-3);
+  font: 500 var(--fs-label) / 1.2 var(--font-mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.tag::before {
+  content: "";
+  flex: none;
+  width: 22px;
+  height: 10px;
+  background: repeating-linear-gradient(-45deg, var(--hud) 0 3px, transparent 3px 6px);
+  opacity: 0.85;
+}
+.h1 {
+  margin: 0 0 var(--sp-2);
+  font: 600 var(--fs-h2) / 1.25 var(--font-display);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--hud-text);
+}
+.muted {
+  margin: 0;
+  font-size: var(--fs-row);
+  line-height: 1.5;
+  color: var(--text-2);
+}
+/* "Opening the shared session…": the radar and its words (nj-loader). */
+.loading {
+  composes: nj-frame-quiet from global;
+  padding: var(--sp-4) var(--sp-5);
+}
+.label {
+  display: block;
+  margin: var(--sp-4) 0 var(--sp-1);
+  font: 500 var(--fs-micro) / 1.2 var(--font-mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.input {
+  composes: nj-field from global;
+  min-width: 0;
+  min-height: 44px;
+}
+.pwRow,
+.row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+.pwRow .input,
+.row .input {
+  flex: 1;
+}
+.primary {
+  composes: primary from "../components/ui/actionButton.module.css";
+  flex: none;
+}
+.ghost {
+  composes: ghost from "../components/ui/actionButton.module.css";
+  flex: none;
+}
+.iconBtn {
+  composes: icon from "../components/ui/actionButton.module.css";
+  flex: none;
+}
+
+.card .primary {
+  width: 100%;
+  margin-top: 14px;
+}
+.notice .primary {
+  margin-top: 14px;
+}
+.error {
+  margin: var(--sp-2) 0 0;
+  padding: var(--sp-1) var(--sp-3);
+  font: 400 var(--fs-meta) / 1.5 var(--font-mono);
+  color: var(--danger-text);
+  border-left: 2px solid var(--status-down);
+  background: color-mix(in srgb, var(--status-down) 8%, transparent);
+}
+.footError {
+  margin: 0;
+  flex: none;
+}
+
+.transcript {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0 0 12px;
+}
+.transcript > .muted {
+  padding: 16px;
+}
+.omitted {
+  margin: 0;
+  padding: 10px 16px;
+  font-size: var(--fs-meta);
+  color: var(--text-3);
+  border-bottom: 1px solid var(--line);
+}
+.turn {
+  border-bottom: 1px solid var(--line);
+}
+/* A turn its sender cut to fit (a session another instance shares, #2055): said in words, quiet. */
+.cut {
+  margin: 0;
+  padding: 0 16px 10px calc(16px + 28px + 10px);
+  font: 400 var(--fs-micro) / 1.5 var(--font-mono);
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+}
+.block {
+  padding: 10px 16px;
+  min-width: 0;
+  /* #1931: the author's disc in its own column, everything the block says beside it. */
+  --avatar-size: 28px;
+  display: grid;
+  grid-template-columns: var(--avatar-size) minmax(0, 1fr);
+  column-gap: 10px;
+}
+.block > * {
+  grid-column: 2;
+}
+.block > .avatar {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  align-self: start;
+}
+.block > .who {
+  display: flex;
+  align-items: center;
+  min-height: var(--avatar-size);
+}
+.block + .block {
+  border-top: 1px solid var(--line);
+}
+.who {
+  margin: 0 0 4px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+/* A paired instance's turn (#2061): the dashed badge of an ORIGIN (never a status colour, never
+   the accent), then the word PEER. Mirrors `components/federation/Remote.module.css` `.badge`;
+   kept here because the public viewer's bundle reaches nothing of the app. */
+.peerWho {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text-2);
+}
+.peerBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0 5px;
+  font: 600 var(--fs-micro) / 15px var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-1);
+  border: 1px dashed var(--text-2);
+  white-space: nowrap;
+}
+.peerBadge svg {
+  flex: none;
+}
+.peerName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.block[data-author="peer"] .who {
+  color: var(--text-2);
+}
+.block[data-author="visitor"] .who {
+  color: var(--text-2);
+}
+.text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+.state {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 6px 0 0;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.image {
+  max-width: min(320px, 100%);
+  max-height: 240px;
+  object-fit: contain;
+  border: 1px solid var(--border);
+}
+.wait {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  margin-top: 8px;
+  font: 400 var(--fs-meta) / 1.5 var(--font-mono);
+  color: var(--text-2);
+  min-width: 0;
+}
+.waitText {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.waitText b {
+  color: var(--text-1);
+  font-weight: 600;
+}
+.backgroundRow {
+  margin: 0;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.bars {
+  flex: none;
+}
+.bars span {
+  display: inline-block;
+  width: 10px;
+  height: 3px;
+  background: var(--hud);
+  margin-right: 3px;
+  vertical-align: middle;
+  opacity: 0.35;
+  animation: pulse 1.2s infinite;
+}
+.bars span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.bars span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+@keyframes pulse {
+  50% {
+    opacity: 1;
+  }
+}
+/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
+:root:not([data-motion="full"]) .bars span {
+  animation: none;
+  opacity: 0.7;
+}
+.activity {
+  margin: 0 0 8px;
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+  min-width: 0;
+}
+.activity > summary {
+  padding: 11px 12px;
+  min-height: 44px;
+  box-sizing: border-box;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.activity > summary:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
+.activityFailed {
+  color: var(--danger-text);
+}
+.tools {
+  list-style: none;
+  margin: 0;
+  padding: 0 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.tool {
+  padding: 5px 9px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+.toolName {
+  color: var(--text-1);
+}
+.toolSummary {
+  color: var(--text-2);
+}
+/* Something waits for the owner: the accent rule marks "attention", not a status. */
+.approval {
+  padding: 10px 16px 10px 13px;
+  border-left: 2px solid var(--hud);
+  border-bottom: 1px solid var(--line);
+}
+.waiting {
+  margin: 6px 0 0;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+
+.composer {
+  flex: none;
+  padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+  background: var(--bg-1);
+  border-top: 1px solid var(--line-strong);
+}
+.composer .label {
+  margin-top: 0;
+}
+.textarea {
+  min-height: 44px;
+  max-height: 160px;
+  padding: 11px;
+  resize: none;
+  line-height: 1.4;
+}
+.hint {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 6px 0 0;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.linkBtn {
+  min-height: 44px;
+  padding: 0 4px;
+  background: transparent;
+  border: none;
+  color: var(--text-1);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.pending {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 8px;
+  padding: 0;
+}
+.pendingItem {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.thumb {
+  width: 44px;
+  height: 44px;
+  object-fit: cover;
+  border: 1px solid var(--border);
+}
+
+.viewOnly {
+  flex: none;
+  padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+  color: var(--text-2);
+  background: var(--bg-1);
+  border-top: 1px solid var(--line-strong);
+  border-left: 2px solid var(--hud);
+}
+.viewOnly b {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.14em;
+  color: var(--text-1);
+}
+
+@media (max-width: 800px) {
+  .row {
+    flex-wrap: wrap;
+  }
+  .row .textarea {
+    flex-basis: calc(100% - 52px);
+  }
+  /* Stop and Send share the second line; Send takes what is left of it. */
+  .composer .row .primary {
+    flex: 1;
+  }
+}

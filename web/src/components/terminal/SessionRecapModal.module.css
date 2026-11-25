@@ -1,0 +1,233 @@
+/* Session-brief modal (#481) on THE dialog (../HudDialog.module.css, NIGHTJAR #1531): frame, head,
+ * close, labels, actions and the ≤800px bottom sheet are composed; this sheet holds the brief's own
+ * pieces — title, subtitle, the meta run, the status chip and the timeline. Tokens only. */
+
+.backdrop {
+  composes: backdrop from "../HudDialog.module.css";
+}
+
+.dialog {
+  composes: dialog from "../HudDialog.module.css";
+  width: min(460px, 100%);
+  max-height: min(80vh, 660px);
+}
+
+.head {
+  composes: head from "../HudDialog.module.css";
+}
+.tag {
+  composes: tag from "../HudDialog.module.css";
+}
+.close {
+  composes: close from "../HudDialog.module.css";
+}
+
+.title {
+  margin: 0 0 3px;
+  font-family: var(--font-display);
+  font-size: var(--fs-title);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  line-height: 1.3;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+/* Subtitle (#744): the AI summary, promoted from its own labelled section to the line directly
+ * under the title — the sidebar row's shape. */
+.subtitle {
+  margin: 0 0 9px;
+  font-size: var(--fs-meta);
+  line-height: 1.4;
+  color: var(--text-2);
+}
+.subtitleMuted {
+  composes: subtitle;
+  color: var(--text-3);
+}
+/* Meta run (#744): LED · engine box · project · updated · reviewed. Wraps rather than truncating
+ * — unlike the 26px pane header there is vertical room here, and none of these facts is worth
+ * dropping in the one place the operator opened specifically to read them. */
+.meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 12px;
+  padding-bottom: 11px;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--text-3);
+}
+/* The shared .hud-led primitive carries no flex hint, so pin it here for the same reason the
+ * pane header does — a 6px flex child otherwise shrinks away under pressure. */
+.metaLed {
+  flex: none;
+}
+/* Same metrics as the sidebar's .engineTag and the pane header's .headEng. */
+.engTag {
+  flex: none;
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: 0;
+  padding: 0 4px;
+  line-height: 15px;
+}
+.projectChip {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+/* #1511: what an API session runs — a fact of the session, in the text colour of its name. */
+.modelChip {
+  min-width: 0;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.projectDot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-right: 4px;
+  vertical-align: 0;
+  background: var(--proj);
+}
+.sep {
+  opacity: 0.55;
+}
+
+.chip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 0 var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-meta);
+  line-height: 1.35;
+  color: var(--badge-fg);
+  background: var(--badge-bg);
+  border: 1px solid var(--hud-dim);
+  border-left: 3px solid var(--hud);
+}
+.chip svg {
+  flex: 0 0 auto;
+  color: var(--accent-text);
+}
+
+.section {
+  margin-bottom: 12px;
+}
+.label {
+  composes: label from "../HudDialog.module.css";
+  margin-bottom: var(--sp-1);
+}
+/* Recap timeline (#744): the model's newline-separated steps as an ordered list with a connector
+ * rail down the left. Replaces the old single `white-space: pre-wrap` paragraph — same data, but
+ * the sequence is now structural (an <ol>) rather than implied by line breaks. */
+.timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 17px;
+  position: relative;
+}
+.timeline::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 5px;
+  bottom: 6px;
+  width: 1px;
+  background: var(--line-strong);
+}
+.timeline li {
+  position: relative;
+  margin: 0 0 9px;
+  font-size: var(--fs-row);
+  line-height: 1.5;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.timeline li:last-child {
+  margin-bottom: 0;
+}
+.timeline li::before {
+  content: "";
+  position: absolute;
+  left: -17px;
+  top: 6px;
+  width: 7px;
+  height: 7px;
+  background: var(--bg-1);
+  border: 1px solid var(--text-3);
+}
+/* The final step is where the session actually IS — the one node worth the accent. */
+.stepLast::before {
+  background: var(--hud);
+  border-color: var(--hud);
+  box-shadow: 0 0 var(--glow-led) var(--hud);
+}
+/* The `code` half of the safe inline subset (lib/inlineMarkup) — file names, commands, ids. */
+.timeline code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  padding: 0 3px;
+  background: color-mix(in srgb, var(--text-3) 18%, transparent);
+  color: var(--text-1);
+}
+.muted {
+  composes: muted from "../HudDialog.module.css";
+}
+.error {
+  composes: error from "../HudDialog.module.css";
+  margin: 0 0 var(--sp-3);
+}
+
+.actions {
+  composes: actions from "../HudDialog.module.css";
+  justify-content: space-between;
+}
+.foot {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--text-3);
+}
+.review {
+  composes: go from "../HudDialog.module.css";
+  flex: 0 0 auto;
+}
+.spin {
+  animation: recap-spin 0.9s linear infinite;
+}
+@keyframes recap-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). */
+:root:not([data-motion="full"]) .spin {
+  animation: none;
+}
+
+/* Mobile (≤800px): the bottom sheet and stacked actions come from the shared dialog. */
+@media (max-width: 800px) {
+  .dialog {
+    max-height: 86vh;
+  }
+  .actions {
+    align-items: stretch;
+  }
+  .review {
+    justify-content: center;
+  }
+  .foot {
+    text-align: center;
+  }
+  /* Its own line on a phone: a long model id never squeezes the update / review facts. */
+  .modelChip {
+    flex-basis: 100%;
+  }
+}

@@ -1,0 +1,54 @@
+@import url('../../../web/src/tokens.css');
+@import url('../../../web/src/components/hud/nightjar.css');
+*{box-sizing:border-box}
+:root{--font-mono:"Liberation Mono",monospace}
+body{margin:0;padding:24px;background:var(--bg-0);color:var(--text-1);font:14px/1.5 "Liberation Sans",sans-serif}
+button,a,select,input{font-family:inherit;font-size:inherit;line-height:inherit;color:inherit}
+h1{font:700 18px "Liberation Mono",monospace;margin:0 0 4px}
+.sub{margin:0 0 20px;color:var(--text-3);font-size:13px;max-width:1100px}
+.board{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px;align-items:start}
+.label{margin:0 0 8px;color:var(--text-3);font:11px "Liberation Mono",monospace;letter-spacing:.08em}
+.frame{border:1px solid var(--border);background:var(--bg-1);min-width:0}
+.mhead{padding:10px 16px;border-bottom:1px solid var(--line);display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+.mhead b{font:600 14px "Liberation Sans",sans-serif}
+.tag{font:600 10px "Liberation Mono",monospace;letter-spacing:.16em;color:var(--hud-text);border:1px solid var(--hud-dim);padding:2px 6px;text-transform:uppercase}
+.body{padding:12px 16px 16px;display:flex;flex-direction:column;gap:12px}
+.sec{font:600 10px/1.4 "Liberation Mono",monospace;letter-spacing:.18em;text-transform:uppercase;color:var(--hud-text);margin-top:4px}
+.row{display:grid;grid-template-columns:170px minmax(0,1fr);gap:6px 12px;align-items:center}
+.row > span{font-size:12px;color:var(--text-2)}
+.in{height:44px;display:flex;align-items:center;padding:0 10px;background:var(--bg-2);border:1px solid var(--line-strong);font:12px "Liberation Mono",monospace;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.in.sel::after{content:"▾";margin-left:auto;color:var(--text-3)}
+.seg{display:flex;gap:0;flex-wrap:wrap}
+.seg b{height:44px;display:inline-flex;align-items:center;padding:0 14px;border:1px solid var(--line-strong);font:600 11px "Liberation Mono",monospace;letter-spacing:.1em;text-transform:uppercase;color:var(--text-2);margin-right:-1px}
+.seg b.on{border-color:var(--accent);color:var(--accent-text);position:relative;z-index:1}
+.chk{display:flex;align-items:center;gap:10px;min-height:44px;font-size:13px}
+.box{width:18px;height:18px;border:1px solid var(--line-strong);display:inline-flex;align-items:center;justify-content:center;font:700 12px "Liberation Mono",monospace;color:var(--accent-text);flex:none}
+.box.on{border-color:var(--accent)}
+.hint{margin:0;font-size:12px;color:var(--text-3)}
+.btn{--c:var(--cut-sm);box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;height:44px;min-height:44px;padding:6px 16px;border:1px solid transparent;font:700 11px "Liberation Mono",monospace;letter-spacing:.12em;text-transform:uppercase;text-decoration:none;cursor:pointer;white-space:nowrap}
+.btn.primary{--nj-face:var(--accent);--nj-edge:color-mix(in srgb,var(--accent) 85%,black);color:var(--on-accent)}
+.btn.ghost{--nj-face:color-mix(in srgb,var(--text-1) 5%,var(--bg-1));--nj-edge:var(--border);color:var(--text-2);font-weight:500}
+.acts{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.ann{margin:8px 0 0;font-size:12px;color:var(--text-3);border-left:2px solid var(--line-strong);padding-left:8px}
+.secret{border:1px solid color-mix(in srgb,var(--status-degraded) 55%,transparent);padding:10px;display:flex;flex-direction:column;gap:8px}
+.secret .warn{font:600 10px "Liberation Mono",monospace;letter-spacing:.12em;text-transform:uppercase;color:var(--warn-text)}
+.mono{font:12px "Liberation Mono",monospace;word-break:break-all}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex:none}
+.d-up{background:var(--status-up)}.d-deg{background:var(--status-degraded)}.d-down{background:var(--status-down)}.d-unk{background:var(--status-unknown)}.d-draft{background:var(--status-draft)}
+.runs{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.run{background:var(--bg-2);border:1px solid var(--line);padding:8px 10px;display:flex;flex-direction:column;gap:4px;min-width:0}
+.rl{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px}
+.rl .t{font:11px "Liberation Mono",monospace;color:var(--text-3)}
+.rl .o{font:600 10px "Liberation Mono",monospace;letter-spacing:.12em;text-transform:uppercase}
+.o.ok{color:var(--ok-text)}.o.warn{color:var(--warn-text)}.o.bad{color:var(--status-down)}.o.mut{color:var(--text-2)}
+.leg{padding:2px 6px;background:var(--surface-3);font:10px "Liberation Mono",monospace}
+.rd{padding:2px 6px;border:1px solid var(--accent);color:var(--accent-text);font:600 10px "Liberation Mono",monospace}
+.why{margin:0;font-size:12px;color:var(--text-2)}
+.facts{margin:0;font:11px "Liberation Mono",monospace;color:var(--text-3)}
+a.lnk{color:var(--accent-text);text-decoration:underline;font-size:12px}
+.lines{margin:0;padding-left:18px;font-size:13px;display:flex;flex-direction:column;gap:4px}
+.lines .w{color:var(--warn-text)}
+.mobile{padding:12px}
+.mobile .board{grid-template-columns:390px}
+.mobile .row{grid-template-columns:minmax(0,1fr)}
+.mobile .acts .btn{flex:1 1 auto}

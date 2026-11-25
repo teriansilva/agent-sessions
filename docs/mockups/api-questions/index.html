@@ -1,0 +1,165 @@
+<!doctype html>
+<html data-theme="dark"><meta charset="utf-8"><title>API chat questions</title>
+<style>
+@import url('../../../web/src/tokens.css');
+*{box-sizing:border-box}
+body{margin:0;padding:24px;background:var(--bg);color:var(--text);font:14px/1.55 "Liberation Sans",sans-serif}
+button,input,select{font-family:inherit;font-size:inherit;line-height:inherit;color:inherit}
+h1,h2,h3,button,header,.tag,.mono{font-family:"Liberation Mono",monospace}
+h1{font-size:20px;margin:0 0 6px}.sub{margin:0 0 20px;color:var(--text-muted)}
+p{margin:10px 0}
+.board{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}
+.frame{border:1px solid var(--line-strong);background:var(--panel);min-width:0}
+header{padding:12px 16px;border-bottom:1px solid var(--line-strong);display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px}
+main{padding:18px}
+.label{margin:0 0 10px;color:var(--text-muted);font:11px "Liberation Mono",monospace;letter-spacing:.06em}
+.chip{padding:4px 8px;color:var(--warn-text);border:1px solid var(--status-degraded);font-size:11px;white-space:nowrap;font-family:"Liberation Mono",monospace}
+.who{font:11px "Liberation Mono",monospace;color:var(--accent);letter-spacing:.06em}
+.you{border-left:3px solid var(--accent);padding:2px 10px;margin:6px 0 14px}
+.reply{border:1px solid var(--line-strong);border-left:3px solid var(--line-strong);padding:12px 14px;margin:8px 0}
+.reply ul{margin:6px 0;padding-left:20px}
+.q{border:1px solid var(--line-strong);border-left:3px solid var(--accent);padding:14px;margin:12px 0;background:var(--bg)}
+.qhead{display:flex;align-items:center;gap:8px;font:11px "Liberation Mono",monospace;letter-spacing:.06em;color:var(--text-muted)}
+.sq{width:6px;height:6px;background:var(--accent);display:inline-block}
+.hdr{border:1px solid var(--line-strong);padding:2px 6px;color:var(--text)}
+.qtext{font-weight:700;margin:10px 0;color:var(--text)}
+.opts{display:flex;flex-direction:column;gap:6px}
+.opt{display:flex;gap:10px;align-items:flex-start;min-height:44px;padding:10px 12px;border:1px solid var(--line-strong);background:var(--surface-2);text-align:left;cursor:pointer;width:100%}
+.opt .mark{flex:0 0 14px;height:14px;margin-top:2px;border:1px solid var(--text-muted)}
+.opt .mark.radio{border-radius:50%}
+.opt.on{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 10%,var(--surface-2))}
+.opt.on .mark{background:var(--accent);border-color:var(--accent)}
+.opt b{display:block;font-family:"Liberation Sans",sans-serif;font-weight:700}
+.opt small{display:block;color:var(--text-muted);font-family:"Liberation Sans",sans-serif;font-size:12px}
+.other{min-height:44px;width:100%;padding:10px 12px;border:1px solid var(--line-strong);background:var(--bg);color:var(--text-muted)}
+.hint{font-size:12px;color:var(--text-muted);margin:10px 0 0}
+.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.btn{min-height:44px;padding:10px 14px;border:1px solid var(--line-strong);background:var(--surface-2);color:var(--text);font-size:12px;cursor:pointer}
+.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent);font-weight:700}
+.btn[disabled]{opacity:.55}
+.status{padding:10px 12px;border-left:3px solid var(--status-degraded);background:var(--bg);font-size:13px;margin-top:10px}
+.answered{font-size:13px;color:var(--text-muted);border:1px dashed var(--line-strong);padding:8px 12px;margin:10px 0}
+.answered b{color:var(--text)}
+.composer{border:1px solid var(--accent);padding:12px;margin-top:16px;color:var(--text-muted);font-size:13px}
+.split{height:1px;background:var(--line-strong);margin:14px 0}
+.mobile .board{grid-template-columns:390px 390px}.mobile{padding:16px}.mobile main{padding:12px}.mobile .actions .btn{flex:1 1 140px}
+</style>
+<h1>API chat · an agent's question shows its choices</h1>
+<p class="sub">Codex API and Claude API, with or without Skip permissions. Choices are never permissions.</p>
+<div class="board">
+
+<div><div class="label">1 · CODEX ASKS WHILE IT KEEPS WORKING (ASYNC QUESTION)</div>
+<section class="frame"><header><span class="mono">CODEX API · BattleLab</span><span class="chip">SKIP PERMISSIONS</span></header><main>
+<div class="who">YOU</div><div class="you">Plan multi user in battlelab…</div>
+<div class="who">CODEX</div>
+<div class="reply">Should project restrictions also prevent users' agents and terminals from reading other projects' files and credentials on the host? I recommend enforcing this isolation.
+<ul><li>Enforce project isolation (Recommended)</li><li>UI/API restrictions for trusted teammates only</li></ul></div>
+<div class="q" role="group" aria-label="Codex asks">
+ <div class="qhead"><span class="sq"></span>CODEX ASKS · IT KEEPS WORKING MEANWHILE</div>
+ <div class="qtext">Should project restrictions also prevent users' agents and terminals from reading other projects' files and credentials on the host?</div>
+ <div class="opts">
+  <button class="opt on"><span class="mark radio"></span><span><b>Enforce project isolation (Recommended)</b></span></button>
+  <button class="opt"><span class="mark radio"></span><span><b>UI/API restrictions for trusted teammates only</b></span></button>
+ </div>
+ <div class="actions"><button class="btn primary">Send answer</button></div>
+ <p class="hint">Sent as your next message, after earlier turns: “Enforce project isolation (Recommended)”. Or type your own answer below.</p>
+</div>
+<div class="composer">Message Codex — sends after earlier turns.</div>
+</main></section></div>
+
+<div><div class="label">2 · CLAUDE WAITS FOR AN ANSWER (AskUserQuestion) — SKIP PERMISSIONS ON</div>
+<section class="frame"><header><span class="mono">CLAUDE API · BattleLab</span><span class="chip">SKIP PERMISSIONS</span></header><main>
+<div class="who">YOU</div><div class="you">Pick a colour scheme for the share page.</div>
+<div class="q" role="group" aria-label="Claude asks">
+ <div class="qhead"><span class="sq"></span>CLAUDE IS WAITING FOR YOUR ANSWER <span class="hdr">Theme</span></div>
+ <div class="qtext">Which colour scheme should the public share page use?</div>
+ <div class="opts">
+  <button class="opt"><span class="mark radio"></span><span><b>Follow the visitor's system</b><small>Light or dark from prefers-color-scheme</small></span></button>
+  <button class="opt on"><span class="mark radio"></span><span><b>Always dark</b><small>Matches the operator's app</small></span></button>
+  <button class="opt"><span class="mark radio"></span><span><b>Always light</b><small>Best for printing</small></span></button>
+ </div>
+ <p class="hint">Or answer in your own words:</p>
+ <div class="other">Other answer…</div>
+ <div class="actions"><button class="btn primary">Send answer</button><button class="btn">Skip question</button><button class="btn">Stop the turn</button></div>
+ <p class="hint">Skip question tells Claude you didn't answer; it carries on with its own judgement.</p>
+</div>
+<div class="composer">Message Claude — sends after earlier turns.</div>
+</main></section></div>
+
+<div><div class="label">3 · SEVERAL QUESTIONS, ONE MULTI-SELECT · SEND WAITS FOR EVERY ANSWER</div>
+<section class="frame"><header><span class="mono">CLAUDE API · BattleLab</span></header><main>
+<div class="q">
+ <div class="qhead"><span class="sq"></span>CLAUDE IS WAITING FOR YOUR ANSWERS · 1 OF 2 ANSWERED</div>
+ <div class="qtext"><span class="hdr mono" style="font-size:11px">Scope</span> Which surfaces should the release cover?</div>
+ <p class="hint" style="margin-top:0">Choose any number</p>
+ <div class="opts">
+  <button class="opt on"><span class="mark"></span><span><b>Web app</b></span></button>
+  <button class="opt on"><span class="mark"></span><span><b>Docs site</b></span></button>
+  <button class="opt"><span class="mark"></span><span><b>Landing page</b></span></button>
+ </div>
+ <div class="split"></div>
+ <div class="qtext"><span class="hdr mono" style="font-size:11px">Channel</span> Which channel ships it first?</div>
+ <div class="opts">
+  <button class="opt"><span class="mark radio"></span><span><b>main</b></span></button>
+  <button class="opt"><span class="mark radio"></span><span><b>stable</b></span></button>
+ </div>
+ <div class="actions"><button class="btn primary" disabled>Send answers</button><button class="btn">Skip question</button><button class="btn">Stop the turn</button></div>
+ <p class="hint">Answer “Channel” to send.</p>
+</div>
+</main></section></div>
+
+<div><div class="label">4 · AFTER SENDING · NO FALSE SUCCESS, ANSWER STAYS IN HISTORY</div>
+<section class="frame"><header><span class="mono">CLAUDE API · BattleLab</span></header><main>
+<div class="q">
+ <div class="qhead"><span class="sq"></span>CLAUDE IS WAITING FOR YOUR ANSWER <span class="hdr">Theme</span></div>
+ <div class="qtext">Which colour scheme should the public share page use?</div>
+ <div class="status" role="status">“Always dark” sent — waiting for Claude to take it.</div>
+</div>
+<div class="label" style="margin-top:18px">LATER · THE TURN'S ACTIVITY KEEPS THE ANSWER</div>
+<div class="answered">Claude asked <b>Theme</b> — you answered <b>Always dark</b></div>
+<div class="who">CLAUDE</div><div class="reply">Going with always dark, matching the operator's app…</div>
+<div class="label" style="margin-top:18px">CODEX · AN ASYNC QUESTION AFTER YOU WROTE AGAIN</div>
+<div class="reply">…the question and its options stay in the reply text.</div>
+<p class="hint">The choice buttons go away once you have sent a later message: Codex reads that message as the answer.</p>
+</main></section></div>
+
+<div><div class="label">5 · UNCERTAIN · RETRY RESENDS THE IDENTICAL ANSWER</div>
+<section class="frame"><header><span class="mono">CLAUDE API · BattleLab</span><span class="chip">SKIP PERMISSIONS</span></header><main>
+<div class="q">
+ <div class="qhead"><span class="sq"></span>CLAUDE IS WAITING FOR YOUR ANSWER <span class="hdr">Theme</span></div>
+ <div class="qtext">Which colour scheme should the public share page use?</div>
+ <div class="opts">
+  <button class="opt" disabled><span class="mark radio"></span><span><b>Follow the visitor's system</b></span></button>
+  <button class="opt on" disabled><span class="mark radio"></span><span><b>Always dark</b></span></button>
+  <button class="opt" disabled><span class="mark radio"></span><span><b>Always light</b></span></button>
+ </div>
+ <div class="status" role="status">“Always dark” may not have reached BattleLab. Retrying sends the same answer.</div>
+ <div class="actions"><button class="btn primary">Retry “Always dark”</button></div>
+ <p class="hint">The choices are frozen with the decision until it settles — a retry can't send a different answer.</p>
+</div>
+<div class="label" style="margin-top:18px">CODEX · ANSWER MESSAGE LOST</div>
+<div class="q">
+ <div class="qhead"><span class="sq"></span>CODEX ASKS · IT KEEPS WORKING MEANWHILE</div>
+ <div class="qtext">Should project restrictions also isolate the host?</div>
+ <div class="status" role="status">“Enforce project isolation (Recommended)” may not have reached BattleLab. Retrying sends the same message.</div>
+ <div class="actions"><button class="btn primary">Retry answer</button></div>
+ <p class="hint">Your unsent draft in the composer is untouched.</p>
+</div>
+</main></section></div>
+
+<div><div class="label">6 · A QUESTION BATTLELAB CAN'T SHOW AS CHOICES (MALFORMED / DUPLICATE QUESTIONS)</div>
+<section class="frame"><header><span class="mono">CLAUDE API · BattleLab</span></header><main>
+<div class="q" style="border-left-color:var(--status-degraded)">
+ <div class="qhead"><span class="sq" style="background:var(--status-degraded)"></span>CLAUDE ASKS · AskUserQuestion</div>
+ <p>Claude asked a question BattleLab can't show as choices (two questions have the same text). Its full request is under Details.</p>
+ <p class="hint">Skip it and Claude carries on with its own judgement, or stop the turn and answer in a message.</p>
+ <div class="actions"><button class="btn">Skip question</button><button class="btn">Stop the turn</button></div>
+ <span class="hint">▸ Details · complete request</span>
+</div>
+<div class="label" style="margin-top:18px">CODEX · MALFORMED OPTIONS</div>
+<div class="who">CODEX</div>
+<div class="reply">Which channel? - main - stable <br><small class="hint">No buttons: the structured options were missing or malformed, so the reply's text is all there is. Answer in the composer.</small></div>
+</main></section></div>
+
+</div>
+<script>const q=new URLSearchParams(location.search);document.documentElement.dataset.theme=q.get('theme')||'dark';if(q.has('mobile'))document.body.classList.add('mobile');</script></html>

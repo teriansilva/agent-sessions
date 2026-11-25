@@ -1,0 +1,3910 @@
+// Types mirroring the existing FastAPI `/api/*` contract (backend is unchanged).
+import type { HqModelSettings, HqThinking } from "./hq";
+
+/** An engine id (#853 P4). A plain string: the roster is RUNTIME data from `/api/engines`, and
+ *  the client keeps no list of its own — adding or removing an agent is a manifest, not an edit
+ *  here. Kept as a named alias so call sites say what the string means. */
+export type EngineId = string;
+
+export interface Session {
+  /** engine-qualified identity, e.g. "claude:<uuid>" — the URL + socket + lock key */
+  id: string;
+  /** Set ONLY on a single-row lookup answered by an alias (#1405): the key that was asked for,
+   *  when it named an API session's native history and `id` is that API session. The client
+   *  accepts a row whose `id` differs from the requested key only when this equals that key. */
+  resolved_from?: string;
+  engine: EngineId;
+  uuid: string;
+  short_uuid: string;
+  cwd: string;
+  /** Resolved project ref (#361): entity or implicit folder group. `cwd` stays the
+   *  launch location; with zero entities this is always `{kind:"folder", id: cwd}`. */
+  project: ProjectRef;
+  last_mtime: number;
+  /** Derived per-engine creation time (#506) — the sort key when the list order is
+   *  "created_at". Absent on older servers (→ treated as 0). */
+  created_at?: number;
+  /** Wall-clock of the last byte the agent emitted that we observed (#156). null when
+   * the server hasn't seen output for this session in this process (no WS attached). */
+  last_output_at?: number | null;
+  /** True when ``now - last_output_at`` is inside the working window (#156 v1).
+   * Browser-attached-only; a headless session not yet reconnected to reports false. */
+  working?: boolean;
+  /** An agent process is running for this session right now — a live dtach master, whether or
+   *  not anyone is watching and whether or not it is printing (#1085). Absent on an older server. */
+  running?: boolean;
+  first_user_message: string;
+  title: string;
+  sticky: boolean;
+  /** Custom per-session tag (#551): a short user label (text / emoji) rendered before the
+   *  AI summary on the row's second line. "" / undefined when unset. */
+  tag?: string;
+  archived: boolean;
+  /** AI review (#356): one-line summary from the last successful review. */
+  ai_summary?: string;
+  /** AI-generated title. Display precedence is resolved SERVER-side into `title`
+   *  (user title → ai_title → first message); this field is informational. */
+  ai_title?: string;
+  /** Advisory "needs a human" flag from the last review + its short reason. */
+  intervention_required?: boolean;
+  intervention_reason?: string;
+  /** Wall-clock (s) of the last SUCCESSFUL review — the stale-age source: a failed
+   *  review never bumps it, so an old result is visibly old. null/absent = never. */
+  reviewed_at?: number | null;
+  /** Per-session opt-out from AI review. */
+  review_excluded?: boolean;
+  /** #726: per-session opt-out from Pulse orchestration. Managed-by-default, so this is
+   *  false until the operator withdraws agency for this session. DISTINCT from
+   *  review_excluded: an unmanaged session is still listed, still summarised, still
+   *  flagged needs-you — it just stops being something the orchestrator may act on. */
+  orchestrator_excluded?: boolean;
+  /** #481: chronological "what happened in this session" recap over the whole transcript,
+   *  shown in the session-brief modal. "" / absent until the first review produces one. */
+  ai_recap?: string;
+  /** #477: the session's compose box has an unsent draft (text and/or pasted images) →
+   *  the blue status dot. The full draft body is fetched separately via api.getDraft. */
+  has_draft?: boolean;
+  /** Cross-engine handoff provenance (#597): engine-qualified peer ids, "" when unset.
+   *  Written server-side only after the target spawn passes the aliveness gate; a stale
+   *  half (peer archived/deleted) is tolerated — display strings, never dereferenced. */
+  handoff_from?: string;
+  handoff_to?: string;
+  /** The model this session's launch ASKED for (#1189), canonical; null/absent = default or never
+   *  recorded. A request, never evidence of what ran. */
+  model_requested?: string | null;
+  /** What the engine's own transcript says it ran (#1189) — only on the single-session lookup.
+   *  null = unknown. */
+  model_effective?: string | null;
+  /** An API session's client-reported model and its requested / reported level (#1511) — only on
+   *  the single-session lookup, null elsewhere and for terminal sessions. */
+  model_configured?: string | null;
+  effort_requested?: string | null;
+  effort_configured?: string | null;
+  /** The mission holding this session (#948): `null` when none does. ABSENT when the server
+   *  could not read the mission store — unknown, so no adopt/open control is offered. */
+  mission?: SessionMissionRef | null;
+  /** The topic cluster this session is in (#1997): `null` when none (or a mission holds it, or
+   *  clusters are off). ABSENT when the server could not tell — unknown, never "not clustered". */
+  cluster?: SessionClusterRef | null;
+  /** An API session's live generation near its memory limit (#1643), or null: none, unknown, or
+   *  not an API session. Absent on older servers. */
+  memory_pressure?: MemoryPressure | null;
+  /** The agent's newest `progress` / `done` report to HQ (#1882), or null. AGENT TEXT: the row
+   *  frames it as "agent says" and renders it as text. Absent on older servers. */
+  agent_report?: AgentNote | null;
+  /** Session lineage (#2325). A list row is always a MAIN session; these describe its subagents
+   *  (sessions it started, any engine), which load lazily from `/children` and `/attention`.
+   *  All absent on older servers. */
+  child_count?: number;
+  /** Every descendant, any depth: what "Archive with N subagents" covers. */
+  descendant_count?: number;
+  /** The worst state over all descendants, transitively; `null` without any. */
+  rollup?: SessionRollup | null;
+  /** Descendants that need the operator, any depth — uncapped. */
+  attention_count?: number;
+  /** The first 10 of those keys (a preview; the attention route lists them all). */
+  attention?: string[];
+  /** Set on a child row (children/attention routes, or a lookup): its main session's key. */
+  parent_key?: string;
+  lineage_source?: "launch" | "native" | "process" | "operator";
+  /** Its recorded parent is archived, gone or out of scope: it lists as a main session. */
+  orphan?: boolean;
+  /** On an attention row: the sessions from the main session down to this row's parent. */
+  path?: { id: string; title: string }[];
+}
+
+/** A rolled-up subagent state, worst first (#2325) — the same precedence as `sessionStatus`. */
+export type SessionRollup = "attention" | "working" | "draft" | "idle";
+
+/** One page of a session's children or attention descendants (#2325). */
+export interface SessionLineagePage {
+  sessions: Session[];
+  total: number;
+  next_offset: number | null;
+}
+
+/** One key's outcome in an archive-with-subagents request (#2325). */
+export interface ArchiveSubagentResult {
+  id: string;
+  result: "archived" | "skipped" | "failed";
+  reason: string | null;
+}
+
+/** One `progress` / `done` line an agent reported to HQ (#1882). `done` is the agent's claim. */
+export interface AgentNote {
+  state: "progress" | "done";
+  summary: string;
+  at: number;
+}
+
+/** An agent's CURRENT report to HQ (#1882), as Needs you and the mission strip receive it. Every
+ *  text field is the agent's own words (guarded server-side): render as text, never markup. */
+export interface AgentReport {
+  id: string;
+  state: "blocked" | "needs_decision" | "progress" | "done";
+  summary: string;
+  at: number;
+  /** `needs_decision` only. */
+  question?: string;
+  options?: string[];
+}
+
+/** A live API worker's memory warning (#1643): its unit's working set against the operator's API
+ *  memory limit. `high` from 75%, `critical` from 90% or once the kernel throttles; anything
+ *  stale, unpinned or unreadable is never sent. Bytes. */
+export interface MemoryPressure {
+  level: "high" | "critical";
+  working_set: number;
+  max: number;
+  /** "shared": the tightest limit is a parent group's, set outside BattleLab (Hermes on #1651). */
+  scope?: "session" | "shared";
+  /** Whose own limit was seen throttling this sample, or null: the only ground for saying the
+   *  kernel is holding something back (Hermes on #1651). Absent on older servers. */
+  throttled?: "session" | "shared" | null;
+}
+
+/** One pasted/uploaded attachment carried by a compose draft (#477) — the server-issued
+ *  upload path + display name. No image blob ever crosses the wire here. */
+export interface DraftAttachment {
+  name: string;
+  path: string;
+}
+
+/** A `{{name}}` slot on an instruction template (#905), filled when the template is used.
+ *  `name` is the token (`[a-z][a-z0-9_]{0,31}`); `label` is what the fill step shows. */
+/** Where a field's value comes from (#1090): the template's own `default`, or the variable of
+ *  the same name in the variables library. A `library` field carries no default of its own. */
+export type TemplateFieldSource = "template" | "library";
+
+/** What a field's value is (#1090 Phase 2): text, or a SECRET — never stored in the template,
+ *  never held by the browser. A template with any secret field is sent server-side only. */
+export type TemplateFieldKind = "text" | "secret";
+
+export interface TemplateField {
+  name: string;
+  label: string;
+  default: string;
+  required: boolean;
+  source: TemplateFieldSource;
+  kind: TemplateFieldKind;
+}
+
+/** A reference image on a template — an upload path, never a blob. The thumbnail is read back
+ *  through `GET /api/uploads/{stored}` where `stored` is the path's basename. */
+export interface TemplateImage {
+  name: string;
+  path: string;
+}
+
+/** An instruction template (#905) — `GET /api/templates`. A *message*, not a prompt: the
+ *  body is user-turn text the composer pastes into a session, never a system prompt. The
+ *  server owns `id` and every timestamp/counter; `updated_at` is also the optimistic-
+ *  concurrency fence (`expected_updated_at` on PATCH/DELETE, 409 + `current` on a stale edit).
+ *  `last_used_at` / `used_count` move on a send and never touch `updated_at`. */
+export interface Template {
+  id: string;
+  name: string;
+  description: string;
+  tags: string[];
+  body: string;
+  fields: TemplateField[];
+  images: TemplateImage[];
+  created_at: number;
+  updated_at: number;
+  used_count: number;
+  last_used_at: number | null;
+}
+
+/** The editable half of a template — what POST/PATCH `/api/templates` accept. */
+export type TemplateInput = Pick<
+  Template,
+  "name" | "description" | "tags" | "body" | "fields" | "images"
+>;
+
+/** The server's bounds, served with the library so the editor never hardcodes a cap. */
+export interface TemplateLimits {
+  templates_max: number;
+  name_max: number;
+  description_max: number;
+  tags_max: number;
+  body_max: number;
+  fields_max: number;
+  label_max: number;
+  default_max: number;
+  images_max: number;
+  image_suffixes: string[];
+}
+
+export interface TemplatesResponse {
+  templates: Template[];
+  limits: TemplateLimits;
+}
+
+/** A template that uses a variable — what a variable's `used_by` and a refused delete list. */
+export interface TemplateRef {
+  id: string;
+  name: string;
+}
+
+/** A variable in the templates library (#1090) — `GET /api/template-variables`. The name is its
+ *  identity (no rename); `updated_at` is the edit/delete fence, as on a template. */
+export interface TemplateVariable {
+  name: string;
+  /** `secret` (#1090 Phase 2): no `value` ever — only whether one is stored and still decrypts. */
+  kind: "text" | "secret";
+  /** A text variable's value. Absent on a secret. */
+  value?: string;
+  /** Secret only: a value is stored. */
+  set?: boolean;
+  /** Secret only: the stored value no longer decrypts (key file missing or replaced). */
+  needs_reentry?: boolean;
+  created_at: number;
+  updated_at: number;
+  used_by: TemplateRef[];
+}
+
+export interface TemplateVariableLimits {
+  variables_max: number;
+  value_max: number;
+  name_max: number;
+  /** Minimum length of any secret, stored or typed once. */
+  secret_min: number;
+}
+
+/** One AI suggestion (#1090 Phase 3) — a DRAFT, validated server-side like a save. A `variable`
+ *  marked `secret` never carries a value: the operator types it into the new-secret form. */
+export type TemplateSuggestion =
+  | {
+      id: string;
+      kind: "template";
+      name: string;
+      reason: string;
+      count: number;
+      body: string;
+      fields: { name: string; label: string; default: string }[];
+    }
+  | {
+      id: string;
+      kind: "variable";
+      name: string;
+      reason: string;
+      count: number;
+      value: string;
+      secret: boolean;
+    };
+
+/** The last analysis, minus dismissals. */
+/** "Write me a template for …" (#1090): one draft, never stored — it opens in the editor. */
+export interface TemplateDraft {
+  name: string;
+  description: string;
+  body: string;
+  fields: Pick<
+    TemplateField,
+    "name" | "label" | "default" | "source" | "kind"
+  >[];
+}
+
+export interface TemplateSuggestionsResult {
+  generated_at: number | null;
+  stats: {
+    messages?: number;
+    distinct?: number;
+    sessions?: number;
+    /** Messages left out because they showed a credential trigger — never sent, not redacted. */
+    withheld?: number;
+    days?: number;
+  };
+  dropped: number;
+  suggestions: TemplateSuggestion[];
+}
+
+/** `GET /api/templates/suggestions`: `result` is `null` until the first analysis. */
+export interface TemplateSuggestionsResponse {
+  result: TemplateSuggestionsResult | null;
+  configured: boolean;
+}
+
+/** `POST /api/templates/{id}/send` (#1090 Phase 2): only the MASKED text comes back. */
+export interface TemplateSendResult {
+  masked: string;
+  template: Template;
+  /** The usage counter moved. `false` = bookkeeping failed AFTER a delivered send — the send
+   *  itself still succeeded and must never be retried. */
+  counted?: boolean;
+}
+
+export interface TemplateVariablesResponse {
+  variables: TemplateVariable[];
+  limits: TemplateVariableLimits;
+}
+
+/** GET /api/sessions/{id}/draft (#477): the saved compose draft for a session, or an empty
+ *  draft (`text: ""`, `attachments: []`, `updated_at: null`) when there is none. */
+export interface SessionDraft {
+  id: string;
+  text: string;
+  attachments: DraftAttachment[];
+  updated_at: number | null;
+}
+
+/** AI session review config (#356) — the PUBLIC view from /api/config. The API key is
+ *  write-only: only `api_key_set` ever crosses the wire. */
+export interface AiReviewConfig {
+  enabled: boolean;
+  base_url: string;
+  model: string;
+  interval_minutes: number;
+  max_input_chars: number;
+  /** Per-request review timeout in seconds (10–600); null = unset → server falls back
+   *  to the AGENT_SESSIONS_AI_REVIEW_TIMEOUT env var, then 120s (#391 follow-up). */
+  request_timeout: number | null;
+  /** A key is stored server-side (its value is never echoed). */
+  api_key_set: boolean;
+  /** Base URL + key present — the /models proxy + Review now are usable. */
+  configured: boolean;
+  /** The provider row (#1657); absent on an older server = Custom. */
+  provider?: string;
+  /** `auto` follows a hosted provider's recommended model; `specific` sends `model`. */
+  model_mode?: AiModelMode;
+  thinking?: AiThinkingLevel;
+  /** The server-owned acknowledgement that session content may go to this recipient. */
+  egress_ack?: AiEgressAck | null;
+  /** The saved endpoint is not on this host, so it needs an acknowledgement. */
+  egress_required?: boolean;
+  /** The saved endpoint may be used: loopback, or acknowledged for exactly this recipient. */
+  egress_allowed?: boolean;
+}
+
+export type AiModelMode = "auto" | "specific";
+export type AiThinkingLevel = "auto" | "off" | "low" | "medium" | "high";
+
+export interface AiEgressAck {
+  provider: string;
+  origin: string;
+  at: string;
+  /** `operator` = ticked in Settings; `legacy` = carried over from before #1671. */
+  source: "operator" | "legacy" | string;
+}
+
+/** One row of the static provider table (#1657) — `GET /api/ai-review/providers`. */
+export interface AiProvider {
+  id: string;
+  label: string;
+  /** `custom` | `self-hosted` | `api` */
+  group: string;
+  kind: string;
+  /** Fixed for hosted rows; the preset's suggestion for self-hosted; "" for Custom. */
+  base_url: string;
+  url_editable: boolean;
+  /** The company the egress warning names ("" for Custom / self-hosted). */
+  vendor: string;
+  thinking_supported: boolean;
+  auto_model: string;
+  key_hint: string;
+}
+
+/** One row of the prompt catalog (#824) — `GET /api/prompts`.
+ *
+ *  `value` is what the operator typed and `guard_suffix` is the text the SERVER appends at
+ *  call time (the guard clause and/or a locked reply rule): separate fields on purpose, so the editor never contains
+ *  text the operator cannot change (and a client that echoed it back would have it stripped
+ *  server-side anyway). Storage bindings are deliberately absent — the client edits by id. */
+export interface PromptEntry {
+  id: string;
+  /** Feature heading the row sits under — the catalog's only grouping hint. */
+  group: string;
+  label: string;
+  description: string;
+  contract: string;
+  max_chars: number;
+  guarded: boolean;
+  guard_suffix: string | null;
+  value: string;
+  default: string;
+  is_default: boolean;
+}
+
+/** AI auto-sort config (#424 Phase 6) — the PUBLIC view from /api/config. Opt-in; reuses the
+ *  ai_review endpoint, so it holds no secret of its own. Tuning knobs added in #459. */
+export interface AutoSortConfig {
+  enabled: boolean;
+  interval_minutes: number;
+  /** Assignment confidence floor (0.5–0.95, default 0.7); below it a session stays
+   *  unassigned. Lower it when confident matches are too rare (#459). */
+  confidence_min: number;
+  /** Max sessions classified per run — the on-demand button AND the background loop
+   *  (1–50, default 8) (#459). */
+  max_per_pass: number;
+  /** The reused ai_review endpoint is usable (base URL + key present). Mirrors
+   *  `ai_review.configured` — auto-sort can't run without it. */
+  configured: boolean;
+}
+
+/** Report from POST /api/projects/auto-sort (#424 Phase 6): one bounded on-demand pass. */
+export interface AutoSortReport {
+  candidates: number;
+  scanned: number;
+  assigned: { id: string; project_id: string; confidence: number }[];
+  low_confidence: number;
+  errors: number;
+  /** Unassigned sessions whose best-guess project fell below `confidence_min` — the
+   *  actionable near-misses, so the operator can lower the threshold with eyes open.
+   *  Bounded + sorted by confidence desc; only known-project picks (#459). */
+  near_misses?: { id: string; project_id: string; confidence: number }[];
+  /** Present when the pass did nothing (e.g. "no projects" / "not configured"). */
+  skipped?: string;
+}
+
+/** The `pulse` block of /api/config: the recent window (#1086) — the scan's auto/interval/depth
+ *  were retired with it (#2179) — plus `configured`, the ai_review endpoint readiness HQ and the
+ *  mission views read. */
+export interface PulseConfig {
+  window_days: number;
+  /** The ai_review endpoint is usable (base URL + key). */
+  configured: boolean;
+}
+
+/** A session state bucket on the Pulse overview, ranked needs-you → in-flight → recent → idle. */
+export type PulseState = "needs_you" | "in_flight" | "recently_active" | "idle";
+
+/** One curated card on the Pulse overview (#441). All AI-derived text (`ai_summary`,
+ *  `synthesis`) is DATA — render it as plain text, never markup. */
+export interface PulseCard {
+  /** Engine-qualified session key ("engine:uuid") — also the jump target. */
+  id: string;
+  engine: EngineId;
+  title: string;
+  cwd: string;
+  project: ProjectRef;
+  /** Wall-clock (s) of the session's last activity. */
+  last_activity: number;
+  /** One-line summary from the last AI review (#356), or null. */
+  ai_summary: string | null;
+  intervention_required: boolean;
+  intervention_reason: string;
+  reviewed_at: number | null;
+  /** Live overlay from the registry at scan time (working/attached) → state "in_flight". */
+  live: boolean;
+  state: PulseState;
+  /** Which mission holds this session, stamped server-side by `routes/pulse._attach_pending`
+   *  over EVERY mission — loaded or not (#878).
+   *
+   *  TRI-STATE, and the three answers are not interchangeable: a mission id means that mission
+   *  holds it; `null` means no mission does (adoptable); and the field being ABSENT means the
+   *  membership store could not be read, which is neither. The console must not derive this by
+   *  scanning the mission rows it has in memory — that list is paged, so a session held by an
+   *  unloaded mission read as unheld and was offered an adoption the server refused. */
+  mission_id?: string | null;
+  /** The live orchestrator action on this session, attached server-side by
+   *  `routes/pulse._attach_pending` (#754). Present means the card carries the decision
+   *  controls inline; the queue is no longer a separate list. */
+  pending_action?: OrchestratorAction;
+  /** The orchestrator's most recent SETTLED action on this session (#777) — what it last did
+   *  here, now that the separate Activity list is gone. Never set alongside `pending_action`:
+   *  a card either has a decision waiting or a history line, not both. */
+  last_action?: OrchestratorAction;
+  /** The band this card had BEFORE `pending_action` re-banded it to `needs_you`. Present only
+   *  when the overlay fired; the client restores it when an action is settled locally, so the
+   *  session does not sit under "Needs you" with nothing pending. */
+  state_without_action?: PulseState;
+  /** True when the card exists only because a live action does — there was no cached card for
+   *  the session. Settle the action and there is nothing left to show, so the card goes too. */
+  synthesized_for_action?: boolean;
+}
+
+/** GET /api/pulse (#441): the in-window cards, built for the request (#2179). */
+export interface PulseOverview {
+  /** When the server built these cards (seconds). */
+  generated_at: number;
+  window_days: number;
+  cards: PulseCard[];
+}
+
+/** A Pulse "Ask" match (#522): the full Pulse card plus the model's one-line reason —
+ *  rendered by the same Card component, so "Jump in" works unchanged. */
+/** #726: the operator's autonomy tier. `off` observes and proposes only; `suggest`
+ *  (the default) queues every action for one tap; `yolo` delivers autonomously — but ONLY
+ *  the verbs inside the server-owned ceiling, which is `continue` alone in this release. */
+export type OrchestratorTier = "off" | "suggest" | "yolo";
+
+/** #726: what the orchestrator proposed. `observe`/`escalate` never reach a session. */
+export type OrchestratorVerb =
+  | "observe"
+  | "continue"
+  | "choose"
+  | "answer"
+  | "dispatch"
+  | "escalate"
+  /** #983 P3: an AI-drafted direction. Minted only by a mission's supervisor, always a proposal,
+   *  and typed only when the operator approves it. Never in the autonomy ceiling. */
+  | "draft_direction";
+
+/** #726: the lifecycle of one action. `indeterminate` is deliberate: if the process dies
+ *  between the PTY write and the durable record, nothing on disk can prove whether the bytes
+ *  landed, so it is parked for the operator rather than retried (which could double-deliver)
+ *  or assumed delivered (which could silently drop). At-most-once, stated honestly. */
+export type OrchestratorState =
+  | "proposed"
+  | "approved"
+  | "claimed"
+  | "delivered"
+  | "escalated"
+  /** A yolo action below `confidence_min` that kept a real DELIVERING verb (#877). Distinct
+   *  from `escalated` — which is the model asking a QUESTION, with nothing to run — because
+   *  only this one can be answered "yes". It is in the server's `CLAIMABLE_STATES`; plain
+   *  `escalated` is not. */
+  | "escalated_low_confidence"
+  | "observed"
+  | "rejected"
+  | "stale"
+  | "failed"
+  | "expired"
+  | "indeterminate";
+
+/** The states an action can no longer leave — `orchestrator_ledger.TERMINAL_STATES`, i.e.
+ *  `OrchestratorState` minus that module's `LIVE_STATES`. Note `escalated` is **live**, not
+ *  terminal: it is waiting on the operator, which is why it carries decision controls and rides
+ *  `pending_action` rather than the history line.
+ *
+ *  Split out so a map over settled actions (Pulse's history line) can be typed
+ *  `Record<TerminalActionState, …>`: adding a state to `OrchestratorState` without giving it
+ *  wording is then a **compile error**, not a blank cell nobody notices. */
+export type TerminalActionState = Exclude<
+  OrchestratorState,
+  "proposed" | "approved" | "claimed" | "escalated" | "escalated_low_confidence"
+>;
+
+export type EvidenceKind = "screen" | "transcript_tail" | "recap" | "none";
+
+export interface OrchestratorAction {
+  id: string;
+  /** Feed rows only (#774): how many actions this row stands for. The orchestrator makes a
+   *  fresh action per session per pass, so the feed collapses to one row per session and this
+   *  says what was folded in. 1 when nothing was. */
+  repeats?: number;
+  state: OrchestratorState;
+  ts: number;
+  expires_at?: number;
+  tier: OrchestratorTier;
+  session_id: string;
+  engine: string;
+  title: string;
+  /** Resolved project name — from the same projects.resolve the sidebar uses, so a feed row
+   *  and its sidebar row always agree. */
+  project: string;
+  project_id: string;
+  verb: OrchestratorVerb;
+  confidence: number;
+  rationale: string;
+  evidence: EvidenceKind;
+  option?: number;
+  answer?: string;
+  /** Why this action is `escalated` — server-decided in `orchestrator._decide`, never inferred
+   *  here and never model-supplied. `model`: the model chose to escalate. `degraded`: it meant
+   *  to deliver but produced no usable option / no answer text. `confidence`: it fell under the
+   *  yolo threshold. Absent on every non-escalated action, and on records written before the
+   *  field existed — which render NO reason rather than a guessed one. */
+  escalation_reason?: "model" | "degraded" | "confidence" | "permission" | "api_pending";
+  /** An API session's waiting requests (#1900), on its ONE `api_pending` escalation card. Read from
+   *  the session's structured state, never from a screen: `count` is every request still waiting,
+   *  `items` the first few (at most 3) for display, `pane` where each is decided. Nothing on this
+   *  card is approvable; Dismiss stays. Absent on every other action. */
+  api_pending?: ApiPending;
+  /** What the session's screen showed when this was ESCALATED (#1060) — `orchestrator.
+   *  observed_prompt_for`. An escalation delivers nothing, so it has no precondition; this is the
+   *  card's only fact about the screen. `menu` is the engine's own menu when one was recognised at
+   *  the bottom of the screen, else null. Its labels are the agent's words — display text, never
+   *  bytes: what a tap sends is re-derived from the live screen at approval time. Absent on every
+   *  other verb and on records written before the field existed. */
+  observed_prompt?: {
+    prompt_class: string;
+    menu: {
+      engine: string;
+      question: string;
+      options: { n: number; label: string; selected: boolean }[];
+    } | null;
+    /** The engine's own TOOL-PERMISSION dialog (#1213), or null/absent. Operator-only: answered
+     *  through the same `/choose`, where the server re-parses the live screen and builds the keys.
+     *  Display text only — the card never sends anything it shows. */
+    permission?: PermissionPrompt | null;
+    observed_at: number;
+  };
+  /** How this action should be RENDERED — decided once on the server by
+   *  `orchestrator_ledger.project_for_operator` and consumed verbatim (#852/#840 §16).
+   *
+   *  Three sets on the server already disagreed about what "pending" means, so every surface
+   *  that re-derived controls from `state` got `approved` wrong: it is in flight and reject-only,
+   *  because approving again is a no-op the backend refuses. `claimed` is live rather than
+   *  terminal and offers nothing at all. Optional so a response written before the field existed
+   *  still renders — the fallback below reproduces the old behaviour rather than guessing. */
+  projection?:
+    | "actionable"
+    | "in_flight_revocable"
+    | "in_flight_locked"
+    | "settled"
+    | "historical"
+    /** The ledger could not be READ — distinct from `historical`, which means it read fine and
+     *  the action is not in it. No controls: the mutation routes read through the same reader,
+     *  so a Reject offered here comes back 404 "unknown action". The row stays visible and keeps
+     *  counting, and regains its controls by itself when the store reads again. */
+    | "unknown";
+  can_approve?: boolean;
+  can_reject?: boolean;
+  /** True once this action has been raised in the bell. The rail needs it to tell a decision the
+   *  operator has already seen from one that has never surfaced anywhere. */
+  announced?: boolean;
+  /** Who minted it. `supervisor` is a mission's follow-through (#885). */
+  source?: string;
+  mission_id?: string;
+  objective_key?: string;
+  objective_episode?: number;
+  /** The objective's current title, stamped by the server on a supervisor nudge (#983 P2). Display
+   *  only: a title is never an input to what is typed. */
+  objective_title?: string;
+  /** A supervisor nudge's EXACT text and the facts it rests on, persisted at proposal (#983). */
+  render?: SupervisorRender;
+  /** Whether delivery would still type `render.text` (#983 P2): the delivery path's own comparison,
+   *  asked early. `sendable: false` comes with `can_approve: false`. */
+  render_status?: RenderStatus;
+  /** What a delivered supervisor nudge typed (#983). */
+  delivered_text?: string;
+  /** An AI-drafted direction's text (#983 P3): stored sanitized at proposal, exactly what Send as
+   *  written types. Model-authored, so it renders as text and is never interpreted. */
+  draft?: string;
+  /** The objective incarnation a draft is bound to (#983 P3). Server-side identity; not shown. */
+  objective_incarnation?: string;
+}
+
+/** One waiting request an API session holds (#1900). `label` is display text (a path, a command,
+ *  the question) and `kind` the tool or request kind; `question` marks a question to the operator. */
+export interface ApiPendingItem {
+  request_id: string;
+  kind: string;
+  label: string;
+  question: boolean;
+}
+
+/** `OrchestratorAction.api_pending` (#1900). `fp` is the content fingerprint of this set of
+ *  waiting requests: their sorted request ids, as a list. Not shown. */
+export interface ApiPending {
+  count: number;
+  items: ApiPendingItem[];
+  fp: string[];
+  /** The session's own pane, `/s/<engine>/<id>`, where each request is decided. */
+  pane: string;
+}
+
+/** One checked fact a direction was filled with (#983). `observed_at` is null for a fact that came
+ *  from the objective's own probe settings rather than an observation. */
+export interface DirectionFact {
+  name: string;
+  value: string | number;
+  target?: Record<string, unknown> | null;
+  observed_at?: number | null;
+}
+
+/** `mission_directions.render`'s output as a proposal persisted it (#983). */
+export interface SupervisorRender {
+  text: string;
+  source: "direction" | "default_nudge" | (string & {});
+  facts: DirectionFact[];
+  digest?: string;
+  provenance?: Record<string, unknown>;
+}
+
+export interface RenderStatus {
+  sendable: boolean;
+  /** The server's own words for what changed. Empty when sendable. */
+  reason: string;
+}
+
+/** One row of the server's placeholder table (`mission_directions.placeholder_table`, #983 P2). */
+export interface DirectionPlaceholder {
+  name: string;
+  hint: string;
+  /** The probe kinds whose objective can fill this placeholder. */
+  probes: string[];
+}
+
+/** `POST /api/mission-directions/preview`: the direction filled with EXAMPLE facts. `text` is null
+ *  when there is no direction, so a nudge would type the default nudge. */
+export interface DirectionPreview {
+  text: string | null;
+  facts: { name: string; value: string | number }[];
+}
+
+export interface OrchestratorConfig {
+  enabled: boolean;
+  autonomy: OrchestratorTier;
+  allowed_verbs: string[];
+  /** The server-owned ceiling. Surfaced so the UI can SHOW that choose/answer/dispatch always
+   *  need a tap, rather than implying the tier alone decides. */
+  auto_verbs_ceiling: string[];
+  confidence_min: number;
+  interval_minutes: number;
+  max_actions_per_pass: number;
+  proposal_ttl_minutes: number;
+  /** Idle window (#768): past this many hours the orchestrator stops considering a session,
+   *  so it stops notifying about it. The session stays visible everywhere else. */
+  stale_hours: number;
+  nudge_template: string;
+  notify: "none" | "escalations" | "all";
+  configured: boolean;
+  default_nudge_template: string;
+  /** AUTONOMOUS AI-WRITTEN DIRECTIONS (#983 P4). Off by default, and the server refuses to turn it
+   *  on outside `yolo` — leaving that tier switches it off durably, so the UI must never treat a
+   *  remembered `true` as still armed. While it is on, an AI-drafted direction at or above the
+   *  threshold below is typed into a session with nobody reading it first. */
+  auto_ai_directions: boolean;
+  ai_direction_confidence_min: number;
+  /** The approved FLOOR (0.90) and ceiling (1.00) for the threshold. Sent by the server rather
+   *  than spelled here, so the control cannot offer a value the save would 422. */
+  ai_direction_confidence_floor: number;
+  ai_direction_confidence_max: number;
+  /** THE SUPERVISOR'S JUDGMENT THRESHOLD (#1088). A `supervisor_judged` objective counts as met
+   *  only when the judge says so at or above this. The floor (0.90) and ceiling (1.00) come from the
+   *  server, so the control cannot offer a value the save would 422. Optional on the wire for an
+   *  older server; the UI falls back to the floor. */
+  judge_confidence_min?: number;
+  judge_confidence_floor?: number;
+  judge_confidence_max?: number;
+}
+
+export interface PulseNotification {
+  id: string;
+  ts: number;
+  read: boolean;
+  title: string;
+  /** Resolved project name — the same one the sidebar and the feed show. */
+  project: string;
+  /** Why it was raised. Rendered in-app ONLY; never travels in a push payload (#726). */
+  reason: string;
+  session_id: string;
+  engine: string;
+  action_id: string;
+  /** A needs-you episode row (#1086) / an escalation (#852): stored flags the listing already
+   *  returns. The Notifications view (#2146) files a row under its class filter from them. */
+  needs_you?: boolean;
+  escalation?: boolean;
+  /** HQ's line about this row (#1837), joined from the Dispatches store — present only once the
+   *  line is written. `bundled` is how many events the dispatch is about. `tag` (#2146) is the
+   *  row's own event tag, read-only: it names which of the bundle's members this row IS. Never on
+   *  a push. */
+  dispatch?: { id: string; line: string; by: string; bundled: number; tag?: string };
+  /** The HQ conversation this row is about (#2103): its Open goes there. A conversation id. */
+  hq_conversation?: string;
+}
+
+/** One event in a dispatch (#1837): the row's fixed text and Open target, as announced. */
+export interface HqDispatchMember {
+  class:
+    | "needs you"
+    | "mission escalation"
+    | "automation failed"
+    | "automation message"
+    | string;
+  title: string;
+  reason: string;
+  /** The row's own Open target, re-validated by the server ("" when it has none). */
+  link: string;
+  ts: number;
+  /** The event's tag (#2146), read-only: equal to the live bell row's `dispatch.tag` while that
+   *  row exists. "" when the server could not vouch for it. */
+  tag?: string;
+}
+
+/** A written dispatch (#1837): HQ's line about one bundle of events. */
+export interface HqDispatch {
+  id: string;
+  /** When the line was written: the order dispatches are read in. */
+  at: number;
+  opened_at: number;
+  line: string;
+  contact: string;
+  by: string;
+  members: HqDispatchMember[];
+  /** Where the same events went (#1841), joined by event: absent when the route ledger can't be
+   *  read. A route that skipped them shows its skip; only an event in a sent copy reads "sent". */
+  routes?: HqDispatchRoute[];
+}
+
+export interface HqDispatchRoute {
+  instance: string;
+  connector: string;
+  state: string;
+  sent: boolean;
+  resolved: boolean;
+}
+
+export interface HqDispatchList {
+  dispatches: HqDispatch[];
+  /** Written dispatches newer than the cursor. */
+  new: number;
+  /** The store could not be read: nothing is listed, and the page says so. */
+  unreadable?: boolean;
+}
+
+export interface NotificationList {
+  notifications: PulseNotification[];
+  unread: number;
+  /** Unread escalations whose ledger state could NOT be established — the store would not read,
+   *  or the row carries no `action_id`. Deliberately not folded into `unread`: those rows project
+   *  as `unknown` and offer no control, so counting them as actionable gives a number the
+   *  operator cannot clear by acting (#852 rule 5). Reported separately so the console can say
+   *  "something is outstanding and its state is unreadable" instead of overstating or hiding it.
+   *  Optional so a response predating the field still parses. */
+  uncertain?: number;
+  /** A bounded window of recently DECIDED rows, projected back as history with NO controls
+   *  (#852). Bounded by the SERVER — newest 10 / 24h — and the bound is on the PROJECTION, not
+   *  the store: a row that ages out of this list is still present, still suppressing a
+   *  re-announce (#760), and merely stops being drawn. Optional for the same reason as above. */
+  settled?: PulseNotification[];
+  /** Needs-you episode tags the server has retracted (#1086 Phase 4): the app closes exactly
+   *  these. ABSENT when the store could not be read. */
+  close_tags?: string[];
+}
+
+/** A registered browser. `origin` only — the endpoint is a per-device capability URL and
+ *  never leaves the server. */
+export interface PushSubscriptionInfo {
+  id: string;
+  origin: string;
+  created_at: number;
+}
+
+export interface OrchestratorState_ {
+  config: OrchestratorConfig;
+  pending: OrchestratorAction[];
+  feed: OrchestratorAction[];
+  expired_now: number;
+  /** Verbs the actuator can actually render and deliver. Server-owned so the UI cannot offer
+   *  Approve on something every delivery would 409 (the client used to keep its own copy). */
+  delivering_verbs?: string[];
+  /** Per-kind last-run record from `aitasks.snapshot()`. `orchestrator` is the scheduled pass:
+   *  a run of failures here is the difference between "nothing needs you" and "nothing has
+   *  been looked at since yesterday evening" (#772). */
+  last?: Record<string, AiTaskLast | undefined>;
+}
+
+/** One AI task kind's last run. */
+export interface AiTaskLast {
+  finished_at: number;
+  ok: boolean;
+  detail?: string;
+  duration_s?: number;
+  /** Why the last run failed — a remote endpoint's message, clamped server-side. Rendered as
+   *  plain text, never markup. Null once a run succeeds. */
+  error?: string | null;
+  /** A single failure is a blip; a run of them is an outage. */
+  consecutive_failures?: number;
+  /** Wall-clock (s) of the last SUCCESSFUL run, carried across failures. */
+  last_ok?: number | null;
+}
+
+/** Server-pulled evidence. The model only ever names a `kind`; every byte here comes from the
+ *  real session, fetched at render time — a model that can quote a screen can invent one. */
+export interface Evidence {
+  kind: EvidenceKind;
+  text: string;
+  available: boolean;
+}
+
+/** `GET /api/missions/{id}/screen/{key}` for a held API session (#1900): it has no terminal screen,
+ *  so the server answers with where its conversation is instead of an `Evidence`. */
+export interface MissionScreenApi {
+  api: true;
+  session_key: string;
+  /** `/s/<engine>/<id>`. */
+  pane: string;
+}
+
+/** A tool-permission dialog parsed server-side off a session's screen (`permission_prompts`,
+ *  #1213). `persistent` marks an option that grants more than this one call ("Allow always",
+ *  "don't ask again"). `selected` is where the dialog's own cursor was — the server's business. */
+export interface PermissionPrompt {
+  engine: string;
+  kind: "permission";
+  parser: string;
+  heading: string;
+  title: string;
+  detail: string;
+  question: string;
+  options: { n: number; label: string; selected: boolean; persistent: boolean }[];
+}
+
+/** A numbered menu parsed server-side off a session's screen (`screen_menus`, #1060/#1082). */
+export interface ScreenMenu {
+  engine: string;
+  question: string;
+  options: { n: number; label: string; selected: boolean }[];
+}
+
+/** What kind of stop a NEEDS YOU row is at — read off the SCREEN, never from a model (#1086). */
+export type NeedsYouKind =
+  | "choice"
+  | "approval"
+  | "question"
+  | "needs_inspection"
+  /** An agent's own report (#1882): fixed server kinds. */
+  | "report_decision"
+  | "report_blocked";
+
+/** The one decision a NEEDS YOU row can settle: the operator projection of a ledger action,
+ *  whitelisted server-side. `menu` is the menu an escalation RECORDED (what `/choose` checks). */
+export interface NeedsYouAction {
+  id: string;
+  verb: string;
+  state: string;
+  projection?: string;
+  can_approve?: boolean;
+  can_reject?: boolean;
+  confidence?: number;
+  rationale?: string;
+  escalation_reason?: string;
+  option?: number;
+  answer?: string;
+  ts?: number;
+  expires_at?: number;
+  menu?: ScreenMenu;
+  /** Details only: this decision's text can be edited before approving (answer / continue). */
+  editable?: boolean;
+  /** Details only: exactly what an unedited approve would type. */
+  suggested_text?: string;
+}
+
+export interface NeedsYouRow {
+  id: string;
+  engine: string;
+  title: string;
+  project: { id: string; name: string };
+  last_activity: number | null;
+  /** When it started needing you (the decision's time, else the review's). */
+  since: number;
+  reason: string;
+  summary: string;
+  flagged: boolean;
+  kind: NeedsYouKind;
+  menu: ScreenMenu | null;
+  action: NeedsYouAction | null;
+  /** The agent's current `blocked` / `needs_decision` report (#1882), or null/absent. */
+  report?: AgentReport | null;
+  /** Whether an option tap on `report` can be delivered now, and if not, why (fixed server text).
+   *  Present whenever `report` is. */
+  report_answer?: { available: boolean; reason: string };
+}
+
+export interface NeedsYouPayload {
+  rows: NeedsYouRow[];
+  total: number;
+  total_unfiltered: number;
+  /** Every session that needs you, before the filter and the row cap (membership, not display). */
+  needs_you_ids?: string[];
+  truncated: boolean;
+  facets: { engines: string[]; projects: { id: string; name: string }[] };
+  window_days: number;
+}
+
+export interface NeedsYouDetails {
+  id: string;
+  title: string;
+  engine: string;
+  project: { id: string; name: string };
+  reason: string;
+  /** The session's last assistant message, from its transcript. Agent text: render as text. */
+  last_words: string;
+  /** The live screen tail, read WITHOUT attaching a viewer. Agent text: render as text. */
+  screen: string;
+  prompt_class: string;
+  menu: ScreenMenu | null;
+  action: NeedsYouAction | null;
+}
+
+export interface RecentWorkEntry {
+  session_key: string;
+  ts: number;
+  text: string;
+  engine: string;
+  title: string;
+  project: { id: string; name: string };
+  /** That session's own stored recap, for the ▸ expansion. Agent-derived: render as text. */
+  session_recap: string;
+}
+
+export interface RecentWorkPayload {
+  window_days: number;
+  source: "ai" | "local";
+  generated_at: number | null;
+  /** A refresh would write something different (sessions moved on, or an entry aged out). */
+  stale: boolean;
+  configured: boolean;
+  error: string | null;
+  entries: RecentWorkEntry[];
+}
+
+/** A session HQ's find names (#522): the card plus the model's one-line reason. */
+export interface PulseAskMatch extends PulseCard {
+  why: string;
+}
+
+/** A mission an Ask answer is about (#1069). `id` is the bare mission id — what `missionLink`
+ *  takes. Server-built from the missions store; only `why` is model text. */
+export interface PulseAskMissionMatch {
+  id: string;
+  title: string;
+  state: string;
+  project_id: string;
+  why: string;
+}
+
+/** Ask's durable conversations (#1443). The switcher's row: the first question is the title. */
+export interface AskConversationSummary {
+  id: string;
+  title: string;
+  created_at: number;
+  updated_at: number;
+  /** A followed session changed since this conversation was last seen (#1443 Phase 4). */
+  unread?: boolean;
+}
+
+/** A followed session changed (#1443 Phase 4). A KIND and the session's title — the words are
+ *  authored here, never model text. */
+export interface AskUpdate {
+  key: string;
+  /** `not_followed` (#1517): a delivered nudge that could not be followed (the cap was full). */
+  kind: "finished" | "needs_you" | "ended" | "not_followed";
+  title: string;
+  ts: number;
+  /** Still followed — Unfollow is offered. */
+  following: boolean;
+}
+
+/** A session an answer named, AS STORED: its key, title and why — never the card's content. */
+export interface AskStoredMatch {
+  id: string;
+  title: string;
+  why: string;
+  /** A session HQ only looked up for its own work: never a row under the answer, still a title
+   *  a step can name. Absent on a row the Commander asked for, and on every older record. */
+  hidden?: boolean;
+}
+
+export interface AskStoredMissionMatch {
+  id: string;
+  title: string;
+  state: string;
+  why: string;
+}
+
+/** A question Ask stopped to ask (#1443 Phase 2). Options are the server's stored replies; an
+ *  answer sends the option's INDEX. */
+export interface AskQuestionCard {
+  question_id: string;
+  question: string;
+  options: string[];
+  allow_text: boolean;
+  answered: boolean;
+}
+
+/** A message Ask proposed for a session (#1443 Phase 2), with the ledger action's LIVE state —
+ *  `projection` / `can_*` are `project_for_operator`'s contract, never derived here. */
+export interface AskNudgeCard {
+  action_id: string;
+  kind: "nudge";
+  key: string;
+  title: string;
+  text: string;
+  /** HQ stopped the session's running turn first (#1960 Phase 2); `text` may then be empty. */
+  interrupt?: boolean;
+  state: string | null;
+  projection:
+    | "actionable"
+    | "in_flight_revocable"
+    | "in_flight_locked"
+    | "settled"
+    | "historical"
+    | "unknown";
+  can_approve: boolean;
+  can_reject: boolean;
+  detail: string;
+}
+
+/** A session Ask proposed to start (#1443 Phase 3a). `title` is the project, `text` the brief —
+ *  as shown; what a tap launches is the server's own entry. Its state is the server's:
+ *  `unknown` = the entry could not be read just now, `gone` = there is no entry to decide. */
+export interface AskSessionCard {
+  /** The card HQ staged to replace this one (#2120); only on a dismissed card. */
+  replaced_by?: string;
+  /** The card this one replaced (#2120). */
+  replaces?: string;
+  /** What changed against the card it replaced (#2251): drawn as the card\'s Changed line. */
+  changes?: AskCardChange[];
+  action_id: string;
+  kind: "session";
+  title: string;
+  agent: string;
+  text: string;
+  state:
+    | "pending"
+    | "deciding"
+    | "started"
+    | "unconfirmed"
+    | "failed"
+    | "stale"
+    | "dismissed"
+    | "interrupted"
+    | "unknown"
+    | "gone";
+  engine: string;
+  /** The kind of session a tap starts (#2014), pinned when the card was shown: an API session
+   *  (which always asks before it acts — no bypass switch) or a terminal one. Absent from an older
+   *  server: the card then names neither and keeps its switch. */
+  runtime?: "api" | "pty";
+  /** The new-session form's starting value for permission bypass — the card's toggle starts here. */
+  bypass_default: boolean;
+  /** What the tap carried, once decided. */
+  bypass: boolean | null;
+  /** The session it started (or may have started), for a way in. */
+  session_key: string;
+  reason: string;
+  /** `default_changed`: the bypass default moved since this was proposed; check and start again.
+   *  `busy`: the project was being changed as it started; nothing started, tap again. */
+  notice: "" | "default_changed" | "busy" | "session_limit";
+  can_start: boolean;
+  can_dismiss: boolean;
+}
+
+/** What `POST /api/ask/proposals/{id}/decide` answers with (and a 409 carries under `proposal`):
+ *  the entry's STATE, never the card's display fields. */
+export type AskSessionDecision = Pick<
+  AskSessionCard,
+  | "state"
+  | "engine"
+  | "bypass_default"
+  | "bypass"
+  | "session_key"
+  | "reason"
+  | "notice"
+  | "can_start"
+  | "can_dismiss"
+>;
+
+/** One step of the team an `assemble` card was STAGED with (#2130): a specialist-eligible agent
+ *  step, in plan order. `assembled`: the pick this tap writes; `kept`: it keeps its specialist;
+ *  `unassigned`: nobody qualifies, with the server's own reason. */
+export type AskTeamRow =
+  | {
+      step: string;
+      state: "assembled" | "kept";
+      specialist: string;
+      version: number;
+      /** Empty when the pick's specialist version is gone. */
+      engine: string;
+      model: string;
+    }
+  | { step: string; state: "unassigned"; reason: string };
+
+/** A change HQ proposed to a session or project (#1559): the server's own wording. What a tap runs
+ *  is the server's catalog entry, bound to this card — never anything the client sends but the
+ *  decision and the inputs the card asks the OPERATOR for (`needs`, e.g. a folder). */
+export interface AskOperationCard {
+  /** The card HQ staged to replace this one (#2120); only on a dismissed card. */
+  replaced_by?: string;
+  /** The card this one replaced (#2120). */
+  replaces?: string;
+  /** What changed against the card it replaced (#2251): drawn as the card\'s Changed line. */
+  changes?: AskCardChange[];
+  action_id: string;
+  kind: "operation";
+  /** The catalog id, e.g. `session.archive`. */
+  op: string;
+  risk: "reversible" | "destructive" | "external";
+  /** The card's Action row and its button. */
+  label: string;
+  verb: string;
+  /** The target's title or name, as the card was shown. */
+  title: string;
+  /** The server's sentence for what it will do. */
+  text: string;
+  /** Card inputs only the operator supplies: a folder, or a secret's write-only value (#1786). */
+  needs: ("folder" | "value" | "file")[];
+  state:
+    | "pending"
+    | "deciding"
+    | "done"
+    | "partly_done"
+    | "failed"
+    | "stale"
+    | "dismissed"
+    | "interrupted"
+    | "unconfirmed"
+    | "unsettled"
+    // The route's store refused it and nothing changed (#1938).
+    | "refused"
+    | "unknown"
+    | "gone"
+    /** A skill import the Library can't store (#2145): staged settled, offers nothing. */
+    | "refused";
+  /** The outcome sentence, once settled. */
+  summary: string;
+  reason: string;
+  can_confirm: boolean;
+  can_dismiss: boolean;
+  /** For a folder the operator picks from the project's own folders. */
+  choices?: { folder?: string[] };
+  /** A Library save (#1611): what it saves is fetched from `askProposalContent`, never polled. */
+  content?: boolean;
+  /** An `assemble` card's team as STAGED (#2130), one row per eligible step; absent on a card
+   *  staged before rows (it shows its stored sentence). A stale card keeps these rows. */
+  team?: AskTeamRow[];
+  /** The plan revision the team was staged at. */
+  team_revision?: number | null;
+  /** A done (or unconfirmed) Library save: what it saved, for the card's Open in Library link. An
+   *  empty id (a new automation, whose id the route chose) opens the list. */
+  library?: {
+    kind: "playbook" | "skill" | "automation" | "secret" | "specialist";
+    id: string;
+  };
+  /** The mission this card names (#1950): a team card's mission, or the draft a mission card
+   *  created. The server's own id; the card's Open mission link is built from it (`missionLink`). */
+  mission?: { id: string };
+}
+
+/** What a Library card shows of its draft (#1611): the files, the diff against what HQ read, or an
+ *  automation's scope lines as the server renders them. Text, rendered as text — never markup. */
+export type AskLibraryContent =
+  | { kind: "files"; files: { path: string; text: string | null }[]; relies?: AskReliesRow[] }
+  | {
+      /** An MCP server from a repository link (#2353): what the link resolved to, and the server
+       *  exactly as it will be registered (its binding id is never shown; the tap sends it). */
+      kind: "mcp_link";
+      link: AskMcpLink;
+      server: string;
+    }
+  | {
+      /** A skill read from a repository link (#2145): the pinned source, one row per file (its
+       *  size, lines and a flag), the files verbatim, and every reason it can't be saved. */
+      kind: "import";
+      source: string;
+      rows: AskImportRow[];
+      files: { path: string; text: string }[];
+      refused: string[];
+    }
+  | {
+      kind: "diff";
+      diff: {
+        path: string;
+        status: "added" | "removed" | "changed";
+        added: number;
+        removed: number;
+        diff: string;
+      }[];
+      relies?: AskReliesRow[];
+    }
+  | {
+      /** A specialist card (#1938): the specialist in full and, for an edit, the version it
+       *  changes. `skills_now` is the Library's revision of each pinned skill at THIS read
+       *  (`null`: gone), so a pin that moved since the card was made is marked. */
+      kind: "specialist";
+      action: "create" | "edit";
+      after: AskSpecialistShown;
+      before: AskSpecialistShown | null;
+      skills_now: Record<string, string | null>;
+      version?: { from: number; to: number };
+    }
+  | {
+      kind: "automation";
+      /** The name it is saved under; `changed` lists the settings an edit changes. */
+      name: string | null;
+      changed: string[];
+      scope_lines: string[];
+      instruction: string | null;
+      /** `off` (saved switched off), `enabled` (an edit of one that is on), `enable`. */
+      status: "off" | "enabled" | "enable" | "";
+      widened: string[];
+    }
+  | {
+      /** The flow a mission card applies (#2152): the deployed procedure, or one HQ wrote for
+       *  this mission. Every step with who does it; an agent step's role is its skills and its
+       *  MINIMUM grade (the Team card fills it from the specialists). */
+      kind: "flow";
+      source: "playbook" | "mission_local";
+      title: string;
+      playbook: string | null;
+      steps: AskFlowStep[];
+    };
+
+/** One version of a specialist as its card shows it (#1938). `grade` is derived from the
+ *  operator's model grades at read: it follows the model and is never chosen on the card. */
+export type AskSpecialistShown = {
+  title: string;
+  summary: string;
+  engine: string;
+  /** The agent's name as HQ calls it; empty when the agent is not present here. */
+  agent: string;
+  model: string;
+  effort: string | null;
+  grade: "fast" | "strong" | "frontier" | null;
+  skills: { id: string; revision: string }[];
+  capacity: number;
+};
+
+/** A specialist a playbook card says it relies on (#1938), with its state at THIS read. */
+export type AskReliesRow =
+  | { title: string; state: "proposed"; where: "below" | "above" }
+  | {
+      title: string;
+      state: "exists";
+      version: number;
+      engine: string;
+      agent: string;
+      model: string;
+    }
+  | { title: string; state: "missing" };
+
+/** One step of a mission card's flow (#2152). */
+export type AskFlowStep = {
+  id: string;
+  title: string;
+  /** Everything below that reaches the agent's instruction is shown VERBATIM, never cut. */
+  brief: string;
+  /** A deployed procedure's step prompts (a flow HQ writes may carry none). */
+  prompts: string[];
+  /** What "done" means for the step, as the agent is told it. */
+  checklist: string[];
+  /** `none`, `read` or `read-write`: the step's project memory. */
+  memory: string;
+  outputs: string[];
+  /** Titles of the steps this one must not share a specialist with. */
+  distinct_from: string[];
+  /** `agent`, `operator` (you), or `none` (a note). */
+  actor: string;
+  skills: string[];
+  /** The role's MINIMUM grade label (Intern, Specialist, Senior); "" for a step with no role. */
+  min_grade: string;
+  /** How often a reviewer may send work back here, when the step reworks. */
+  rework: number | null;
+};
+
+/** What a repository link resolved to, as HQ's create card shows it (`ask_mcp._link_view`). */
+export interface AskMcpLink {
+  repository: string;
+  commit: string;
+  manifest: string;
+  kind: string;
+  package: string;
+  version: string;
+  registry: string;
+  record_field: string;
+  names: string;
+  integrity: string;
+  dependencies: number;
+  install_scripts: string;
+  runs: string;
+  license: string;
+  disclaimer: string;
+}
+
+/** One file of an imported skill as the card's table shows it. `bytes` is null when the server
+ *  withheld it (over the size cap); `flag` names why a file stands out. */
+export interface AskImportRow {
+  path: string;
+  bytes: number | null;
+  lines: number | null;
+  flag: "" | "script" | "binary" | "oversize" | "link" | "submodule" | "path";
+}
+
+export type AskOperationDecision = Pick<
+  AskOperationCard,
+  | "state"
+  | "summary"
+  | "reason"
+  | "can_confirm"
+  | "can_dismiss"
+  | "choices"
+  | "library"
+  | "team"
+  | "team_revision"
+>;
+
+/** A message HQ proposes through a messenger connector (#1833): the exact text a tap sends.
+ *  Its live fields come from the proposal sidecar (`ask_messages.view`). */
+export type AskMessageCard = {
+  /** The card HQ staged to replace this one (#2120); only on a dismissed card. */
+  replaced_by?: string;
+  /** The card this one replaced (#2120). */
+  replaces?: string;
+  /** What changed against the card it replaced (#2251): drawn as the card\'s Changed line. */
+  changes?: AskCardChange[];
+  action_id: string;
+  kind: "message";
+  connector: string;
+  recipient: string;
+  recipient_kind: string;
+  /** A Matrix room's member count, looked up live when HQ staged the card: who would read it. */
+  recipient_members?: number;
+  text: string;
+  state: string;
+  reason?: string;
+  code?: string;
+  can_send?: boolean;
+  can_dismiss?: boolean;
+  /** An email (#1836): the configured From, the To address, and the subject and body the text
+   *  splits into, as the transport sends them. Absent on every other message. */
+  sender?: string;
+  address?: string;
+  subject?: string;
+  body?: string;
+};
+export type AskMessageDecision = Omit<AskMessageCard, "action_id" | "kind">;
+export type AskProposalCard = AskNudgeCard | AskSessionCard | AskOperationCard | AskMessageCard;
+
+/** One step of an HQ turn as the process view shows it (#2076): a stored tool record. The tool's
+ *  name, its guarded string arguments, and numbers — never model text, never tool output. */
+export interface AskToolStep {
+  name: string;
+  outcome: "ok" | "refused";
+  /** The step's ordinal in its turn; absent on a record from before #2076. */
+  n?: number;
+  /** How long it took, in milliseconds. */
+  ms?: number;
+  count?: number;
+  length?: number;
+  /** The refusal's code, when refused. */
+  error?: string;
+  /** What became of a send's message. */
+  sent?: "yes" | "no" | "unknown";
+  /** It had, or may have had, an effect: always stored, whatever its position. */
+  effect?: boolean;
+  args?: Record<string, string>;
+}
+
+/** The steps a turn ran past its stored ones (#2076): numbers and tool names only. */
+export interface AskStepsMore {
+  count: number;
+  ms: number;
+  tools: Record<string, number>;
+  refused: Record<string, number>;
+}
+
+/** How many steps a turn took. `incomplete`: it ended without its summary (a crash), so the
+ *  count is at least the stored steps. `live`: the step running now, on a running turn. */
+export interface AskSteps {
+  count: number;
+  more: AskStepsMore | null;
+  incomplete: boolean;
+  live?: { n: number; tool: string; at: number } | null;
+}
+
+/** One question and what became of it. `status` is the server's: a `pending` turn is still
+ *  running there (or in another tab), whatever this page is doing. `stopped` (#2076): the
+ *  operator ended it before HQ answered; what it did is kept. */
+export interface AskConversationTurn {
+  turn_id: string;
+  question: string;
+  asked_at: number;
+  /** #2103: `queued` waits behind the running turn; `withdrawn` was taken back; `not_started`
+   *  was still queued when the server stopped. */
+  status: "pending" | "done" | "failed" | "stopped" | "queued" | "withdrawn" | "not_started";
+  /** #2103: when it began to run and when its outcome was written (server time); absent from
+   *  an older server. `settled_at` is what "seen" is marked through. */
+  started_at?: number | null;
+  settled_at?: number | null;
+  answer: string | null;
+  detail: string | null;
+  code: string | null;
+  matches: AskStoredMatch[];
+  mission_matches: AskStoredMissionMatch[];
+  tools: AskToolStep[];
+  /** #2076; absent from an older server. */
+  steps?: AskSteps;
+  /** How long the turn ran (settled), or has run so far (running, by the server's clock). */
+  elapsed_ms?: number | null;
+  /** A Stop is in: the turn settles once what it is doing has reached its outcome. */
+  stopping?: boolean;
+  /** The question this turn ended on (#1443 Phase 2). */
+  ask?: AskQuestionCard | null;
+  proposals?: AskProposalCard[];
+  /** The question this turn answers. */
+  answers?: string | null;
+  /** Who answered (#1525): the HQ contact's id, stored on the turn so an earlier answer keeps its
+   *  speaker after the operator switches; "off" (or absent, before HQ) reads as plain HQ. */
+  contact?: string;
+  /** Files shared with the question (#1707) — their descriptors, as stored. */
+  attachments?: AskAttachment[];
+  /** What the turn asked the Commander's screen to show (#2102): each stored directive's closed
+   *  fields beside the title the conversation already holds for its target. A REQUEST, never a
+   *  result, and never executed when read: only a live `screen` event is. Absent from an older
+   *  server. Parsed field by field (`app/screenDirective.ts`). */
+  shows?: unknown[];
+  /** How the turn began (#1397, #1950): absent = typed, `call` = spoken on a call, `card` = the
+   *  server's continuation after a confirmed draft-mission card — not the Commander's words. */
+  via?: "call" | "card" | null;
+  /** On a settled view only, never stored (#1950): this turn's draft card was tapped while it
+   *  was still answering, and the server has just started HQ's continuation, so the client reads
+   *  the conversation again at once instead of waiting for nothing. */
+  continued?: boolean;
+  /** #2251: this turn laid out, revised or filled a step list; read the conversation again. */
+  steps_changed?: boolean;
+}
+
+/** One HQ task (#2103): a turn that runs, waits, is parked on a question, or settled lately.
+ *  `question` is the stored question's first line (redacted as stored; empty for the server's
+ *  own continuation after a card), `conversation` its conversation's title. */
+export interface HqTask {
+  cid: string;
+  turn_id: string;
+  state:
+    | "running"
+    | "queued"
+    | "question"
+    | "answered"
+    | "stopped"
+    | "failed"
+    | "withdrawn"
+    | "not_started";
+  question: string;
+  via?: "call" | "card" | null;
+  conversation: string;
+  steps: number;
+  /** The tool the running turn is on, by name (`askStep.ts` words it). */
+  step: string | null;
+  stopping: boolean;
+  asked_at: number | null;
+  started_at: number | null;
+  ended_at: number | null;
+  elapsed_ms: number | null;
+}
+
+export interface HqTaskList {
+  tasks: HqTask[];
+  recent: HqTask[];
+  counts: { running: number; queued: number; question: number };
+  /** How many questions may wait behind one conversation's running turn. */
+  queue_max?: number;
+}
+
+/** A file shared in the HQ chat (#1707). The bytes live on the server; this is what the
+ *  conversation carries. `kind` is decided server-side from the bytes: `image` renders inline,
+ *  `text` is viewable + downloadable, `other` is a Download card (never rendered). */
+export interface AskAttachment {
+  id: string;
+  name: string;
+  kind: "image" | "text" | "other";
+  size: number;
+  /** Shared as a secret (#1786): never shown to HQ, never served back; HQ can only propose
+   *  moving it into the Library. */
+  secret?: boolean;
+}
+
+/** One change against a replaced card (#2251): a field and its old and new value. A long text (a
+ *  brief, a message) is named with empty values. */
+export interface AskCardChange {
+  field: string;
+  from: string;
+  to: string;
+}
+
+/** One step of an HQ step list (#2251). Its state is the server's, derived from its cards. */
+export interface AskStep {
+  sid: string;
+  n: number;
+  title: string;
+  detail: string;
+  needs: string[];
+  state: "now" | "next" | "done" | "held" | "skipped" | "ended";
+  /** Why a step is held: its card did not complete, or it needs a skipped step. */
+  reason: "" | "card" | "needs_skipped";
+  outcome: string;
+  /** The step's cards (action ids), drawn in its slot while it is the current step. */
+  cards: string[];
+  settled_at: number | null;
+  /** A done step whose cards are all session starts: started, its work not tracked. */
+  started?: boolean;
+}
+
+/** HQ's ordered steps for a multi-part request (#2251): drawn ONCE, under `drawn_at_turn`. */
+export interface AskStepList {
+  id: string;
+  revision: number;
+  title: string;
+  status: "active" | "held" | "finished" | "ended";
+  current: string | null;
+  drawn_at_turn: string;
+  created_turn?: string;
+  steps: AskStep[];
+  /** HQ is about to continue (a step settled): keep reading. */
+  owed: boolean;
+}
+
+export interface AskConversation {
+  id: string;
+  title: string;
+  turns: AskConversationTurn[];
+  running: boolean;
+  /** #2251: the step lists, oldest first; null when they could not be read this time. */
+  step_lists?: AskStepList[] | null;
+  /** #1443 Phase 4: the follower's updates, in order; the sessions followed; unseen updates. */
+  updates?: AskUpdate[];
+  following?: string[];
+  /** Every active follow with its title, so Unfollow is offered before any update exists. */
+  follows?: AskFollow[];
+  unread?: boolean;
+  /** How far this conversation has been SEEN (#2103): the newest update or turn settlement a
+   *  browser displayed. Absent from an older server. */
+  seen_at?: number;
+  /** The follow state could not be read this time: keep what was last verified, keep reading. */
+  follows_incomplete?: boolean;
+  /** An update is stored but not appended to the conversation yet: it will land, keep reading. */
+  updates_pending?: boolean;
+  /** The update budget is spent: this conversation no longer follows sessions (#1517). */
+  follows_exhausted?: boolean;
+  /** When each remembered follow (active or not) last began (#1755): an older update belongs to
+   *  an earlier follow of that session. */
+  follow_since?: Record<string, number>;
+}
+
+/** A session the conversation follows (#1443 Phase 4). */
+export interface AskFollow {
+  key: string;
+  title: string;
+}
+
+/** One line of `POST /api/ask/conversations/{id}/message/stream` (#1443): `progress` while the
+ *  turn runs, then exactly one `turn` (the settled turn) or one `error`. */
+export type AskTurnEvent =
+  | { type: "progress"; step: "classify" }
+  // The turn watcher changed HQ's approach (#2136).
+  | { type: "progress"; step: "replan"; text: string }
+  | {
+      type: "progress";
+      step: "catalog";
+      sessions: number;
+      missions: number;
+      hits?: number;
+      mission_hits?: number;
+    }
+  | { type: "progress"; step: "content"; candidates: number }
+  | { type: "progress"; step: "thinking"; round: number; steps?: number }
+  // #2076: a step's ordinal and start time (server clock, seconds)…
+  | { type: "progress"; step: "tool"; tool: string; n?: number; at?: number }
+  // …and its end: the stored record (absent for a step past the stored ones) and the totals.
+  | {
+      type: "progress";
+      step: "tool_done";
+      tool: string;
+      n: number;
+      ms: number;
+      outcome: "ok" | "refused";
+      steps: number;
+      more: number;
+      record: AskToolStep | null;
+    }
+  // #2102: HQ asks THIS browser to show something. Sent once, on the stream of the device that
+  // asked; `title` is the server's name for the target, for the line under the answer.
+  | { type: "screen"; turn_id?: string; directive: unknown; title?: string }
+  | { type: "turn"; status: number; turn: AskConversationTurn }
+  | { type: "error"; status: number; detail: string };
+
+/** One running AI task in the shared activity surface (#441 Phase 1). */
+export interface AiActivityTask {
+  kind: string;
+  detail: string;
+  started_at: number;
+}
+
+/** The last run of an AI task kind (#441 Phase 1). */
+export interface AiActivityLast {
+  finished_at: number;
+  ok: boolean;
+  detail: string;
+  duration_s: number;
+}
+
+/** GET /api/ai/activity (#441 Phase 1): what AI work is running now + the last run per kind.
+ *  Also the body of a single-flight 409 (that kind of task already running), with `detail`. */
+export interface AiActivity {
+  running: AiActivityTask[];
+  last: Record<string, AiActivityLast>;
+  /** Only present on the 409 scan-already-running body. */
+  detail?: string;
+}
+
+/** Running vs working, host-wide (#1085): agents running, and how many printed in the window. */
+/** One running session on the dashboard (#1123). */
+export interface DashboardLiveRow {
+  id: string;
+  title: string;
+  engine: string;
+  project: { id: string; name: string };
+  /** Running AND visibly printing (#1085). */
+  working: boolean;
+  last_activity: number;
+  /** The recap's current-state line — where it stands now, not how it started. */
+  state_line: string;
+}
+
+export type DashboardBand =
+  "needs_you" | "in_flight" | "recently_active" | "idle";
+
+export interface DashboardRecentRow {
+  id: string;
+  title: string;
+  engine: string;
+  project: { id: string; name: string };
+  band: DashboardBand;
+  /** `null` when the runtime probe failed: unknown, never "not running". */
+  running: boolean | null;
+  last_activity: number;
+}
+
+/** `GET /api/dashboard/sessions` (#1123). Every count is over the rows the session list shows, so
+ *  it equals `/api/sessions?running=live|working`'s `total`. */
+export interface DashboardSessions {
+  live:
+    | {
+        health: "ok";
+        total: number;
+        working: number;
+        by_engine: Record<string, { live: number; working: number }>;
+        rows: DashboardLiveRow[];
+      }
+    | { health: "unavailable" };
+  recent: { total: number; rows: DashboardRecentRow[] };
+}
+
+export interface SessionsPage {
+  sessions: Session[];
+  next_offset: number | null;
+  total: number;
+  /** Of `total` — the FILTERED set, not the page — how many have an agent running (#1085). */
+  live_total?: number;
+  facets: {
+    projects: ProjectRef[];
+    engines: string[];
+    /** Missions holding at least one session in scope (#948). Absent when the store was unreadable. */
+    missions?: SessionMissionFacet[];
+    /** Sessions in scope held by no mission (#948). */
+    no_mission?: number;
+    /** Every topic cluster, with its count in scope (#1997). Absent when the answer is unknown
+     *  (a store could not be read) or clusters are off. */
+    clusters?: SessionClusterFacet[];
+    /** Every distinct custom tag in scope, case variants grouped, with its count (#2338). Absent
+     *  on older servers. */
+    tags?: SessionTagFacet[];
+  };
+  /** A `mission` filter was requested but the mission store could not be read (#948). */
+  mission_filter_unavailable?: boolean;
+  /** A `cluster` filter was requested but could not be answered (#1997). */
+  cluster_filter_unavailable?: boolean;
+  /** A `running` filter was requested but the runtime probe failed (#1123): unknown, not "none". */
+  running_filter_unavailable?: boolean;
+  /** Present only while a filter is active (#2325): subagents needing the operator whose MAIN
+   *  session the filter dropped. `count` is uncapped; `mains` names every one of those mains. */
+  attention_outside?: {
+    count: number;
+    mains: { id: string; engine: string; title: string; attention_count: number }[];
+  };
+  /** The pinned scan to pass on the NEXT page (#1007 Phase 3). Present only when the request sent
+   *  `snapshot`, and it may differ from what was sent (an expired pin is replaced, never an error). */
+  snapshot?: string;
+}
+
+/** A tag filter option (#2338): the tag as displayed, the group key to send back as `tag=`, and
+ *  how many sessions in scope carry it. */
+export interface SessionTagFacet {
+  tag: string;
+  /** The server's `casefold()` of the tag: one key per case-insensitive group. */
+  key: string;
+  count: number;
+}
+
+/** The mission that holds a session, as stamped on session rows (#948). */
+export interface SessionMissionRef {
+  id: string;
+  title: string;
+  state: string;
+}
+
+/** A mission in the list's facets: its count in scope and, per project, how many of those
+ *  sessions are in that project (#1997; absent on older servers). */
+export type SessionMissionFacet = SessionMissionRef & {
+  count: number;
+  by_project?: Record<string, number>;
+};
+
+/** The topic cluster a session is in, as stamped on session rows (#1997). `kept` = the operator
+ *  chose the title, so HQ no longer renames it. */
+export interface SessionClusterRef {
+  id: string;
+  title: string;
+  kept: boolean;
+}
+
+export type SessionClusterFacet = SessionClusterRef & {
+  project_id: string;
+  count: number;
+};
+
+/** One cluster as `GET /api/clusters` lists it (#1997). */
+export interface ClusterDetail extends SessionClusterRef {
+  project_id: string;
+  ai_title: string;
+  source: "ai" | "operator";
+  summary: string;
+  count: number;
+}
+
+/** Session clusters settings (#1997). `configured` mirrors the AI endpoint's readiness. */
+export interface ClustersConfig {
+  enabled: boolean;
+  agent_tool: boolean;
+  interval_minutes: number;
+  configured: boolean;
+}
+
+export interface ClustersList {
+  clusters: ClusterDetail[];
+  /** project id → its last sweep. */
+  sweeps: Record<string, { at: number | null; error: string | null } | null>;
+  /** The cluster store could not be read: nothing is listed, and that is not "no clusters". */
+  unreadable: boolean;
+  settings: ClustersConfig;
+}
+
+export interface ReclusterReport {
+  projects: { project_id: string; status: string; error?: string }[];
+  deferred: number;
+}
+
+/** What a session BELONGS to (#361): a project entity, or the implicit folder group
+ *  (pre-#361 behaviour — id is the cwd). Resolved server-side by the shared resolver. */
+export interface ProjectRef {
+  kind: "project" | "folder";
+  /** Entity id (`p-…`) or the cwd for a folder ref — also the `project` filter value. */
+  id: string;
+  name: string;
+  /** Entity color (#285 spends it); absent on folder refs. */
+  color?: string;
+  /** Scoped rows resolving to this ref — set on FACET refs only (#361 Phase 3),
+   *  never on a session row's `project`. */
+  count?: number;
+}
+
+/** A project entity from GET /api/projects (#361): what the Settings manager edits.
+ *  `session_count` is the resolver's member count at read time (GET only — the
+ *  create/patch responses omit it). */
+export interface ProjectEntity {
+  id: string;
+  name: string;
+  color: string;
+  folders: string[];
+  /** Default launch folder (#448): where new sessions in this project start unless overridden.
+   *  Always one of `folders` (auto-adopted); "" for legacy folderless projects with none set. */
+  default_folder: string;
+  archived: boolean;
+  created_at: number;
+  session_count: number;
+  /** What a NEW session in this project starts with (#1508). Every key is optional and an absent
+   *  one follows the global agent defaults; a model or effort only ever sits beside the project's
+   *  own engine. Only a PRESELECTION on the New session form — no launch path reads it. */
+  launch_defaults?: LaunchDefaults;
+}
+
+export interface LaunchDefaults {
+  engine?: string;
+  model?: string;
+  effort?: string;
+  bypass?: boolean;
+}
+
+/** A directory from GET /api/fs/dirs — the folder picker's tree node (#448), bounded to ~/. */
+export interface FsDir {
+  name: string;
+  path: string;
+}
+
+/** Bulk archive/unarchive report from POST /api/projects/{id}/(un)archive (#361 Phase 2).
+ *  Idempotent + blindly retryable: re-calling after a partial failure retries only the
+ *  failed members (the rest report `already_*`). Result keys mirror the direction:
+ *  archived/already_archived/failed or unarchived/already_unarchived/failed. */
+export interface ProjectArchiveReport {
+  id: string;
+  archived: boolean;
+  sessions: { id: string; result: string; reason?: string }[];
+  counts: Record<string, number>;
+}
+
+/** A launch-location folder from GET /api/folders — the pre-#361 "project" picker row.
+ *  Folders stay where sessions LAUNCH; project entities are what sessions BELONG to. */
+export interface Folder {
+  cwd: string;
+  label: string;
+}
+
+/** The forge the objective probes read (#891). PUBLIC view only — the token is write-only and
+ *  surfaces as `token_set`, never as a value.
+ *
+ *  `configured` deliberately does NOT require a token: a public forge is readable without one, and
+ *  demanding a credential the probes do not need would turn a working setup into a permanent
+ *  `unknown`. */
+export interface ForgeConfig {
+  enabled: boolean;
+  kind: string;
+  base_url: string;
+  owner: string;
+  token_set: boolean;
+  configured: boolean;
+}
+
+/** Session review depth (#1086 Phase 2) — its own prefs block, never inside `ai_review`. */
+export interface SessionReviewConfig {
+  /** Read the screen for numbered options, yes/no and permission prompts. */
+  recognise_prompts: boolean;
+  /** `deep` adds a bounded transcript tail and earlier outcomes for the sessions a decision is
+   *  about; `standard` reads the current-state line, the reason and the screen's prompt. */
+  decision_context: "standard" | "deep";
+  /** Notify (bell + push) when a session no mission holds starts needing you (#1086 Phase 4).
+   *  Optional so a server predating the field still parses; absent means on. */
+  notify?: boolean;
+  /** Show the review's AI title as the session's name (#1510). Off keeps each session's own
+   *  title; the review still writes it. Optional like `notify`; absent means on. */
+  rename_sessions?: boolean;
+}
+
+export interface AppConfig {
+  /** CSRF token bound to the session cookie; sent as X-CSRF-Token on mutations. */
+  csrf: string;
+  /** Server hostname (#503), shown in the footer classbar. Absent on older servers. */
+  hostname?: string;
+  /** Absent on a server from before #891. */
+  forge?: ForgeConfig;
+  /** Engines that are installed AND can start a new session (drives the picker). */
+  new_session_engines: string[];
+  /** Native API clients that cannot start, with why (#1311). Optional: older servers omit it. */
+  unavailable_clients?: UnavailableClient[];
+  terminal_backend: "ttyd" | "ws" | string;
+  /** First-run forced password change pending — the SPA routes to /change-password. */
+  must_change_password?: boolean;
+  /** First-run onboarding (#463): false ⇒ show the setup wizard (after the password gate);
+   *  true once completed/skipped, or inferred true for an existing install. Absent on older
+   *  servers (the SPA treats absent as onboarded so it never shows for them). */
+  onboarded?: boolean;
+  /** What's new (#971): the newest release whose notes were dismissed, `null` until then. Absent
+   *  on a server from before #971 — and an absent key means "not due", so the dialog stays shut. */
+  whats_new_seen?: string | null;
+  /** Usage analytics (#1009): the operator's decision, and whether this server allows it at all
+   *  (`available` is false under `AGENT_SESSIONS_ANALYTICS=0`). Absent on an older server. */
+  analytics?: AnalyticsState;
+  /** Per-user UI theme id (dark|light); applied at load. Absent on older servers. */
+  theme?: string;
+  /** The primary HQ contact (#1525): a contact id from `components/hq/contacts.ts`, "random" (a
+   *  new contact every day) or "off". Absent on older servers (→ "random"). */
+  hq_contact?: string;
+  /** The server's write revision of `hq_contact` (#1525): orders a client's own write against this
+   *  read. Absent on older servers. */
+  hq_contact_rev?: number;
+  /** Settings → HQ → "Sessions can report to HQ" (#1882): off by default (#1889); new launches only.
+   *  Absent on older servers. */
+  hq_reports?: boolean;
+  /** Settings → AI → HQ → Question routing (#2028). Absent on older servers. */
+  hq_route?: HqRouteSettings;
+  hq_models?: HqModelSettings;
+  /** Per-user brand accent (#rrggbb) driving --accent + the xterm cursor (#211 Phase 2);
+   *  applied at load. Absent on older servers (→ client default phosphor-amber). */
+  accent?: string;
+  /** Terminal font size in px (#859), which on a phone IS the agent's column count.
+   *  Seeds a device with no local choice; the localStorage cache wins over it. Absent on
+   *  older servers (→ client default 13). */
+  term_font_size?: number;
+  /** Terminal font stack (#866) — the FACE, the second axis beside the size. Seeds a device
+   *  with no local choice; the localStorage cache wins over it. Absent on older servers
+   *  (→ client default: the system monospace stack). */
+  term_font_family?: string;
+  /** Terminal colour scheme id (#1494 P2). Seeds a device with no local choice; the localStorage
+   *  cache wins over it. Absent on older servers (→ client default "battlelab"). */
+  term_scheme?: string;
+  /** The API-session look (#1494 P3). Seeds a device with no local choice; the localStorage
+   *  cache wins. Absent on older servers (→ the default look, which sets nothing). */
+  api_look?: unknown;
+  /** Compose box default on load: "auto" (device heuristic) | "open" | "collapsed". */
+  compose_default?: "auto" | "open" | "collapsed" | string;
+  /** Session-list sort order (#506): "recent_activity" (newest update first, default) or
+   *  "created_at" (stable, newest-created first). Absent on older servers (→ recent_activity). */
+  session_list_order?: "recent_activity" | "created_at" | string;
+  /** Overview (#144): expanded cluster cwds (default collapsed). */
+  overview_expanded?: string[];
+  /** Hidden cwds (#174). NOT a global hide (#615). For every folder it withholds the folder as
+   *  a launch location (the new-session picker). For a folder no project has adopted it also
+   *  drops that folder's sessions from the sidebar list and the overview map. A folder adopted
+   *  by a project entity keeps its sessions in the sidebar — the server's `_visible` exempts
+   *  `kind: "project"` rows — and on the map only under `project` grouping (`folder`/`agent`
+   *  grouping is cwd/engine-keyed, so a hidden cwd hides its sessions there, #424). Archive the
+   *  project to hide an adopted folder's sessions. Nothing is removed from the project filter,
+   *  which lists entities, not folders (#445). The legacy `overview_excluded` alias is retired
+   *  (#357 Phase 2) — the server migrates old on-disk values into this key. */
+  projects_hidden?: string[];
+  /** Project-visibility mode (#335): "all" (legacy denylist, default) or "included" (curated
+   *  allowlist — only `projects_included` cwds show; new dirs never auto-appear). Mode-exclusive:
+   *  in "included" mode `projects_hidden` is ignored and `projects_included` is authoritative. */
+  projects_mode?: "all" | "included" | string;
+  /** The "included"-mode allowlist of visible project cwds (#335). Ignored in "all" mode. */
+  projects_included?: string[];
+  /** Preferred new-session PROJECT, by entity id (#615 Phase 2). The picker pre-selects it; an
+   *  id that no longer names an unarchived project falls back to the first unarchived one, so a
+   *  deleted or archived default degrades silently rather than erroring. "" / absent = no
+   *  preference. Supersedes `default_project`. */
+  default_project_id?: string;
+  /** The agent defaults for NEW sessions (#853 P4, #1128). `default_engine` is the operator's
+   *  choice as stored — it may name an agent that is not installed now, which is why every picker
+   *  resolves it through `resolveDefault` rather than reading it directly. `bypass` is the new-
+   *  session form's starting value; each session can still change it. Absent on an older server. */
+  agent_defaults?: AgentDefaults;
+  /** #1693: the operator's model→grade map, `{engine: {model_id: grade}}`. Empty by default. */
+  model_grades?: Record<string, Record<string, "fast" | "strong" | "frontier">>;
+  /** Bumped on every grade commit (#1693): the newest map seen wins. */
+  model_grades_rev?: number;
+  /** Whether mission launches run with permission bypass — the strict, fail-closed reading the
+   *  launch itself uses (#1215). Absent from an older server. */
+  mission_bypass?: boolean;
+  /** Legacy preferred new-session start directory (#335 Phase 2), superseded by
+   *  `default_project_id`. Retained as the fallback for a start directory no project has adopted
+   *  (the migration cannot map it to an id), and as Onboarding's seed. With a project selected
+   *  its own `default_folder` (#448) wins, so this never fires. "" / absent = no preference. */
+  default_project?: string;
+  /** Base dirs under which the UI may create a new project folder (#335 Phase 3) AND the root
+   *  scope for discovery (#465) — the merged effective list (prefs roots, else env fallback).
+   *  Empty/absent ⇒ the "New folder" affordance is hidden, the mkdir endpoint is disabled, and
+   *  discovery is unscoped (today's behaviour). UI-settable via setPrefs (#465). */
+  project_roots?: string[];
+  /** Manual exclusion list (#465): boundary-aware path prefixes dropped from discovery even when
+   *  under a root (for ephemerals that slip past the ~/.cache/act filter). UI-settable. */
+  folder_exclusions?: string[];
+  /** Per-cwd custom project display names (#148). */
+  project_names?: Record<string, string>;
+  /** Auth mode: "single-user" (cookie login) or "none" (no login — self-host on a
+   * trusted network). Lets the SPA hide login/logout UI. Absent on older servers. */
+  auth_mode?: "single-user" | "none" | string;
+  /** Home Free (#2190): no login on this box, yet a public artifact link can be a copy hosted on
+   *  the BattleLab relay (a Home Free agent is set up here). Absent on older servers. */
+  artifact_relay?: boolean;
+  /** The operator's LOGIN NAME (#1058) — what the corner tile shows. Never a credential: the
+   *  password hash, the secret key and the 2FA secret are not serialised anywhere in this payload.
+   *  `null` under `auth_mode: "none"`, where there is no operator to name; absent on older
+   *  servers, which renders no tile rather than a made-up one. */
+  username?: string | null;
+  /** The operator's avatar version for `?v=` (#1931), or null when none is set. Absent on older
+   *  servers. */
+  avatar?: string | null;
+  /** The operator's display name (#1942), or null when none is set. Absent on older servers. */
+  operator_name?: string | null;
+  /** Optional TOTP 2FA on/off (#116) — drives the Settings security section. Just the
+   *  bit; the secret/recovery codes are never exposed here. Absent on older servers. */
+  two_factor_enabled?: boolean;
+  /** AI session review (#356): public config block (write-only key → `api_key_set`). */
+  ai_review?: AiReviewConfig;
+  /** AI auto-sort (#424 Phase 6): opt-in; reuses the ai_review endpoint (no secret). */
+  auto_sort?: AutoSortConfig;
+  /** The recent window + ai_review endpoint readiness (#1086, #2179). No secret. */
+  pulse?: PulseConfig;
+  /** How deeply a session is read before a decision (#1086 Phase 2). No secret. */
+  session_review?: SessionReviewConfig;
+  /** Session clusters (#1997). Absent on older servers, which have no clusters. */
+  clusters?: ClustersConfig;
+  /** #1019: feature-detected scoped grants; legacy projections may conservatively be off. The SPA
+   *  reads autonomy ONLY from here: the server's legacy `orchestrator` block is not read (#2179). */
+  automation?: {
+    version: 1;
+    legacy_compatible: boolean;
+    mission: OrchestratorConfig & { revision: string };
+    session: Omit<OrchestratorConfig,
+      "auto_ai_directions" | "ai_direction_confidence_min" |
+      "ai_direction_confidence_floor" | "ai_direction_confidence_max" |
+      "judge_confidence_min" | "judge_confidence_floor" | "judge_confidence_max"
+    > & { revision: string };
+  };
+  /** What each probe kind takes, FROM THE SERVER'S OWN SCHEMA — never a second copy here. The
+   *  editor offers the right fields per kind so an unknown argument is prevented rather than
+   *  refused on save; validation itself stays entirely server-side. */
+  mission_probes?: MissionProbeSchema;
+}
+
+export type AutomationScope = "session" | "mission";
+export type AutomationPolicy = NonNullable<AppConfig["automation"]>[AutomationScope];
+
+export interface MissionProbeSchema {
+  kinds: string[];
+  /** Probes that may never gate alone — "the agent believes it wrote tests" is not evidence. */
+  non_gating: string[];
+  args: Record<string, { required: string[]; optional: string[] }>;
+  /** The JSON type each argument takes, keyed the same way. `"text"` means send a string;
+   *  `"int"` means send a number, which is the only way `http_status.expect_status` can be
+   *  authored at all (#900 review, finding 6). Absent on an older server — treat as `"text"`. */
+  types?: Record<string, Record<string, string>>;
+  /** Which checked facts a direction may name, per probe (#983 P2). Absent on an older server. */
+  placeholders?: DirectionPlaceholder[];
+}
+
+/** TOTP enrollment payload (#116): shown once. The secret + recovery codes are never
+ *  returned again after this response. */
+export interface TwoFactorEnrollment {
+  /** base32 TOTP secret (also encoded in otpauth_uri) for manual entry. */
+  secret: string;
+  /** otpauth://totp/... URI to render as a QR for the authenticator app. */
+  otpauth_uri: string;
+  /** One-time recovery codes — display once, never persisted by the SPA. */
+  recovery_codes: string[];
+}
+
+/** One engine provider's discovery status (Settings → Connected agents). */
+/** The capability booleans a manifest declares — all default-deny server-side. */
+export interface EngineCapabilities {
+  resume: boolean;
+  new: boolean;
+  archive: boolean;
+  handoff_target: boolean;
+  seed_start: boolean;
+  orchestrator_input: boolean;
+  raw_tty: boolean;
+  owns_transcript: boolean;
+}
+
+/** One roster row (#853 P3/P4): the binary's state on this host + what the manifest declares. */
+export interface EngineInfo {
+  id: EngineId;
+  present: boolean;
+  supports_new: boolean;
+  /** Handoff-target capability (#597) — THE capability source the handoff modal's engine
+   *  tiles render from (the server rejects from the same source, so they can't diverge). */
+  supports_seed_start: boolean;
+  /** Why the engine can't be a handoff target (null exactly when it can). */
+  seed_reason: string | null;
+  bin: string | null;
+  // --- from the manifest (#853 P3) ---
+  label: string;
+  /** `agent` — a coding agent; `terminal` — the plain shell, no agent behind it. */
+  kind: "agent" | "terminal" | string;
+  /** The client family (#1728): an API client's `api.source` agent, else its own id. Grouping
+   *  only: which client is a family's default is `EnginesResponse.families`, never derived here. Absent on
+   *  an older server. */
+  family?: string;
+  /** How a session runs (#853 §7). `pty` is the only runtime this build has. */
+  runtime: "pty" | string;
+  display: {
+    name: string;
+    badge: string;
+    /** A token name, never a hex: rendered as `var(--engine-<accent>)`. */
+    accent: string;
+    id_prefix: string | null;
+    order: number;
+  };
+  capabilities: EngineCapabilities;
+  session_id: { mint: "pinned" | "adopt" | string };
+  models: { id: string; context_window: number | null; aliases: string[] }[];
+  /** What a launch can choose (#1189). `offered` excludes `default`, which pickers put first;
+   *  empty ⇒ `default` only. Optional so an older server's rows read as default-only. */
+  model_select?: ModelSelect;
+  /** Workspace-root instruction files the engine reads (#1189). */
+  instructions?: { files: string[] };
+  /** How its CLI takes BattleLab's memory tool per launch (#1506), or null: the Memory page's
+   *  "Agent access" card says "memory tool" exactly when `mcp` is set. Absent on older servers. */
+  tools?: { mcp: string | null };
+  usage: { source: "plan" | "tokens" | "manual" | "none" | string };
+  terminal: { repaint: "none" | "wipe" | "winch" | string };
+  /** `retiring` (#1126 PR B): manifest gone, live sessions attach-only. Absent ⇒ active. */
+  status?: "active" | "retiring" | string;
+  status_reason?: string | null;
+  /** runtime "api" only (#1311): the native protocol, the console agent it drives, and why it
+   *  cannot start right now (null when it can). Absent/null for every other runtime.
+   *  `can_bypass` (#1339): its adapter maps "Skip permission prompts"; the server re-checks. */
+  api?: {
+    kind: string;
+    source: string;
+    unavailable_reason: string | null;
+    can_bypass?: boolean;
+  } | null;
+}
+
+/** A native API client that cannot start a session, with why (#1311) — `/api/config`. Display
+ *  data only: the server re-checks at create. */
+export interface UnavailableClient {
+  id: string;
+  label: string;
+  reason: string;
+}
+
+// ---- Structured sessions (#1275 / #1278 / #1311) ------------------------------------------------
+
+export type StructuredTurnState =
+  | "queued"
+  | "delivering"
+  | "delivered"
+  | "running"
+  | "awaiting_approval"
+  | "completed"
+  | "failed"
+  | "interrupted"
+  | "uncertain"
+  | "unavailable";
+
+/** Advisory risk of a command (#1339): a fixed list of risky shapes, `unknown` when the command
+ *  could not be read. Never an assurance of safety. */
+export interface StructuredRisk {
+  level: "risky" | "none" | "unknown" | string;
+  reasons: string[];
+}
+
+/** One standing grant the request itself proposed (#1339). `label` states its breadth
+ *  and where it persists; the server and the worker accept only these ids. */
+export interface StructuredGrant {
+  id: string;
+  label: string;
+  scope: "persistent" | "session" | string;
+  rules?: string[];
+}
+
+export interface StructuredTool {
+  id: string;
+  name: string;
+  outcome: string;
+  summary: string;
+  risk?: StructuredRisk;
+  /** How many characters of the turn's `reply` came before this call; absent from older servers
+   *  and public links. */
+  at?: number;
+}
+
+/** A question the agent asked with fixed options (#1463): its own words, display text only.
+ *  Codex's async question — it is not waiting, so the operator's next message is the answer. */
+export interface StructuredQuestion {
+  title: string;
+  options: string[];
+}
+
+export interface StructuredTurn {
+  /** An operator submission; absent on older servers (#1438). */
+  kind?: "operator";
+  turn_id: string;
+  operation_id: string;
+  state: StructuredTurnState | string;
+  text: string | null;
+  reply: string | null;
+  /** Recorded operator submission, in Unix seconds; absent on older servers. */
+  ts?: number | null;
+  /** Recorded first native response text, in Unix seconds; absent on older servers. */
+  reply_ts?: number | null;
+  text_truncated: boolean;
+  reply_truncated: boolean;
+  /** Where each agent message starts in `reply` (#1643); absent from older servers and the public
+   *  link, which fold nothing. Always begins at 0 when there is text. */
+  reply_breaks?: number[];
+  /** `reply` begins inside a message whose start was not loaded (#1643). */
+  first_message_partial?: boolean;
+  /** What this view left out before `reply` (#1643): whole messages and characters, or null. */
+  reply_omitted?: { messages: number; chars: number } | null;
+  reason: string | null;
+  /** What the operator can do about this FAILED turn, as its client reported it in a structured
+   *  field (never read from `reason`'s words). `signin`: the agent's login is missing or expired,
+   *  and the turn offers Sign in. Absent on every other turn and from older servers. */
+  remedy?: "signin";
+  /** A queued message proved never sent, and why (#1538): a closed code, shown as fixed text.
+   *  Only on a queued operator message — never a Send now control or an uncertain handoff. */
+  not_sent?: {
+    code: string;
+    /** The ONE operation id Send again submits, derived by the server from this turn's id: every
+     *  tab, reload and click resends under it, so it is delivered at most once. */
+    retry?: string;
+    /** The journal holds that operation, whatever became of it: this message was sent again
+     *  (from any tab or device) and is history; a retry that failed offers its own Send again. */
+    retry_recorded?: boolean;
+    /** The journal holds it and it was not settled not sent: delivered, pending or uncertain. */
+    retried?: boolean;
+  };
+  /** Input delivery is distinct from completing the agent's active response (#1389). */
+  delivery?: "steering" | "steered" | "interrupting" | "interrupt_failed";
+  delivery_turn_id?: string;
+  delivery_reason?: string;
+  tools: StructuredTool[];
+  tools_truncated: boolean;
+  /** The pictures the turn carried (#1332 Phase 3): upload names, shown via the read-back route. */
+  attachments?: { stored: string; name?: string; mime: string }[];
+  /** Who sent it through a public link (#1404 P2) — a self-chosen name, not a verified identity.
+   *  Absent or null for the operator's own turns. */
+  author?:
+    | { name: string; via: "public_link" }
+    /** A paired instance caused this turn (#2057): its name on this instance, and whether the
+     *  operator edited the suggestion before approving it. */
+    | { name: string; via: "peer"; actor?: string; edited?: boolean }
+    | { name: null; via: "unknown" }
+    | null;
+  /** The newest question the agent asked in this turn, with its options (#1463). */
+  questions?: StructuredQuestion[];
+  /** That question's id, which an answer names as its `reply_to`; present with `questions`. */
+  question_id?: string;
+  /** This RUNNING turn's reply is its streamed text so far (#1727): the pane may append the turn's
+   *  next partial text events (after the snapshot's `event_cursor`) to it. `item` is the message
+   *  that text continues, or null. Absent on every other turn and from the public link. */
+  stream?: { item: string | null };
+  /** Processes the kernel OOM-killed in this session while this turn ran (#1732): a count, never
+   *  a name. Absent when none. */
+  oom_kills?: number;
+  /** Session-level OOM kills between this turn and the next (#1732): not this turn's. */
+  oom_kills_after?: number;
+}
+
+/** A turn the agent ran for itself — a scheduled wake-up, a task notification (#1438). Nobody
+ *  sent it: it has no text, author, attachments or delivery, only what the agent did and said. */
+export interface StructuredAgentTurn {
+  kind: "agent";
+  /** Its interrupt target (the worker's `background_turn` while it runs). */
+  turn_id: string;
+  state: StructuredTurnState | string;
+  /** When it started, in Unix seconds. */
+  ts?: number | null;
+  reply: string | null;
+  reply_ts?: number | null;
+  reply_truncated: boolean;
+  /** Where each agent message starts in `reply` (#1643); absent from older servers and the public
+   *  link, which fold nothing. Always begins at 0 when there is text. */
+  reply_breaks?: number[];
+  /** `reply` begins inside a message whose start was not loaded (#1643). */
+  first_message_partial?: boolean;
+  /** What this view left out before `reply` (#1643): whole messages and characters, or null. */
+  reply_omitted?: { messages: number; chars: number } | null;
+  /** Why it failed, when it did. */
+  reason?: string;
+  /** Processes the kernel OOM-killed in this session while this turn ran (#1732): a count, never
+   *  a name. Absent when none. */
+  oom_kills?: number;
+  /** Session-level OOM kills between this turn and the next (#1732): not this turn's. */
+  oom_kills_after?: number;
+  tools: StructuredTool[];
+  tools_truncated: boolean;
+  /** The newest question the agent asked in this turn, with its options (#1463). */
+  questions?: StructuredQuestion[];
+  /** That question's id, which an answer names as its `reply_to`; present with `questions`. */
+  question_id?: string;
+}
+
+/** One exact pending request. `payload` is the COMPLETE request the decision answers; `choices`
+ *  are the only decisions the server will take for it right now. */
+export interface StructuredRequest {
+  request_id: string;
+  turn_id: string;
+  kind: string;
+  item_id?: string;
+  summary?: string;
+  payload?: unknown;
+  payload_digest?: string;
+  choices: string[];
+  complete?: boolean;
+  /** "Approve always" choices (#1339): every grant the client proposed, labelled with what it
+   *  covers, where it is saved and the request's risk; empty when it proposed none. */
+  always?: StructuredGrant[];
+  risk?: StructuredRisk | null;
+  /** A background task's own request (#1725), never an operator turn's: `turn_id` is its own, it
+   *  stays pending whatever the operator's turns do, and it is approved once or declined. */
+  background_task?: { task_id: string; description: string };
+}
+
+/** One model a native API client's own CLI reports (#1313). */
+export interface StructuredModel {
+  id: string;
+  label: string;
+  description: string | null;
+  efforts: string[];
+  is_default: boolean;
+}
+
+/** `GET /api/structured/clients/{engine}/models`: `unavailable` offers `default` only. Served
+ *  from the server's cache and refreshed behind it (#1503): `stale` = past its TTL, a refresh is
+ *  running; `refresh_error` = the newest refresh failed and this is still the last good list. */
+export interface StructuredModelList {
+  status: "ok" | "unavailable";
+  models: StructuredModel[];
+  reason: string | null;
+  stale?: boolean;
+  /** Seconds since the agent was asked for this list, when the server answered. */
+  fetched_age_s?: number | null;
+  refresh_error?: string;
+}
+
+/** A live worker's reported background task (#1461). Times are journal observations, never
+ *  native start/end authority or evidence of continuous work. Optional strings are bounded. */
+export interface StructuredBackgroundTask {
+  task_id: string;
+  state: string;
+  /** #1724: an engine-reported task, or a process the agent started (the process floor). Two
+   *  kinds of observation, never merged into one job count. Absent on older servers (engine). */
+  source?: "engine" | "process";
+  description?: string;
+  task_type?: string;
+  last_tool_name?: string;
+  summary?: string;
+  /** A process only: its pid and executable name (`/proc/<pid>/comm`), never argv. */
+  pid?: number;
+  comm?: string;
+  started_at: number | null;
+  updated_at: number | null;
+}
+
+/** A process the process floor observed (#1724): pid, start ticks and executable name only. */
+export interface StructuredProcess {
+  pid: number;
+  start: number;
+  comm: string;
+  started_at: number | null;
+  /** A settled Stop's process not in the confirmed list: it started while the Stop ran. */
+  started_during_stop?: boolean;
+}
+
+/** What an operator Stop ends (#1724), as the live worker last journaled it. The Stop sends back
+ *  `worker` + `digest`; the worker rechecks a fresh scan and refuses a changed set (409). */
+export interface StructuredStopInventory {
+  worker: string;
+  /** Null only on an unreachable worker's escape hatch, which confirms by `unreachable`. */
+  digest: string | null;
+  /** `unknown`: the process scan can't be read — never an empty list (Stop everything). */
+  scan: "ok" | "unknown";
+  tasks: { task_id: string; description?: string; task_type?: string; started_at?: number }[];
+  processes: StructuredProcess[];
+  /** Processes beyond the listed ones. */
+  more: number;
+  /** Agent tasks beyond the listed 128. Over either limit: only Stop everything, never exact. */
+  engine_more?: number;
+  /** The agent reported more tasks than are tracked (#1725): the list isn't all of it, so only
+   *  Stop everything, and the dialog warns untracked work may also end. */
+  overflow?: boolean;
+  observed_at: number | null;
+  /** A 503's escape hatch: the worker could not answer the check; this is what it last
+   *  journaled, and Stop everything (`{worker, everything: true}`) is the only confirm. */
+  reach?: "unreachable";
+}
+
+/** An earlier worker generation's end (#1724): work still running when it ended, or an idle
+ *  exit. Placed after `after_turn` (null: before the first shown turn). */
+export interface StructuredWorkerEnd {
+  /** More tasks ran than were tracked (#1725): this row can't list them all. */
+  overflow?: boolean;
+  worker: string;
+  reason: "idle" | "stop" | "oom" | "protocol" | "worker_ended";
+  /** When it was settled; for an end that could not settle, when its work was last observed. */
+  at: number;
+  settled: boolean;
+  after_turn: string | null;
+  idle_for?: number | null;
+  scan?: "ok" | "unknown";
+  tasks?: { task_id: string; description?: string; task_type?: string; started_at?: number }[];
+  processes?: StructuredProcess[];
+  more?: number;
+  engine_more?: number;
+}
+
+export interface StructuredLaunch {
+  gen: string | null;
+  state: "starting" | "ready" | "failed";
+  /** ≤200 characters, failures only. */
+  reason?: string;
+  since: number | null;
+}
+
+/** The agent's plan (#1726): the newest checklist and the newest proposed document of the
+ *  conversation, across generations, each with when it was recorded. */
+export interface StructuredPlanEntry {
+  text: string;
+  status: "pending" | "in_progress" | "completed";
+}
+export interface StructuredPlan {
+  entries?: StructuredPlanEntry[];
+  explanation?: string;
+  entries_at?: number | null;
+  document?: string;
+  document_at?: number | null;
+  /** The checklist may be out of date: its client said so, or an earlier generation wrote it
+   *  and the live one has not re-confirmed it. */
+  stale?: boolean;
+}
+
+/** What the LIVE generation's client reports it works with (#1726). A list the client never
+ *  reported is absent. `configured`: named by its configuration, never measured. */
+export interface StructuredEnvironment {
+  skill_use?: boolean;
+  mcp?: {
+    name: string;
+    status: "connected" | "failed" | "pending" | "needs_auth" | "disabled" | "configured";
+  }[];
+  skills?: { name: string }[];
+  commands?: { name: string }[];
+}
+
+/** Calls this conversation made (#1726), from the journal — never the windowed rows. */
+export interface StructuredCounts {
+  tools: { name: string; calls: number }[];
+  tools_other: number;
+  servers: { name: string; calls: number }[];
+  servers_other: number;
+  unattributed: number;
+  skills: { name: string; calls: number }[];
+  skills_other: number;
+}
+
+/** Who has an API session open right now (#1931), on the operator's snapshot read only. */
+export interface StructuredPresence {
+  /** Everyone connected, the operator included. */
+  count: number;
+  /** Each connected visitor, by the name they gave (null: a view-only visitor who gave none). */
+  visitors: { name: string | null }[];
+  /** At least one live share link reaches this session. */
+  shared: boolean;
+}
+
+export interface StructuredSnapshot {
+  session_key: string;
+  revision: number;
+  event_cursor: number;
+  cwd: string;
+  state: StructuredTurnState | "idle" | string;
+  active_turn: string | null;
+  model_requested: string | null;
+  model_effective?: string | null;
+  /** The reasoning level requested at create (#1407): configuration, never an observation. */
+  effort_requested?: string | null;
+  /** What the client REPORTS it runs (#1511): an "agent default" session's actual model and level.
+   *  A report, apart from the request and the per-turn observation. Absent from an older server. */
+  model_configured?: string | null;
+  effort_configured?: string | null;
+  /** Effective permission mode, including an explicit existing-session enable (#1388). */
+  bypass?: boolean;
+  can_enable_bypass?: boolean;
+  permission_change?: { operation_id?: string; state?: "stopping" | "enabled" };
+  /** A skip creation waits for `start` (#1339): nothing runs until the operator confirms it. */
+  pending_start?: boolean;
+  start_expires_at?: number;
+  /** Authorized, but its launch never happened (interrupted): Start reconciles it. */
+  start_incomplete?: boolean;
+  /** It waited too long and was never launched. */
+  start_expired?: boolean;
+  /** Discarded before it ever started (#1647): it takes no message and never runs. */
+  start_discarded?: boolean;
+  /** A launched skip worker that is not ready yet (#1505): no Start, nothing "didn't run". */
+  start_in_flight?: boolean;
+  /** The skip start failed (#1505), with its bounded reason when known: Start again reconciles. */
+  start_failed?: boolean;
+  start_failed_reason?: string;
+  /** The generation-scoped launch view (#1505): the HTTP create/start answer at launch, and this
+   *  turns `ready` or `failed` by itself. `gen` is null for a refusal before any worker existed. */
+  launch?: StructuredLaunch;
+  turns: (StructuredTurn | StructuredAgentTurn)[];
+  omitted_turns: number;
+  /** Where scrolling up continues (#1504): the oldest turn of the window, null at the first turn.
+   *  Absent on older servers and on clients without history. */
+  history_before?: string | null;
+  /** Session-level OOM kills before the first turn (#1732); only while that turn is shown. */
+  oom_kills_start?: number;
+  pending_requests: StructuredRequest[];
+  /** Who settled the newest requests of a session this instance shares (#2059): the answer's
+   *  effect and its author. Read through `cleanDecisions`. Absent when nothing is recorded. */
+  decisions?: unknown;
+  native?: {
+    native_id: string | null;
+    worker: string | null;
+    background_active: boolean;
+    /** Active task observations scoped to this live worker; absent on older servers. */
+    background_tasks?: StructuredBackgroundTask[];
+    /** What an operator Stop ends (#1724); null without a live worker. Absent on older servers. */
+    stop_inventory?: StructuredStopInventory | null;
+    /** Earlier generations that ended with work running, and idle exits (#1724). */
+    worker_ends?: StructuredWorkerEnd[];
+    /** Jobs an interrupted exact Stop paused and could not confirm resumed (#1724). */
+    paused_unresumed?: number;
+    /** The live generation's pending ScheduleWakeup (#1927): when it is due (epoch seconds) and
+     *  the agent's own reason. It keeps an idle session alive until then. Null or absent: none. */
+    wakeup?: { at: number; reason?: string } | null;
+    /** This connection is full and can't retire while work runs (#1725). A display hint: a send
+     *  is decided at the worker's own admission. */
+    rollover_held?: boolean;
+    /** Frames too large to read this generation skipped (#1725). */
+    frames_skipped?: number;
+    /** Requests from a task id that had already ended, refused with no turn to carry a row (#1725). */
+    requests_refused?: number;
+    /** Advertised by this running worker, absent on older workers. */
+    send_now?: "steer" | "interrupt";
+    /** What Send now would do right now, as the live worker last reported it (#1644): a display
+     *  hint, never authority. `unknown`: no live worker or no report yet. Absent on older servers. */
+    send_now_state?: "ready" | "would_stop_background" | "unknown";
+    /** A turn the agent runs for itself (a task notification) that Send now can interrupt
+     *  (#1427), or null. Only from a worker advertising `send_now_background`. */
+    background_turn?: string | null;
+    /** Background requests an ended generation left open: its end retired them (#1725). Decided
+     *  or retracted ones are never here. Absent when there are none, and on older servers. */
+    ended_requests?: { worker: string; turn_id: string; request_id: string }[];
+    send_now_background?: "interrupt";
+    /** The live worker can remove a still-queued message (#1447). */
+    withdraw?: boolean;
+    /** This worker takes Interrupt on a turn the agent runs for itself directly (#1438). */
+    interrupt_own?: boolean;
+    /** The live generation's memory warning (#1643), or null. Absent on older servers. */
+    memory_pressure?: MemoryPressure | null;
+    /** #1726: the plan (null: none shared yet), the live generation's tools (null: not
+     *  reported, or no live worker) and the conversation's call counts. Absent on older servers. */
+    plan?: StructuredPlan | null;
+    environment?: StructuredEnvironment | null;
+    counts?: StructuredCounts;
+  };
+  /** Why this conversation takes no new work (its client is retiring), or null. */
+  read_only?: string | null;
+  /** The client's protocol takes pictures in a turn (#1332 Phase 3). */
+  images?: boolean;
+  /** Upload references supported by the running native worker (or its next generation). */
+  files?: boolean;
+  /** #1931: present on `GET /api/structured/sessions/{key}` only, not on action answers. */
+  presence?: StructuredPresence;
+}
+
+/** The turns just older than a cursor (#1504), chronological, shaped as the snapshot's. */
+export interface StructuredHistoryPage {
+  session_key: string;
+  turns: (StructuredTurn | StructuredAgentTurn)[];
+  /** Where the next older page starts; null at the conversation's first turn. */
+  before: string | null;
+  has_more: boolean;
+  /** Work that ended with a worker after one of these turns, or before the first (#1724): each
+   *  end travels with the turn it follows. Absent on older servers. */
+  worker_ends?: StructuredWorkerEnd[];
+}
+
+export interface StructuredEventPage {
+  session_key: string;
+  revision: number;
+  next_cursor: number;
+  /** The operator's pages carry each normalized event's `data` (#1727 reads text events from
+   *  it); the public link's carry cursors and kinds only. */
+  events: { cursor: number; kind: string; data?: Record<string, unknown>; ts?: number }[];
+}
+
+export type Containment = "live" | "gone" | "unknown";
+
+/** One model a launch may request (#1189). `source`: the manifest's list, or an id the operator
+ *  added in Settings → Agents. */
+export interface OfferedModel {
+  id: string;
+  aliases: string[];
+  context_window: number | null;
+  source: "manifest" | "operator" | string;
+}
+
+export interface ModelSelect {
+  supported: boolean;
+  on_resume: boolean;
+  configured_elsewhere: boolean;
+  offered: OfferedModel[];
+}
+
+/** A manifest that failed to load (#853 P4) — diagnostics only, never an engine. */
+export interface EngineProblem {
+  source: string;
+  error: string;
+}
+
+/** One agent's usage, as the agent itself reports it (#839).
+ *
+ *  `source` is the whole contract, and the UI must not paper over it:
+ *  - `plan`    — the agent's own quota percentage. Authoritative; the operator configures nothing.
+ *  - `tokens`  — a token count from the engine's own store, meaningful only against `limit_tokens`.
+ *  - `manual`  — the operator's own counter, for an agent that reports nothing.
+ *  - `none`    — nothing reported and nothing configured. Not "0%".
+ */
+export interface AgentUsageWindow {
+  label: string;
+  used_pct: number;
+  resets_at: number | null;
+}
+
+/** Whose figures a usage row is (#2331): an account of the agent, `default` for the login its CLI
+ *  already has. `label` is the operator's own; `email` is what the vendor's CLI reports for the
+ *  login, or null when it reports none. */
+export interface AgentUsageAccount {
+  id: string;
+  label: string;
+  email: string | null;
+}
+
+export interface AgentUsageRow {
+  engine: string;
+  /** Whose figures these are. An agent's row is the account its NEW sessions start on. Optional:
+   *  an older server does not send it. */
+  account?: AgentUsageAccount | null;
+  /** On a row of `AgentUsageResponse.accounts`: whether new sessions start on this account. */
+  active?: boolean;
+  source: "plan" | "tokens" | "manual" | "none";
+  windows?: AgentUsageWindow[];
+  tokens?: {
+    in?: number;
+    out?: number;
+    cache_read?: number;
+    cache_write?: number;
+  } | null;
+  window_days?: number | null;
+  plan?: string | null;
+  /** When the figures were taken. 0 = never asked. */
+  at: number;
+  /** When the last attempt happened, which differs from `at` after a failed refresh. */
+  checked_at: number | null;
+  /** Why the last refresh failed. The figures are still the last good ones. */
+  error?: string | null;
+  stale: boolean;
+  limit_tokens: number;
+  manual_used: number;
+  /** The one number a threshold is tested against, or null when there isn't one. */
+  used_pct: number | null;
+  /** Whether the vendor refuses this account (#1167) — the agent's own answer. `null` when it has
+   *  no access check or has never answered one. */
+  access?: AgentAccess | null;
+  /** Where the row is heading at its recent pace. `null` when there is nothing to project — a
+   *  manual counter, or a token count with no limit. */
+  forecast?: AgentUsageForecast | null;
+}
+
+/** `agent_usage.forecast`: the pace between the sweep's own readings of the agent's answer. */
+export interface AgentUsageForecast {
+  /** `out` = already at 100 %; `exhausts` = runs out before its reset at this pace; `ok` = lasts;
+   *  `learning` = too few readings to say — never read as "ok". */
+  state: "out" | "exhausts" | "ok" | "learning";
+  /** The plan window judged (the one running out first); null for a token count. */
+  window: string | null;
+  resets_at: number | null;
+  runs_out_at: number | null;
+  /** Where a lasting plan window lands at its reset. */
+  pct_at_reset: number | null;
+  /** Percent of the quota (or of the limit) per hour. */
+  rate_per_h: number | null;
+}
+
+export interface AgentAccess {
+  state: "denied" | "ok";
+  /** The agent's own refusal text (denied only). */
+  message: string | null;
+  /** When the agent said it. */
+  observed_at: number | null;
+  checked_at: number | null;
+}
+
+export interface AgentBudgets {
+  threshold_pct: number;
+  notify: boolean;
+  engines: Record<string, { limit_tokens?: number; manual_used?: number }>;
+}
+
+export interface AgentUsageResponse {
+  agents: AgentUsageRow[];
+  /** One row per account, the default login first, for every agent that holds several (#2331).
+   *  Optional: an older server does not send it. */
+  accounts?: Record<string, AgentUsageRow[]>;
+  budgets: AgentBudgets;
+  refreshing?: boolean;
+}
+
+/** `/api/config.agent_defaults` and the `agent_defaults` block of `POST /api/prefs` (#1128). */
+export interface AgentDefaults {
+  default_engine: string | null;
+  bypass: boolean;
+  /** Operator-added model ids per engine (#1189). A patch REPLACES the named engines' lists;
+   *  `[]` clears one. Optional: an older server does not send it. */
+  models?: Record<string, string[]>;
+  /** What a NEW API session starts with, per API client (#1407). Only the new-session screen's
+   *  PRESELECTION: the create sends what the operator submits, and the server never substitutes.
+   *  Lenient on read — a value the client stopped offering is still here; the UI, holding the
+   *  client's list, marks it stale. Optional: an older server does not send it. */
+  session_defaults?: Record<string, SessionDefault>;
+}
+
+/** One API client's new-session defaults (#1407). `effort` needs `model`: levels belong to one. */
+export interface SessionDefault {
+  model: string;
+  effort: string | null;
+}
+
+/** A partial `agent_defaults` write. `session_defaults` entries REPLACE that engine's; `null`
+ *  clears it. */
+export type AgentDefaultsPatch = Partial<Omit<AgentDefaults, "session_defaults">> & {
+  session_defaults?: Record<string, { model: string; effort: string | null } | null>;
+};
+
+/** `GET /api/engines/{id}` (#853 P4): one engine as its manifest declares it — the Agents detail
+ *  page. Read-only; 404 for an id the loaded roster does not have. */
+export interface EngineDetail {
+  id: string;
+  label: string;
+  publisher: string;
+  version: string | null;
+  contract: number | string;
+  /** `in-tree` (shipped with BattleLab) or `local`. */
+  source: string;
+  kind: string;
+  runtime: string;
+  /** Null for a runtime that executes nothing (`chat`, #1209). */
+  binary: { name: string; env_var: string | null; search_paths: string[] } | null;
+  /** The wire format of a `chat` engine's endpoint (#1209); null for `pty`. Never a URL. */
+  endpoint?: { kind: string } | null;
+  /** How the binary was found (or why not): `state` is e.g. `adopted`, `absent`, `refused`. */
+  provenance: {
+    state: string;
+    via: string | null;
+    path: string | null;
+    note: string | null;
+  };
+  store: {
+    root: string;
+    resolved: string | null;
+    layout: string;
+    read_only: boolean;
+  } | null;
+  /** Null for a runtime that launches nothing (`chat`, #1209). */
+  launch: { resume: string; new: string | null; admission: string | null } | null;
+  transcript: { kind: string | null; strict: boolean };
+  usage: { source: string; kind: string | null };
+  capabilities: Record<string, boolean>;
+  models: { id: string; context_window: number | null; aliases: string[] }[];
+  model_select?: ModelSelect;
+  instructions?: { files: string[] };
+  maintenance: string[];
+}
+
+export interface EnginesResponse {
+  engines: EngineInfo[];
+  /** The server's family decision (#1728). Absent on an older server: no API-first preselection. */
+  families?: EngineFamily[];
+  problems?: EngineProblem[];
+}
+
+/** Why a family's base default is the client it is (#1728) — the server's typed reasons. */
+export type FamilyBaseReason = "api_ready" | "api_unready" | "api_absent" | "family_retired";
+
+/** One client family as the server decided it (`/api/engines` → `families`, #1728): its clients
+ *  in display order, the client a new interactive session defaults to and why, the clients
+ *  admitted for unattended work (none until #1273 P3), and why each client that cannot start
+ *  cannot. The SPA reads this; it never re-derives a default or a readiness. */
+export interface EngineFamily {
+  family: string;
+  clients: string[];
+  interactive_default: { engine: string | null; reason: FamilyBaseReason | string };
+  unattended_admitted: string[];
+  reasons: Record<string, string>;
+}
+
+/** Host/system info (Settings → System). Every field is fail-soft server-side, so any
+ *  of them may be absent depending on the platform / permissions. */
+/** `GET /api/telemetry` (#1531). Every field may be null where the host cannot say (non-Linux). */
+export interface Telemetry {
+  cpu_pct: number | null;
+  mem: { used: number; total: number; pct: number } | null;
+  hq: {
+    ctx_tokens: number | null;
+    ctx_estimated: boolean;
+    today_tokens: number;
+    today_estimated: boolean;
+    at: number | null;
+  };
+  as_of: number;
+}
+
+export interface SystemInfo {
+  os?: string;
+  platform?: string;
+  arch?: string;
+  python?: string;
+  version?: string;
+  hostname?: string;
+  cpus?: number;
+  load?: { "1": number; "5": number; "15": number };
+  mem_total?: number;
+  mem_available?: number;
+  disk_total?: number;
+  disk_free?: number;
+  uptime_seconds?: number;
+}
+
+/** GET /api/update/progress (#1085) — the running (or last) self-update, read from the
+ *  installer's own progress record. `label` is the server's text for the step, never the file's. */
+export interface UpdateProgress {
+  state: "idle" | "running" | "done" | "failed" | "rolled_back" | "stale";
+  steps: number;
+  step?: string;
+  /** 1-based; 0 before the installer's first milestone. */
+  step_index?: number;
+  label?: string;
+  started_at?: number | null;
+  elapsed_s?: number | null;
+  /** How long the last COMPLETED update took, when one has been seen. */
+  last_duration_s?: number | null;
+}
+
+export interface UpdateInfo {
+  current: string;
+  channel: string;
+  /** The channel's latest ref (highest v* tag on stable, main HEAD short SHA on main),
+   *  or null when git/network is unavailable or no release tag exists yet. */
+  latest: string | null;
+  update_available: boolean;
+  /** #931: the comparison could not be made — the remote HEAD or the running build's own
+   *  release tag would not resolve. NOT the same as "up to date", and deliberately its own
+   *  field rather than a third value of `update_available`: that flag keeps its type and its
+   *  meaning (nothing auto-updates on a guess), while the panel gains a verdict it can render
+   *  honestly instead of "You're on the latest". Absent means the comparison happened. */
+  undetermined?: boolean;
+  /** Why the last update was REFUSED by release verification — a moved tag (#612) or a
+   *  signature that does not verify (#832). Absent when nothing was refused. */
+  blocked?: string;
+  /** #538 additive fields (present on current servers; optional for back-compat). */
+  auto_update?: boolean;
+  last_auto?: UpdateLastAuto | null;
+}
+
+/** Recent-runtime status of the last scheduled auto-update pass (#538). In-memory on the
+ *  server by design — resets on restart; a status hint, not an audit log. */
+export interface UpdateLastAuto {
+  ts: number;
+  result: string;
+}
+
+/** The persisted update settings (#538): the Settings card's cheap read + POST shape. */
+export interface UpdateSettings {
+  auto_update: boolean;
+  channel: string;
+  last_auto?: UpdateLastAuto | null;
+}
+
+/** One page of older transcript history for scroll-up lazy-load (#348 Phase 3).
+ *  `cursor` is a stable per-engine TURN index (never a rendered-line offset): pass it
+ *  back as `before` to fetch the next-older page. `null` cursor + `has_more=false`
+ *  means the oldest turn was reached (or the engine has no transcript at all). */
+export interface HistoryPage {
+  ansi: string;
+  cursor: number | null;
+  has_more: boolean;
+}
+
+export interface SessionsQuery {
+  limit?: number;
+  offset?: number;
+  archived?: boolean;
+  q?: string;
+  project?: string;
+  engine?: string;
+  /** A mission id, or `none` for sessions no mission holds (#948). */
+  mission?: string;
+  /** A cluster id, or `none` for sessions in no cluster and no mission (#1997). */
+  cluster?: string;
+  /** A custom tag (#551), matched trimmed and case-insensitively (#2338). */
+  tag?: string;
+  /** Pin one server scan across a paging sequence (#1007 Phase 3): `new` on the first page, then
+   *  the `snapshot` the previous page returned. Omitted (the sidebar), nothing is pinned. */
+  snapshot?: string;
+}
+
+/** Seed-generation mode (#597): "quick" builds the tail locally; "ai" (Phase 2) asks the
+ *  configured AI-review endpoint for a structured brief and degrades to "quick" when that
+ *  endpoint is unconfigured or failing. */
+export type HandoffMode = "quick" | "ai";
+
+/** Cross-engine handoff (#597): the prepared seed — preview + the opaque server-side
+ *  handle the commit step redeems. Nothing is spawned at prepare; cancel = let it expire.
+ *  `meta.mode` is what was actually BUILT: an "ai" request that degraded reports "quick"
+ *  with `degraded` + a human `notice` the modal shows. */
+export interface HandoffPrepared {
+  handle: string;
+  preview: string;
+  meta: {
+    mode: string;
+    turns: number;
+    bytes: number;
+    cap: number;
+    requested_mode?: string;
+    degraded?: boolean;
+    notice?: string;
+  };
+}
+
+/** The committed handoff target: navigate to /s/{engine}/{native} with fresh={cwd,bypass}
+ *  and the normal launch path seeds the new session server-side (never via URL/argv). */
+export interface HandoffCommitted {
+  id: string;
+  engine: string;
+  native: string;
+  cwd: string;
+  /** An API target (#2141): the brief is the new session's first structured turn, sent by the
+   *  server. `delivery`: `sent` / `queued` (it is in the session), `not_sent` (the pane's Send
+   *  again owns it), `uncertain` (never resent), `pending_start` (a skip session: the client
+   *  starts it, the server sends the brief once it is ready), `released`, `withheld` (a guarded
+   *  brief that now holds a known secret: dropped unsent, with `detail`), or null with `detail`
+   *  (not taken yet: commit the same handle again). Absent for a console target. */
+  api?: boolean;
+  bypass?: boolean;
+  delivery?: "sent" | "queued" | "not_sent" | "uncertain" | "pending_start" | "released" | "withheld" | null;
+  detail?: string;
+}
+
+/** One entry from GET /api/files/list (#783). `kind` is the entry's OWN kind (lstat), so a
+ *  symlink reports "link" and is display-only in phase 1 — never expanded, never opened.
+ *  `link_kind` is present ONLY when `link_contained` is true: an uncontained target's kind is
+ *  not resolved, let alone reported. */
+export interface FileEntry {
+  name: string;
+  path: string;
+  kind: "dir" | "file" | "link";
+  size: number;
+  mtime: number;
+  link_target?: string | null;
+  link_contained?: boolean;
+  link_kind?: "dir" | "file" | null;
+  /** The link is real but its TARGET is not valid UTF-8, so it cannot be shown. Distinct from a
+   *  target that simply could not be read — this one exists and is unrepresentable. */
+  link_unencodable_target?: boolean;
+}
+
+/** GET /api/files/list (#783). One canonical counting rule, shared with the server so the two
+ *  cannot drift: `total` is a number **iff `complete`**; a scan stopped by the entry cap or the
+ *  wall-clock budget reports `complete: false`, `total: null`, `truncated: true`. The dirs-first
+ *  ordering therefore describes the entries actually RETURNED, not the directory. */
+export interface FileListing {
+  path: string;
+  parent: string | null;
+  root: string;
+  entries: FileEntry[];
+  total: number | null;
+  complete: boolean;
+  truncated: boolean;
+  /** Entries omitted because their filename is not valid UTF-8 and cannot survive JSON. POSIX
+   *  names are bytes; `scandir` surfaces undecodable ones as lone surrogates, which would
+   *  otherwise make one file take down the whole listing. Reported so the response is honest
+   *  about what it left out rather than quietly looking smaller than the directory. */
+  unencodable?: number;
+}
+
+/** GET /api/files/read (#783). Binary files return metadata only — no content, ever. */
+export interface FileContent {
+  path: string;
+  size: number;
+  binary: boolean;
+  mime?: string;
+  /** #1530: what the viewer may show inline, by extension and independent of `binary` — an SVG is
+   *  text (editable) AND an image. Absent from servers that predate it. */
+  preview?: "image" | "video" | "audio" | null;
+  content?: string;
+  truncated?: boolean;
+  /** #950: sha256 of the complete bytes — what a save is bound to. `null` when the read was
+   *  truncated, because there is then nothing honest to save against. */
+  version?: string | null;
+  /** #950: whether the viewer may offer EDIT; when not, `readonly_reason` says why as a predicate
+   *  ("is larger than 1 MiB …", "mixes CRLF and LF line endings"). */
+  editable?: boolean;
+  readonly_reason?: string | null;
+  eol?: "\n" | "\r\n";
+  bom?: boolean;
+}
+
+/** POST /api/files/write (#950) — a completed save. `retained` is the version it replaced, kept in
+ *  the recovery store; null when the text was unchanged and nothing was written. */
+export interface FileWriteResult {
+  path: string;
+  version: string;
+  size: number;
+  retained: { path: string; version: string } | null;
+}
+
+/** The body of a 409 from POST /api/files/write (#950), carried as `ApiError.record`. */
+export interface FileWriteRefusal {
+  detail: string;
+  reason?:
+    | "changed"
+    | "open_elsewhere"
+    | "opened_during_save"
+    | "too_large"
+    | "not_editable";
+  /** The version now on disk, when the refusal is `changed`. */
+  version?: string;
+  /** Best-effort name of the process holding the file open. Often absent; never required. */
+  holder?: { pid: number; comm: string };
+  /** Both surviving names, when a writer claimed the name mid-save and nothing was overwritten. */
+  both?: string[];
+}
+
+/** GET /api/files/capabilities (#783) — the panel fails CLOSED when the platform cannot support
+ *  the containment contract, rather than degrading to a weaker check. */
+export interface FileCapabilities {
+  ok: boolean;
+  reason: string;
+}
+
+/** One changed path from GET /api/git/status (#784). A single porcelain record can yield TWO of
+ *  these — an `MM` path is a staged edit AND a later unstaged one, which is real git state, so it
+ *  renders in both groups with its own diff side rather than the UI picking a winner. */
+export interface GitEntry {
+  path: string;
+  index: string;
+  worktree: string;
+  kind: "staged" | "changed" | "untracked" | "unmerged";
+  oid: string | null;
+  /** Rename/copy source, when the record carried one. */
+  orig_path?: string;
+  /** #950 review 4833: git reported this path (or its rename source) as bytes that are not
+   *  UTF-8. The name shown is lossy, so two different files can look alike — the server refuses
+   *  to write to it, and the panel offers nothing to write with. */
+  undecodable?: boolean;
+  /** What this row IS, not what it is called — see `entry_fingerprint` server-side. The panel
+   *  echoes it back on a write so the operation acts on the bytes that were displayed; the
+   *  session agent shares this worktree and never takes the panel's lock, so binding to the
+   *  pathname alone meant "act on whatever is there when the command runs". */
+  fp: string;
+  /** #950: both sides' object ids and modes, as porcelain v2 reports them. Whether an index entry
+   *  still holds the last commit's PARENT version is a `(mode, oid)` question. */
+  oid_head?: string;
+  oid_index?: string;
+  mode_head?: string;
+  mode_index?: string;
+}
+
+/** GET /api/git/status (#784). `repo: null` is a normal 200 — "not a repository" is a state.
+ *  `ahead`/`behind` are **null when absent**, which is different from 0: detached HEAD and "no
+ *  upstream" have no divergence to report, and level-with-upstream does. */
+export interface GitStatus {
+  repo: string | null;
+  branch: string | null;
+  upstream: string | null;
+  ahead: number | null;
+  behind: number | null;
+  entries: GitEntry[];
+  truncated: boolean;
+  /** The whole staged SET as of this read. A commit records the index, not the listed rows, so
+   *  this is what a commit binds to — a per-row check cannot see a file ADDED to the index. */
+  staged_fp: string;
+  /** The set of paths making the tree dirty — the precondition `switch` refuses on. */
+  dirty_fp: string;
+  /** #950: the commit HEAD is on (null on a branch with no commit yet) — what a write that must act
+   *  on "the commit the operator was shown" sends back. */
+  head?: string | null;
+  /** #950: paths the last commit changed whose index entry still holds the parent's version —
+   *  i.e. staged reversals of it. An unfinished panel commit and a reversal staged on purpose look
+   *  identical, so this is reported, never acted on. `null` = could not be determined. */
+  unsettled?: string[] | null;
+  /** #950: paths the last commit changed whose index is AT the commit but whose worktree file still
+   *  holds the parent's version — what a revert that could not write a file leaves. `null` = could
+   *  not be determined (too many files, or one too large to hash). Reported, never acted on. */
+  unsettled_worktree?: string[] | null;
+}
+
+/** POST /api/files/upload/batch (#807): a server-side reservation minted from an immutable
+ *  manifest. ADMISSION only — an over-budget drop fails here before a byte moves; the bound that
+ *  actually holds is charged per chunk while streaming. */
+export interface UploadBatch {
+  batch_id: string;
+  files: number;
+  bytes: number;
+  files_limit: number;
+  bytes_limit: number;
+  file_limit: number;
+}
+
+/** POST /api/files/upload (#807): one file, landed. */
+export interface UploadResult {
+  path: string;
+  name: string;
+  relpath: string;
+  bytes: number;
+  batch: {
+    batch_id: string;
+    files_used: number;
+    bytes_used: number;
+    files_limit: number;
+    bytes_limit: number;
+  } | null;
+}
+
+/** GET /api/git/diff (#784). Assembled from `cat-file` blobs + the descriptor-verified worktree
+ *  read — never `git diff`, because no flag stops a repo-configured `filter.*` clean driver.
+ *  `added`/`removed` are **null when `truncated`**: a count taken from a cut-off prefix is not a
+ *  total, and showing it as one would be a lie the UI could not detect. */
+export interface GitDiff {
+  path: string;
+  repo: string;
+  diff: string;
+  added: number | null;
+  removed: number | null;
+  truncated: boolean;
+  binary: boolean;
+  too_large: boolean;
+  /** Ours-vs-theirs, not worktree-vs-anything: the two sides of an unresolved merge. */
+  conflict?: boolean;
+  /** The pair exceeded the comparison budget, so this is a whole-block replacement rather than a
+   *  line-by-line diff. Said out loud instead of passed off as a real diff. */
+  coarse: boolean;
+}
+
+/** GET /api/git/branches (#806): what the branch menu lists. A **read**, so it comes off the read
+ *  path's sanitized gitdir like every other read — the write side never grows its own listing. */
+export interface GitBranches {
+  repo: string | null;
+  current: string | null;
+  local: string[];
+  remote: string[];
+}
+
+/** One RECENT COMMITS row (#950). */
+export interface GitLogCommit {
+  sha: string;
+  short: string;
+  subject: string;
+  author: string;
+  /** Author time, epoch seconds. */
+  time: number | null;
+  /** More than one is a merge, which the panel does not revert; zero is the branch's first commit. */
+  parents: number;
+  /** Whether the upstream already has it. ABSENT when there is no upstream to ask — "not known",
+   *  never "not pushed". */
+  pushed?: boolean;
+}
+
+/** GET /api/git/log (#950): the branch's first-parent history, newest first, off the read path's
+ *  sanitized gitdir. The window it lists is also the only set of commits a revert may name. */
+export interface GitLog {
+  repo: string | null;
+  branch: string | null;
+  head: string | null;
+  commits: GitLogCommit[];
+}
+
+/** GET /api/git/push-target (#806): the dry preflight the PUSH control renders *before* the
+ *  operator commits to a write. Ambiguity comes back as `ok:false` + `candidates` rather than an
+ *  error, because the control has to DRAW the refusal — enforcement still lives on the POST. */
+export interface GitPushTarget {
+  ok: boolean;
+  reason: string | null;
+  branch: string | null;
+  remote: string | null;
+  /** `origin/devopsagent/git-write` — the resolved name, never a hardcoded `origin`. */
+  target: string | null;
+  /** Opaque expectation the POST must echo back. Pins the destination the preflight RESOLVED,
+   *  not just its label — `remote.<n>.pushurl` can move while `origin/master` stays true. */
+  expect: string | null;
+  candidates: string[];
+  set_upstream: boolean;
+}
+
+/** Every `/api/git/*` write answers with the post-write status, so the panel settles from the
+ *  server rather than from an optimistic guess (#806). A git operation that appears to have
+ *  worked and did not is worse than a spinner. */
+export interface GitWriteResult {
+  /** `discard` only: `{path: [blob-oid, ...]}` for every version of the bytes that were
+   *  REPLACED. The server displaces the file with `rename` before writing anything, so each set
+   *  of bytes that occupied the name is in the object database — usually one, more than one only
+   *  when something else was writing at the same moment. Recover with `git cat-file -p <oid>`. */
+  recoverable?: Record<string, string[]>;
+  /** `push` only: the commit the REMOTE received. Present even when local settlement failed. */
+  pushed?: string;
+  /** `push` and `pull`: whether the LOCAL bookkeeping finished after the durable change landed.
+   *  `false` means the remote/branch update SUCCEEDED and only the local part did not — a retry
+   *  is safe and idempotent, which is a different action from retrying a failed operation. */
+  settled?: boolean;
+  settle_error?: string | null;
+  /** Null or absent when the post-write status read itself failed. The operation still happened —
+   *  this says only that the panel could not re-read the repository afterwards, so the caller must
+   *  KEEP the status it already had rather than adopting an absence as the new truth. #950 writes
+   *  (`commit-paths`, `settle`, `discard`) omit it and say why in `status_error`. */
+  status?: GitStatus | null;
+  status_error?: string;
+  /** Present on the operations that have something specific to report. */
+  branch?: string;
+  remote?: string;
+  target?: string;
+  set_upstream?: boolean;
+  commit?: string;
+  files?: number;
+  paths?: string[];
+  discarded?: string[];
+  deleted?: string;
+  created?: boolean;
+  staged?: boolean;
+  upstream?: string;
+  /** #950 `commit-paths` / `settle` / revert-file: the full commit SHA. */
+  sha?: string;
+  /** #950: whether the real index caught up with the write. `pending` means the commit (or the
+   *  worktree revert) happened and some index entries were left — see `index_left`. Deliberately
+   *  not `settled`, which pull and push already use for a different fact. */
+  index?: "settled" | "pending";
+  index_left?: string[];
+  index_reason?: string | null;
+  /** #950: present, as `false`, only when the index write LANDED but syncing it to disk could not be
+   *  confirmed (review 4833). Neither "not updated" nor a plain success: say so, with `index_reason`. */
+  index_durable?: boolean;
+  /** #950 revert-file: the staged blob each path had before, recoverable with `git cat-file -p`. */
+  staged_recoverable?: Record<string, string>;
+  reverted?: string[];
+  /** #950 revert-commit: the commit that was undone (`sha` is the new commit that undoes it). */
+  reverted_commit?: string;
+  /** #950 revert-commit and revert-file: whether worktree restoration completed. `pending`
+   *  lists incomplete paths in `worktree_left`; a path may have been left alone or partially
+   *  restored. Inspect `worktree_reason` and `recoverable`, which carries versions already
+   *  moved aside. For revert-file, `discarded` lists the paths successfully put back. */
+  worktree?: "settled" | "pending";
+  worktree_left?: string[];
+  worktree_reason?: string | null;
+  /** #950 settle: the worktree files SETTLE wrote the committed version of. */
+  worktree_paths?: string[];
+}
+
+// ---------------------------------------------------------------------------------------------
+// Missions (#846 Phase 1, #852/#862 Phase 2a). Shapes derived from the running store, not from
+// the SQL — `missions.create_mission` / `get_mission` / `objectives` / `list_missions` were
+// called directly and their output transcribed, so a field that does not exist cannot be typed
+// here by wishful thinking.
+// ---------------------------------------------------------------------------------------------
+
+/** One entry in a mission's timeline. `kind` is `missions.EVENT_KINDS`. */
+/** One durable operator turn (#871, wired in #890).
+ *
+ *  `state` is the whole reason this route exists rather than a second Ask box:
+ *
+ *  - `in_progress` — the model is running, or the turn is waiting on an action that has not
+ *    settled. A reload finds it here rather than finding nothing.
+ *  - `done` — settled; `answer` is the stored answer and a replay returns exactly this.
+ *  - `indeterminate` — **nobody can say whether the instruction went out.** It is never retried
+ *    automatically: a retry could be a second copy of an instruction the agent already has.
+ *  - `failed` — settled with an honest failure outcome. */
+export interface MissionTurn {
+  turn_id: string;
+  state: "in_progress" | "done" | "indeterminate" | "failed" | string;
+  intent?: string | null;
+  answer?: string | null;
+  delivery_error?: string | null;
+  matches?: PulseAskMatch[];
+  actions?: OrchestratorAction[];
+}
+
+/** One line of `POST /api/missions/{id}/message/stream` (#1224). `progress` names the step the turn
+ *  is on; `answer` is a find turn's PROVISIONAL Stage-1 text (shown, never stored); the last line is
+ *  exactly one `turn` — the very body `/message` returns — or one `error`. */
+export type MissionTurnEvent =
+  | { type: "progress"; step: "classify" }
+  | {
+      type: "progress";
+      step: "catalog";
+      sessions: number;
+      missions: number;
+      hits?: number;
+      mission_hits?: number;
+    }
+  | { type: "progress"; step: "content"; candidates: number }
+  | { type: "progress"; step: "instruct"; sessions: number }
+  | { type: "answer"; final: false; answer: string }
+  | { type: "turn"; status: number; turn: MissionTurn }
+  | { type: "error"; status: number; detail: string };
+
+/** The timeline kinds the console knows by name. Open-ended (`string & {}`): the server adds kinds,
+ *  and an unknown one still renders as a generic row rather than failing to type-check.
+ *
+ *  `planning` and `plan_edit` are #967 P2's. A `planning` event closes or annotates one planning
+ *  attempt (`MissionPlanningMeta`); a `plan_edit` records WHICH fields an operator's edit changed and
+ *  never carries the brief (`MissionPlanEditMeta`, no `text`). */
+export type MissionEventKind =
+  | "operator_msg"
+  | "assistant_msg"
+  | "state"
+  | "plan"
+  | "plan_edit"
+  | "planning"
+  | (string & {});
+
+/** `meta` of a `planning` event (#967). `discarded` is a settlement the generation fence refused
+ *  because a newer attempt or the operator's own save owned the mission by then. */
+export interface MissionPlanningMeta {
+  outcome:
+    | "skipped"
+    | "failed"
+    | "discarded"
+    | "recovered"
+    | "project_conflict"
+    | (string & {});
+  generation?: number;
+}
+
+/** `meta` of a `plan_edit` event (#967): the plan it produced and the fields that changed. */
+export interface MissionPlanEditMeta {
+  plan_id: string;
+  changed: string[];
+}
+
+export interface MissionEvent {
+  seq: number;
+  mission_id: string;
+  at: number;
+  kind: MissionEventKind;
+  session_key: string | null;
+  action_id: string | null;
+  text: string | null;
+  meta: Record<string, unknown> | null;
+  /** The IMMUTABLE settlement projection frozen onto a decision event (#840). Present only on
+   *  decision events; a stored answer that changes is not a stored answer. */
+  settlement: Record<string, unknown> | null;
+}
+
+/** An objective. `state` is never written by the client — an operator edit may add, drop,
+ *  retitle, waive or reorder, and can never mark something met (#840). */
+export interface MissionObjective {
+  mission_id: string;
+  key: string;
+  ord: number;
+  title: string;
+  probe: string;
+  probe_args: Record<string, unknown> | null;
+  gate: boolean;
+  state: string;
+  met_at: number | null;
+  /** The last thing a probe actually saw, with when it saw it. Rendered as STALE rather than
+   *  as current when the probe could not run — nothing is marked met or failed on data the
+   *  server could not fetch. */
+  observed: Record<string, unknown> | null;
+  source: string;
+  /** This mission's direction for the objective (#983): copied from the playbook (`template`) or
+   *  written for this mission (`operator`). Null when a nudge would type the default nudge. */
+  direction?: string | null;
+  direction_source?: "template" | "operator" | null;
+  /** The operator rejected a judgment of this objective and the supervisor is waiting for new
+   *  session output before it judges again (#1088). Only the fact — never the fingerprint. */
+  judge_rejected?: boolean;
+}
+
+/** A row from `GET /api/missions` — the LIST shape.
+ *
+ *  It carries `session_count`, **not** `sessions`. That is not an omission: a list row has never
+ *  had a roster, and the console originally iterated `m.sessions` on one, which threw on any
+ *  non-empty production list while every unit mock hid it by supplying the array. The two shapes
+ *  are separate types so consuming a detail-only field from a list row does not compile. */
+export interface MissionListRow {
+  id: string;
+  title: string;
+  project_id: string | null;
+  cwd: string | null;
+  state: string;
+  created_at: number;
+  updated_at: number;
+  closed_at: number | null;
+  archived_at: number | null;
+  outcome: string | null;
+  /** Active memberships (`removed_at IS NULL`) — the KEYS, not the roster rows.
+   *
+   *  Both of the console's questions are this one fact: how many sessions the mission holds (the
+   *  rail's line) and which sessions are held at all, so a session another mission owns is not
+   *  offered as untracked. A bare count answers the first and gets the second silently wrong. */
+  session_keys: string[];
+  /** DERIVED at read time from the ledger, never stored (#840). */
+  needs_you?: boolean;
+  needs_you_why?: string[];
+}
+
+/** A row from `GET /api/missions/{id}` — the DETAIL shape, which does carry the roster. */
+/** One objective as the FOLLOW-THROUGH supervisor sees it (#885). Distinct from
+ *  `MissionObjective`, which is the objective itself: this is what the supervisor is allowed to
+ *  do about it next, and why. */
+export interface SupervisorObjective {
+  key: string;
+  title: string | null;
+  gate: boolean;
+  state: string;
+  met: boolean;
+  /** Bumped when the objective goes round again; the nudge budget is PER EPISODE, so a new
+   *  episode restores it. */
+  episode: number;
+  /** The operator asked not to be told about this objective again. */
+  stood_down: boolean;
+  /** A question is open against this objective, so the supervisor has stood it down UNTIL IT IS
+   *  ANSWERED. Distinct from `stood_down`, and the server keeps them apart for the reader's sake:
+   *  one says the operator asked for quiet, this one says the operator owes an answer. */
+  awaiting_answer: boolean;
+  spent: number;
+  remaining: number;
+  may_nudge: boolean;
+  /** The ledger could not be READ. Distinct from a spent budget: the server reports
+   *  `remaining: 0` in this case because none can be justified, so the number alone cannot tell
+   *  "unknown" from "exhausted" — read this, never infer it. */
+  unreadable: boolean;
+  /** A nudge may or may not have been delivered. Charged and terminal. */
+  indeterminate: boolean;
+  /** How many nudges for this episode are still in flight. */
+  live: number;
+  /** Whether the refusal ENDS the episode (exhausted or indeterminate) as opposed to merely
+   *  describing right now (live, or an unreadable ledger). Only a terminal refusal escalates. */
+  terminal: boolean;
+  /** The server's OWN sentence for the refusal, rendered verbatim. Never re-derived here: the
+   *  supervisor's rule is that every refusal names itself, and a second copy of that vocabulary
+   *  in the client is a second thing to keep in step. */
+  why_not: string;
+}
+
+export interface MissionSupervisor {
+  objectives: SupervisorObjective[];
+  /** A PROPOSAL that the mission looks finished — never a close, and false for a mission with no
+   *  objectives, which is unmeasured rather than done. */
+  likely_done: boolean;
+  unmet_gates: number;
+  /** How many objectives GATE completion. `unmet_gates: 0` reads the same whether every gate
+   *  passed or there was never one to pass, and only one of those is progress — so the board
+   *  cannot word itself honestly without this (#1063). Optional: a client may be rendering a
+   *  response from a server that predates it. */
+  gates?: number;
+  /** How many sessions the mission currently holds, and the discriminator derived from it.
+   *
+   *  `no_session` is NOT "idle" and NOT "stalled" — those are claims about an agent. This is a
+   *  claim about the MISSION: there is no agent for it to be either. Releasing the last session
+   *  from a `running` mission reaches that state, and the board has to say so rather than paint
+   *  a follow-through it cannot perform (#896 review 7, finding 2). */
+  held_sessions?: number | null;
+  no_session?: boolean;
+  /** The roster could not be READ. Not the same claim as `no_session`, and the difference is the
+   *  point: "we could not look" is not "there is nothing there". Both cannot be true. */
+  sessions_unreadable?: boolean;
+  checked_at: number;
+}
+
+export interface Mission {
+  id: string;
+  title: string;
+  instruction: string | null;
+  brief: string | null;
+  project_id: string | null;
+  cwd: string | null;
+  engine: string | null;
+  engine_source: string | null;
+  state: string;
+  playbook_id: string | null;
+  created_at: number;
+  updated_at: number;
+  closed_at: number | null;
+  archived_at: number | null;
+  archiving_at: number | null;
+  unarchiving_at: number | null;
+  outcome: string | null;
+  /** How the objective PRODUCER finished, or `pending` while it is still running (#883).
+   *
+   *  Load-bearing for the console's honesty: `POST /api/missions` returns 201 before the model
+   *  has been asked, so a mission legitimately has an empty checklist for a moment. Rendering
+   *  that as "no objectives" states a fact the server has not established. `null` is a mission
+   *  from before the producer existed; `skipped` and `failed` each carry their own reason into
+   *  the timeline.
+   *
+   *  The PLAN CARD reads it for the same reason (#904 review 2, finding 8): "nothing required"
+   *  and "not worked out yet" are different things to approve a launch against. */
+  objectives_state?: "pending" | "done" | "failed" | "skipped" | null;
+  objectives_at?: number | null;
+  /** How the retired one-agent planner left this mission (#967; retired by #2152). A new mission is
+   *  `skipped` (HQ plans it); a `pending` left from before the upgrade is settled at boot. Still a
+   *  server-side fence: DISPATCH answers 409 while it says `pending`. */
+  plan_state?: "pending" | "ready" | "failed" | "skipped" | null;
+  plan_generation?: number;
+  plan_detail?: string | null;
+  plan_at?: number | null;
+  /** The latest plan revision HQ's procedure wrote (#2152), or null when it has none. ABSENT when
+   *  the server could not read it: not known to be unplanned. */
+  plan_revision?: number | null;
+  sessions: MissionSession[];
+  objectives?: MissionObjective[];
+  /** How many LIVE sub-agents this mission may hold (#894). A server constant, echoed so the
+   *  console can show "n of N used" and withhold a control that could only 409. The client never
+   *  enforces it — `claim_spawn` does, inside the transaction that reserves the slot. */
+  spawn_cap?: number;
+  /** Where a sub-agent would run, server-resolved. `null` when the project no longer resolves. */
+  spawn_cwd?: string | null;
+  /** Which agent a sub-agent would be, derived from the session this mission holds. */
+  spawn_engine?: string | null;
+  /** Sub-agents started and not proven stopped — the SAME count the claim enforces.
+   *  Absent (not 0) when the server could not read it: an unknown budget is not an empty one. */
+  spawn_live?: number;
+  /** The supervisor's mechanical reading, attached at read time (#885). ABSENT when the
+   *  assessment could not be produced — never an empty reading, which would render as
+   *  "nothing to follow up" and is a different claim from "we could not look". */
+  supervisor?: MissionSupervisor;
+  events?: MissionEvent[];
+  /** Cursor for the NEXT page of older events, or null when the first page is all of them. */
+  events_next_seq?: number | null;
+  /** DERIVED at read time from the ledger, never stored (#840). */
+  needs_you?: boolean;
+  needs_you_why?: string[];
+  /** The turn the operator is still owed an outcome for, from the STORE (#890). Absent/null when
+   *  there is none. This is what makes "still working" and an ambiguous turn survive a reload —
+   *  a durable turn whose only representation is component state is not durable. */
+  /** The question awaiting an answer, or null (#892). Carried on the mission rather than found
+   *  in `events`, which is paginated — a question older than the newest page would disappear
+   *  from the console while `needs_you` still said the mission wanted an answer. */
+  question?: MissionQuestion | null;
+  turn?: MissionOpenTurn | null;
+  /** The dispatch PROPOSAL, when there is one (#893). Absent/null when the mission has not been
+   *  planned. It survives a reload because it is a row, not component state — the operator reads
+   *  it, edits it, and decides. */
+  plan?: MissionPlan | null;
+  /** May this failed mission be started again (#966)? Computed by `get_mission` from the same
+   *  predicate the state write re-checks in its transaction. The failure EVENT carries a
+   *  `retry_eligible` too; that one is a settle-time snapshot and never decides a control. */
+  retry_eligible?: boolean;
+  /** What the failed launch typed: `not_attempted`, `zero_write`, `partial`, `delivered`, `unknown`. */
+  seed_outcome?: string | null;
+  /** Why Start again is refused, set only while the mission is failed and not eligible. */
+  retry_reason?: string | null;
+  /** How the checklist was fitted when it was proposed (#1061 Phase 3): suggestions dropped, and
+   *  objectives whose target was filled in from the instruction. Zeros when nothing was unusual.
+   *  Display facts for the launch confirmation, never an authority. */
+  objectives_fit?: { dropped: number; parameterised: number };
+  /** The mission's opt-in to autonomous menu answers (#1060 Phase 4). Off unless the operator
+   *  turned it on for THIS mission; it acts only at the yolo tier. */
+  auto_choose?: boolean;
+}
+
+/** An unresolved turn: still running, or terminal-and-ambiguous. `done` never appears here —
+ *  a finished turn's answer is a timeline event, which is where finished turns live. */
+export interface MissionOpenTurn {
+  turn_id: string;
+  state: "in_progress" | "indeterminate";
+  /** The operator's own words, read back from the event the claim wrote. */
+  text: string;
+  delivery_error: string;
+  created_at: number;
+}
+
+/** An agent left out of the mission picker, and why (#1577). `reason` is a few plain words;
+ *  `detail` is the server's full sentence. */
+export interface MissionEngineUnavailable {
+  id: string;
+  label: string;
+  reason: string;
+  detail?: string;
+}
+
+/** A LEGACY one-agent plan (#893; read-only since #2152): which project, which agent, what the
+ *  agent will be told. Kept so a mission that holds one can still Begin; nothing writes new ones.
+ *
+ *  `plan_id` is the identity DISPATCH compares against. Every edit mints a new one, so a dispatch
+ *  approved against the version on screen a minute ago cannot run the version typed since. */
+export interface MissionPlan {
+  plan_id: string;
+  mission_id: string;
+  project_id: string | null;
+  /** Resolved SERVER-SIDE from the project entity. The client never sends a path. */
+  cwd: string | null;
+  engine: string | null;
+  /** Why this agent, in the model's words — empty when the operator chose it themselves. */
+  engine_reason: string;
+  brief: string;
+  created_at: number;
+  /** What an override may choose from. Current as of the read, not as of the plan. */
+  project_options?: { id: string; name: string; cwd: string }[];
+  engine_options?: { id: string; label: string }[];
+  /** Agents the server does not offer for missions, each with its reason (#1577). Display only:
+   *  the server refuses any of these on save, whatever the client sends. */
+  engine_unavailable?: MissionEngineUnavailable[];
+  /** Fields the model's reply could not supply, so the card can say why one is empty rather
+   *  than looking merely unfilled. */
+  dropped?: string[];
+}
+
+/** A bounded choice the supervisor is waiting on (#892).
+ *
+ *  `label` is DISPLAY TEXT and carries no authority: the client sends back the option's INDEX,
+ *  and the server looks the action up from its own closed set. Nothing the model wrote is ever
+ *  executed, which is why the label is never sent back.
+ *
+ *  **That is not the whole threat, and `consequence` is the rest of it.** The model authors the
+ *  label AND picks the action, and the operator sees only the label — so a label reading "Keep
+ *  working; leave this required" over a hidden `waive_objective` obtains a confirmation under
+ *  false pretences (#900 review 2, finding 1). `consequence` is the SERVER's own sentence about
+ *  what the option does, and `settling` marks the ones that change something beyond the
+ *  timeline. Both are server-owned; neither can be model-authored. */
+export interface MissionQuestion {
+  seq: number;
+  question: string;
+  objective?: string | null;
+  episode?: number | null;
+  options: {
+    label: string;
+    action: string;
+    consequence?: string;
+    settling?: boolean;
+  }[];
+}
+
+export interface MissionSession {
+  mission_id?: string;
+  session_key: string;
+  role?: string | null;
+  added_at?: number;
+  removed_at?: number | null;
+}
+
+/** What one held session is doing right now (#1064), from `GET /api/missions/{id}/now`. Derived
+ *  facts only — the server never sends screen text on this route. `unobserved` is NOT quiet: it
+ *  means this process has seen no output for the session, so it cannot say. */
+export type MissionNowStatus =
+  "producing" | "at_prompt" | "quiet" | "unobserved";
+
+export interface MissionNowSession {
+  session_key: string;
+  status: MissionNowStatus;
+  seconds_since_output: number | null;
+  /** Set only while `at_prompt`: `choice` / `confirm` / `question`. */
+  prompt_class: string | null;
+  recap_age_s: number | null;
+  /** The last recap was written before the latest output, so it describes an earlier screen. */
+  recap_older_than_output: boolean;
+  /** The session's current report to HQ (#1882), the agent's own words. Absent on older servers. */
+  report?: AgentReport | null;
+  /** An API member (#1900): its status comes from structured state, not a screen. `producing` is
+   *  a turn in flight, `at_prompt` (class `approval`) is requests waiting, `quiet` is at rest, and
+   *  `seconds_since_output` is the age of the newest turn. Absent on console rows. */
+  api?: boolean;
+  /** API rows only: how many requests are waiting. */
+  pending_count?: number;
+}
+
+export interface MissionNow {
+  sessions: MissionNowSession[];
+  checked_at: number;
+}
+
+export interface MissionList {
+  missions: MissionListRow[];
+  total: number;
+  limit: number;
+  offset: number;
+  facets: { projects: string[]; states: string[] };
+  /** A locked or corrupt store empties the rail and SAYS WHY rather than taking the console
+   *  down — the same fail-soft the opencode reader gives the sidebar. Never conflate this with
+   *  "you have no missions": one is a store that would not answer, the other is an answer. */
+  store_error?: string | null;
+  /** A digest of the ORDERED ids of the full filtered set this page was sliced out of (#896
+   *  review 19). Offsets only compose if the thing they index has not moved, and a client
+   *  stitching several pages had no way to establish that: deduplication catches a reorder and
+   *  cannot catch a removal, so an archive between two pages leaves a rail that is
+   *  count-consistent, duplicate-free, holding a stale row and permanently missing a live one.
+   *
+   *  Equal digests across two pages is a proof rather than a heuristic. **A missing one is not a
+   *  match** — a degraded read carries `null`, and the honest reading of that is "cannot prove
+   *  one snapshot". */
+  snapshot?: string | null;
+}
+
+/** Project, cwd, branch, git summary and session roster for one mission. Takes NO client path —
+ *  the cwd is read from the mission row, which is what makes it traversal-proof (#862). */
+export interface MissionContext {
+  id: string;
+  project_id: string;
+  cwd: string;
+  sessions: MissionSession[];
+  git: GitStatus | null;
+  /** The exception KIND only, never the path or message — the panel says "git could not be
+   *  read" without leaking where. Fails closed: `git` stays null. */
+  git_error: string | null;
+}
+
+/** Usage analytics (#1009). `decided` false means the operator was never asked or never answered —
+ *  which is off. */
+export interface AnalyticsState {
+  enabled: boolean;
+  decided: boolean;
+  available: boolean;
+}
+
+// ---- API agents (#1209): conversations BattleLab holds itself -----------------------------------
+
+/** One exchange of a chat-runtime conversation: the operator's message and, once settled, the
+ *  reply. `pending` is in flight; `failed` carries an operator-safe `reason` (never a key). */
+export interface ChatTurn {
+  turn_id: string;
+  text: string;
+  ts: number;
+  status: "pending" | "awaiting_approval" | "done" | "failed";
+  reason: string | null;
+  reply: string | null;
+  reply_ts: number | null;
+  usage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | null;
+  /** The reply stopped at the output limit (it is kept, and marked). */
+  truncated: boolean;
+  /** Earlier exchanges left out of this request by the context budget. */
+  dropped: number;
+  /** The latest attempt's tool calls, in order (#1222). Absent/empty when tools are off. */
+  tools?: ChatToolCall[];
+  proposals?: ChatProposal[];
+}
+
+export interface ChatProposal {
+  id: string;
+  turn_id: string;
+  path: string;
+  status: "awaiting_approval" | "deciding" | "approved" | "rejected" | "refused" | "interrupted";
+  base_sha256: string;
+  new_sha256: string;
+  size: number;
+  created_at: number;
+  decided_at?: number;
+  decided_by?: string;
+  reason?: string | null;
+  can_approve?: boolean;
+  diff?: string;
+}
+
+/** One tool call's SUMMARY (#1222). The file contents are never stored or returned. */
+export interface ChatToolCall {
+  call_id: string;
+  name: "list_files" | "read_file" | string;
+  /** Relative to the conversation's folder, as the tool resolved it. */
+  path: string;
+  /** `stopped`: still running when its turn settled (a failure or restart mid-call). */
+  outcome: "ok" | "refused" | "running" | "stopped";
+  /** `read_file`: the lines returned and the file's total line count. */
+  start_line?: number | null;
+  end_line?: number | null;
+  total_lines?: number | null;
+  /** `list_files`: the entries returned. */
+  entries?: number | null;
+  /** Why a call was refused, in the operator's words. */
+  reason?: string | null;
+}
+
+export type AgentTools = "none" | "read" | "write";
+
+export interface ChatSession {
+  session_id: string;
+  cwd: string;
+  created_at: number;
+  turns: ChatTurn[];
+  in_flight: string | null;
+}
+
+/** An API agent's endpoint, as the server shows it: never the key, only whether one is stored. */
+export interface AgentEndpoint {
+  base_url: string;
+  model: string;
+  api_key_set: boolean;
+  context_window: number;
+  max_output_tokens: number;
+  request_timeout: number | null;
+  configured: boolean;
+  /** #1222: `read` lets the agent list and read files in the conversation's folder. */
+  tools: AgentTools;
+}
+
+export interface AgentEndpointPatch {
+  base_url?: string;
+  /** A new key; `null` clears it; omitted keeps the stored one. */
+  api_key?: string | null;
+  model?: string;
+  context_window?: number;
+  max_output_tokens?: number;
+  tools?: AgentTools;
+}
+
+/** Settings → AI → HQ → Question routing (#2028): when HQ's endpoint takes no tools, one call
+ *  decides whether a message needs a session search. `model` "" = the turn's own answering model;
+ *  `thinking` "hq" = the turn's own level. */
+export type HqRouteThinking = HqThinking;
+export interface HqRouteSettings {
+  enabled: boolean;
+  model: string;
+  thinking: HqRouteThinking;
+}

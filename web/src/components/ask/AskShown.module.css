@@ -1,0 +1,44 @@
+/* What HQ put on screen (#2102): one quiet row directly under the answer, kept after it ran. A
+ * 2px rule on the left, the target in the stronger weight, Open on the right. Never a card and
+ * never an alert. Tokens only. */
+.shown {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-height: 32px;
+  margin: var(--sp-2) 0 0;
+  padding: 2px 0 2px var(--sp-3);
+  border-left: 2px solid var(--hud-dim);
+  font-size: var(--fs-row);
+  line-height: 1.45;
+  color: var(--text-2);
+}
+.rec {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.shown b {
+  font-weight: 500;
+  color: var(--text-1);
+}
+.open {
+  flex: none;
+}
+/* Not applied here (read back, or held by a guard): the same row on a neutral rule. Never a
+ * warning colour — nothing went wrong. */
+.neutral {
+  border-left-color: var(--line-strong);
+}
+.shown + .shown {
+  margin-top: var(--sp-1);
+}
+
+@media (pointer: coarse), (max-width: 800px) {
+  .shown {
+    min-height: 44px;
+  }
+  .open {
+    min-width: 64px;
+  }
+}

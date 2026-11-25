@@ -1,0 +1,196 @@
+/** Every top-level route path, in ONE place (#1058).
+ *
+ *  `missionLink.ts` already stated the rule and the reason: the `/pulse` → `/mission` rename touched
+ *  41 files because the path was a literal at every link site, every route declaration and every
+ *  e2e selector. #1058 promotes `/overview` and `/templates` out of the top bar's icon cluster into
+ *  the section nav and adds `/ask`, so the same paths are now named in more places again — the
+ *  moment to stop spelling them.
+ *
+ *  `MISSION_PATH` lives here too and `missionLink.ts` re-exports it, so nothing that already
+ *  imports it has to change: one home for the values, both import sites valid.
+ */
+
+/** The new-session landing (#1525). It was `/` until the dashboard became the start page. */
+export const NEW_SESSION_PATH = "/new";
+
+/** The Sessions section's front door — the new-session landing. A session itself is
+ *  `/s/:engine/:id`, and the nav links to whichever of the two was last on screen. */
+export const SESSIONS_PATH = NEW_SESSION_PATH;
+
+/** The Missions section (#948). */
+export const MISSION_PATH = "/mission";
+
+/** A "new mission" URL (#2152): there is no New-mission form; it redirects to HQ's fresh compose. */
+export const MISSION_NEW_PATH = `${MISSION_PATH}/new`;
+
+/** The pre-#948 mission path, still served as a permanent replace-redirect. */
+export const LEGACY_MISSION_PATH = "/pulse";
+
+/** The BattleLab dashboard (#1123), and since #1525 the start page: `/` redirects here. */
+export const DASHBOARD_PATH = "/dashboard";
+
+/** Ask's old conversation page (#878, #1171). Since #1776 this path survives only as a link that
+ *  opens HQ's page (`HQ_PATH`) on a new, empty conversation. */
+export const ASK_PATH = "/ask";
+
+/** HQ's page (#1776): the conversation list beside the open thread. `/ask` redirects here. */
+export const HQ_PATH = "/hq";
+/** One HQ conversation on the page (#1776): what "Open as page" and an external link open. */
+export const HQ_CONVERSATION_ROUTE = `${HQ_PATH}/c/:cid`;
+export const hqConversationPath = (cid: string) => `${HQ_PATH}/c/${encodeURIComponent(cid)}`;
+/** HQ's Dispatches (#1837): the lines HQ wrote about notifications, read only. */
+export const HQ_DISPATCHES_PATH = `${HQ_PATH}/d`;
+/** One dispatch (#1837): what the bell's "In HQ →" opens — scrolled to and marked LINKED. */
+export const hqDispatchPath = (id: string) => `${HQ_DISPATCHES_PATH}/${encodeURIComponent(id)}`;
+/** A dispatch id as the server mints it (`hq_dispatch.BID_RE`): checked before any API call. */
+export const HQ_DISPATCH_ID_RE = /^d_[0-9a-f]{16}$/;
+/** A conversation id as the server mints it (`ask_store.CID_RE`): checked before any API call,
+ *  so a malformed link is the same "isn't here" as an unknown one, and asks nothing. */
+export const ASK_CID_RE = /^ask_[0-9a-f]{32}$/;
+/** Whether `pathname` (router-relative) is HQ's page: `/hq` and everything under it. */
+export const isHqPath = (pathname: string) =>
+  pathname === HQ_PATH || pathname.startsWith(`${HQ_PATH}/`);
+
+/** The session map (#208 / #424). Labelled MAP in the nav; the path is unchanged. */
+export const MAP_PATH = "/overview";
+
+/** The instruction-template gallery (#905). */
+export const TEMPLATES_PATH = "/templates";
+
+/** Library → shared variable definitions, values and collections (#1390). */
+export const VARIABLES_PATH = "/library/variables";
+
+/** Library → MCP servers (#2163): third-party MCP servers registered once, checked, and enabled
+ *  per project. `MCP_NEW_PATH` is the setup wizard; one server's page is `mcpServerPath(id)`. */
+export const MCP_PATH = "/library/mcp";
+export const MCP_NEW_PATH = `${MCP_PATH}/new`;
+export const MCP_SERVER_ROUTE = `${MCP_PATH}/:serverId`;
+export const mcpServerPath = (id: string) => `${MCP_PATH}/${encodeURIComponent(id)}`;
+/** A server id as the registry mints it (`mcp_registry.ID_RE`): checked before any API call. */
+export const MCP_ID_RE = /^[0-9a-f]{16}$/;
+
+/** Library → Memory: each project's shared notebook that agent sessions read and add to (#1441). */
+export const MEMORY_PATH = "/library/memory";
+
+/** Library → Artifacts (#1932): every file and static site the agents published, and one
+ *  artifact's full page at `artifactPath(id)` — the stable deep link HQ's answers carry. */
+export const ARTIFACTS_PATH = "/library/artifacts";
+export const ARTIFACT_ROUTE = `${ARTIFACTS_PATH}/:artifactId`;
+export const artifactPath = (id: string) => `${ARTIFACTS_PATH}/${encodeURIComponent(id)}`;
+/** The hosted bytes (served sandboxed by the server, never by the SPA): the stable link, which
+ *  always shows the latest revision, or one revision pinned best-effort with `@<n>`. */
+export const hostedArtifactPath = (id: string, revision?: number) =>
+  `/artifacts/${encodeURIComponent(id)}${revision ? `@${revision}` : ""}/`;
+/** Library → Artifacts → REPOSITORIES (#2347 P1): the shared artifact repositories hosted on this
+ *  BattleLab, and one repository's page at `artifactRepoPath(id)`. A repository id is digit groups
+ *  like an artifact's, so it never equals the static `repositories` segment. */
+export const ARTIFACT_REPOS_PATH = `${ARTIFACTS_PATH}/repositories`;
+export const ARTIFACT_REPO_ROUTE = `${ARTIFACT_REPOS_PATH}/:repoId`;
+export const artifactRepoPath = (id: string) =>
+  `${ARTIFACT_REPOS_PATH}/${encodeURIComponent(id)}`;
+/** One repository item's hosted bytes (served sandboxed by the server, like an artifact's): the
+ *  latest revision, or one pinned with `@<n>`. */
+export const hostedRepoItemPath = (id: string, revision?: number) =>
+  `/artifacts/i/${encodeURIComponent(id)}${revision ? `@${revision}` : ""}/`;
+
+/** The public gallery (#1440): one Browse view per kind, inside Library → Playbooks and → Skills.
+ *  A playbook ID (`[a-z][a-z0-9-]{1,47}`) or skill ID (`[a-z0-9][a-z0-9-]{0,63}`, #1654) has no
+ *  slash, so it never equals a kind segment plus a digest, and the bare prefix and `/library/gallery/<digest>[?kind=&id=]` are only old links, redirected by
+ *  `LegacyGalleryRedirect`. */
+export const GALLERY_PATH = "/library/gallery";
+export const GALLERY_PLAYBOOKS_PATH = `${GALLERY_PATH}/playbooks`;
+export const GALLERY_SKILLS_PATH = `${GALLERY_PATH}/skills`;
+export const galleryPath = (kind: "playbook" | "skill") =>
+  kind === "playbook" ? GALLERY_PLAYBOOKS_PATH : GALLERY_SKILLS_PATH;
+export const galleryEntryPath = (kind: "playbook" | "skill", digest: string) =>
+  `${galleryPath(kind)}/${digest}`;
+/** Review an update of local copy `id` to the entry `digest` (a new copy; the original stays). */
+export const galleryUpdatePath = (kind: "playbook" | "skill", digest: string, id: string) =>
+  `${galleryEntryPath(kind, digest)}?update=${encodeURIComponent(id)}`;
+export const SKILLS_PATH = "/library/skills";
+/** Library → Specialists (#1693, #1613 P3): the Commander's pool of jobs HQ staffs missions from. */
+export const SPECIALISTS_PATH = "/library/specialists";
+export const SPECIALIST_NEW_PATH = `${SPECIALISTS_PATH}/create/new`;
+export const specialistPath = (id: string) => `${SPECIALISTS_PATH}/${encodeURIComponent(id)}`;
+/** Library → Mission plans (#1924): reusable, slot-only, inert plans. */
+export const MISSION_PLANS_PATH = "/library/mission-plans";
+export const missionPlanPath = (id: string) => `${MISSION_PLANS_PATH}/${encodeURIComponent(id)}`;
+
+export const PLAYBOOKS_PATH = "/library/playbooks";
+export function playbookPath(id: string): string {
+  return `${PLAYBOOKS_PATH}/${encodeURIComponent(id)}`;
+}
+export const PLAYBOOK_NEW_PATH = `${PLAYBOOKS_PATH}/create/new`;
+export const playbookEditPath = (id: string) => `${playbookPath(id)}/edit`;
+
+/** Where the checklists editor lived (#1294). Checklists were removed (#1653); this old address, and
+ *  `/settings/ai-playbooks` before it, redirect to Library → Playbooks. */
+export const LEGACY_CHECKLISTS_PATH = `${MISSION_PATH}/checklists`;
+
+/** Library → Automations (#1201, moved from Missions by #1294 — the URL stayed): missions and sessions that run on a schedule, once, or on Run
+ *  now. The list lives here; one automation's run history is `automationPath(id)`, its editor
+ *  `automationEditPath(id)`, a new one `AUTOMATION_NEW_PATH`. The server links a failure
+ *  notification to `automationPath(id)` too (`notifications.AUTOMATION_PATH`). */
+export const AUTOMATIONS_PATH = `${MISSION_PATH}/automations`;
+export const AUTOMATION_NEW_PATH = `${AUTOMATIONS_PATH}/new`;
+export function automationPath(id: string, runId?: string): string {
+  const base = `${AUTOMATIONS_PATH}/${encodeURIComponent(id)}`;
+  return runId ? `${base}?run=${encodeURIComponent(runId)}` : base;
+}
+export function automationEditPath(id: string): string {
+  return `${AUTOMATIONS_PATH}/${encodeURIComponent(id)}/edit`;
+}
+
+/** Library → Actions (#2248 P1): the gallery of the steps an automation can take. Read-only. */
+export const ACTIONS_PATH = "/library/actions";
+
+/** Library → Webhooks (#2221): a name, an address and a secret any service can deliver to and any
+ *  automation can pick. `WEBHOOK_NEW_PATH` makes one (its secret shown once); one webhook's page is
+ *  `webhookPath(id)`. */
+export const WEBHOOKS_PATH = "/library/webhooks";
+export const WEBHOOK_NEW_PATH = `${WEBHOOKS_PATH}/new`;
+export const WEBHOOK_ROUTE = `${WEBHOOKS_PATH}/:webhookId`;
+export const webhookPath = (id: string) => `${WEBHOOKS_PATH}/${encodeURIComponent(id)}`;
+
+/** HQ → Projects (#2143): every project's setup on one page. The index lists the projects and holds
+ *  folder discovery; `projectPath(pid)` is one project's page. Outside `/hq` on purpose, like
+ *  Missions at `/mission`: `isHqPath` is true for every `/hq/*` path, which closes the Ask sidebar and
+ *  points the corner icon at a composer only HQ's conversation page mounts (hq-page.md). The section
+ *  a page belongs to comes from `sections.ts`, not from its URL prefix. */
+export const PROJECTS_PATH = "/projects";
+
+/** The index's two tabs. `projects` is the index's own URL; `folders` is `?tab=folders`. */
+export type ProjectsIndexTab = "projects" | "folders";
+export const PROJECTS_FOLDERS_PATH = `${PROJECTS_PATH}?tab=folders`;
+
+/** One project's page tabs, in order. `general` is the page's own URL. */
+export const PROJECT_TABS = ["general", "defaults", "playbook", "memory"] as const;
+export type ProjectTab = (typeof PROJECT_TABS)[number];
+
+/** One project's page, optionally on a tab other than General. */
+export function projectPath(pid: string, tab?: ProjectTab): string {
+  const base = `${PROJECTS_PATH}/${encodeURIComponent(pid)}`;
+  return tab && tab !== "general" ? `${base}?tab=${tab}` : base;
+}
+
+/** The New project wizard (#1187), under HQ → Projects since #2143. A static route, so it outranks
+ *  the `:pid` page (and a project id is always `p-…`). Reached from New session, the dashboard and
+ *  the Projects index, and renders without the session sidebar. */
+export const NEW_PROJECT_PATH = `${PROJECTS_PATH}/new`;
+
+/** Settings is NOT here: `routes/settingsTabs.ts` already owns `SETTINGS_PATH` and `settingsPath()`
+ *  alongside the section list they index, and a second constant for the same path is the drift this
+ *  module exists to prevent. It is also not a section — it is an action in the corner cluster and an
+ *  item in the operator menu — so the nav never links it.
+ */
+
+/** The NIGHTJAR primitives gallery (#1531): every primitive in every state, the Playwright baseline
+ *  for the design system. Unlinked from the app, behind the normal login like every route. */
+export const NIGHTJAR_GALLERY_PATH = "/__nightjar";
+
+/** The navigation state that hands a message to HQ's page (#2152): a draft's Plan with HQ
+ *  (`mission` binds the conversation to it). The page opens a new conversation and sends it once
+ *  (`AskConsole`'s `seed`). */
+export function hqSeedState(text: string, mission?: string) {
+  return { hqCompose: true, hqSeed: { text, ...(mission ? { mission } : {}) } };
+}

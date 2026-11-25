@@ -1,0 +1,573 @@
+/* The dashboard's sections (#1086, #1123): NEEDS YOU, RECENT WORK and the tiles beside them.
+ * NIGHTJAR (#1531, docs/design.md v2 §6, Phase 5): each section is an armour frame (`nj-frame`: the
+ * chamfer, the lit top edge), its head a callsign — the hazard notch, the title in the display face,
+ * `//` before its meta. A frame CLIPS, so every focus ring inside is inset and anything that must
+ * escape (a dialog) is portalled. Status colour ONLY for state (a needs-you LED is the degraded hue,
+ * whatever the row's kind), `--accent` only for the primary action. Tokens only. Every control is
+ * ≥ 44px tall (§8), and every button is the action button (`ui/actionButton.module.css`). */
+
+.sec {
+  composes: nj-frame from global;
+  margin-bottom: var(--sp-4);
+  text-align: left;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+  flex-wrap: wrap;
+  min-height: 44px;
+  padding: var(--sp-2) var(--sp-4);
+  border-bottom: 1px solid var(--line);
+}
+
+.sq {
+  composes: nj-notch from global;
+}
+
+.title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-label);
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+
+.meta {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.head > .meta::before {
+  content: "//  " / "";
+  color: var(--hud-text);
+}
+
+.headEnd {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* 1 | 2 | 3 days — radios drawn as a segmented control; the native input keeps the semantics. */
+.seg {
+  display: inline-flex;
+}
+.seg label {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 var(--sp-3);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line-strong);
+  margin-left: -1px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.seg input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+}
+.seg label:has(input:checked) {
+  position: relative;
+  z-index: var(--z-raised);
+  border-color: var(--hud);
+  background: var(--hud-tint);
+  color: var(--hud-text);
+}
+.seg label:has(input:focus-visible) {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+
+/* The action button (#967, #1568): each class here IS one of its variants, used alone — never two
+ * of them on one element (the variants set the same plate properties). */
+.btn {
+  composes: ghost from "../ui/actionButton.module.css";
+  white-space: nowrap;
+  text-decoration: none;
+}
+.btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.primary {
+  composes: primary from "../ui/actionButton.module.css";
+  white-space: nowrap;
+}
+.icon {
+  composes: icon from "../ui/actionButton.module.css";
+}
+/* Dismiss REJECTS a decision: the ghost, clearly secondary, never styled like Approve (review
+ * 72959); on a phone it also sits apart from it (below). */
+.quiet {
+  composes: btn;
+}
+
+.select {
+  composes: nj-field from global;
+  display: inline-block;
+  width: auto;
+  min-height: 44px;
+  padding: 0 var(--sp-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.08em;
+}
+
+/* ---- recent work ---- */
+.timeline {
+  padding: var(--sp-1) var(--sp-4) var(--sp-3);
+}
+.day {
+  padding: 8px 0 2px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.entry {
+  composes: nj-arrive from global;
+  display: grid;
+  grid-template-columns: 52px 1fr auto;
+  gap: var(--sp-3);
+  align-items: start;
+  padding: var(--sp-2) 0;
+  border-bottom: 1px dashed var(--line);
+}
+.entry:last-child {
+  border-bottom: 0;
+}
+.at {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--hud-text);
+  padding-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+.what {
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.what b {
+  color: var(--text-1);
+  font-weight: 600;
+}
+.chip {
+  display: inline-block;
+  margin-left: var(--sp-2);
+  padding: 0 var(--sp-1);
+  border: 1px solid var(--line-strong);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.recap {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--accent-soft);
+  background: var(--glass-strong);
+  font-size: var(--fs-label);
+  line-height: 1.5;
+  color: var(--text-2);
+  white-space: pre-wrap;
+}
+.note {
+  margin: 0;
+  padding: var(--sp-3) var(--sp-4);
+  font-size: var(--fs-label);
+  line-height: 1.5;
+  color: var(--text-3);
+}
+/* A first read: Acquiring, with its words (Loader kind="acquire"). */
+.loading {
+  padding: var(--sp-3) var(--sp-4) var(--sp-4);
+}
+.err {
+  color: var(--danger-text, var(--status-down));
+  border-left: 2px solid var(--status-down);
+  background: color-mix(in srgb, var(--status-down) 8%, transparent);
+}
+
+/* ---- needs you ---- */
+/* A row waiting on you: the degraded rail down its left edge (an inset hairline, drawn inside the
+ * frame's clip), its LED, and the words "needs you" for both. It arrives with the shared flash. */
+.row {
+  composes: nj-arrive from global;
+  display: grid;
+  grid-template-columns: var(--sp-3) 1fr auto;
+  gap: var(--sp-3);
+  align-items: start;
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--line);
+  box-shadow: inset 2px 0 0 var(--status-degraded);
+}
+.row:last-child {
+  border-bottom: 0;
+}
+.led {
+  margin-top: var(--sp-1);
+  justify-self: center;
+}
+.rowTitle {
+  font-size: var(--fs-row);
+  font-weight: 600;
+  color: var(--text-1);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.rowTitle:hover {
+  color: var(--hud-text);
+}
+.rowTitle:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
+.rowMeta {
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.why {
+  margin-top: 6px;
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.kind {
+  margin-right: 6px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--warn-text, var(--status-degraded));
+}
+.ctl {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.rowErr {
+  composes: nj-error from global;
+  margin-top: var(--sp-2);
+}
+
+/* ---- an agent's own report (#1882) ---- */
+/* Untrusted agent text, framed as such: the details dialog's quote block under a "the agent says
+ * — its own words, unchecked" label; the summary in --text-2, the question in --text-1. Options
+ * are numbered GHOST plates (none is HQ's pick, so no primary), two columns on a desktop and one
+ * on a phone, every one ≥ 44px. Neutral ink only. */
+.report {
+  margin-top: var(--sp-2);
+  max-width: 720px;
+}
+.reportQuote {
+  border-left: 2px solid var(--line-strong);
+  padding: 6px 10px;
+  background: var(--glass-strong);
+}
+.reportLab {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.reportLabNote {
+  font-weight: 400;
+  letter-spacing: 0.06em;
+  text-transform: none;
+}
+.reportSummary,
+.reportQuestion {
+  margin: 4px 0 0;
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.reportSummary {
+  color: var(--text-2);
+}
+.reportQuestion {
+  margin-top: 8px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+.reportOpts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+.reportOpt {
+  composes: ghost from "../ui/actionButton.module.css";
+}
+/* Doubled so the label's own voice wins over the plate's display caps, whatever order the two
+ * sheets land in: an option is the agent's sentence, not a command label. */
+.reportOpts .reportOpt {
+  min-height: 44px;
+  height: auto;
+  justify-content: flex-start;
+  gap: 10px;
+  padding: 8px 12px;
+  text-align: left;
+  text-transform: none;
+  letter-spacing: normal;
+  font-family: inherit;
+  font-size: var(--fs-meta);
+  font-weight: 600;
+  white-space: normal;
+}
+.reportOpts .reportOpt:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.reportOptNum {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  border: 1px solid var(--line-strong);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--hud-text);
+}
+.reportOptLabel {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-1);
+}
+.reportHint {
+  margin: var(--sp-2) 0 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.04em;
+  line-height: 1.5;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+.reportHint code {
+  color: var(--text-2);
+}
+.reportOpen {
+  display: flex;
+  width: fit-content;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 4px;
+  color: var(--accent-text);
+  font-size: var(--fs-meta);
+  font-weight: 600;
+}
+.reportOpen:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -2px;
+}
+.reportDismiss {
+  min-width: 96px;
+}
+
+/* ---- a section's own control row ---- */
+.bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  padding: var(--sp-2) 0;
+}
+.bar .sp {
+  flex: 1;
+}
+
+/* ---- the details dialog ---- */
+/* One scroll per block, never the whole panel (#1170): the panel is a column bounded by the shared
+   dialog's max-height, the evidence blocks (last words, screen) are the only items that shrink —
+   each scrolling inside itself — and everything else keeps its size, so the footer stays in view.
+   The shared `overflow-y: auto` remains as the fallback for a viewport too short for the fixed
+   parts alone. */
+.details {
+  display: flex;
+  flex-direction: column;
+}
+.details > * {
+  flex: none;
+}
+.details > .quote,
+.details > .screen {
+  flex: 0 1 auto;
+  min-height: 48px;
+}
+.lab {
+  margin: 14px 0 6px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.quote {
+  border-left: 2px solid var(--line-strong);
+  padding: 6px 10px;
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  color: var(--text-2);
+  background: var(--glass-strong);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: min(320px, 40vh);
+  overflow: auto;
+}
+/* The last words' markdown (#1168): quiet structure, same type size as the quote. */
+.md p,
+.md ul,
+.md ol,
+.md pre {
+  margin: 0 0 6px;
+}
+.md > :last-child {
+  margin-bottom: 0;
+}
+.md ul,
+.md ol {
+  padding-left: 18px;
+}
+.md strong {
+  color: var(--text-1);
+}
+.md code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+}
+.md pre {
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  background: var(--bg-0);
+  white-space: pre-wrap;
+}
+.screen {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  background: var(--term-bg, var(--bg-0));
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  line-height: 1.5;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 220px;
+  overflow: auto;
+}
+.approve {
+  border: 1px solid var(--line-strong);
+  padding: 10px 12px;
+  background: var(--bg-2);
+  font-size: var(--fs-meta);
+  color: var(--text-1);
+}
+.bytes {
+  margin-top: 6px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--text-3);
+}
+.bytes code {
+  padding: 0 5px;
+  border: 1px solid var(--line);
+  color: var(--text-1);
+}
+.textarea {
+  width: 100%;
+  min-height: 96px;
+  resize: vertical;
+  border: 1px solid var(--accent-soft);
+  background: var(--bg-2);
+  color: var(--text-1);
+  font: inherit;
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  padding: 9px 11px;
+}
+.options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.options .btn {
+  justify-content: flex-start;
+  text-transform: none;
+  letter-spacing: 0;
+  font-family: inherit;
+  font-size: var(--fs-meta);
+  white-space: normal;
+  text-align: left;
+}
+.foot {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 16px;
+}
+.foot .sp {
+  flex: 1;
+}
+
+
+@media (max-width: 800px) {
+  .row {
+    grid-template-columns: 10px 1fr;
+  }
+  .row .ctl {
+    grid-column: 2;
+    justify-content: flex-start;
+  }
+  .entry {
+    grid-template-columns: 44px 1fr;
+  }
+  .entry > :last-child {
+    grid-column: 2;
+  }
+  .reportOpts {
+    grid-template-columns: 1fr;
+  }
+  .row .ctl .reportDismiss {
+    flex: 1;
+  }
+  /* On a phone, Dismiss sits apart from Approve (review 72959). */
+  .foot .quiet {
+    order: 3;
+    width: 100%;
+  }
+}

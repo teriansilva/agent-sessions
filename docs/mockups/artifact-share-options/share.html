@@ -1,0 +1,71 @@
+<!doctype html>
+<html data-theme="dark"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Artifact public link options · operator side</title>
+<link rel="stylesheet" href="base.css">
+<body>
+<h1>Public link options · the operator's side</h1>
+<p class="sub">Library → Artifacts → one artifact → Share publicly. Three new options sit in the existing confirm, above "I checked the files": a password, an expiry and the BattleLab header. Defaults keep today's link (no password, never expires, header on). The artifact page then shows what the live link carries.</p>
+<div class="board">
+
+<div><div class="label">1 · SHARE PUBLICLY: THE OPTIONS, FILLED IN</div>
+<section class="dialog">
+ <span class="dtag">Share publicly // SITE</span>
+ <h3>Share “Q3 load-test report” publicly?</h3>
+ <div class="warnbox"><p><b>Anyone with the link and the password can open it.</b> No sign-in. It stops working in 7 days, or when you revoke it.</p></div>
+ <div class="opts2">
+  <div class="orow"><span class="k">Password</span><div class="input"><span class="val">••••••••••</span><button class="eye" type="button">SHOW</button></div>
+   <p class="d">Optional. BattleLab keeps only a hash: tell the visitor yourself, you can't see it again.</p></div>
+  <div class="orow"><span class="k">Expires</span><div class="segs"><span class="seg">Never</span><span class="seg">1 hour</span><span class="seg">1 day</span><span class="seg sel">7 days</span><span class="seg">Pick a date…</span></div>
+   <p class="d">Ends Nov 26, 14:05. After that the link answers “This link no longer works”.</p></div>
+  <div class="orow"><span class="k">Header</span><label class="toggle"><span class="box"></span>Show the BattleLab header above it</label>
+   <p class="d">Off: the artifact fills the whole page, with no BattleLab title bar. It stays sandboxed.</p></div>
+ </div>
+ <div class="target"><span class="lbl">Public link</span><span class="mono">https://lab.example.com/artifacts/p/•••••••••••/</span></div>
+ <label class="hold"><span class="box on"></span>I checked the files: 14 files, 2.1 MB. Nothing in them should stay private.</label>
+ <div class="dfoot"><button class="nj-plate btn ghost">Cancel</button><button class="nj-plate btn primary">Share publicly</button></div>
+</section>
+
+<div class="label" style="margin-top:20px">1B · HOME FREE (RELAY-HOSTED COPY): THE OPTIONS ARE OFF, WITH THE REASON</div>
+<section class="dialog">
+ <span class="dtag">Share publicly // SITE</span>
+ <h3>Share “Q3 load-test report” publicly?</h3>
+ <div class="opts2">
+  <div class="orow"><span class="k">Password</span><div class="input"><span class="ph">Not available here</span></div></div>
+  <div class="orow"><span class="k">Expires</span><div class="segs"><span class="seg sel">Never</span></div></div>
+  <div class="orow"><span class="k">Header</span><label class="toggle"><span class="box on"></span>Show the BattleLab header above it</label>
+   <p class="d">This box runs without sign-in, so the public copy is hosted on the BattleLab relay, which has no password, expiry or header switch yet. Turn sign-in on to host the link on this box with them.</p></div>
+ </div>
+ <div class="dfoot"><button class="nj-plate btn ghost">Cancel</button><button class="nj-plate btn primary">Share publicly</button></div>
+</section></div>
+
+<div><div class="label">2 · THE ARTIFACT PAGE: A LIVE LINK AND WHAT IT CARRIES</div>
+<section class="frame">
+ <div class="mhead"><b>Q3 load-test report</b><span class="mstate">PUBLIC</span></div>
+ <div class="pub">
+  <div class="target"><span class="lbl">Public link</span><span class="mono">https://lab.example.com/artifacts/p/Xr4…q9A/</span></div>
+  <div class="chips"><span class="chip live">LIVE</span><span class="chip">PASSWORD</span><span class="chip" title="Nov 26, 14:05">EXPIRES IN 7D</span><span class="chip">NO HEADER</span></div>
+  <div class="ctl"><button class="nj-plate btn ghost">Copy link</button><button class="nj-plate btn ghost">Open</button><button class="nj-plate btn danger">Revoke</button></div>
+  <p class="tsum">To change the password, expiry or header, revoke and share again: that makes a new link.</p>
+ </div>
+</section>
+
+<div class="label" style="margin-top:20px">3 · THE SAME PAGE AFTER THE EXPIRY</div>
+<section class="frame">
+ <div class="mhead"><b>Q3 load-test report</b><span class="mstate">PRIVATE</span></div>
+ <div class="pub">
+  <div class="chips"><span class="chip warn">EXPIRED NOV 26, 14:05</span></div>
+  <p class="tsum">The public link stopped working at its expiry. Your private link is unchanged.</p>
+  <div class="ctl"><button class="nj-plate btn primary">Share again…</button></div>
+ </div>
+</section>
+
+<div class="label" style="margin-top:20px">4 · THE LIST (LIBRARY → ARTIFACTS): A ROW'S VISIBILITY TAG</div>
+<section class="frame">
+ <div class="pub">
+  <div class="sline"><span class="stitle">Q3 load-test report</span><span class="chip live">PUBLIC</span><span class="chip">PASSWORD</span><span class="chip">7D</span></div>
+  <div class="sline"><span class="stitle">Onboarding diagram</span><span class="chip">PRIVATE</span><span class="chip warn">LINK EXPIRED</span></div>
+ </div>
+</section></div>
+
+</div>
+<script src="head.js"></script>
+</body></html>

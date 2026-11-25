@@ -1,0 +1,31 @@
+# A non-development playbook (#1096 §8): no connections, supervisor-judged checklists only.
+format = 1
+connections = []
+
+[identity]
+id = "inbox-triage"
+name = "Inbox triage"
+publisher = "Example"
+version = "0.1.0"
+domain = "mail"
+summary = "Read an inbox, sort what needs an answer, and have the operator confirm."
+
+[[variables]]
+name = "inbox_name"
+label = "Inbox"
+required = true
+
+[[variables]]
+name = "urgency"
+type = "enum"
+label = "What counts as urgent"
+choices = ["today", "this-week"]
+default = "today"
+
+[[materials]]
+path = "docs/triage-rules.md"
+disposition = "seed"
+template = true
+
+[flows]
+default = "triage"

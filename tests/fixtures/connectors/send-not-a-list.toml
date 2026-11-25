@@ -1,0 +1,25 @@
+# refuse: capabilities.send must be a non-empty list
+contract = 1
+
+[identity]
+id = "telegram"
+label = "Telegram"
+publisher = "battlelab"
+version = "1"
+category = "messenger"
+
+[adapter]
+kind = "telegram-bot"
+
+[origin]
+mode = "fixed"
+fixed = "https://api.telegram.org"
+
+[auth]
+kind = "path-token"
+scheme = "bot"
+scopes = ["bot-token"]
+
+[capabilities]
+read = []
+send = "message"

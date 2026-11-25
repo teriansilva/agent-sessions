@@ -1,0 +1,35 @@
+# A bundled action manifest (#2248 P1). Data only: every value is a member of a set in
+# actions/manifest.py, an unknown field anywhere refuses it, and `executor` names reviewed code in
+# actions/executors.py. Its inputs are the stored action's own fields, unchanged.
+contract = 1
+id = "start_mission"
+label = "Start a mission"
+category = "battlelab"
+description = "Creates a mission draft in a project from your instruction; you plan it with HQ before it starts."
+effect = "write-battlelab"
+executor = "start_mission"
+requires = ["project"]
+triggers = ["once", "schedule", "manual"]
+
+[[inputs]]
+name = "project_id"
+type = "project"
+label = "Project"
+required = true
+
+[[inputs]]
+name = "instruction"
+type = "message"
+label = "What the mission should do"
+required = true
+
+[[inputs]]
+name = "autonomy"
+type = "choice"
+label = "What it may do on its own"
+choices = ["propose", "dispatch", "dispatch_auto_choose"]
+
+[[outputs]]
+name = "mission"
+type = "mission"
+label = "The mission it created"

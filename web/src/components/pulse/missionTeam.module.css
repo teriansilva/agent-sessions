@@ -1,0 +1,323 @@
+/* The mission's TEAM (#1950; mockups docs/mockups/mission-team-1950/). Tokens only: no literal
+   colour, radius, shadow or off-scale size. Status colour means state: the warn edge marks a step
+   that needs the operator (refused, unassigned, no longer qualifies); the accent is never a status. */
+.team {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border-top: 1px solid var(--line);
+  min-width: 0;
+}
+.thead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+}
+.ttl {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--hud-text);
+}
+.rev,
+.sid,
+.ver,
+.code {
+  /* --text-2, not --text-3: these are live content and must meet AA (Hermes on #1950). */
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  color: var(--text-2);
+}
+.tsum,
+.dim {
+  margin: 0;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.tacts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-left: auto;
+}
+.btn {
+  min-height: 44px;
+}
+.steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.step {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px var(--sp-3);
+  padding: var(--sp-2) 10px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  min-width: 0;
+}
+.warn {
+  border-left: 3px solid var(--warn-text);
+}
+.quiet {
+  background: transparent;
+  border-style: dashed;
+}
+.sline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px var(--sp-2);
+  min-width: 0;
+}
+.stitle {
+  font-weight: 600;
+  font-size: var(--fs-row);
+  overflow-wrap: anywhere;
+}
+.actor {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.skill {
+  padding: 3px 6px;
+  background: var(--surface-3);
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+}
+.grade,
+.ungraded {
+  padding: 2px 6px;
+  border: 1px solid var(--accent);
+  color: var(--accent-text);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.ungraded {
+  border: 1px dashed var(--line-strong);
+  color: var(--text-2);
+}
+.side {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+}
+.who {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) 10px;
+  padding-left: var(--sp-2);
+  border-left: 3px solid var(--line-strong);
+  min-width: 0;
+}
+.spec {
+  font-weight: 600;
+}
+.runs {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.ovr {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.12em;
+  color: var(--hud-text);
+  border: 1px solid var(--hud-dim);
+  padding: 1px 5px;
+}
+.why {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.notes {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.note {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--warn-text);
+  border: 1px solid var(--warn-text);
+  padding: 2px 6px;
+}
+.noteInfo {
+  color: var(--text-2);
+  border-color: var(--line-strong);
+}
+.alt {
+  grid-column: 1 / -1;
+}
+.altSummary {
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.altList {
+  margin: 0;
+  padding: 0 0 var(--sp-1) 20px;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.alert,
+.gone {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 6px var(--sp-2);
+  border-left: 3px solid var(--warn-text);
+  font-size: var(--fs-meta);
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.alert b,
+.gone b {
+  margin-right: 6px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  color: var(--warn-text);
+}
+.empty {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  align-items: flex-start;
+}
+.empty p {
+  margin: 0;
+  color: var(--text-2);
+}
+/* The per-step picker. */
+.picker {
+  grid-column: 1 / -1;
+  border: 1px solid var(--border);
+  background: var(--bg-0);
+  min-width: 0;
+}
+.phead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 10px;
+  padding: 10px var(--sp-3);
+  border-bottom: 1px solid var(--line);
+}
+.ogroup {
+  padding: var(--sp-2) 10px 2px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.opts {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.opt {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0 10px;
+  min-height: 44px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+}
+.opt input {
+  margin: 0;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+.optOn {
+  border-color: var(--accent);
+}
+.optOff {
+  border-style: dashed;
+  background: transparent;
+  color: var(--text-3);
+}
+.oname {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+  /* The label IS the row's hit area: a full 44 px tall (docs/design.md §8). */
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+}
+.optOff .oname {
+  color: var(--text-3);
+  cursor: not-allowed;
+}
+.oreason {
+  grid-column: 2 / -1;
+  padding-bottom: 6px;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.pfoot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 10px var(--sp-3);
+  border-top: 1px solid var(--line);
+}
+.hint {
+  margin-right: auto;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+@media (max-width: 800px) {
+  .team {
+    padding: 10px;
+  }
+  .step {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .side,
+  .tacts {
+    width: 100%;
+    margin-left: 0;
+  }
+  .side .btn,
+  .tacts .btn {
+    flex: 1 1 auto;
+  }
+}

@@ -1,0 +1,3406 @@
+"""The contained per-session native protocol worker (#1278).
+
+Started only by ``native_runtime`` as ``python -I -m agent_sessions.native_worker`` inside a
+fresh transient systemd user service (``native_containment.launch_argv``). It is a protocol
+adapter: it owns the native CLI's stdin/stdout, the session writer locks and the durable
+journal records for its generation. It serializes queued operator messages and explicit
+Send now selection (native steering or cancel-then-dispatch), judges nothing
+and stores no credentials of its own.
+
+Lifecycle, in order (each step refuses rather than guesses):
+
+1. Read the private config from ``<state>/workers/<id>/config.json``; adopt the server's
+   path environment so locks, ownership and roster resolve to the SAME shared directories.
+2. Under the session lifecycle lock: refuse unless this generation is the current, open one,
+   then take the per-app-session writer lock for the worker's lifetime.
+3. Bound histories take the source writer lock BEFORE the native child exists. New Codex and
+   opencode histories bind under launch admission from a correlated thread/start or session/new
+   response. Only those fresh histories may coexist with unresolved console placeholders; their
+   own writer locks are taken before any turn can be accepted.
+4. Serve the private socket: peer UID, capability handshake, then closed IPC frames. Every
+   effect is claimed durably in the journal (fsync) before its stdin write; exact replays
+   observe the recorded receipt and write nothing.
+5. Native EOF, a protocol violation or ``stop`` ends the generation. The worker never restarts
+   its child: a later turn needs a NEW generation launched by the web process.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import contextlib
+import errno
+import fcntl
+import json
+import logging
+import logging.handlers
+import os
+import secrets
+import signal
+import socket
+import stat
+import struct
+import sys
+import time
+from pathlib import Path
+
+from . import (
+    agent_tools,
+    native_admit,
+    native_attachments,
+    native_authority,
+    native_containment,
+    native_exec,
+    native_ipc,
+    native_journal,
+    native_memory,
+    native_processes,
+    native_protocol,
+    native_questions,
+    native_segments,
+    native_state,
+)
+from .plugins import kinds
+
+EXIT_REFUSED = 3
+EXIT_FAILED = 4
+INIT_TIMEOUT = 90.0
+IDLE_TIMEOUT = 1800.0  # an idle worker exits; the next turn resumes in a new generation
+SHUTTING_DOWN = "the native worker is shutting down; retry"
+SEND_NOW_WOULD_STOP = (
+    "Send now would also stop this agent's background agents here; "
+    "the message is sent when the current turn ends"
+)
+INVENTORY_CHANGED = (
+    "the agent's background tasks or turn changed since you confirmed; "
+    "review them and confirm again"
+)
+STOP_CHANGED = (
+    "the session's background work changed since you confirmed; review it and confirm again"
+)
+#: A send refused while a full connection can't retire yet (#1725): nothing was claimed.
+CONVERSATION_FULL = (
+    "this conversation's connection is full and can't start another turn until what's running "
+    "finishes; nothing was sent"
+)
+#: Attempts at the readiness baseline of the process floor (#1724); later idle ticks retry it
+#: while no turn has run.
+BASELINE_TRIES = 3
+#: The longest a process-only change waits to be journaled (#1724): bounds churn's records.
+INVENTORY_INTERVAL = 300.0
+#: Claims of a Stop retried at the current revision while the agent keeps writing (#1724).
+STOP_CLAIM_TRIES = 5
+#: The exact Stop's freeze (#1724): scan→SIGSTOP passes, and the time, before an unstable set is
+#: treated as changed.
+FREEZE_PASSES = 10
+FREEZE_SECONDS = 2.0
+#: Pause between freeze passes / resume attempts, and the abort's immediate resume retries
+#: before the remainder is left to idle ticks and shown in the pane (#1724).
+FREEZE_RETRY = 0.02
+RESUME_RETRIES = 5
+FLUSH_INTERVAL = 0.2
+STDERR_TAIL = 4096
+
+
+def _journalable(item: dict) -> dict:
+    """``item``, or a bounded diagnostic when the journal's closed schema would refuse it."""
+    try:
+        native_ipc.normalize_event(item)
+    except native_ipc.IPCError:
+        kind = str(item.get("kind", "native"))[:64]
+        return {
+            "kind": "error",
+            "data": {"message": f"a {kind} observation outside its bounds was dropped"},
+        }
+    return item
+
+
+_URGENT = frozenset(
+    {
+        "approval",
+        "approval_cancelled",
+        "turn_started",
+        "turn_completed",
+        "input_accepted",
+        "delivery_failed",
+        "disconnected",
+        "session",
+    }
+)
+
+
+#: Observations that mean a turn ran (#1724): after one, a missing process baseline is never taken.
+_TURN_KINDS = frozenset({"turn_started", "turn_completed", "text", "tool", "approval"})
+
+OPENCODE = "opencode-acp"
+OPENCODE2 = "opencode2-acp"
+COPILOT = "copilot-acp"
+PROBE_TIMEOUT = 30.0
+PROBE_LIMIT = 4 * 1024 * 1024
+#: How long the worker waits, once the agent's output ends, for the agent to exit by itself before
+#: it stops it (#1732): an agent that died is reaped with its OWN return code, never one a stop
+#: gave it.
+REAP_WINDOW = 2.0
+#: The turn of an OOM-counter read that failed: it matches no turn, so the next rise is
+#: session-level (#1732).
+_UNREAD = ("unread", "")
+#: Why the agent ended, as the worker can state it (#1732): only facts, never a cause.
+SIGKILL_DURING_OOM = "sigkill_during_oom"
+
+
+class WorkerError(RuntimeError):
+    pass
+
+
+class AdmissionPreempted(native_state.LockBusy):
+    """A Stop (or the worker's own end) arrived while the installed release was still deciding a
+    queued message's admission (#2165). Nothing was decided or written: it is the same transient
+    contention as a busy lock, so the message keeps its place and Send now answers ``busy``."""
+
+
+class AdmissionRefused(WorkerError):
+    """An expected refusal of a queued message at delayed handoff (#1538), before anything was
+    written to the agent. ``code`` is one of `native_journal.REASON_CODES`; the operator sees
+    the fixed text the pane derives from it, never this exception's message."""
+
+    MESSAGES = {
+        "agent_removed": "the queued message's agent was removed",
+        "agent_changed": "the queued message's agent changed",
+        "source_store_changed": "the queued message's source store changed",
+        "generation_closed": "this worker generation is closed",
+        "question_replaced": "its question was answered or replaced",
+        # #1897: the caller's authority (a mission's hold, its policy) was withdrawn meanwhile.
+        "authority_withdrawn": "the authority it was sent under was withdrawn",
+    }
+
+    def __init__(self, code: str):
+        if code not in self.MESSAGES:
+            raise ValueError(f"unknown queued refusal {code!r}")
+        super().__init__(self.MESSAGES[code])
+        self.code = code
+
+
+log = logging.getLogger(__name__)
+
+
+def log_queue_refusal(session_key: str, operation_id: str, code: str, exc: BaseException) -> None:
+    """One line per operator message settled ``not_sent`` before stdin (#1538): the session key,
+    the operation id, the reason code and the exception's TYPE NAME only. Never its message,
+    which can carry paths, CLI output or credentials."""
+    log.warning(
+        "queued message not sent: session=%s operation=%s reason=%s error=%s",
+        session_key,
+        operation_id,
+        code,
+        type(exc).__name__,
+    )
+
+
+def log_admission_unverified(session_key: str, cause: str) -> None:
+    """Why a queued message's admission could not be checked by the installed release (#2165):
+    a fixed phrase (`native_admit.Unverified`), never the config or the helper's output. The
+    message itself is refused `agent_changed`, logged by `log_queue_refusal` as usual."""
+    log.warning("queued admission could not be checked: session=%s cause=%s", session_key, cause)
+
+
+def _log_to_journal() -> None:
+    """The contained worker's stdio is null (`native_containment.launch_argv`): its refusal lines
+    go to the user's journal through the local syslog socket instead, tagged
+    ``agent-sessions-native``. No socket (a container, a test) means no log, never a failure."""
+    if not os.path.exists("/dev/log") or log.handlers:
+        return
+    try:
+        handler = logging.handlers.SysLogHandler(address="/dev/log")
+    except OSError:
+        return
+    handler.ident = "agent-sessions-native: "
+    handler.setLevel(logging.WARNING)
+    log.addHandler(handler)
+    log.setLevel(logging.WARNING)
+
+
+def _authority_tokens(params: dict) -> dict:
+    """The per-attempt tokens a guarded submit carries (#1897), as `native_authority` compares."""
+    return {"session": params.get("authority_session"), "policy": params.get("authority_policy")}
+
+
+def admit_queued(roster, session_key: str, adapter: str, config: dict) -> None:
+    """Is the agent a queued message was accepted for still the one this worker runs (#1538)?
+
+    Raises `AdmissionRefused` with the reason. Every launch gate holds again: the API client and
+    its source are in the fresh roster, the protocol and source engine are the launched ones, and
+    the source store has the same owner. The source's binary is resolved AGAIN, through
+    provenance, and must be selected the way it was at launch (`api_source.same_selection`). Its
+    resolved path may differ: a vendor self-update retargets the launcher, while the message goes
+    to the process that has been running since launch.
+    """
+    from . import native_ownership
+    from .engine_errors import EngineError
+    from .plugins import api_source
+
+    prov = roster.by_id.get(session_key.partition(":")[0])
+    api = getattr(getattr(prov, "manifest", None), "api", None)
+    if prov is None or api is None or getattr(prov, "retiring", False):
+        raise AdmissionRefused("agent_removed")
+    source = roster.by_id.get(api.source)
+    if source is None or getattr(source, "retiring", False):
+        raise AdmissionRefused("agent_removed")
+    try:
+        binding = api_source.resolve(prov, roster=roster)
+    except EngineError:
+        raise AdmissionRefused("agent_changed") from None
+    if api.kind != adapter or binding.source.engine_id != config["source_engine"]:
+        raise AdmissionRefused("agent_changed")
+    pinned = config.get("entrypoint")
+    try:
+        ep = binding.source.entrypoint_selection()
+    except EngineError:
+        raise AdmissionRefused("agent_changed") from None
+    if pinned is None:
+        # A configuration written before #1538 pinned only the path: keep its exact rule.
+        if ep.path != config["binary"]:
+            raise AdmissionRefused("agent_changed")
+    elif not api_source.same_selection(pinned, ep, binding.source.trust):
+        raise AdmissionRefused("agent_changed")
+    owner = native_ownership.lookup(session_key)
+    if owner is None or owner.source != native_ownership.source_identity(binding.source):
+        raise AdmissionRefused("source_store_changed")
+
+
+def _private_file(path: Path) -> dict:
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        st = os.fstat(fd)
+        if (
+            not stat.S_ISREG(st.st_mode)
+            or st.st_uid != os.geteuid()
+            or st.st_mode & 0o077
+            or st.st_size > native_state.MAX_RECORD_BYTES
+        ):
+            raise WorkerError("worker config is not a private bounded file")
+        with os.fdopen(fd, "rb", closefd=False) as fh:
+            doc = json.loads(fh.read())
+    finally:
+        os.close(fd)
+    if not isinstance(doc, dict):
+        raise WorkerError("worker config is malformed")
+    return doc
+
+
+def _peer_uid(sock: socket.socket) -> int | None:
+    try:
+        raw = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+    except OSError:
+        return None
+    _pid, uid, _gid = struct.unpack("3i", raw)
+    return uid
+
+
+def native_environment(config: dict) -> dict[str, str]:
+    """The child's whole environment: no inherited server secrets, vendor stores by HOME."""
+    env = {
+        "HOME": config["home"],
+        "PATH": config["path"],
+        "LANG": "C.UTF-8",
+        "TERM": "dumb",
+        "NO_COLOR": "1",
+    }
+    from .resource_limits import THREAD_VARIABLES
+
+    # Frozen at generation launch; old configs retain their original environment.
+    threads = config.get("thread_environment", {})
+    if not isinstance(threads, dict) or any(
+        key not in THREAD_VARIABLES or not isinstance(value, str) or "\0" in value
+        for key, value in threads.items()
+    ):
+        raise WorkerError("invalid library thread environment")
+    env.update(threads)
+    for key in ("USER", "LOGNAME"):
+        if isinstance(config.get(key.lower()), str):
+            env[key] = config[key.lower()]
+    return env
+
+
+def memory_environment(config: dict) -> dict[str, str]:
+    """The shared project memory paths this generation was given (#1441), or ``{}``.
+
+    Bound by the web process at generation launch and passed explicitly — never read from this
+    process's environment. Both variables or neither, absolute paths, nothing else.
+    """
+    from .memory import ALL_ENV_KEYS, ENV_KEYS
+
+    value = config.get("memory_env", {})
+    if not isinstance(value, dict):
+        raise WorkerError("invalid memory environment")
+    if value and (
+        set(value) not in (set(ENV_KEYS), set(ALL_ENV_KEYS))
+        or any(
+            not isinstance(path, str) or not path.startswith("/") or "\0" in path or "\n" in path
+            for path in value.values()
+        )
+    ):
+        raise WorkerError("invalid memory environment")
+    return dict(value)
+
+
+def secrets_environment(config: dict) -> dict[str, str]:
+    """The secrets capability this generation was given (#1786), or ``{}``: the broker's socket
+    path and the token, plus the helper's path where it is installed. Bound by the web process at
+    generation launch and passed explicitly — never read from this process's environment."""
+    from .secrets_broker import ALL_ENV_KEYS, ENV_KEYS
+
+    value = config.get("secrets_env", {})
+    if not isinstance(value, dict):
+        raise WorkerError("invalid secrets environment")
+    if value and (
+        not set(ENV_KEYS) <= set(value) <= set(ALL_ENV_KEYS)
+        or any(
+            not isinstance(v, str) or not v.startswith("/") or "\0" in v or "\n" in v
+            for v in value.values()
+        )
+    ):
+        raise WorkerError("invalid secrets environment")
+    return dict(value)
+
+
+def memory_tool(config: dict):
+    """The memory tool this generation carries (#1506), as an `agent_tools.Server`, or None.
+
+    Only beside the generation's memory paths, and only the kind the adapter's protocol carries
+    (`kinds.API_MCP_KINDS`); anything else refuses the spawn. Shaped from this worker's own
+    interpreter, never from the config.
+    """
+    try:
+        kind = agent_tools.api_kind(config["adapter"], config.get("memory_tool"))
+    except ValueError:
+        raise WorkerError("invalid memory tool") from None
+    paths = memory_environment(config)
+    if kind is None:
+        return None
+    if not paths:
+        raise WorkerError("invalid memory tool")
+    return agent_tools.server(paths)
+
+
+def artifacts_environment(config: dict) -> dict[str, str]:
+    """The artifacts capability this generation was given (#1932), or ``{}``: the broker's socket
+    and the token FILE path. Bound by the web process at generation launch; never read from this
+    process's environment, and never given to the agent's own environment (only its MCP child)."""
+    from .artifact_broker import ENV_KEYS
+
+    value = config.get("artifacts_env", {})
+    if not isinstance(value, dict):
+        raise WorkerError("invalid artifacts environment")
+    if value and (
+        set(value) != set(ENV_KEYS)
+        or any(
+            not isinstance(v, str) or not v.startswith("/") or "\0" in v or "\n" in v
+            for v in value.values()
+        )
+    ):
+        raise WorkerError("invalid artifacts environment")
+    return dict(value)
+
+
+def shelf_environment(config: dict) -> dict[str, str]:
+    """The mission shelf capability this generation was given (#1900), or ``{}``: the broker's
+    socket and the token FILE path. Bound by the web process at generation launch; never read
+    from this process's environment, and never given to the agent's own environment (only its MCP
+    child)."""
+    from .shelf_broker import ENV_KEYS
+
+    value = config.get("shelf_env", {})
+    if not isinstance(value, dict):
+        raise WorkerError("invalid shelf environment")
+    if value and (
+        set(value) != set(ENV_KEYS)
+        or any(
+            not isinstance(v, str) or not v.startswith("/") or "\0" in v or "\n" in v
+            for v in value.values()
+        )
+    ):
+        raise WorkerError("invalid shelf environment")
+    return dict(value)
+
+
+def tool_servers(config: dict) -> list:
+    """Every BattleLab tool this generation carries: the memory tool (above) and, for a session
+    started from a specialist (#1693), the skills tool over its launch bundle. A bundle on an
+    adapter whose protocol carries no MCP server refuses the spawn: a specialist never runs
+    without the skills it was saved with."""
+    out = [t for t in (memory_tool(config),) if t is not None]
+    # The secrets tool (#1786) rides only where the adapter's protocol carries an MCP server; an
+    # agent without one keeps the capability variables and the helper.
+    if kinds.API_MCP_KINDS.get(config["adapter"]):
+        secrets_tool = agent_tools.secrets_server(secrets_environment(config))
+        if secrets_tool is not None:
+            out.append(secrets_tool)
+        artifacts_tool = agent_tools.artifacts_server(artifacts_environment(config))
+        if artifacts_tool is not None:
+            out.append(artifacts_tool)
+        # The mission shelf (#1900), for a generation of a mission's session only.
+        shelf_tool = agent_tools.shelf_server(shelf_environment(config))
+        if shelf_tool is not None:
+            out.append(shelf_tool)
+        # Project MCP servers (#2163), over the same capability as the secrets tool.
+        out += project_mcp_servers(config, secrets_environment(config))
+    bundle = config.get("skills_bundle")
+    if bundle is None:
+        return out
+    if not kinds.API_MCP_KINDS.get(config["adapter"]):
+        raise WorkerError("this agent cannot load skills")
+    try:
+        skills = agent_tools.skills_server(bundle)
+    except ValueError:
+        raise WorkerError("invalid skill bundle") from None
+    return [*out, skills]
+
+
+def project_mcp_servers(config: dict, secrets_env: dict[str, str]) -> list:
+    """The project MCP servers this generation was given (#2163): ``[{id, name, tools}]``, each
+    checked here before it becomes a launcher entry. A malformed list refuses the spawn."""
+    from . import mcp_registry
+
+    value = config.get("mcp_servers", [])
+    if not isinstance(value, list) or len(value) > mcp_registry.SERVERS_MAX:
+        raise WorkerError("invalid MCP server list")
+    out = []
+    for spec in value:
+        if (
+            not isinstance(spec, dict)
+            or set(spec) != {"id", "name", "tools"}
+            or not isinstance(spec["id"], str)
+            or not mcp_registry.ID_RE.fullmatch(spec["id"])
+            or not isinstance(spec["name"], str)
+            or not mcp_registry.NAME_RE.fullmatch(spec["name"])
+            or spec["name"].startswith(mcp_registry.RESERVED_PREFIX)
+            or not isinstance(spec["tools"], list)
+            or not all(
+                isinstance(t, str) and mcp_registry.TOOL_NAME_RE.fullmatch(t) for t in spec["tools"]
+            )
+        ):
+            raise WorkerError("invalid MCP server list")
+        server = agent_tools.project_server(spec["id"], spec["name"], secrets_env, spec["tools"])
+        if server is not None:
+            out.append(server)
+    return out
+
+
+def battlelab_session(config: dict) -> str:
+    """The BattleLab session key the agent records as its own id (#1406), never the native id.
+
+    A non-secret identifier (the `/s/<engine>/<id>` link). The web process composed it from the
+    admitted roster; here it must be exactly the canonical API key shape (`native_ipc`'s gate,
+    lowercase engine id and UUID, nothing around them), or the spawn is refused rather than
+    telling the agent a wrong id. The worker does not consult its own roster for it.
+    """
+    try:
+        return native_ipc.validate_session_key(config.get("session_key"))
+    except native_ipc.IPCError:
+        raise WorkerError("the session key is not canonical") from None
+
+
+#: Linux UAPI values (memfd.h, fcntl.h), the same on every architecture: the standalone CPython
+#: `install.sh` may vendor is built without `os.memfd_create` and the `fcntl` seal constants.
+_MFD_CLOEXEC, _MFD_ALLOW_SEALING = 0x1, 0x2
+_F_ADD_SEALS = 1024 + 9
+_F_SEAL_SEAL, _F_SEAL_SHRINK, _F_SEAL_GROW = 0x1, 0x2, 0x4
+
+
+def _memfd(name: str) -> int:
+    """An anonymous, sealable, close-on-exec memory file: `os.memfd_create`, or libc's own
+    (glibc >= 2.27) where this Python was built without it."""
+    flags = _MFD_CLOEXEC | _MFD_ALLOW_SEALING
+    if hasattr(os, "memfd_create"):
+        return os.memfd_create(name, flags)
+    import ctypes
+
+    try:
+        create = ctypes.CDLL(None, use_errno=True).memfd_create
+    except (OSError, AttributeError) as exc:
+        raise OSError(errno.ENOSYS, "memfd_create is unavailable") from exc
+    create.argtypes = (ctypes.c_char_p, ctypes.c_uint)
+    create.restype = ctypes.c_int
+    fd = create(name.encode(), flags)
+    if fd < 0:
+        err = ctypes.get_errno()
+        raise OSError(err, os.strerror(err))
+    return fd
+
+
+def _probe_sink(limit: int) -> int:
+    """The configuration probe's stdout: an anonymous in-memory file (memfd; never on disk, no
+    name, 0600) sized to `limit` bytes and sealed there. The kernel refuses any write that would
+    grow it, so the probe can never write more than `limit` bytes however fast it writes; the
+    probe shares this descriptor's file offset, which is how much it wrote."""
+    fd = _memfd("opencode-config-probe")
+    try:
+        os.fchmod(fd, 0o600)
+        os.ftruncate(fd, limit)
+        fcntl.fcntl(fd, _F_ADD_SEALS, _F_SEAL_GROW | _F_SEAL_SHRINK | _F_SEAL_SEAL)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def forced_environment(config: dict) -> dict[str, str]:
+    """The forced XDG tree of an isolated source (#1986, #2084) plus a managed agent's
+    self-update switch (`kinds.SELF_UPDATE_OFF`), or ``{}``.
+
+    Computed by the web process from `forced_env(source)` at generation launch — after the 1.x
+    overlap refusal, before any spawn — and passed explicitly in the config: exactly
+    ``XDG_{DATA,STATE,CACHE,CONFIG}_HOME``, absolute paths, nothing else. An `opencode2-acp`
+    generation without it is refused: a 2.x child must never run on its defaults, which are
+    1.x's database."""
+    from .engines.opencode2 import XDG_DIRS
+    from .plugins.kinds import SELF_UPDATE_OFF
+
+    value = config.get("forced_env", {})
+    if not isinstance(value, dict):
+        raise WorkerError("invalid isolated environment")
+    tree = {k: v for k, v in value.items() if k in XDG_DIRS}
+    if tree and (
+        set(tree) != set(XDG_DIRS)
+        or any(
+            not isinstance(v, str) or not v.startswith("/") or "\0" in v or "\n" in v
+            for v in tree.values()
+        )
+    ):
+        raise WorkerError("invalid isolated environment")
+    # Besides the tree, only a managed agent's own "never update yourself" switch, exactly as
+    # `kinds.SELF_UPDATE_OFF` spells it: never an arbitrary variable over the child.
+    switches = {pair for row in SELF_UPDATE_OFF.values() for pair in row.items()}
+    if any((k, v) not in switches for k, v in value.items() if k not in XDG_DIRS):
+        raise WorkerError("invalid isolated environment")
+    if config.get("adapter") == OPENCODE2 and not tree:
+        raise WorkerError("opencode 2 has no isolated environment; refusing to run it")
+    return dict(value)
+
+
+def account_environment(config: dict, env: dict[str, str]) -> dict[str, str]:
+    """``env`` as a launch on this generation's account must see it (#2169), or ``env`` unchanged
+    on the default login. The web process resolved the account at generation launch and passed
+    only the reviewed recipe's kind and the home's path; the recipe itself (which variable, which
+    outranking credentials to drop) is looked up here, the same `launch_env` the terminal seam
+    uses. Nothing is read from the home."""
+    value = config.get("account")
+    if value is None:
+        return env
+    from . import agent_accounts
+
+    if not isinstance(value, dict) or set(value) != {"kind", "home"}:
+        raise WorkerError("invalid account")
+    kind, home = value["kind"], value["home"]
+    rec = agent_accounts.recipe(kind) if isinstance(kind, str) else None
+    if (
+        rec is None
+        or not isinstance(home, str)
+        or not home.startswith("/")
+        or "\0" in home
+        or "\n" in home
+    ):
+        raise WorkerError("invalid account")
+    return agent_accounts.launch_env(rec, Path(home), env)
+
+
+#: Listener passwords a 2.x child must never be handed (#2084): its ACP client mints its own
+#: per process and overrides an inherited one anyway; a stray value is simply dropped.
+_LISTENER_PASSWORDS = ("OPENCODE_PASSWORD", "OPENCODE_SERVER_PASSWORD")
+
+
+def child_environment(
+    config: dict,
+    server_password: str | None = None,
+    agent: str | None = None,
+    mcp: dict | None = None,
+    *,
+    operator_permission: object = None,
+) -> dict[str, str]:
+    """`native_environment` plus what one adapter's child needs and nothing else.
+
+    `opencode acp` also opens an HTTP server on loopback that answers without authentication
+    (provider configuration included) unless `OPENCODE_SERVER_PASSWORD` is set (#1312 spike).
+    The password is minted by THIS process for this child only: it is never in the worker
+    config, a journal record, the lifecycle state or any argv, so it reaches nothing but the
+    child's environment (readable only by this same user, like every vendor credential).
+    `OPENCODE_CONFIG_CONTENT` defines BattleLab's own guarded or bypass agent (``agent``, minted per
+    generation, the same construction as the unattended launch's) that the session is pinned to.
+    The operator's own config and console opencode are untouched, and the app's own
+    `OPENCODE_CONFIG_CONTENT` is not passed on (the environment is sanitized).
+    A copilot child gets `COPILOT_AUTO_UPDATE=false` beside its argv's `--no-auto-update` (#1565):
+    the CLI otherwise self-downloads and re-execs outside the provenance-bound entrypoint.
+    Every adapter's child also gets `BATTLELAB_SESSION` (`battlelab_session`), and the shared
+    project memory paths when its generation was given them (`memory_environment`).
+    """
+    env = native_environment(config)
+    env["BATTLELAB_SESSION"] = battlelab_session(config)
+    env.update(memory_environment(config))
+    env.update(secrets_environment(config))
+    if config["adapter"] == OPENCODE:
+        if not isinstance(server_password, str) or len(server_password) < 32:
+            raise WorkerError("the opencode listener password is missing")
+        from .engines import opencode
+
+        env["OPENCODE_SERVER_PASSWORD"] = server_password
+        try:
+            env["OPENCODE_CONFIG_CONTENT"] = opencode.api_config_content(
+                agent,
+                mcp,
+                bypass=config.get("bypass") is True,
+                operator_permission=operator_permission,
+            )
+        except ValueError as exc:
+            raise WorkerError(str(exc)) from None
+    if config["adapter"] == OPENCODE2:
+        from .engines import opencode2
+
+        try:
+            env["OPENCODE_CONFIG_CONTENT"] = opencode2.api_config_content(
+                agent, bypass=config.get("bypass") is True
+            )
+        except ValueError as exc:
+            raise WorkerError(str(exc)) from None
+        for key in _LISTENER_PASSWORDS:
+            env.pop(key, None)
+    if config["adapter"] == COPILOT:
+        env["COPILOT_AUTO_UPDATE"] = "false"
+    # The account's home (#2169), with the credentials that would outrank its login dropped.
+    env = account_environment(config, env)
+    # LAST, over everything above (`docs/invariants/opencode2-isolation.md`): an isolated
+    # source's forced XDG tree. Refused when an opencode 2 generation lacks one.
+    env.update(forced_environment(config))
+    return env
+
+
+class Worker:
+    def __init__(self, config: dict, state_dir: Path):
+        self.config = config
+        self.state_dir = state_dir
+        self.worker_id = config["worker_id"]
+        self.session_key = config["session_key"]
+        self.session_id = self.session_key.partition(":")[2]
+        self.adapter = config["adapter"]
+        self.journal_root = Path(config["journal_root"])
+        self.capability = native_ipc.Capability(config["capability"])
+        self.binding = native_ipc.Binding(
+            self.session_key, self.worker_id, config["connection_id"], self.adapter
+        )
+        self.native_id: str | None = config.get("native_id")
+        # opencode: the resolved config-level permission block (#1891), from the spawn's probe.
+        self.operator_permission: object = None
+        # opencode: the resolved config's commands that open a child (#1892), names only.
+        self.subtask_commands: frozenset[str] = frozenset()
+        self.codec: (
+            native_protocol.CodexCodec
+            | native_protocol.ClaudeCodec
+            | native_protocol.OpencodeAcpCodec
+            | native_protocol.CopilotAcpCodec
+        )
+        self.agent: str | None = None
+        if self.adapter == "codex-app-server":
+            self.codec = native_protocol.CodexCodec(effort=config.get("effort"))
+        elif self.adapter == OPENCODE:
+            from .engines import opencode
+
+            self.agent = (
+                opencode.mint_api_agent()
+            )  # this generation's own immutable permission mode
+            self.codec = native_protocol.OpencodeAcpCodec(self.native_id, agent=self.agent)
+        elif self.adapter == OPENCODE2:
+            from .engines import opencode
+
+            # The same per-generation name grammar as 1.x's (`battlelab-api-<16 hex>`), defined
+            # in 2.x's own shape by `engines.opencode2.api_config_content`.
+            self.agent = opencode.mint_api_agent()
+            self.codec = native_protocol.Opencode2AcpCodec(self.native_id, agent=self.agent)
+        elif self.adapter == COPILOT:
+            self.codec = native_protocol.CopilotAcpCodec(self.native_id)
+        else:
+            self.codec = native_protocol.ClaudeCodec(self.native_id)
+        self.codec.generation = self.worker_id
+        # Minted by this process for this generation only; see `child_environment`.
+        self._server_password = secrets.token_urlsafe(32) if self.adapter == OPENCODE else None
+        self.locks: list = []
+        self.proc: asyncio.subprocess.Process | None = None
+        self.server: asyncio.AbstractServer | None = None
+        self.pending: list[dict] = []
+        self.flush_now = asyncio.Event()
+        self.effects = asyncio.Lock()
+        # The installed release's admission check in flight (#2165), which a Stop preempts.
+        self.admission_check: asyncio.Task | None = None
+        self.queued: list[dict] = []
+        self.priority_turn: str | None = None
+        # Queued messages a Send now promoted: each goes ahead of the agent's own queue (#1475).
+        self.sent_now: set[str] = set()
+        self.priority_requests: dict[str, tuple[str, str, str, str]] = {}
+        self.queue_wake = asyncio.Event()
+        self.ready = asyncio.Event()
+        self.done = asyncio.Event()
+        self.waiters: dict[str, asyncio.Future] = {}
+        self.after_write: list[native_protocol.NativeEvent] = []
+        self.stderr_tail = b""
+        self.reason = ""
+        self.closing = False
+        self.terminated = False
+        self.last_activity = time.monotonic()
+        self.idle_timeout = float(config.get("idle_timeout") or IDLE_TIMEOUT)
+        self.reported_send_now: str | None = None
+        # The process floor (#1724): the readiness baseline of (pid, start) identities, the
+        # latest reading against it, the group it reads (once pinned), and the last inventory
+        # journaled. Unknown until the baseline is taken; unknown is busy.
+        self.baseline: frozenset[tuple[int, int]] | None = None
+        self.floor = native_processes.Floor(native_processes.UNKNOWN)
+        self._floor_group: str | None = None
+        self.written: dict | None = None  # the last inventory served
+        self.written_at = 0.0
+        self.journaled = False  # an inventory reached the journal this generation
+        self.tick = min(30.0, max(0.05, self.idle_timeout / 4))
+        # 5 min; scaled down with a short configured idle timeout (tests), never above 5 min.
+        self.inventory_interval = min(INVENTORY_INTERVAL, 10 * self.tick)
+        self.turn_seen = False  # a turn of any kind ran: a missing baseline is never taken now
+        self.stop_accepted = False  # a Stop of this generation was accepted and is under way
+        # Seams of the exact Stop's freeze (#1724): the signal and the (pid, start) recheck.
+        self._signal = os.kill
+        self._recheck = native_processes.read_process
+        # The paused ledger (#1724): every (pid, start) an exact Stop's freeze SIGSTOPped and
+        # has not confirmed resumed (or killed). `unresumed`: its size as last journaled.
+        self.paused: dict[tuple[int, int], native_processes.Process] = {}
+        self.paused_by: str | None = None
+        self.unresumed = 0
+        # The ONE exact Stop in progress (Hermes on PR #1757 head a19fc823): from before its
+        # first SIGSTOP until its frozen set is killed or it is refused and resumed, it owns the
+        # ledger, and nothing else (an idle tick) may resume a process it froze.
+        self.stop_owner: str | None = None
+        self.settled = False  # an orderly end wrote its `background_settled`
+        # Frames too large to read (#1725): the two ends of the one being dropped, how many so far.
+        self.lost_head = b""
+        self.lost_tail = b""
+        self.frames_skipped = 0
+        self.reported_held = False  # the full-conversation hold, as the lifecycle last said
+        self.reported_refused = 0  # requests refused with no turn to carry a row (#1725)
+        self.signalled = False  # SIGTERM/SIGINT: the unit is being stopped
+        # OOM kills in this worker's unit (#1732). `_oom_base`: the hierarchical counter when the
+        # worker started; `_oom_seen`: the last count journaled (kills since the base);
+        # `_oom_turn`: the turn in flight at the last read; `_turn_key`: the turn the worker last
+        # saw the codec in. `_oom_pin`: the pinned (group, invocation) once the runtime wrote it.
+        self._oom_base: int | None = None
+        self._oom_seen = 0
+        self._oom_turn: tuple[str, str] | None = None
+        self._turn_key: tuple[str, str] | None = None
+        self._oom_pin: tuple[str, str] | None = None
+        self._oom_invocation: str | None = None  # of the last successful read
+
+    # --- lifecycle -------------------------------------------------------------------------
+
+    def report(self, **fields) -> None:
+        with contextlib.suppress(native_state.StateError, OSError):
+            native_state.update_lifecycle(self.worker_id, **fields)
+
+    def admit(self) -> None:
+        from . import sessionlock
+
+        with native_state.session_lock(self.session_id):
+            if not native_state.admitted(self.session_id, self.worker_id):
+                raise WorkerError("this worker generation is no longer current")
+            lock = sessionlock.acquire(self.session_key)
+            if lock is None:
+                raise WorkerError("another worker owns this API session")
+            self.locks.append(lock)
+        if self.native_id is not None:
+            self.lock_source(self.native_id)
+
+    def lock_source(self, native_id: str) -> None:
+        from . import sessionlock
+
+        lock = sessionlock.acquire(f"{self.config['source_engine']}:{native_id}")
+        if lock is None:
+            raise WorkerError("the native history has another BattleLab writer")
+        self.locks.append(lock)
+
+    def argv(self) -> list[str]:
+        binary = self.config["binary"]
+        if self.adapter == "codex-app-server":
+            return native_protocol.CodexCodec.argv(binary)
+        if self.adapter == OPENCODE:
+            return native_protocol.OpencodeAcpCodec.argv(binary)
+        if self.adapter == OPENCODE2:
+            return native_protocol.Opencode2AcpCodec.argv(binary)
+        if self.adapter == COPILOT:
+            tools = tool_servers(self.config)
+            return native_protocol.CopilotAcpCodec.argv(
+                binary, mcp_config=agent_tools.copilot_mcp_config(tools) if tools else None
+            )
+        tools = tool_servers(self.config)
+        return native_protocol.ClaudeCodec.argv(
+            binary,
+            self.native_id,
+            resume=self.config["mode"] == "resume",
+            model=self.config.get("model"),
+            bypass=self.config.get("bypass") is True,
+            effort=self.config.get("effort"),
+            mcp_config=agent_tools.claude_mcp_config(tools) if tools else None,
+            add_dirs=agent_tools.claude_add_dirs(secrets_environment(self.config)),
+        )
+
+    async def spawn(self) -> None:
+        if self.terminated:
+            raise WorkerError("stopped before the native agent started")
+        guard = self.store_admission()
+        try:
+            # The probe runs under the same admission as the launch it configures. Its result
+            # (operator MCP command lines) lives only in this child's environment: never in a
+            # journal record, lifecycle state, the worker config or a log.
+            mcp = await self.mcp_overrides() if self.adapter == OPENCODE else None
+            self.proc = await asyncio.create_subprocess_exec(
+                *self.spawn_argv(),
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=self.config["cwd"],
+                env=child_environment(
+                    self.config,
+                    self._server_password,
+                    self.agent,
+                    mcp,
+                    operator_permission=self.operator_permission,
+                ),
+                limit=native_protocol.MAX_FRAME_BYTES + 1,
+            )
+        finally:
+            # Held through process creation only: from here the child is visible to the
+            # compactor's process scan, which refuses to run while it holds the database.
+            if guard is not None:
+                guard.release()
+        # The names the resolved config marks for a child (#1892), so the app can refuse a guarded
+        # operator turn before it asks this worker. Names only; never a template.
+        extra = (
+            {"subtask_commands": sorted(self.subtask_commands)} if self.adapter == OPENCODE else {}
+        )
+        self.report(phase="native_started", native_pid=self.proc.pid, **extra)
+
+    def spawn_argv(self) -> list[str]:
+        """The agent's argv behind the exec trampoline (#1732, `native_exec`): the agent and
+        everything it starts rank above this worker as an OOM victim. The worker's own value is
+        never changed. Unreadable (or no absolute interpreter): the agent starts directly, as
+        before #1732."""
+        argv = self.argv()
+        own = native_exec.own_value()
+        if own is None or not sys.executable.startswith("/"):
+            return argv
+        return native_exec.argv(sys.executable, native_exec.raised(own), argv)
+
+    async def mcp_overrides(self) -> dict:
+        """`opencode debug config` in the session's directory, with the sanitized environment and
+        a fresh password of its own, bounded in time and size; then the per-server overrides
+        that keep the listener password out of local MCP servers (Hermes on #1336). Any failure
+        refuses the launch: never an opencode child without the blanking."""
+        from .engines import opencode
+
+        env = native_environment(self.config)
+        env["OPENCODE_SERVER_PASSWORD"] = secrets.token_urlsafe(32)
+        # Its stdout is a regular file, never a pipe: opencode 1.18.35 (a Bun binary) exits
+        # before it flushes a pipe and cuts its output at 8192 bytes, so a resolved config over
+        # 8 KB arrived as truncated JSON (measured: `| wc -c` = 8192, a file gets all of it). The
+        # file is a sealed memfd (`_probe_sink`): the config can carry credentials, so it never
+        # reaches a disk, and its size cap is enforced by the kernel like the pipe's was. Not
+        # RLIMIT_FSIZE: that caps every file the probe writes, and opencode checkpoints its
+        # (multi-GB) SQLite WAL during `debug config` — measured, the probe then fails.
+        try:
+            sink = _probe_sink(PROBE_LIMIT + 1)
+        except OSError as exc:
+            raise WorkerError(f"the opencode configuration probe could not start: {exc}") from None
+        try:
+            try:
+                probe = await asyncio.create_subprocess_exec(
+                    *native_protocol.OpencodeAcpCodec.config_probe_argv(self.config["binary"]),
+                    stdin=asyncio.subprocess.DEVNULL,
+                    stdout=sink,
+                    stderr=asyncio.subprocess.DEVNULL,
+                    cwd=self.config["cwd"],
+                    env=env,
+                )
+            except (OSError, native_protocol.ProtocolError) as exc:
+                raise WorkerError(
+                    f"the opencode configuration probe could not start: {exc}"
+                ) from None
+            try:
+                code = await asyncio.wait_for(probe.wait(), PROBE_TIMEOUT)
+            except TimeoutError:
+                raise WorkerError("the opencode configuration probe timed out") from None
+            finally:
+                if probe.returncode is None:
+                    with contextlib.suppress(ProcessLookupError):
+                        probe.kill()
+                    await probe.wait()
+            written = os.lseek(sink, 0, os.SEEK_CUR)
+            if code != 0 or written > PROBE_LIMIT:
+                raise WorkerError("the opencode configuration probe failed")
+            out = os.pread(sink, written, 0)
+        finally:
+            os.close(sink)
+        try:
+            resolved = json.loads(out)
+            overrides = opencode.mcp_password_overrides(resolved)
+        except (ValueError, UnicodeError) as exc:
+            raise WorkerError(f"the opencode configuration could not be used: {exc}") from None
+        # The config-level permission rules the child would merge ours over (#1891): patterns
+        # and actions, no credential. Bypass restates each as allow.
+        self.operator_permission = resolved.get("permission")
+        # The commands that would open a child session by a slash prompt (#1892): names only,
+        # whether the operator or the project declared them, from this same resolved config.
+        self.subtask_commands = opencode.subtask_commands(resolved)
+        # The servers' names only (#1726), `configured`: reported with the session once bound.
+        self.codec.configured_mcp(opencode.mcp_server_states(resolved))
+        return overrides
+
+    def store_admission(self):
+        """opencode's shared SQLite store: take the SAME shared admission a console launch takes
+        (`opencode_admission`, #993), keyed by the database the web process resolved for the
+        source (`store_database`), so compaction through ANY engine on that file and this launch
+        can never interleave — a source alias included (Hermes on #1336)."""
+        if self.adapter != OPENCODE:
+            return None
+        from . import opencode_admission
+
+        try:
+            guard = opencode_admission.acquire(
+                self.config["source_engine"],
+                exclusive=False,
+                database=self.config["store_database"],
+            )
+        except (OSError, KeyError, TypeError) as exc:
+            raise WorkerError(opencode_admission.REFUSAL) from exc
+        if guard is None:
+            raise WorkerError(opencode_admission.REFUSAL)
+        return guard
+
+    # --- native protocol -------------------------------------------------------------------
+
+    async def write(self, frame: dict) -> None:
+        assert self.proc is not None and self.proc.stdin is not None
+        # BattleLab's own frames; a turn's inlined pictures may exceed the read cap (#1332).
+        self.proc.stdin.write(native_protocol.encode(frame, native_protocol.MAX_WRITE_FRAME_BYTES))
+        # A child that stops reading must not hold the effect lock (and with it stop) forever.
+        await asyncio.wait_for(self.proc.stdin.drain(), 15)
+
+    def record(self, events) -> None:
+        for event in events:
+            if event.kind == "send":
+                continue
+            data = dict(event.data)
+            if event.kind == "approval":
+                data.update(worker_id=self.worker_id, connection_id=self.binding.connection_id)
+            item = {"kind": event.kind, "data": data}
+            last = self.pending[-1] if self.pending else None
+            if (
+                last is not None
+                and item["kind"] == last["kind"] == "text"
+                and data.get("partial")
+                and last["data"].get("partial")
+                and data.get("operation_id") == last["data"].get("operation_id")
+                and data.get("agent_turn") == last["data"].get("agent_turn")
+                and data.get("item_id") == last["data"].get("item_id")
+                and len(last["data"]["text"]) + len(data["text"]) <= native_ipc.MAX_EVENT_TEXT
+            ):
+                last["data"]["text"] += data["text"]
+                last["data"]["truncated"] = last["data"]["truncated"] or data["truncated"]
+                continue
+            self.pending.append(item)
+            if event.kind in _URGENT or len(self.pending) >= native_ipc.MAX_EVENTS:
+                self.flush_now.set()
+
+    def flush(self) -> None:
+        while self.pending:
+            batch, self.pending = (
+                self.pending[: native_ipc.MAX_EVENTS],
+                self.pending[native_ipc.MAX_EVENTS :],
+            )
+            # One observation the journal's schema refuses must never cost the batch (or stop
+            # flushing): it is replaced by a bounded diagnostic, the rest is journaled (#1811).
+            batch = [_journalable(item) for item in batch]
+            try:
+                native_journal.append_events(self.journal_root, self.binding, batch)
+            except native_journal.JournalError as exc:
+                # A journal that cannot record observations must not keep accepting effects.
+                self.reason = f"journal unavailable: {exc}"
+                self.journal_failed(exc)
+                self.stop_child()
+                return
+
+    def write_checked(self, events) -> None:
+        """Journal ``events`` NOW, raising `JournalError` rather than stopping the child: a
+        record the exact Stop depends on (#1724, Hermes on PR #1757) is a checked precondition,
+        and its failure fails that Stop closed with the unit still running. What was pending is
+        written first (journal order); on failure, nothing of ``events`` stays pending."""
+        mark = len(self.pending)
+        self.record(events)
+        ours, self.pending = self.pending[mark:], self.pending[:mark]
+        while self.pending:
+            batch = self.pending[: native_ipc.MAX_EVENTS]
+            native_journal.append_events(self.journal_root, self.binding, batch)
+            del self.pending[: len(batch)]
+        for start in range(0, len(ours), native_ipc.MAX_EVENTS):
+            native_journal.append_events(
+                self.journal_root, self.binding, ours[start : start + native_ipc.MAX_EVENTS]
+            )
+
+    async def flusher(self) -> None:
+        while not self.done.is_set():
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(self.flush_now.wait(), FLUSH_INTERVAL)
+            self.flush_now.clear()
+            self.flush()
+
+    def _turn_busy(self) -> bool:
+        codec = self.codec
+        return (
+            codec.operation_id is not None
+            or bool(self.priority_requests)
+            or bool(getattr(codec, "_steers", None))
+            or codec.turn_approvals()
+            or getattr(codec, "_session_state", None) in {"running", "requires_action"}
+            or getattr(codec, "unowned_turn", False)
+        )
+
+    def native_busy(self) -> bool:
+        """Anything running at all, background tasks included: the worker must stay alive. A
+        background task's open request (#1725) or more tasks than are tracked count too."""
+        return (
+            self._turn_busy()
+            or bool(getattr(self.codec, "_background", None))
+            or bool(self.codec._approvals)
+            or self.codec.overflow
+        )
+
+    def dispatch_busy(self) -> bool:
+        """May an operator message go to the agent now (#1427)?
+
+        A running background task alone does not stop it once this generation's codec has PROVED
+        it can tell the operator's output from a turn the agent starts for itself, or has seen the
+        CLI frame an input it wrote with `command_lifecycle` (#2164). A distrusted fence no longer
+        holds it: only an operator turn's clean cycle proves the fence again, and the hold kept
+        every such turn out for as long as the agent kept a task running. Without lifecycle frames
+        at all (an older CLI) the old rule holds: a task could start a turn of the agent's own,
+        whose output would read as the reply.
+        """
+        if getattr(self.codec, "lifecycle_proven", False) or getattr(
+            self.codec, "frames_inputs", False
+        ):
+            return self._turn_busy()
+        return self.native_busy()
+
+    def busy(self) -> bool:
+        """Stay alive (#1724): a turn, a queued message, an approval or question, an agent turn,
+        an engine-reported background task (Claude's tasks, Codex's terminals) or a live process
+        the agent spawned — or a process scan that cannot say. Never decides dispatch."""
+        return (
+            bool(self.queued)
+            or self.native_busy()
+            or bool(getattr(self.codec, "terminals", None))
+            or self.floor.busy
+        )
+
+    def wake_held(self) -> bool:
+        """A `ScheduleWakeup` is pending (#1927): the idle exit waits until it is due, plus a
+        grace for the turn it starts. Liveness only, never dispatch, never a Stop's inventory."""
+        due = getattr(self.codec, "wake_due", None)
+        return due is not None and native_protocol._monotonic() < due + native_protocol.WAKE_GRACE
+
+    # --- the process floor and the background inventory (#1724) ---------------------------
+
+    def _observe(self) -> native_processes.Scan:
+        unit = native_containment.WorkerIdentity(self.worker_id).unit
+        pinned = self._floor_group
+        if pinned is None:
+            try:
+                pinned = native_state.read_lifecycle(self.worker_id).get("control_group")
+            except (native_state.StateError, OSError):
+                pinned = None
+        observed = native_processes.observe(unit, pinned if isinstance(pinned, str) else None)
+        if observed.state == native_processes.OK:
+            self._floor_group = pinned
+        return observed
+
+    def take_baseline(self, tries: int = BASELINE_TRIES) -> None:
+        """Everything in the group now is the worker, its CLI and what the CLI started to get
+        ready. Taken at readiness; one that cannot be read is retried on later idle ticks only
+        while no turn has run (`baseline_open`). After that it is never guessed: it could
+        swallow the agent's own work, so the floor stays unknown (busy) for the generation."""
+        for attempt in range(tries):
+            observed = self._observe()
+            if observed.state != native_processes.UNKNOWN:
+                if observed.state == native_processes.OK:
+                    self.baseline = frozenset(p.identity for p in observed.processes)
+                self.floor = native_processes.floor(observed, self.baseline)
+                return
+            if attempt + 1 < tries:
+                time.sleep(0.1)
+        self.floor = native_processes.Floor(native_processes.UNKNOWN)
+
+    @property
+    def baseline_open(self) -> bool:
+        """May a missing baseline still be taken? Only until the first turn of any kind."""
+        return self.baseline is None and not self.turn_seen and self.floor.state != "uncontained"
+
+    def observe_floor(self) -> native_processes.Floor:
+        if self.floor.state == native_processes.UNCONTAINED:
+            return self.floor
+        if self.baseline_open:
+            self.take_baseline(1)
+            return self.floor
+        self.floor = native_processes.floor(self._observe(), self.baseline)
+        return self.floor
+
+    def rollover_due(self) -> bool:
+        """This connection's result ledger reached its high-water mark (#1725): it takes no new
+        turn, and retires as soon as nothing runs. Only Claude has such a ledger."""
+        at_capacity = getattr(self.codec, "at_capacity", None)
+        return at_capacity is not None and at_capacity()
+
+    async def _nothing_runs_now(self) -> bool:
+        """Is nothing running, by a process scan made now? A failed scan can't say so."""
+        try:
+            await asyncio.to_thread(self.observe_floor)
+        except OSError:
+            return False
+        return not self.busy()
+
+    def retire(self) -> None:
+        """The between-turns end of a full connection (#1725). Held under the effect lock with
+        nothing running, like an idle exit: nothing is cut, nothing of the history is lost, and
+        the next Send resumes it in a new generation, exactly as after one."""
+        self.closing = True
+        self.report(rollover_at=time.time(), rollover_held=False)
+        self.settle("rollover", self.inventory())
+        self.stop_child()
+
+    async def report_rollover(self) -> None:
+        """What the pane says while a full connection waits for what still runs (#1725): a display
+        hint. With nothing running it is about to retire, and a send is decided at its own
+        admission either way."""
+        held = self.rollover_due() and self.busy()
+        if held != self.reported_held:
+            self.reported_held = held
+            await asyncio.to_thread(self.report, rollover_held=held)
+
+    def engine_ids(self) -> list[str]:
+        return sorted(
+            set(getattr(self.codec, "_background", ())) | set(getattr(self.codec, "terminals", ()))
+        )
+
+    def _aged(self, floor: native_processes.Floor) -> tuple[native_processes.Process, ...]:
+        """The processes that have lived at least one idle tick (#1724): what a periodic
+        inventory journals. A loop's short-lived children keep the worker alive (liveness uses
+        every process) but never reach the journal one by one."""
+        if floor.observed is None:
+            return floor.processes
+        span = self.tick * os.sysconf("SC_CLK_TCK")
+        return tuple(p for p in floor.processes if floor.observed - p.start >= span)
+
+    def inventory(self, floor: native_processes.Floor | None = None, *, aged: bool = False) -> dict:
+        """The active set as an inventory. ``aged``: only processes older than one tick (the
+        periodic journal record); otherwise every process (Stop, settlement). The digest covers
+        everything, listed or not; `more` / `engine_more` count what is not listed."""
+        floor = self.floor if floor is None else floor
+        engine = self.engine_ids()
+        processes = self._aged(floor) if aged else floor.processes
+        listed = processes[: native_ipc.MAX_INVENTORY_PROCESSES]
+        identities = frozenset(p.identity for p in processes)
+        overflow = self.codec.overflow
+        return {
+            "engine": engine[: native_ipc.MAX_INVENTORY_TASKS],
+            "engine_more": max(0, len(engine) - native_ipc.MAX_INVENTORY_TASKS),
+            "processes": [
+                {
+                    "pid": p.pid,
+                    "start": p.start,
+                    "comm": p.comm,
+                    "started_at": native_processes.started_at(p),
+                }
+                for p in listed
+            ],
+            "more": len(processes) - len(listed),
+            "scan": floor.state,
+            "digest": native_ipc.stop_digest(
+                self.worker_id, engine, identities, floor.state, overflow=overflow
+            ),
+            **({"overflow": True} if overflow else {}),
+        }
+
+    def record_inventory(self, data: dict, *, force: bool = False) -> None:
+        """Journal the active set when it changed. Nothing active and nothing journaled yet
+        writes nothing."""
+        if self.written is not None and self.written["digest"] == data["digest"]:
+            return
+        self.written, self.written_at = data, time.monotonic()
+        empty = not data["engine"] and not data["processes"] and data["scan"] != "unknown"
+        if empty and not force and not self.journaled:
+            return
+        self.journaled = True
+        self.record([native_protocol.NativeEvent("background_inventory", data)])
+
+    @staticmethod
+    def complete(inventory: dict) -> bool:
+        """May this inventory be confirmed EXACTLY (#1724)? Only when the dialog can list all of
+        it: every process and every task named (none past the display limits, no task the engine
+        reported past what is tracked, #1725) and a readable scan. Anything else is confirmed only
+        by Stop everything."""
+        return (
+            inventory["more"] == 0
+            and inventory.get("engine_more", 0) == 0
+            and not inventory.get("overflow")
+            and inventory["scan"] != native_processes.UNKNOWN
+        )
+
+    def note_engine(self) -> None:
+        """An engine task started or ended, or the set stopped or started being complete (#1725):
+        journal the set with it, in the same batch."""
+        written = self.written or {}
+        if self.ready.is_set() and (
+            written.get("engine", []) != self.engine_ids()
+            or bool(written.get("overflow")) != self.codec.overflow
+        ):
+            self.record_inventory(self.inventory(aged=True))
+
+    def after_floor(self, terminals_before: set[str]) -> None:
+        """A readable floor with no agent process means no terminal the client reported can
+        still run (its shell is such a process): retire the ones known before the scan. Then
+        journal the set if it changed: at once for an engine task (or the first one), otherwise
+        — processes, a scan that became (un)readable — at most once per `inventory_interval`
+        (5 min): process churn or a flapping scan never journals a record per tick."""
+        retire = getattr(self.codec, "retire_terminals", None)
+        if (
+            retire is not None
+            and self.floor.state == native_processes.OK
+            and not self.floor.processes
+        ):
+            ended = terminals_before & set(self.codec.terminals)
+            if ended:
+                self.record(retire(ended))
+            # A Codex terminal is a process, so an empty readable floor also settles the ones past
+            # what is tracked (#1725).
+            self.codec.overflow = False
+        data = self.inventory(aged=True)
+        last = self.written
+        if last is not None and last["digest"] == data["digest"]:
+            return
+        urgent = (
+            last is None
+            or last["engine"] != data["engine"]
+            or bool(last.get("overflow")) != bool(data.get("overflow"))
+        )
+        if urgent or time.monotonic() - self.written_at >= self.inventory_interval:
+            self.record_inventory(data)
+
+    def settle(
+        self,
+        reason: str,
+        data: dict,
+        *,
+        idle_for: int | None = None,
+        confirmed: dict | None = None,
+        checked: bool = False,
+    ) -> None:
+        """An orderly end (#1724): what was still active ends with this worker, for this reason.
+        Durable before the child is stopped; a crash before it leaves the last inventory.
+        ``confirmed``: the inventory a Stop was confirmed against; a process of ``data`` (the
+        final scan) not in it started while the Stop ran, and is marked so. ``checked``: the
+        exact Stop's settlement raises `JournalError` instead (it fails that Stop closed). A
+        generation settles once: a second caller (the watch's next tick after a send retired it,
+        #1725) has nothing to add."""
+        if self.settled:
+            return
+        settled = {
+            key: data[key]
+            for key in ("engine", "processes", "more", "scan", "engine_more", "overflow")
+            if key in data
+        }
+        if confirmed is not None:
+            known = {(p["pid"], p["start"]) for p in confirmed["processes"]}
+            settled["processes"] = [
+                p if (p["pid"], p["start"]) in known else {**p, "started_during_stop": True}
+                for p in settled["processes"]
+            ]
+        settled["reason"] = reason
+        if idle_for is not None:
+            settled["idle_for"] = idle_for
+        event = native_protocol.NativeEvent("background_settled", settled)
+        if checked:
+            self.write_checked([event])
+            self.settled = True
+            return
+        self.settled = True
+        self.record([event])
+        self.flush()
+
+    # --- the exact Stop's freeze (#1724) ---------------------------------------------------
+
+    def _signalable(self, pid: int) -> bool:
+        """Never pid ≤ 1, never the worker itself or its process group (killpg(1) is kill(-1))."""
+        own = {os.getpid()}
+        with contextlib.suppress(OSError):
+            own.add(os.getpgid(0))
+        return pid > 1 and pid not in own
+
+    def _members(self) -> set[int]:
+        """The pids of this worker's own unit cgroup (sub-cgroups included); `ScanError` when it
+        cannot be read. Membership only, never a guess."""
+        if not self._floor_group:
+            raise native_processes.ScanError("no pinned group")
+        return native_processes.members(self._floor_group)
+
+    def _send(self, process: native_processes.Process, sig: int, *, ledger: bool = False) -> bool:
+        """Signal one process scanned from this unit's cgroup, only while its pid still names
+        the same (pid, start) identity. False when it is gone, no longer that process, or the
+        signal could not be delivered. ``ledger``: a SIGSTOP enters the paused ledger right
+        before the signal is sent, and leaves it if the signal was not delivered."""
+        if not self._signalable(process.pid):
+            return False
+        try:
+            current = self._recheck(process.pid)
+        except native_processes.ScanError:
+            return False
+        if current is None or current.start != process.start:
+            return False
+        if ledger:
+            self.paused[process.identity] = process
+        try:
+            self._signal(process.pid, sig)
+        except OSError:
+            if ledger:
+                self.paused.pop(process.identity, None)
+            return False
+        return True
+
+    def _stopped(self, process: native_processes.Process) -> bool | None:
+        """Is this process confirmed stopped (`T`/`t`)? None when it is gone (or its pid now
+        names another process): nothing of it can run any more. False when it runs, or when it
+        cannot be read — never assumed stopped."""
+        try:
+            current = self._recheck(process.pid)
+        except native_processes.ScanError:
+            return False
+        if current is None or current.start != process.start:
+            return None
+        return current.state in {"T", "t"}
+
+    def freeze_and_check(self, confirmed: dict) -> dict:
+        """SIGSTOP every process of this unit (sub-cgroups included) but the worker, until every
+        one present is CONFIRMED stopped (its state re-read as `T`) or gone, and a rescan finds
+        no new one (≤ `FREEZE_PASSES` passes, ≤ `FREEZE_SECONDS`). A stopped process cannot
+        fork, so the set is then stable. A process that cannot be stopped, or whose stop cannot
+        be confirmed, within those bounds is `unstable`: fail closed (Hermes on PR #1757). Every
+        SIGSTOP goes into the paused ledger first, so it is always resumed on any way out but
+        acceptance. Then revalidate the frozen set against the confirmed inventory: every agent
+        process confirmed or a descendant of a confirmed one (what the dialog discloses), the
+        engine tasks unchanged; anything else is `changed`."""
+        try:
+            return self._freeze(confirmed)
+        except BaseException:
+            self.resume_paused()  # an exception never strands a stopped job
+            raise
+
+    def _freeze(self, confirmed: dict) -> dict:
+        frozen: set[tuple[int, int]] = set()
+        gone: set[tuple[int, int]] = set()
+        deadline = time.monotonic() + FREEZE_SECONDS
+        observed = None
+        for attempt in range(FREEZE_PASSES):
+            observed = self._observe()
+            if observed.state != native_processes.OK:
+                return {"problem": "unstable", "observed": observed}
+            pending = [
+                p
+                for p in sorted(observed.processes)
+                if p.identity not in frozen and p.identity not in gone and self._signalable(p.pid)
+            ]
+            if not pending:
+                break
+            for process in pending:
+                # Into the ledger before the signal: whatever happens next, it is resumed.
+                self._send(process, signal.SIGSTOP, ledger=True)
+            for process in pending:
+                stopped = self._stopped(process)
+                if stopped is None:
+                    gone.add(process.identity)
+                    self.paused.pop(process.identity, None)
+                elif stopped:
+                    frozen.add(process.identity)
+            if time.monotonic() >= deadline:
+                return {"problem": "unstable", "observed": observed}
+            if attempt + 1 < FREEZE_PASSES:
+                time.sleep(FREEZE_RETRY)
+        else:
+            return {"problem": "unstable", "observed": observed}
+        floor = native_processes.floor(observed, self.baseline)
+        self.floor = floor
+        allowed = {(p["pid"], p["start"]) for p in confirmed["processes"]}
+        running = {p.pid: p for p in observed.processes}
+
+        def disclosed(process: native_processes.Process) -> bool:
+            seen, current = set(), process
+            while current is not None and current.pid not in seen:
+                if current.identity in allowed:
+                    return True
+                seen.add(current.pid)
+                current = running.get(current.ppid)
+            return False
+
+        changed = set(self.engine_ids()) != set(confirmed["engine"]) or not all(
+            disclosed(p) for p in floor.processes
+        )
+        return {"problem": "changed" if changed else None, "observed": observed}
+
+    def resume_paused(self) -> int:
+        """SIGCONT every process in the paused ledger, and keep in it only those whose resume
+        cannot be confirmed. An unreadable identity is resumed anyway while its pid is still a
+        member of this unit's cgroup (a resumed wrong process is harmless; a suspended job is
+        not). Never pid ≤ 1, the worker's own pid or group. Returns what is still unresumed."""
+        try:
+            members = self._members()
+        except native_processes.ScanError:
+            members = None
+        for identity, process in list(self.paused.items()):
+            if not self._signalable(process.pid):
+                del self.paused[identity]
+                continue
+            try:
+                current = self._recheck(process.pid)
+            except native_processes.ScanError:
+                if members is not None and process.pid in members:
+                    with contextlib.suppress(OSError):
+                        self._signal(process.pid, signal.SIGCONT)
+                continue  # sent if a member, but unconfirmed: retried on the next idle tick
+            if current is None or current.start != process.start:
+                del self.paused[identity]  # gone: nothing left to resume
+                continue
+            with contextlib.suppress(OSError):
+                self._signal(process.pid, signal.SIGCONT)
+            if self._stopped(process) is not True:
+                del self.paused[identity]
+        return len(self.paused)
+
+    def resume_with_retries(self) -> int:
+        left = self.resume_paused()
+        for _ in range(RESUME_RETRIES):
+            if not left:
+                break
+            time.sleep(FREEZE_RETRY)
+            left = self.resume_paused()
+        return left
+
+    async def retry_resume(self) -> None:
+        """Idle tick: retry a ledger an earlier REFUSED Stop could not empty; journal any change.
+        Serialized with the effects, and never while an exact Stop owns the ledger: what an
+        accepted Stop froze stays frozen until it is killed (Hermes on PR #1757 head a19fc823)."""
+        if not self.paused or self.stop_owner is not None:
+            return
+        async with self.effects:
+            if not self.paused or self.stop_owner is not None:
+                return
+            left = await asyncio.to_thread(self.resume_paused)
+            if left != self.unresumed:
+                self.unresumed = left
+                self.record(
+                    [
+                        native_protocol.NativeEvent(
+                            "stop_resumed", {"stop_operation": self.paused_by, "unresumed": left}
+                        )
+                    ]
+                )
+
+    async def exact_stop(self, request: dict, params: dict, ending: dict, receipt) -> dict:
+        """An EXACT Stop, claimed (#1724, operator decision on PR #1757): freeze the unit,
+        journal the ledger, revalidate, settle from the frozen set, accept, hand off, and kill
+        the frozen set. The Stop owns the ledger throughout. Every journal write it depends on
+        (the ledger, the settlement) is checked: a failure resumes the frozen set and refuses,
+        never accepted (Hermes on PR #1757). Any exception or cancellation before acceptance
+        resumes; after acceptance it kills what it froze."""
+        operation = params["operation_id"]
+        self.paused_by = self.stop_owner = operation
+        accepted = False
+        try:
+            freeze = asyncio.ensure_future(asyncio.to_thread(self.freeze_and_check, ending))
+            try:
+                verdict = await asyncio.shield(freeze)
+            except asyncio.CancelledError:
+                # The freeze thread runs on: wait for it (bounded) before anything resumes.
+                while not freeze.done():
+                    with contextlib.suppress(BaseException):
+                        await asyncio.wait({freeze})
+                raise
+            except Exception as exc:  # resumed inside; nothing was accepted or stopped
+                log.warning("exact Stop freeze failed: %s", type(exc).__name__)
+                return await self.refuse_stop(
+                    request,
+                    params,
+                    "unstable",
+                    self.error(request, "unavailable", "the Stop could not freeze the unit"),
+                )
+            try:
+                self.write_checked([self.paused_event(operation)])
+            except native_journal.JournalError as exc:
+                return await self.refuse_stop(
+                    request, params, "journal", self.journal_error(request, exc)
+                )
+            if verdict["problem"] is not None:
+                return await self.abort_stop(request, params, verdict)
+            frozen = dict(self.paused)
+            if not self.settled:
+                # The FINAL scan is the frozen set: what the confirmed jobs started meanwhile
+                # is marked so.
+                try:
+                    self.settle("stop", self.inventory(), confirmed=ending, checked=True)
+                except native_journal.JournalError as exc:
+                    return await self.refuse_stop(
+                        request, params, "journal", self.journal_error(request, exc)
+                    )
+            # Accepted only now, with its claim, ledger and settlement durable.
+            accepted = self.stop_accepted = True
+            self.report(stop_accepted_at=time.time())
+            handed = await self.handoff("stop", params, receipt=receipt)
+            # Stopped processes cannot act on SIGTERM: end the frozen set now (its children
+            # cannot have been born since — a stopped process does not fork).
+            await asyncio.to_thread(self.kill_frozen, frozen)
+            return self.receipt(request, handed)
+        except BaseException:
+            if accepted:
+                self.kill_frozen(dict(self.paused))
+            else:
+                self.unresumed = self.resume_with_retries()
+            raise
+        finally:
+            self.stop_owner = None
+
+    async def refuse_stop(self, request: dict, params: dict, reason: str, response: dict) -> dict:
+        """Refuse a claimed exact Stop with everything it froze resumed FIRST: then, as far as
+        the journal can be written, why (`stop_aborted`, how many could not be resumed) and the
+        claim settled `not_sent`. Never accepted."""
+        self.unresumed = await asyncio.to_thread(self.resume_with_retries)
+        aborted = {"stop_operation": params["operation_id"], "reason": reason}
+        with contextlib.suppress(native_journal.JournalError):
+            self.write_checked(
+                [
+                    native_protocol.NativeEvent(
+                        "stop_aborted", {**aborted, "unresumed": self.unresumed}
+                    )
+                ],
+            )
+        with contextlib.suppress(native_journal.JournalError):
+            await asyncio.to_thread(
+                native_journal.record_handoff,
+                self.journal_root,
+                self.binding,
+                params["operation_id"],
+                "not_sent",
+            )
+        return response
+
+    async def abort_stop(self, request: dict, params: dict, verdict: dict) -> dict:
+        """The frozen set is not what the operator confirmed, or could not be frozen: resume
+        everything that was stopped, record that this Stop's claim was not applied (`not_sent`,
+        final) and why (`stop_aborted`, with how many could not be resumed), journal the
+        current inventory, and refuse with it (409). A journal that cannot take the abort's
+        record refuses as the journal failure (the pane shows a refusal, nothing sent)."""
+        left = await asyncio.to_thread(self.resume_with_retries)
+        self.unresumed = left
+        if verdict["observed"] is not None and verdict["observed"].state == native_processes.OK:
+            self.floor = native_processes.floor(verdict["observed"], self.baseline)
+        aborted = native_protocol.NativeEvent(
+            "stop_aborted",
+            {
+                "stop_operation": params["operation_id"],
+                "reason": verdict["problem"],
+                "unresumed": left,
+            },
+        )
+        response = self.error(request, "stale", STOP_CHANGED, "inventory_changed")
+        try:
+            self.write_checked([aborted])
+            self.record_inventory(self.inventory(), force=True)
+            self.write_checked([])
+        except native_journal.JournalError as exc:
+            self.written = None  # the fresh inventory is not journaled: write it again later
+            response = self.journal_error(request, exc)
+        with contextlib.suppress(native_journal.JournalError):
+            await asyncio.to_thread(
+                native_journal.record_handoff,
+                self.journal_root,
+                self.binding,
+                params["operation_id"],
+                "not_sent",
+            )
+        return response
+
+    def paused_event(self, operation_id: str) -> native_protocol.NativeEvent:
+        """The ledger as a record (#1724): which (pid, start) this Stop paused. Bounded like an
+        inventory; `more` counts the rest."""
+        listed = sorted(self.paused.values())[: native_ipc.MAX_INVENTORY_PROCESSES]
+        return native_protocol.NativeEvent(
+            "stop_paused",
+            {
+                "stop_operation": operation_id,
+                "processes": [
+                    {
+                        "pid": p.pid,
+                        "start": p.start,
+                        "comm": p.comm,
+                        "started_at": native_processes.started_at(p),
+                    }
+                    for p in listed
+                ],
+                "more": len(self.paused) - len(listed),
+            },
+        )
+
+    def kill_frozen(self, frozen: dict) -> None:
+        """The accepted exact Stop ends its frozen set (stopped processes cannot act on SIGTERM;
+        a stopped process cannot have forked since). The ledger empties: nothing to resume."""
+        for process in frozen.values():
+            self._send(process, signal.SIGKILL)
+        self.paused.clear()
+
+    def on_signal(self) -> None:
+        self.signalled = True
+        self.stop_child()
+
+    def _sent_now_cuts(self) -> bool:
+        """Does the head, a message Send now selected, go now although the agent runs a turn of
+        its own (#1475)? That turn may have started in the gap after the interrupt, before this
+        dispatch; the message's `priority: "now"` cuts it, which is what Send now asked for. Only
+        once the lifecycle is proved (the fence tells that turn's output from the message's) and
+        with nothing else of the operator's in flight: no turn, no pending control, no approval."""
+        codec = self.codec
+        return (
+            bool(self.queued)
+            and self.queued[0]["operation_id"] in self.sent_now
+            and codec.submit_now_cuts_own_turn
+            and getattr(codec, "lifecycle_proven", False)
+            and codec.operation_id is None
+            and not self.priority_requests
+            and not getattr(codec, "_steers", None)
+            and not codec._approvals
+        )
+
+    def memory_sample(self, tracker: native_memory.Tracker) -> dict:
+        """One reading of this worker's own unit (#1643): only the group `/proc/self/cgroup` names
+        when it is this unit AND the group the runtime pinned; anything else reads unavailable."""
+        unit = native_containment.WorkerIdentity(self.worker_id).unit
+        life = native_state.read_lifecycle(self.worker_id)
+        try:
+            proc = Path("/proc/self/cgroup").read_text()
+        except OSError:
+            proc = ""
+        group = native_memory.own_group(proc, unit)
+        pinned = group is not None and group == life.get("control_group")
+        reading = native_memory.sample(group) if pinned else None
+        level = tracker.update(reading)
+        return native_memory.state(
+            level, tracker.shown, life.get("invocation_id"), tracker.throttled
+        )
+
+    async def memory_watch(self) -> None:
+        """Sample memory pressure every INTERVAL; record a warning while it lasts (fresh `at`),
+        and every change of level, so a reader can tell a live warning from a stale one."""
+        tracker, written = native_memory.Tracker(), None
+        while not self.done.is_set():
+            with contextlib.suppress(native_state.StateError, OSError):
+                memory = await asyncio.to_thread(self.memory_sample, tracker)
+                if memory["level"] in native_memory.SHOWN or memory["level"] != written:
+                    await asyncio.to_thread(self.report, memory=memory)
+                    if memory["level"] != written:
+                        # The change itself, on the event stream (#1643): a reader learns of it at
+                        # once, and the journal keeps when each warning began and ended.
+                        self.record(
+                            [
+                                native_protocol.NativeEvent(
+                                    "memory_pressure",
+                                    {
+                                        key: memory.get(key)
+                                        for key in (
+                                            "level",
+                                            "working_set",
+                                            "max",
+                                            "scope",
+                                            "throttled",
+                                        )
+                                    },
+                                )
+                            ]
+                        )
+                    written = memory["level"]
+            # The periodic OOM-counter read (#1732); turn transitions read it too.
+            if not self.turn_transition():
+                self.oom_read(self._turn_key, self._turn_key)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self.done.wait(), native_memory.INTERVAL)
+
+    # --- OOM kills in the unit (#1732) -----------------------------------------------------
+
+    def _own_group(self) -> str | None:
+        try:
+            proc = Path("/proc/self/cgroup").read_text()
+        except OSError:
+            return None
+        unit = native_containment.WorkerIdentity(self.worker_id).unit
+        return native_memory.own_group(proc, unit)
+
+    def oom_baseline(self) -> None:
+        """The counter at the worker's start, before the agent exists: kills before it are not
+        this generation's. Unreadable: the first successful read becomes the base (a kill before
+        it is never claimed)."""
+        group = self._own_group()
+        self._oom_base = None if group is None else native_memory.oom_kills(group)
+
+    def oom_count(self) -> tuple[int, str] | None:
+        """(kills since the base, the pinned invocation), read from the worker's own unit only
+        once the runtime pinned it (the same rule as `memory_sample`); None when unreadable."""
+        if self._oom_pin is None:
+            group = self._own_group()
+            if group is None:
+                return None
+            life = native_state.read_lifecycle(self.worker_id)
+            if group != life.get("control_group") or not isinstance(life.get("invocation_id"), str):
+                return None
+            self._oom_pin = (group, life["invocation_id"])
+        total = native_memory.oom_kills(self._oom_pin[0])
+        if total is None:
+            return None
+        if self._oom_base is None or total < self._oom_base:
+            self._oom_base = total
+        return total - self._oom_base, self._oom_pin[1]
+
+    def _turn_now(self) -> tuple[str, str] | None:
+        codec = self.codec
+        if codec.operation_id is not None:
+            return ("operation_id", codec.operation_id)
+        if codec.background_turn is not None:
+            return ("agent_turn", codec.background_turn)
+        return None
+
+    def turn_transition(self) -> bool:
+        """Did the codec's turn change since the worker last looked? Then read the counter now,
+        before the change is journaled. True when that read journaled a kill."""
+        now = self._turn_now()
+        if now == self._turn_key:
+            return False
+        before, self._turn_key = self._turn_key, now
+        return self.oom_read(before, now)
+
+    def oom_read(self, before, after) -> bool:
+        """Read the counter; journal a rise since the last journaled count as ONE
+        `memory_oom_kill` (cumulative count, invocation). It names a turn only when that turn
+        was in flight at the previous read AND up to this one (``before``); otherwise it is a
+        session-level notice. ``after`` is the turn in flight from this read on. True when a
+        kill was journaled."""
+        try:
+            read = self.oom_count()
+        except (native_state.StateError, OSError):
+            read = None
+        if read is None:
+            self._oom_turn = _UNREAD  # where the next rise began is unknown: never a turn's
+            return False
+        count, self._oom_invocation = read
+        rose = count > self._oom_seen
+        if rose:
+            data = {"count": count, "invocation_id": self._oom_invocation}
+            if before is not None and before == self._oom_turn:
+                data[before[0]] = before[1]
+            self.record([native_protocol.NativeEvent("memory_oom_kill", data)])
+            self._oom_seen = count
+        self._oom_turn = after
+        return rose
+
+    async def reap_window(self) -> None:
+        """The agent's output ended (#1732). Give it REAP_WINDOW to exit by itself: then its
+        own return code stands, the counter is read once more, and if the agent was SIGKILLed
+        while the count rose since the last journaled read, that is recorded (the facts, not a
+        cause: a tool's OOM and an unrelated SIGKILL in one window read the same). Still alive,
+        or stopped by BattleLab meanwhile: nothing is derived; the stop path runs as before."""
+        proc = self.proc
+        deadline = time.monotonic() + REAP_WINDOW
+        while proc.returncode is None and not self.terminated and time.monotonic() < deadline:
+            await asyncio.sleep(0.02)
+        if proc.returncode is None or self.terminated:
+            return
+        seen = self._oom_seen
+        if not self.oom_read(self._turn_key, None):
+            return
+        if proc.returncode == -signal.SIGKILL:
+            await asyncio.to_thread(
+                self.report,
+                agent_exit={
+                    "reason": SIGKILL_DURING_OOM,
+                    "returncode": proc.returncode,
+                    "oom_kills": self._oom_seen - seen,
+                    "invocation_id": self._oom_invocation,
+                    "at": time.time(),
+                },
+            )
+
+    async def idle_watch(self) -> None:
+        """Exit when nothing is running; a later turn resumes the history in a new generation.
+        Each tick reads the process floor (#1724), bounded and read-only."""
+        while not self.done.is_set():
+            await asyncio.sleep(self.tick)
+            if self.closing:
+                return  # ending already: a send retired it (#1725), or the agent's output ended
+            before = set(getattr(self.codec, "terminals", ()))
+            with contextlib.suppress(OSError):
+                await asyncio.to_thread(self.observe_floor)
+            if self.done.is_set():
+                return
+            self.after_floor(before)
+            await self.retry_resume()
+            await self.report_rollover()
+            if self.busy():
+                self.last_activity = time.monotonic()
+                continue
+            if self.wake_held():
+                # The CLI's own timer (#1927), outside `busy()`: `last_activity` keeps meaning
+                # the last real work, so a wake that never fires exits at
+                # max(last_activity + idle_timeout, wake_due + WAKE_GRACE). It holds a rollover
+                # retire too: that stops the child, and the timer with it.
+                continue
+            if self.rollover_due():
+                # Full, and nothing runs (#1725): this connection retires now, between turns.
+                async with self.effects:
+                    if await self._nothing_runs_now():
+                        self.retire()
+                        return
+                continue
+            if time.monotonic() - self.last_activity < self.idle_timeout:
+                continue
+            async with self.effects:  # no effect is between claim and handoff
+                if self.busy() or self.wake_held():
+                    continue
+                self.closing = True
+                self.report(idle_exit_at=time.time())
+                # Recorded first (#1724): the pane says how long it was idle, with nothing active.
+                self.settle(
+                    "idle",
+                    self.inventory(),
+                    idle_for=int(time.monotonic() - self.last_activity),
+                )
+                self.stop_child()
+                return
+
+    def promote_queued(self, operation_id: str) -> None:
+        selected = next((p for p in self.queued if p["operation_id"] == operation_id), None)
+        if selected is not None:
+            self.queued.remove(selected)
+            self.queued.insert(0, selected)
+            self.sent_now.add(operation_id)
+
+    async def handle_events(self, events) -> None:
+        self.last_activity = time.monotonic()
+        if not self.turn_seen and any(
+            e.kind in _TURN_KINDS
+            or (e.kind == "background" and (e.data.get("task_id") or e.data.get("background_turn")))
+            for e in events
+        ):
+            self.turn_seen = True  # the agent ran something: a missing baseline stays missing
+        # Before this batch is journaled: a turn that starts or settles here closes the OOM
+        # counter's window first (#1732).
+        self.turn_transition()
+        delivery_events = []
+        for event in events:
+            if event.kind in {"response", "error"}:
+                target = self.priority_requests.pop(event.data.get("request_id"), None)
+                if target is not None and event.kind == "error":
+                    # A reply from a finished turn cannot release a newer selection.
+                    if self.priority_turn == target[3]:
+                        self.priority_turn = None
+                    delivery_events.append(
+                        native_protocol.NativeEvent(
+                            "delivery_failed",
+                            {
+                                "operation_id": target[0],
+                                "native_turn_id": target[1],
+                                "control_id": target[2],
+                                "message": event.data.get("message")
+                                or "the agent refused interruption",
+                            },
+                        )
+                    )
+                elif target is not None and self.priority_turn == target[3]:
+                    self.promote_queued(target[0])
+            if event.kind == "send":
+                await self.write(event.data["frame"])
+            elif event.kind in {"initialized", "session", "error"}:
+                request_id = event.data.get("request_id")
+                waiter = self.waiters.pop(request_id, None) if request_id else None
+                if waiter is not None and not waiter.done():
+                    waiter.set_result(event)
+        self.record([*events, *delivery_events])
+        self.note_engine()
+        self.queue_wake.set()
+        await self.report_send_now_state()
+        await self.report_rollover()
+        if self.codec.requests_refused != self.reported_refused:
+            self.reported_refused = self.codec.requests_refused
+            await asyncio.to_thread(self.report, requests_refused=self.reported_refused)
+
+    def send_now_state(self) -> str:
+        """What Send now would do right now (#1644), for the composer: ``ready`` (nothing in the
+        background is stopped; a protocol without that distinction is never refused for it) or
+        ``would_stop_background``. A display hint only: every Send now is decided at its own
+        admission."""
+        would_stop = getattr(self.codec, "send_now_would_stop_background", None)
+        return "would_stop_background" if would_stop is not None and would_stop() else "ready"
+
+    async def report_send_now_state(self) -> None:
+        state = self.send_now_state()
+        if state == self.reported_send_now:
+            return
+        self.reported_send_now = state
+        await asyncio.to_thread(self.report, send_now_state=state)
+
+    def claim(self, request: dict, queued: bool) -> tuple[bool, dict]:
+        """Claim ``request``. BLOCKING. A guarded turn (#1897) is claimed only while its caller's
+        authority tokens are current, under the authority lock, so no withdrawal can commit
+        between the comparison and the claim. An exact repeat of a turn already claimed still
+        replays: observing an earlier effect needs no authority."""
+        params = request["params"]
+        # A guarded interrupt (#1960 Phase 2: HQ's stop) is claimed under its caller's authority
+        # exactly as a guarded turn is: a withdrawal that committed first refuses the claim.
+        if request["action"] not in native_ipc.GUARDED_ACTIONS or "authority" not in params:
+            return native_journal.claim(self.journal_root, request, queued=queued)
+        try:
+            with native_authority.held(self.session_id, _authority_tokens(params)):
+                return native_journal.claim(self.journal_root, request, queued=queued)
+        except native_authority.AuthorityError:
+            journal = native_journal.read(self.journal_root, self.session_id)
+            if params["operation_id"] not in journal.operations:
+                raise
+            return native_journal.claim(self.journal_root, request, queued=queued)
+
+    @contextlib.asynccontextmanager
+    async def queued_admission(self, params: dict | None = None):
+        """Recheck the current generation and source at delayed stdin handoff (#1378, #1538),
+        and a guarded message's caller authority (#1897). The authority lock is held from the
+        comparison until the handoff's durable `uncertain` record (the yielded release), or to
+        the end of the block when the caller has no such point.
+
+        A worker that is not the installed release has the installed release decide (#2165,
+        `native_admit`), awaited under the same locks; the generation is checked again after it.
+        """
+        from .engines import registry
+        from .plugins import storage
+
+        with native_state.session_lock(self.session_id, wait=0), storage.locked("launch", wait=0):
+            if not self.gate_open() or self.terminated or self.closing:
+                raise AdmissionRefused("generation_closed")
+            where = native_admit.plan()
+            if where.mode == native_admit.IN_PROCESS:
+                scope = registry.snapshot_scope(fresh=True, require_current=True)
+            else:
+                await self.installed_admission(where)
+                # Awaited: a Stop, a signal or a closed generation meanwhile makes it stale.
+                if not self.gate_open() or self.terminated or self.closing:
+                    raise AdmissionRefused("generation_closed")
+                scope = contextlib.nullcontext()
+            with scope as roster:
+                if roster is not None:
+                    admit_queued(roster, self.session_key, self.adapter, self.config)
+                with contextlib.ExitStack() as authority:
+                    if params is not None and "authority" in params:
+                        try:
+                            authority.enter_context(
+                                native_authority.held(
+                                    self.session_id, _authority_tokens(params), wait=0
+                                )
+                            )
+                        except native_authority.AuthorityError:
+                            raise AdmissionRefused("authority_withdrawn") from None
+                    # Yields the early release: the handoff calls it once its `uncertain` record
+                    # is durable, so a stalled write never holds every withdrawal behind it.
+                    yield authority.close
+
+    async def installed_admission(self, where: native_admit.Plan) -> None:
+        """Ask the installed release (#2165). Raises `AdmissionRefused` with its code, or
+        `agent_changed` when it could not decide; `AdmissionPreempted` when a Stop preempted it."""
+        if where.mode != native_admit.DELEGATE:
+            log_admission_unverified(self.session_key, where.cause)
+            raise AdmissionRefused(native_admit.UNVERIFIED)
+        task = asyncio.ensure_future(
+            native_admit.ask(where, self.session_key, self.adapter, self.config)
+        )
+        self.admission_check = task
+        try:
+            code = await task
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if task.cancelled() and current is not None and not current.cancelling():
+                raise AdmissionPreempted("a Stop preempted the admission check") from None
+            raise
+        except native_admit.Unverified as exc:
+            log_admission_unverified(self.session_key, exc.cause)
+            raise AdmissionRefused(native_admit.UNVERIFIED) from None
+        finally:
+            self.admission_check = None
+        if code is not None:
+            raise AdmissionRefused(code)
+
+    def preempt_admission(self) -> None:
+        """A Stop is served now, not after the installed release's check (#2165): the check is
+        cancelled (its helper killed and reaped) and the message stays queued."""
+        check = getattr(self, "admission_check", None)  # absent before `__init__` ran
+        if check is not None:
+            check.cancel()
+
+    async def dispatch_queue(self) -> None:
+        """Only this live connection may drain its FIFO; a successor never replays it."""
+        from .plugins import storage
+
+        try:
+            while not self.done.is_set():
+                await self.queue_wake.wait()
+                self.queue_wake.clear()
+                retry = False
+                async with self.effects:
+                    while self.queued and (not self.dispatch_busy() or self._sent_now_cuts()):
+                        if self.terminated or self.closing or self.done.is_set():
+                            return
+                        # Completion must be durable before the following turn can start.
+                        self.flush()
+                        if self.terminated:
+                            return
+                        params = self.queued[0]
+                        admitted = False
+                        try:
+                            if not await self._answer_current(params):
+                                raise AdmissionRefused("question_replaced")
+                            async with self.queued_admission(params) as release:
+                                if not self._still_due(params):
+                                    # Stale after the awaited admission (#2165): the head moved,
+                                    # a turn started, the worker is ending. Nothing was written.
+                                    continue
+                                admitted = True
+                                self.queued.pop(0)
+                                now = params["operation_id"] in self.sent_now
+                                self.sent_now.discard(params["operation_id"])
+                                await self.handoff(
+                                    "submit", params, queued=True, now=now, on_durable=release
+                                )
+                        except (native_state.LockBusy, storage.LockBusy):
+                            if admitted:
+                                raise
+                            # Another session's launch is not a refusal. Keep the FIFO head
+                            # queued, then retry outside all locks so Stop stays responsive.
+                            retry = True
+                            break
+                        except Exception as exc:
+                            # Admission failure proves non-send only BEFORE handoff. Its reason
+                            # is a closed code (#1538); anything unforeseen is `unexpected`, and
+                            # only its type name is logged.
+                            if admitted:
+                                raise
+                            code = exc.code if isinstance(exc, AdmissionRefused) else "unexpected"
+                            log_queue_refusal(self.session_key, params["operation_id"], code, exc)
+                            # By identity, not position: an awaited admission (#2165) may have
+                            # let the reader promote another message to the head meanwhile.
+                            self.queued[:] = [p for p in self.queued if p is not params]
+                            self.sent_now.discard(params["operation_id"])
+                            await asyncio.to_thread(
+                                native_journal.record_handoff,
+                                self.journal_root,
+                                self.binding,
+                                params["operation_id"],
+                                "not_sent",
+                                reason_code=code,
+                            )
+                if retry:
+                    await asyncio.sleep(0.1)
+                    self.queue_wake.set()
+        except Exception as exc:  # a queue/journal failure cannot permit further native writes
+            self.reason = f"queued message dispatch failed: {exc}"
+            self.stop_child()
+
+    async def lines(self):
+        """Complete native lines, bounded. An oversized line is DROPPED, not fatal.
+
+        One huge tool output must not end the generation (and a frame that can never be read
+        must not make a session unresumable). The drop reaches the codec once the frame has ended,
+        with its two ends, bounded (`frame_lost`, #1725): a request's id can be on either side of
+        its payload. A visible row, a request refused, and a turn that may have depended on it
+        never claimed as a success.
+        """
+        assert self.proc is not None and self.proc.stdout is not None
+        stream, buffer, dropping = self.proc.stdout, bytearray(), False
+        limit, ends = native_protocol.MAX_FRAME_BYTES, native_protocol.LOST_FRAME_ENDS
+        while chunk := await stream.read(65536):
+            buffer += chunk
+            while True:
+                index = buffer.find(b"\n")
+                if index < 0:
+                    if dropping or len(buffer) > limit:
+                        if not dropping:
+                            self.lost_head, self.lost_tail = bytes(buffer[:ends]), b""
+                        self.lost_tail = (self.lost_tail + bytes(buffer))[-ends:]
+                        dropping = True
+                        buffer.clear()
+                    break
+                line = bytes(buffer[: index + 1])
+                del buffer[: index + 1]
+                if dropping or len(line) > limit:
+                    if not dropping:
+                        self.lost_head, self.lost_tail = line[:ends], b""
+                    self.lost_tail = (self.lost_tail + line)[-ends:]
+                    dropping = False
+                    yield b""  # the dropped frame has ended: the codec may be waiting for it
+                    continue
+                yield line
+        if buffer and not dropping:
+            # An unterminated tail is a frame the child never finished writing: never complete
+            # it into a valid record (Hermes on #1278).
+            self.record(
+                [
+                    native_protocol.NativeEvent(
+                        "error", {"message": "the native agent exited mid-frame; it was discarded"}
+                    )
+                ]
+            )
+
+    async def dropped_frame(self) -> None:
+        """A frame too large to read has ended (#1725). What it was is the codec's to say; that
+        it happened reaches the pane even when no turn carries a row for it."""
+        head, tail = self.lost_head, self.lost_tail
+        self.lost_head, self.lost_tail = b"", b""
+        events = self.codec.settle_lost(self.codec.frame_lost(head, tail))
+        await self.handle_events(events)
+        if self.ready.is_set() and not any(event.kind == "tool" for event in events):
+            self.frames_skipped += 1
+            await asyncio.to_thread(self.report, frames_skipped=self.frames_skipped)
+
+    async def reader(self) -> None:
+        assert self.proc is not None and self.proc.stdout is not None
+        ended = False  # the agent's output ended (EOF), not a protocol violation
+        try:
+            async for line in self.lines():
+                if not line:
+                    await self.dropped_frame()
+                    if self.codec.unread_frame:
+                        # It may be a request nothing can answer: left, the agent could wait on it
+                        # for ever. A lost effect-bearing frame fails closed (#1725).
+                        self.record(
+                            [
+                                native_protocol.NativeEvent(
+                                    "error", {"message": "protocol: an unreadable frame"}
+                                )
+                            ]
+                        )
+                        self.reason = "native protocol violation: an unreadable frame"
+                        break
+                    continue
+                try:
+                    events = self.codec.settle_lost(self.codec.feed(native_protocol.decode(line)))
+                except native_protocol.ProtocolError as exc:
+                    self.record(
+                        [native_protocol.NativeEvent("error", {"message": f"protocol: {exc}"})]
+                    )
+                    self.reason = f"native protocol violation: {exc}"
+                    break
+                await self.handle_events(events)
+            else:
+                ended = True
+        finally:
+            if ended and not self.terminated:
+                # Reap before stop (#1732): nothing new is admitted meanwhile (`closing` refuses
+                # effects and the queue as an idle exit does), and the disconnect is journaled
+                # after the counter's last read.
+                self.closing = True
+                await self.reap_window()
+            with contextlib.suppress(native_protocol.ProtocolError):
+                self.record([self.codec.eof()])
+            for waiter in self.waiters.values():
+                if not waiter.done():
+                    waiter.set_exception(WorkerError("native connection closed"))
+            self.stop_child()
+            self.done.set()
+
+    def stderr_text(self) -> str:
+        text = self.stderr_tail.decode("utf-8", "replace")
+        if self._server_password:
+            text = text.replace(self._server_password, "[redacted]")
+        return text
+
+    async def stderr_reader(self) -> None:
+        assert self.proc is not None and self.proc.stderr is not None
+        while chunk := await self.proc.stderr.read(4096):
+            self.stderr_tail = (self.stderr_tail + chunk)[-STDERR_TAIL:]
+
+    async def request(self, frame: dict, timeout: float = INIT_TIMEOUT):
+        waiter = asyncio.get_running_loop().create_future()
+        self.waiters[frame["id"] if "id" in frame else frame["request_id"]] = waiter
+        await self.write(frame)
+        event = await asyncio.wait_for(waiter, timeout)
+        if event.kind == "error":
+            raise WorkerError(f"native {event.data.get('action')} failed: {event.data['message']}")
+        return event
+
+    async def initialize(self) -> None:
+        await self.request(self.codec.initialize())
+        if isinstance(self.codec, native_protocol.ClaudeCodec):
+            return
+        if isinstance(self.codec, native_protocol.OpencodeAcpCodec):
+            await self.initialize_opencode()
+            return
+        if isinstance(self.codec, native_protocol.CopilotAcpCodec):
+            await self.initialize_copilot()
+            return
+        await self.write(self.codec.initialized())
+        cwd, model = self.config["cwd"], self.config.get("model")
+        bypass = self.config.get("bypass") is True
+        session = battlelab_session(self.config)
+        shell_env = memory_environment(self.config)
+        tools = tool_servers(self.config)
+        mcp_config = agent_tools.codex_thread_config(tools) if tools else None
+        if self.native_id is not None:
+            await self.request(
+                self.codec.resume(
+                    self.native_id,
+                    cwd,
+                    model,
+                    bypass=bypass,
+                    session=session,
+                    shell_env=shell_env,
+                    mcp_config=mcp_config,
+                )
+            )
+            return
+        request = self.codec.create(
+            cwd, model, bypass=bypass, session=session, shell_env=shell_env, mcp_config=mcp_config
+        )
+        event = await self.request(request)
+        native_id = event.data["native_id"]
+        await asyncio.to_thread(self.bind_created, request["id"], event)
+        self.native_id = native_id
+
+    async def initialize_opencode(self) -> None:
+        """new → bind (or load), then pin our own agent, then the requested model and level —
+        before any turn."""
+        codec = self.codec
+        assert isinstance(codec, native_protocol.OpencodeAcpCodec)
+        cwd, model = self.config["cwd"], self.config.get("model")
+        tools = tool_servers(self.config)
+        servers = agent_tools.acp_servers(tools) if tools else None
+        if self.native_id is not None:
+            # `session/load` replays history; the codec attributes none of it to a turn and no
+            # replayed tool call can become a live approval.
+            await self.request(codec.load(self.native_id, cwd, servers))
+        else:
+            request = codec.create(cwd, servers)
+            event = await self.request(request)
+            native_id = event.data["native_id"]
+            await asyncio.to_thread(self.bind_created, request["id"], event)
+            self.native_id = native_id
+        if isinstance(codec, native_protocol.Opencode2AcpCodec) and codec.offered_models:
+            # 2.x's model list is the one its own session offers (#2084): recorded beside the
+            # journal for `native_models`, never asked of another CLI process. Best effort.
+            from . import native_models
+
+            await asyncio.to_thread(
+                native_models.record_offered, self.journal_root, codec.offered_models
+            )
+        await self.request(codec.pin_mode())
+        if model is not None:
+            await self.request(codec.set_model(model))
+            # A level belongs to a model (#1407): set after it, on every generation (a load too),
+            # and confirmed from the echo like the model. A model without levels never gets one:
+            # the create refused that combination against the same list.
+            effort = self.config.get("effort")
+            if effort is not None:
+                await self.request(codec.set_effort(effort))
+
+    async def initialize_copilot(self) -> None:
+        """new → bind (or load), then the pinned agent mode and `allow_all` — before any turn
+        (#1565). No `mcpServers` anywhere: copilot's ACP rejects stdio servers, so the memory
+        tool rode in on this child's argv instead. A model/effort selection is REFUSED, never
+        silently dropped: 1.0.68 enumerates no `model` option and echoes no set, so a request
+        this worker cannot confirm would run the vendor default while the record says
+        otherwise; `CopilotAcpCodec.set_model/set_effort` pin the seam for a future CLI whose
+        listing and echo can be trusted."""
+        codec = self.codec
+        assert isinstance(codec, native_protocol.CopilotAcpCodec)
+        if self.config.get("model") is not None or self.config.get("effort") is not None:
+            raise WorkerError(
+                "copilot cannot honour a model or effort selection — its ACP sets are never "
+                "echoed, so the vendor default would run under a chosen model's name"
+            )
+        cwd = self.config["cwd"]
+        if self.native_id is not None:
+            # `session/load` replays history before its reply; the codec attributes none of it
+            # to a turn and no replayed tool call can become a live approval.
+            await self.request(codec.load(self.native_id, cwd))
+        else:
+            request = codec.create(cwd)
+            event = await self.request(request)
+            native_id = event.data["native_id"]
+            await asyncio.to_thread(self.bind_created, request["id"], event)
+            self.native_id = native_id
+        await self.request(codec.pin_mode())
+        await self.request(codec.set_allow_all(self.config.get("bypass") is True))
+
+    def bind_created(self, request_id: str, event: native_protocol.NativeEvent) -> None:
+        """Bind only this connection's fresh-create reply, before the writer lock and any turn.
+
+        Neither a supplied native id nor a resume/load reply is fresh-creation evidence. The
+        codec correlates responses before releasing the waiter; verify that evidence again at
+        the only call site that selects the ownership guard's fresh-create exception.
+        """
+        from . import native_ownership
+        from .plugins import storage
+
+        action = {
+            "codex-app-server": "thread/start",
+            OPENCODE: "session/new",
+            OPENCODE2: "session/new",
+            COPILOT: "session/new",
+        }.get(self.adapter)
+        native_id = event.data.get("native_id")
+        if (
+            action is None
+            or self.config["mode"] != "create"
+            or self.config.get("native_id") is not None
+            or self.native_id is not None
+            or event.kind != "session"
+            or event.data.get("action") != action
+            or event.data.get("request_id") != request_id
+            or not native_id
+            or self.codec.native_id != native_id
+        ):
+            raise WorkerError("native binding requires this connection's fresh create response")
+        creation = self.config["creation"]
+        with storage.locked("launch", wait=30):
+            native_ownership.bind(
+                self.session_key,
+                operation_id=creation["operation_id"],
+                owner_token=creation["owner_token"],
+                native_id=native_id,
+                fresh_create=True,
+            )
+        self.lock_source(native_id)
+        with native_state.session_lock(self.session_id):
+            record = native_state.read_session(self.session_id) or {}
+            if record.get("native_id") not in (None, native_id):
+                raise WorkerError("the session was bound to another native history")
+            record["native_id"] = native_id
+            native_state.write_session(self.session_id, record)
+
+    def stop_child(self) -> None:
+        self.terminated = True  # a stop before the child exists prevents its spawn
+        self.preempt_admission()
+        if self.proc is not None and self.proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                self.proc.terminate()
+
+    def kill_child(self) -> None:
+        if self.proc is not None and self.proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                self.proc.kill()
+
+    def release_lease(self) -> None:
+        """Last act: the code no longer runs, so its release may be pruned again."""
+        if self.proc is not None and self.proc.returncode is None:
+            return  # a child we could not reap keeps the lease (the sweep needs evidence)
+        with contextlib.suppress(Exception):
+            release = native_state.read_lifecycle(self.worker_id).get("release")
+            if release:
+                native_state.lease(Path(release), self.worker_id, remove=True)
+
+    # --- private IPC -----------------------------------------------------------------------
+
+    def gate_open(self) -> bool:
+        try:
+            return native_state.admitted(self.session_id, self.worker_id)
+        except native_state.StateError:
+            return False
+
+    def receipt(self, request: dict, result: dict) -> dict:
+        return {
+            **self.binding.envelope("response"),
+            "request_id": request["request_id"],
+            "action": request["action"],
+            "result": result,
+        }
+
+    def journal_failed(self, exc: native_journal.JournalError) -> None:
+        """Name WHY the record could not be written (#1733), best effort: on a full disk this
+        write can fail too, and the turn then reads uncertain with the generic reason."""
+        if exc.cause in native_segments.CAUSES:
+            self.report(journal_failure=exc.cause)
+
+    def journal_error(
+        self, request: dict, exc: native_journal.JournalError, *, before_effect: bool = True
+    ) -> dict:
+        """A journal failure as a response. ``unwritable`` appended nothing, so for a claim made
+        BEFORE any effect it is a known refusal (#1733) the pane shows as such — the draft kept, a
+        NEW send offered. Where an effect may already have reached the agent (Send now writes the
+        queued message before journaling its control), it stays unavailable: uncertain."""
+        if exc.code == "unwritable" and not before_effect:
+            self.journal_failed(exc)
+            return self.error(request, "unavailable", exc.detail)
+        if exc.code == "unwritable":
+            self.journal_failed(exc)
+            return self.error(
+                request,
+                "conflict",
+                f"{exc.detail}; nothing was sent",
+                native_ipc.JOURNAL_UNWRITABLE,
+            )
+        return self.error(
+            request,
+            exc.code if exc.code in {"conflict", "invalid", "busy"} else "unavailable",
+            exc.detail,
+        )
+
+    def error(self, request: dict, code: str, message: str, reason: str | None = None) -> dict:
+        return {
+            **self.binding.envelope("response"),
+            "request_id": request["request_id"],
+            "action": request["action"],
+            "error": {
+                "code": code,
+                "message": message[:2000],
+                **({"reason": reason} if reason is not None else {}),
+            },
+        }
+
+    @staticmethod
+    def _approval_turn(approval: dict):
+        """The turn a request is decided under: the operator's, or a background task's own."""
+        origin = approval.get("origin")
+        return approval["operation_id"] if origin is None else origin["id"]
+
+    def _pending(self, params: dict):
+        approval = self.codec._approvals.get(params["request_id"])
+        if (
+            approval is None
+            or params["approval_worker_id"] != self.worker_id
+            or params["approval_connection_id"] != self.binding.connection_id
+            or self._approval_turn(approval) != params["turn_id"]
+            or approval.get("digest", native_protocol._digest(approval["frame"]))
+            != params["payload_digest"]
+            or (approval.get("item_id") or approval["params"].get("itemId")) != params["item_id"]
+        ):
+            return None
+        return approval
+
+    async def effect(self, request: dict) -> dict:
+        action, params = request["action"], request["params"]
+        if action == "stop":
+            # A Stop never waits for the installed release's admission check (#2165).
+            self.preempt_admission()
+        async with self.effects:
+            self.last_activity = time.monotonic()
+            if (self.closing or self.terminated) and action != "stop":
+                return self.error(request, "unavailable", SHUTTING_DOWN)
+            if action != "stop" and not self.gate_open():
+                return self.error(request, "stale", "this worker generation is closed")
+            if action != "stop" and (not self.ready.is_set() or self.done.is_set()):
+                return self.error(request, "unavailable", "the native connection is not ready")
+            if action == "stop" and params["target_worker_id"] != self.worker_id:
+                return self.error(request, "conflict", "stop targets another worker generation")
+            ending = None
+            if action == "stop":
+                # A Stop rescans the process floor first (#1724). An operator's confirms the exact
+                # background work it was shown: a changed set — a new process, an ended task, a
+                # scan that became unreadable or readable — refuses with nothing claimed and the
+                # fresh inventory journaled, so the pane asks again. Before readiness no turn ran.
+                if self.ready.is_set():
+                    with contextlib.suppress(OSError):
+                        await asyncio.to_thread(self.observe_floor)
+                    ending = self.inventory()
+                else:
+                    ending = self.inventory(native_processes.Floor(native_processes.OK))
+                confirmed = params.get("confirm_digest")
+                # Two kinds of confirmation (#1724, operator decision on PR #1757). EXACT: the
+                # digest of a COMPLETE inventory (the dialog listed every process and task), and
+                # what runs now is exactly that; any change refuses. EVERYTHING
+                # (`confirm_everything`): the operator was told it ends everything the agent
+                # started, listed or not; it is bound to this generation by its target and the
+                # runtime's pinned close, and takes no inventory check. A Stop already accepted
+                # for this generation (a double click, a second tab) answers as accepted.
+                if (
+                    confirmed is not None
+                    and not self.stop_accepted
+                    and not (confirmed == ending["digest"] and self.complete(ending))
+                ):
+                    if self.ready.is_set():
+                        self.record_inventory(ending, force=True)
+                        self.flush()
+                    return self.error(request, "stale", STOP_CHANGED, "inventory_changed")
+            if action == "send_now":
+                return await self.send_now(request)
+            if action == "withdraw":
+                return await self.withdraw(request)
+            # Validate what can be validated BEFORE a durable claim; a refused request that
+            # never claimed can be retried with the same operation id.
+            if action == "decide":
+                pending = self._pending(params)
+                if pending is None:
+                    return self.error(request, "stale", "that approval is no longer pending")
+                origin = pending.get("origin")
+                if origin is not None:
+                    # Rechecked HERE too (#1725), independently of the server: the task it was
+                    # presented for still runs as that task, and the decision is one-shot.
+                    if not self.codec.origin_live(origin):
+                        return self.error(request, "stale", "that background task has ended")
+                    if params["decision"] not in {"approve", "reject"}:
+                        return self.error(
+                            request,
+                            "unsupported",
+                            "a background task's request is approved once or declined",
+                        )
+                if params["decision"] == "always":
+                    # A standing grant (#1339) is re-derived HERE from the request this
+                    # connection holds — only what the client itself proposed — independently of
+                    # the server that offered it.
+                    try:
+                        self.codec._always(
+                            params["request_id"], params.get("grant"), self.config["cwd"]
+                        )
+                    except native_protocol.ProtocolError as exc:
+                        return self.error(request, "unsupported", str(exc))
+                if params["decision"] in {"approve", "always"} and (
+                    pending.get("kind") == native_questions.ASK_TOOL
+                ):
+                    return self.error(
+                        request,
+                        "unsupported",
+                        "an agent question is answered, skipped or stopped, not approved",
+                    )
+                if params["decision"] == "answer":
+                    # An agent question's answer (#1463), checked HERE against the request this
+                    # connection holds, independently of the server that relayed it.
+                    try:
+                        self.codec.check_answer(params["request_id"], params.get("answers"))
+                    except native_protocol.ProtocolError as exc:
+                        return self.error(request, "unsupported", str(exc))
+                if (
+                    params["decision"] in {"approve", "always"}
+                    and pending.get("complete") is not True
+                ):
+                    # Defence in depth for the web gate: only a request presented in full
+                    # (its patch / permission context included) can be approved.
+                    return self.error(
+                        request,
+                        "unsupported",
+                        "this request could not be presented completely; it can only be declined",
+                    )
+            if (
+                action == "interrupt"
+                and self.codec.operation_id != params["turn_id"]
+                # A turn the agent runs for itself (#1438), named by the target the operator saw.
+                # Checked again once claimed: `interrupt_background` refuses a target that moved.
+                and not self._background_target(params["turn_id"])
+            ):
+                replayed = await self._replayed(request)
+                if replayed is not None:
+                    return replayed
+                if self.codec.unowned_turn and self.codec.send_now_background is None:
+                    return self.error(
+                        request, "unsupported", "this agent can't interrupt a turn of its own"
+                    )
+                return self.error(request, "stale", "that turn is not active")
+            if action == "submit" and self.rollover_due():
+                # A full connection takes no new turn (#1725). Replays still observe; with nothing
+                # running it retires at once and the send resumes in a successor (the same answer
+                # as an idle exit that raced it); otherwise the send is refused, nothing claimed.
+                replayed = await self._replayed(request)
+                if replayed is not None:
+                    return replayed
+                # The floor is up to a tick old: a server a tool just left running is only in a
+                # scan made now (#1725). One that fails can't say nothing runs, so nothing retires.
+                if await self._nothing_runs_now():
+                    self.retire()
+                    return self.error(request, "unavailable", SHUTTING_DOWN)
+                return self.error(
+                    request, "conflict", CONVERSATION_FULL, native_ipc.CONVERSATION_FULL
+                )
+            queued = action == "submit" and (bool(self.queued) or self.dispatch_busy())
+            if action == "submit" and not queued:
+                # A direct turn's claim is its start: the OOM counter is read before it (#1732).
+                if self.oom_read(self._turn_key, ("operation_id", params["operation_id"])):
+                    self.flush()
+            for attempt in range(STOP_CLAIM_TRIES):
+                try:
+                    fresh, receipt = await asyncio.to_thread(self.claim, request, queued)
+                    break
+                except native_authority.AuthorityError:
+                    # Refused before any claim (#1897): nothing was journaled or sent.
+                    return self.error(
+                        request,
+                        "conflict",
+                        "not sent: the authority it was sent under was withdrawn",
+                        native_ipc.AUTHORITY_WITHDRAWN,
+                    )
+                except native_state.LockBusy:
+                    return self.error(
+                        request, "unavailable", "the authority check is busy; nothing was sent"
+                    )
+                except native_journal.JournalError as exc:
+                    if (
+                        action == "stop"
+                        and exc.code == "conflict"
+                        and exc.detail == native_journal.REVISION_CHANGED
+                        and attempt + 1 < STOP_CLAIM_TRIES
+                    ):
+                        # A Stop's identity does not depend on what the agent wrote meanwhile
+                        # (#1724): on a session that streams output, claim it at the current
+                        # revision instead of answering "conflict".
+                        journal = await asyncio.to_thread(
+                            native_journal.read, self.journal_root, self.session_id
+                        )
+                        request = {
+                            **request,
+                            "params": {**request["params"], "expected_revision": journal.revision},
+                        }
+                        continue
+                    return self.journal_error(request, exc)
+            if action == "submit":
+                self.turn_seen = True  # from here a missing process baseline is never taken
+            if not fresh:
+                return self.receipt(request, receipt)
+            if (
+                action == "stop"
+                and params.get("confirm_digest") is not None
+                and not self.stop_accepted
+                and self.ready.is_set()
+                and self.floor.state == native_processes.OK
+            ):
+                # An EXACT Stop freezes the unit and revalidates (#1724, operator decision on PR
+                # #1757): nothing it was not confirmed for may be ended.
+                return await self.exact_stop(request, params, ending, receipt)
+            if action == "stop" and not self.stop_accepted:
+                # Accepted only now, with its claim durable (Hermes on PR #1757): a refused claim
+                # or exhausted retries leave no marker a later Stop could take for acceptance.
+                self.stop_accepted = True
+                self.report(stop_accepted_at=time.time())
+            if ending is not None and self.ready.is_set() and not self.settled:
+                # The FINAL scan, as late as the worker can. A failed scan settles `unknown`,
+                # never a list it cannot vouch for.
+                with contextlib.suppress(OSError):
+                    await asyncio.to_thread(self.observe_floor)
+                self.settle("stop", self.inventory(), confirmed=ending)
+            if queued:
+                self.queued.append(params)
+                self.queue_wake.set()
+                return self.receipt(request, receipt)
+            return self.receipt(request, await self.handoff(action, params, receipt=receipt))
+
+    async def send_now(self, request: dict) -> dict:
+        """Promote one queued input under the SAME effect/admission fences as FIFO dispatch.
+
+        The control claim binds selection, not a second copy of the user message. Codex steers
+        the original submit; serial protocols cancel and let the existing dispatcher deliver it
+        after terminal evidence. Neither a receipt nor a cancellation ack means completion.
+        """
+        from .plugins import api_source, storage
+
+        params = request["params"]
+        try:
+            journal = await asyncio.to_thread(
+                native_journal.read, self.journal_root, self.session_id
+            )
+            previous = journal.operations.get(params["operation_id"])
+            if previous is not None:
+                if previous.request != native_ipc.immutable_request(request):
+                    return self.error(
+                        request, "conflict", "native operation UUID binds another request"
+                    )
+                return self.receipt(request, previous.receipt())
+            queued = next(
+                (p for p in self.queued if p["operation_id"] == params["queued_turn_id"]), None
+            )
+            # The target is the operator turn running now, or a turn the agent runs for itself
+            # (#1427): never the other, and never one that has since ended.
+            background = self._background_target(params["turn_id"])
+            if queued is not None and params["turn_id"] == getattr(self.codec, "_ahead", None):
+                # Sent now already (#1526): it runs as soon as the turn it cut has ended.
+                return self.error(
+                    request, "busy", "a message is already waiting for this response to stop"
+                )
+            # Stop all and send (#1644): a turn or queued head that moved is a changed binding
+            # like the tasks are, so the operator is asked again for what runs now.
+            changed = "inventory_changed" if params["mode"] == "stop_all" else None
+            if queued is None or not (background or self.codec.operation_id == params["turn_id"]):
+                return self.error(
+                    request, "stale", "the message is no longer queued behind that turn", changed
+                )
+            # FIFO is the contract (#1442): only the head of the queue goes now, so nothing ever
+            # jumps the messages before it. An old tab offering a later one is refused here.
+            if not self._queue_head(queued):
+                return self.error(
+                    request, "stale", "only the first queued message can be sent now", changed
+                )
+            if not background and self.codec.native_turn_id is None:
+                return self.error(
+                    request, "busy", "the agent has not acknowledged the active turn yet"
+                )
+            expected = self.codec.send_now_background if background else self.codec.send_now_mode
+            stop_all = params["mode"] == "stop_all"
+            if expected != "interrupt" if stop_all else params["mode"] != expected:
+                return self.error(request, "unsupported", "this worker uses another delivery mode")
+            if stop_all and not self._confirmed(params):
+                return self.error(request, "stale", INVENTORY_CHANGED, "inventory_changed")
+            if self._send_now_would_stop_background() and not (
+                stop_all and self._confirmed(params)  # rechecked after every await before it
+            ):
+                return self.error(
+                    request, "unsupported", SEND_NOW_WOULD_STOP, "would_stop_background"
+                )
+            if self.priority_turn == params["turn_id"]:
+                return self.error(
+                    request, "busy", "a message is already waiting for this response to stop"
+                )
+            # The PROMOTED message's own authority (#1897): it leaves the queue under this fence.
+            # Its target and head are checked again after the claim, which covers an admission
+            # the installed release decided meanwhile (#2165).
+            async with self.queued_admission(queued) as release:
+                fresh, receipt = await asyncio.to_thread(
+                    native_journal.claim, self.journal_root, request
+                )
+                if not fresh:
+                    return self.receipt(request, receipt)
+                # Native output is read independently while the claim fsyncs. Never cancel a
+                # newer response, or consume a queued message when its observed turn ended.
+                if (
+                    (
+                        not self._background_target(params["turn_id"])
+                        if background
+                        else self.codec.operation_id != params["turn_id"]
+                    )
+                    or not self._queue_head(queued)
+                    # Stop all and send (#1644): what was confirmed is checked again HERE, after
+                    # the claim; a task that started or ended meanwhile never authorizes it.
+                    or (stop_all and not self._confirmed(params))
+                ):
+                    receipt = await asyncio.to_thread(
+                        native_journal.record_handoff,
+                        self.journal_root,
+                        self.binding,
+                        params["operation_id"],
+                        "not_sent",
+                    )
+                elif params["mode"] == "steer":
+                    # Asked BEFORE the message leaves the queue: a failed read leaves it queued.
+                    current = await self._answer_current(queued)
+                    self.queued.remove(queued)
+                    self.sent_now.discard(queued["operation_id"])
+                    if current:
+                        delivered = await self.handoff(
+                            "steer", queued, queued=True, on_durable=release
+                        )
+                        handoff = delivered["handoff"]
+                    else:
+                        # Steering leaves the queue too: an answer whose question was replaced
+                        # meanwhile is never read as the reply to the newer one (#1463).
+                        log_queue_refusal(
+                            self.session_key,
+                            queued["operation_id"],
+                            "question_replaced",
+                            AdmissionRefused("question_replaced"),
+                        )
+                        await asyncio.to_thread(
+                            native_journal.record_handoff,
+                            self.journal_root,
+                            self.binding,
+                            queued["operation_id"],
+                            "not_sent",
+                            reason_code="question_replaced",
+                        )
+                        handoff = "not_sent"
+                    receipt = await asyncio.to_thread(
+                        native_journal.record_handoff,
+                        self.journal_root,
+                        self.binding,
+                        params["operation_id"],
+                        handoff,
+                    )
+                elif self._native_send_now():
+                    # Also for Stop all and send: the CLI's own way ends no background task, so
+                    # it is taken whenever it is there; the confirmation only permits the Stop.
+                    receipt = await self._send_now_native(queued, params, receipt, release)
+                else:
+                    receipt = await self._send_now_by_interrupt(
+                        params, receipt, stop_all=stop_all, release=release
+                    )
+                self.queue_wake.set()
+                return self.receipt(request, receipt)
+        except (native_state.LockBusy, storage.LockBusy):
+            return self.error(request, "busy", "another launch is in progress; try Send now again")
+        except AdmissionRefused as exc:
+            # Only entering `queued_admission` raises it, BEFORE the claim: nothing was claimed
+            # or written, so it is a definite refusal, never "unavailable" (a 503 the pane must
+            # read as "status unknown"). The message stays queued; FIFO dispatch settles it.
+            return self.error(request, "stale", str(exc))
+        except native_journal.JournalError as exc:
+            if exc.code not in {"conflict", "invalid", "busy"}:
+                self.stop_child()  # no further write without durable evidence
+            return self.journal_error(request, exc, before_effect=False)
+        except (WorkerError, api_source.SourceError) as exc:
+            return self.error(request, "unavailable", str(exc))
+
+    def _native_send_now(self) -> bool:
+        ready = getattr(self.codec, "send_now_ready", None)
+        return ready is not None and ready()
+
+    def _send_now_would_stop_background(self) -> bool:
+        would_stop = getattr(self.codec, "send_now_would_stop_background", None)
+        return would_stop is not None and would_stop()
+
+    def _confirmed(self, params: dict) -> bool:
+        """Is what the operator confirmed for Stop all and send what runs now (#1644)? The
+        generation and the exact set of background tasks; the turn and the queued head are
+        checked beside it. Labels are never compared: two tasks may share one."""
+        return params.get("confirm_worker_id") == self.worker_id and params.get(
+            "confirm_tasks"
+        ) == native_ipc.tasks_digest(getattr(self.codec, "_background", ()))
+
+    async def _send_now_by_interrupt(
+        self, params: dict, receipt: dict, *, stop_all: bool = False, release=None
+    ) -> dict:
+        """Send now on a serial protocol without its own: cancel the turn, and let the existing
+        dispatcher deliver the message after terminal evidence. Never while that cancellation,
+        a Stop, would also end background agents (#1526): the message keeps its place, unless
+        the operator confirmed exactly those tasks (Stop all and send, #1644)."""
+        if self._send_now_would_stop_background() and not (
+            stop_all and self._confirmed(params)  # rechecked after every await before it
+        ):
+            return await asyncio.to_thread(
+                native_journal.record_handoff,
+                self.journal_root,
+                self.binding,
+                params["operation_id"],
+                "not_sent",
+            )
+        self.priority_turn = params["turn_id"]
+        if release is not None:
+            # The queued message does not leave here: FIFO dispatch re-admits it (and rechecks
+            # its authority, #1897) after the interrupt, so the lock is not held across it.
+            release()
+        receipt = await self.handoff("interrupt", params, receipt=receipt)
+        if receipt["handoff"] != "sent":
+            self.priority_turn = None
+        elif self.priority_turn == params["turn_id"] and not any(
+            target[2] == params["operation_id"] for target in self.priority_requests.values()
+        ):
+            # Notification-only cancellation has no ack. RPC cancellation promotes
+            # from its correlated success response; a refusal leaves FIFO intact.
+            self.promote_queued(params["queued_turn_id"])
+        return receipt
+
+    async def _send_now_native(
+        self, queued: dict, params: dict, receipt: dict, release=None
+    ) -> dict:
+        """The CLI's own Send now (#1526): the message is written to the CLI first, then a
+        `send_now` interrupt names it. A plain interrupt is a Stop, which also ends every
+        background agent; this cuts only the running turn. Whether the message is still current
+        is asked BEFORE it leaves the queue: a failed read leaves it queued."""
+        current = await self._answer_current(queued)
+        if not self._native_send_now():
+            # The connection changed while the journal was read (its fence was lost).
+            return await self._send_now_by_interrupt(
+                params, receipt, stop_all=params["mode"] == "stop_all", release=release
+            )
+        self.queued.remove(queued)
+        self.sent_now.discard(queued["operation_id"])
+        if current:
+            delivered = await self.handoff("ahead", queued, queued=True, on_durable=release)
+        else:
+            # Like a steer: an answer whose question was replaced meanwhile is never sent (#1463).
+            log_queue_refusal(
+                self.session_key,
+                queued["operation_id"],
+                "question_replaced",
+                AdmissionRefused("question_replaced"),
+            )
+            delivered = await asyncio.to_thread(
+                native_journal.record_handoff,
+                self.journal_root,
+                self.binding,
+                queued["operation_id"],
+                "not_sent",
+                reason_code="question_replaced",
+            )
+        if delivered["handoff"] != "sent":
+            return await asyncio.to_thread(
+                native_journal.record_handoff,
+                self.journal_root,
+                self.binding,
+                params["operation_id"],
+                "not_sent",
+            )
+        # The message is at the CLI and runs next whatever this request does: a refusal or
+        # `nothing_waiting` only means it waits for the turn to end.
+        self.priority_turn = params["turn_id"]
+        return await self.handoff("send_now", params)
+
+    async def _replayed(self, request: dict) -> dict | None:
+        """The receipt of a request this journal already holds, so a retried interrupt answers
+        as it did the first time even after its turn ended (#1438). None: never claimed."""
+        params = request["params"]
+        try:
+            journal = await asyncio.to_thread(
+                native_journal.read, self.journal_root, self.session_id
+            )
+        except native_journal.JournalError:
+            return None
+        previous = journal.operations.get(params["operation_id"])
+        if previous is None:
+            return None
+        if previous.request != native_ipc.immutable_request(request):
+            return self.error(request, "conflict", "native operation UUID binds another request")
+        return self.receipt(request, previous.receipt())
+
+    async def _answer_current(self, params: dict) -> bool:
+        """May this queued message leave the queue now (#1463)? An async question's answer goes
+        only to the question it was admitted for; a newer one asked while it waited is not its.
+        Asked on EVERY way out of the queue (FIFO dispatch and Send now's steer), after a flush,
+        so a question the agent just asked is in the journal read."""
+        if "reply_to" not in params:
+            return True
+        self.flush()
+        journal = await asyncio.to_thread(native_journal.read, self.journal_root, self.session_id)
+        return native_journal.answer_current(journal, params["operation_id"])
+
+    def _still_due(self, params: dict) -> bool:
+        """Is FIFO dispatch of ``params`` still what it was when it was chosen? Asked once its
+        admission returned, which may have awaited the installed release (#2165)."""
+        return (
+            self._queue_head(params)
+            and not (self.terminated or self.closing or self.done.is_set())
+            and (not self.dispatch_busy() or self._sent_now_cuts())
+        )
+
+    def _queue_head(self, queued: dict) -> bool:
+        """Is ``queued`` the first message waiting (#1442)? Checked before the claim and again
+        once it is fsynced: the head that changed meanwhile settles the control ``not_sent``."""
+        return bool(self.queued) and self.queued[0] is queued
+
+    async def withdraw(self, request: dict) -> dict:
+        """Remove one still-queued message before it is sent (#1447).
+
+        Runs under the same effect lock as FIFO dispatch and Send now, so a message is either
+        removed here or handed off there, never both. The queued submit settles ``not_sent``;
+        the control records ``sent`` once the entry is gone.
+        """
+        params = request["params"]
+        try:
+            journal = await asyncio.to_thread(
+                native_journal.read, self.journal_root, self.session_id
+            )
+            previous = journal.operations.get(params["operation_id"])
+            if previous is not None:
+                if previous.request != native_ipc.immutable_request(request):
+                    return self.error(
+                        request, "conflict", "native operation UUID binds another request"
+                    )
+                return self.receipt(request, previous.receipt())
+            queued = next(
+                (p for p in self.queued if p["operation_id"] == params["queued_turn_id"]), None
+            )
+            if queued is None:
+                return self.error(
+                    request, "stale", "the message was already sent or is no longer queued"
+                )
+            fresh, receipt = await asyncio.to_thread(
+                native_journal.claim, self.journal_root, request
+            )
+            if not fresh:
+                return self.receipt(request, receipt)
+            self.queued.remove(queued)
+            self.sent_now.discard(params["queued_turn_id"])
+            await asyncio.to_thread(
+                native_journal.record_handoff,
+                self.journal_root,
+                self.binding,
+                params["queued_turn_id"],
+                "not_sent",
+            )
+            receipt = await asyncio.to_thread(
+                native_journal.record_handoff,
+                self.journal_root,
+                self.binding,
+                params["operation_id"],
+                "sent",
+            )
+            self.queue_wake.set()
+            return self.receipt(request, receipt)
+        except native_journal.JournalError as exc:
+            if exc.code not in {"conflict", "invalid", "busy"}:
+                self.stop_child()  # no further write without durable evidence
+            return self.journal_error(request, exc, before_effect=False)
+
+    def _background_target(self, turn_id: str) -> bool:
+        """Is ``turn_id`` the turn the agent is running for itself right now (#1427)?"""
+        codec = self.codec
+        return (
+            codec.send_now_background is not None
+            and codec.operation_id is None
+            and codec.background_turn is not None
+            and codec.background_turn == turn_id
+        )
+
+    async def handoff(
+        self, action: str, params: dict, *, receipt=None, queued=False, now=False, on_durable=None
+    ) -> dict:
+        """``on_durable`` (#1897): called once the outcome is durable enough that a withdrawal
+        may commit — after the `uncertain` record (or a `not_sent` one) — never before."""
+        refusal: Exception | None = None
+        try:
+            frame = self.frame(action, params, now=now)
+        except native_protocol.ProtocolError as exc:
+            frame, refusal = None, exc
+        if frame is not None and self.turn_transition():
+            self.flush()  # the counter's read lands before the turn's handoff (#1732)
+        if frame is None:
+            reason = {}
+            if queued or action == "submit":
+                # An operator message refused at its own handoff (an attachment that changed, a
+                # codec refusal), queued or direct, was never written: a proved non-send with a
+                # reason (#1538).
+                reason = {"reason_code": "unexpected"}
+                log_queue_refusal(
+                    self.session_key,
+                    params["operation_id"],
+                    "unexpected",
+                    refusal or native_protocol.ProtocolError(),
+                )
+            receipt = await asyncio.to_thread(
+                native_journal.record_handoff,
+                self.journal_root,
+                self.binding,
+                params["operation_id"],
+                "not_sent",
+                **reason,
+            )
+            if on_durable is not None:
+                on_durable()
+            if action == "stop":
+                receipt = {**receipt, "containment": "unknown"}
+                self.stop_child()
+            return receipt
+        if queued:
+            # The durable boundary: after this fsync, a crash can NEVER imply safe replay.
+            receipt = await asyncio.to_thread(
+                native_journal.record_handoff,
+                self.journal_root,
+                self.binding,
+                params["operation_id"],
+                "uncertain",
+            )
+        if on_durable is not None:
+            on_durable()
+        try:
+            await self.write(frame)
+        except (OSError, ConnectionError, AssertionError, TimeoutError):
+            self.after_write = []
+            self.stop_child()
+            return receipt  # remains uncertain: a half-written frame is never resent
+        receipt = await asyncio.to_thread(
+            native_journal.record_handoff,
+            self.journal_root,
+            self.binding,
+            params["operation_id"],
+            "sent",
+        )
+        after, self.after_write = self.after_write, []
+        if after:
+            try:
+                await self.handle_events(after)
+            except (OSError, ConnectionError, AssertionError, TimeoutError):
+                self.stop_child()
+        return receipt
+
+    def frame(self, action: str, params: dict, *, now: bool = False) -> dict | None:
+        if action in {"submit", "steer", "ahead"}:
+            images = ()
+            text = params["text"]
+            # A guarded turn (#1897) carries its caller's authority; its words never start a
+            # slash command the client would run unasked (#1903). An operator's own turn in a
+            # no-bypass session keeps its ordinary commands but not one that opens a child
+            # (#1892): opencode never forwards that child's ask over ACP, so it would hang.
+            if "authority" in params:
+                refused = native_protocol.guarded_text_refusal(self.codec, text)
+            elif getattr(self, "config", {}).get("bypass") is not True:
+                refused = native_protocol.operator_subtask_refusal(
+                    self.codec, text, getattr(self, "subtask_commands", frozenset())
+                )
+            else:
+                refused = None
+            if refused:
+                raise native_protocol.ProtocolError(refused)
+            if params.get("attachments"):
+                try:
+                    # Reverify before constructing either images or file references (#1396).
+                    text, images = native_attachments.prepare(text, params["attachments"])
+                except native_attachments.AttachmentError as exc:
+                    raise native_protocol.ProtocolError(str(exc)) from None
+            method = (
+                self.codec.steer
+                if action == "steer"
+                else self.codec.submit_ahead
+                if action == "ahead"
+                else self.codec.submit_now
+                if now
+                else self.codec.submit
+            )
+            return method(text, params["operation_id"], images)
+        if action == "decide":
+            return self.codec.decide(
+                params["request_id"],
+                params["decision"],
+                grant=params.get("grant"),
+                cwd=self.config["cwd"],
+                answers=params.get("answers"),
+            )
+        if action in {"interrupt", "send_now"}:
+            # Any target but the operator turn running NOW goes to `interrupt_background`, which
+            # refuses one that moved since the claim (#1438): a turn that ended between the
+            # check and this write is reported, never swapped for whatever runs now. Send now's
+            # own request (#1526) names the message it wrote, not a turn.
+            frame = (
+                self.codec.send_now_interrupt(params["queued_turn_id"])
+                if action == "send_now"
+                else self.codec.interrupt()
+                if self.codec.operation_id == params["turn_id"]
+                else self.codec.interrupt_background(params["turn_id"])
+            )
+            rid = frame.get("id", frame.get("request_id"))
+            if rid is not None and params.get("queued_turn_id"):
+                self.priority_requests[rid] = (
+                    params["queued_turn_id"],
+                    self.codec.native_turn_id,
+                    params["operation_id"],
+                    params["turn_id"],
+                )
+            if isinstance(
+                self.codec, native_protocol.OpencodeAcpCodec | native_protocol.CopilotAcpCodec
+            ):
+                # ACP: a cancelled turn's pending permission requests are answered `cancelled`.
+                # Taken in the same step as the cancel, before the turn's end can clear them.
+                self.after_write = self.codec.cancel_pending()
+            return frame
+        return None  # stop: nothing is written to the agent; the child is terminated
+
+    async def read_only(self, request: dict) -> dict:
+        action, params = request["action"], request["params"]
+        if action == "probe":
+            if params["target_worker_id"] != self.worker_id:
+                return self.error(request, "conflict", "probe targets another worker generation")
+            return self.receipt(request, {"containment": "live"})
+        try:
+            journal = await asyncio.to_thread(
+                native_journal.read, self.journal_root, self.session_id
+            )
+            if action == "events":
+                return self.receipt(request, journal.page(params["after"], params["limit"]))
+            page = journal.page(max(0, journal.revision - native_ipc.MAX_EVENTS), 100)
+        except native_journal.JournalError as exc:
+            return self.error(request, "unavailable", exc.detail)
+        busy = self.codec.operation_id is not None
+        return self.receipt(
+            request,
+            {
+                **page,
+                "state": "running" if busy else "idle",
+                "native_id": self.native_id,
+                "model_requested": self.config.get("model"),
+                "model_effective": None,
+            },
+        )
+
+    async def serve_client(self, reader, writer) -> None:
+        try:
+            if _peer_uid(writer.get_extra_info("socket")) != os.geteuid():
+                return
+            line = await asyncio.wait_for(reader.readline(), 10)
+            try:
+                native_ipc.decode_handshake(line, expected=self.binding, capability=self.capability)
+            except native_ipc.IPCError:
+                return
+            writer.write(native_ipc.encode_welcome(self.binding))
+            await writer.drain()
+            while line := await reader.readline():
+                try:
+                    request = native_ipc.decode_request(line, expected=self.binding)
+                except native_ipc.IPCError as exc:
+                    writer.write(
+                        json.dumps({"error": {"code": "invalid", "message": str(exc)}}).encode()
+                        + b"\n"
+                    )
+                    await writer.drain()
+                    return
+                if request["action"] in native_ipc.EFFECT_ACTIONS:
+                    response = await self.effect(request)
+                else:
+                    response = await self.read_only(request)
+                writer.write(native_ipc.encode_response(response))
+                await writer.drain()
+                if request["action"] == "stop" and "result" in response:
+                    self.stop_child()
+        except (OSError, ConnectionError, asyncio.LimitOverrunError, ValueError, TimeoutError):
+            pass
+        finally:
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+
+    async def listen(self) -> None:
+        path = Path(self.config["socket"])
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        st = os.lstat(path.parent)
+        if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.geteuid() or st.st_mode & 0o077:
+            raise WorkerError("worker socket directory is not private")
+        old_umask = os.umask(0o177)
+        try:
+            self.server = await asyncio.start_unix_server(
+                self.serve_client, path=str(path), limit=native_ipc.MAX_FRAME_BYTES + 1
+            )
+        finally:
+            os.umask(old_umask)
+
+    # --- main ------------------------------------------------------------------------------
+
+    async def run(self) -> int:
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(sig, self.on_signal)
+        await asyncio.to_thread(self.admit)
+        self.oom_baseline()
+        await self.spawn()
+        tasks = [
+            asyncio.create_task(self.reader()),
+            asyncio.create_task(self.stderr_reader()),
+            asyncio.create_task(self.flusher()),
+        ]
+        try:
+            await asyncio.wait_for(self.initialize(), INIT_TIMEOUT)
+        except (TimeoutError, WorkerError, Exception) as exc:  # noqa: BLE001
+            self.reason = self.reason or f"native initialization failed: {exc}"
+            self.stop_child()
+        else:
+            # The process floor's baseline (#1724), before any turn can be accepted.
+            await asyncio.to_thread(self.take_baseline)
+            self.record_inventory(self.inventory())
+            self.flush()
+            await self.listen()
+            self.ready.set()
+            self.report(
+                phase="ready",
+                native_id=self.native_id,
+                ready_at=time.time(),
+                send_now=self.codec.send_now_mode,
+                # Send now against a turn the agent runs for itself (#1427); absent on workers
+                # from before it, which the server then never offers it for.
+                send_now_background=self.codec.send_now_background,
+                # Remove a queued message (#1447); absent on older workers, which the server
+                # then never offers it for.
+                withdraw=True,
+                # Interrupt a turn the agent runs for itself directly, not only via Send now
+                # (#1438); absent on older workers, which the pane then offers no button for.
+                interrupt_own=self.codec.send_now_background == "interrupt",
+                files=True,
+                # Checks a guarded turn's caller authority at its claim and queued handoff (#1897);
+                # absent on older workers, which the server then never sends a guarded turn to.
+                authority=True,
+                # Reads and writes a `not_sent` handoff's `reason_code` (#1538): the web process
+                # writes `worker_ended` for an earlier generation only while the live worker
+                # says so, since an older reader refuses the field.
+                handoff_reasons=True,
+                # Checks an operator Stop's confirmed background inventory (#1724); absent on
+                # older workers, which the server then stops unconfirmed as before.
+                stop_confirm=True,
+                # Reads a segmented journal and the `journal_unwritable` reason code (#1733).
+                journal_segments=True,
+            )
+            tasks.append(asyncio.create_task(self.idle_watch()))
+            tasks.append(asyncio.create_task(self.memory_watch()))
+            tasks.append(asyncio.create_task(self.dispatch_queue()))
+        await self.done.wait()
+        if self.proc is not None:
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(self.proc.wait(), 10)
+            if self.proc.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    self.proc.kill()
+                await self.proc.wait()
+        self.flush()
+        if self.ready.is_set() and not self.settled and not self.reason.startswith("journal"):
+            # An end the worker survives (#1724): SIGTERM (its unit is being stopped: what it last
+            # observed, since the group is being killed meanwhile), or the native connection
+            # ended (rescanned: what is still running ends when this worker exits).
+            if self.signalled:
+                self.settle("stop", self.inventory())
+            else:
+                with contextlib.suppress(OSError):
+                    await asyncio.to_thread(self.observe_floor)
+                self.settle("protocol", self.inventory())
+        if self.server is not None:
+            self.server.close()
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(self.config["socket"])
+        for task in tasks:
+            task.cancel()
+        self.report(
+            phase="exited",
+            exited_at=time.time(),
+            reason=self.reason[:2000],
+            native_returncode=None if self.proc is None else self.proc.returncode,
+            native_stderr=self.stderr_text(),
+        )
+        return 0 if not self.reason else EXIT_FAILED
+
+
+def _adopt_environment(config: dict, state_dir: Path) -> None:
+    for key, value in config.get("server_env", {}).items():
+        if key.startswith("AGENT_SESSIONS_") and isinstance(value, str):
+            os.environ[key] = value
+    os.environ["HOME"] = config["home"]
+    if native_state.root() != state_dir:
+        raise WorkerError("worker state directory does not match the shared plugin state")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="agent_sessions.native_worker")
+    parser.add_argument("--worker-id", required=True)
+    parser.add_argument("--state-dir", required=True)
+    args = parser.parse_args(argv)
+    state_dir = Path(args.state_dir)
+    try:
+        config = _private_file(
+            state_dir / "workers" / native_state._uuid(args.worker_id) / "config.json"
+        )
+        if config.get("worker_id") != args.worker_id:
+            raise WorkerError("worker config belongs to another generation")
+        _adopt_environment(config, state_dir)
+        _log_to_journal()
+        worker = Worker(config, state_dir)
+    except (OSError, ValueError, KeyError, WorkerError, native_state.StateError) as exc:
+        print(f"native worker refused: {exc}", file=sys.stderr)
+        return EXIT_REFUSED
+    worker.report(phase="starting", pid=os.getpid(), started_at=time.time())
+    try:
+        return asyncio.run(worker.run())
+    except WorkerError as exc:
+        worker.report(phase="refused", reason=str(exc)[:2000], exited_at=time.time())
+        return EXIT_REFUSED
+    except BaseException as exc:  # noqa: BLE001 — any failure must leave a definite phase
+        worker.kill_child()
+        worker.report(
+            phase="exited", reason=f"worker failed: {exc!r}"[:2000], exited_at=time.time()
+        )
+        return EXIT_FAILED
+    finally:
+        for lock in worker.locks:
+            with contextlib.suppress(Exception):
+                lock.release()
+        worker.release_lease()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

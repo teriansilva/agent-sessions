@@ -1,0 +1,1360 @@
+/* HQ's chat column (#1069; Ask until #1525), NIGHTJAR (#1531): only what the mission thread's
+ * primitives (`mission.module.css` `.threadCol` / `.pane` / `.event` / `.composerDock`) do not
+ * already say. The head is a callsign with the contact's portrait in a scan frame; the operator's
+ * turns carry the HUD rule; answers are framed plates whose words fade in as they arrive
+ * (RevealText); the composer is a chamfered field. Doubled selectors win over `mission.module.css`
+ * whatever order the two sheets load in. Tokens only. */
+
+/* The page is the column: it fills the route's height so the dock sits on the bottom edge. */
+.col {
+  height: 100%;
+}
+
+/* One centred measure for the thread and the composer, so they line up — a chat's column. */
+.measure {
+  width: 100%;
+  max-width: 760px;
+  margin-inline: auto;
+}
+/* HQ's page (#1873): the thread and the composer take the page's whole width, beside the list —
+ * a 760 px column in the middle of a wide screen left most of it empty. The sidebar keeps the
+ * measure (it is narrower than it anyway). */
+.colWide .measure {
+  max-width: none;
+}
+
+/* The dashboard intro (#1123): the page's width, from the top — tiles, not a centred greeting. */
+.dashboard {
+  width: 100%;
+  max-width: 1320px;
+  margin-inline: auto;
+  padding-block: 16px;
+}
+
+/* Before the first question the greeting sits in the middle of the empty thread. */
+.intro {
+  margin-block: auto;
+  padding-block: var(--sp-5);
+}
+
+/* The operator's own turn is set apart by the HUD rule, the thread's one non-status accent. */
+.you.you {
+  border-left: 3px solid var(--hud);
+  background: color-mix(in srgb, var(--hud) 6%, transparent);
+}
+/* HQ continuing after a confirmed card (#1950): not the Commander's words, so a slim rule-led line
+ * in --text-2 (AA on both themes), never the "You" bubble's HUD accent. */
+.continuation {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px var(--sp-2);
+  min-height: 28px;
+  margin: 2px 0 var(--sp-2);
+  padding: 4px 10px;
+  border-left: 3px solid var(--line-strong);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.continuation b {
+  font-weight: 600;
+  color: var(--text-1);
+}
+/* An answer: a framed plate (the chamfered edge, the rail along its top) — the transmission. */
+.answer {
+  composes: nj-frame-sm from global;
+}
+.answer.answer {
+  --nj-face: var(--bg-2);
+  --nj-edge: var(--line-strong);
+  margin-top: var(--sp-2);
+}
+
+.group {
+  margin-top: var(--sp-3);
+}
+
+/* The thread's type, a step up from the mission thread's dense primitives: Ask is read in a narrow
+ * sidebar, often at arm's length (operator, 2026-10). Doubled selectors so they win over
+ * `mission.module.css` whatever order the two sheets load in. */
+.text.text {
+  font-size: var(--fs-row);
+  line-height: 1.55;
+}
+.reason.reason {
+  margin-top: 2px;
+  font-size: var(--fs-label);
+  line-height: 1.45;
+  color: var(--text-2);
+}
+.label.label {
+  font-size: var(--fs-micro);
+}
+/* #1525: an answer's head names its speaker, in --text-2: the --text-3 label measures only 3.7:1
+ * dark and 4.0:1 light; --text-2 gives 7.55:1 and 8.22:1. The poster is decoration. */
+.speaker.speaker {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-family: var(--font-display);
+  letter-spacing: 0.16em;
+  color: var(--text-2);
+}
+.speakerPoster {
+  width: 24px;
+  height: 32px;
+  flex: none;
+  object-fit: cover;
+  border: 1px solid var(--line-strong);
+}
+
+/* An answer's markdown, through `blockMarkup` — the enumerated subset, no html sink. Quiet
+ * structure at the answer's own size: blocks spaced like paragraphs, lists indented, code in mono. */
+.md p,
+.md ul,
+.md ol,
+.md pre {
+  margin: 0 0 8px;
+}
+.md :is(p, ul, ol, pre):last-child {
+  margin-bottom: 0;
+}
+.md ul,
+.md ol {
+  padding-left: 20px;
+}
+.md li + li {
+  margin-top: 2px;
+}
+.md code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+}
+.md a {
+  color: var(--accent-text);
+  overflow-wrap: anywhere;
+}
+.md pre {
+  padding: 6px var(--sp-2);
+  border: 1px solid var(--line);
+  background: var(--surface-3);
+  overflow-x: auto;
+  white-space: pre;
+}
+
+/* A session row carries two ways in, so its title gives up some basis to keep both on the line in
+ * the 440px sidebar; it still wraps them under the title on a phone. */
+.matchBody.matchBody {
+  flex-basis: 140px;
+}
+
+/* A matched session's two ways in, kept together on the row's right edge. */
+.opens {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-left: auto;
+}
+.opens.opens > * {
+  margin-left: 0;
+}
+/* "Open all in map", under the session rows it acts on. */
+.batch {
+  display: flex;
+  justify-content: flex-end;
+  margin: var(--sp-3) 0 0 var(--sp-3);
+}
+
+/* #1086: an answer row for a session on the NEEDS YOU list. The dot is STATE (`--status-degraded`,
+ * the same needs-you colour the list uses), never decoration. */
+.needsTag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--warn-text);
+}
+.needsDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--status-degraded);
+}
+.detailsBtn {
+  composes: icon from "../ui/actionButton.module.css";
+}
+
+/* #1171: the conversation's only chrome — the callsign, the switcher, New and Close, at the 44px
+ * touch target (design §8). */
+.head {
+  /* The switcher's list drops from here, across the whole head (AskSwitcher). */
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) 0;
+  border-bottom: 1px solid var(--hud-dim);
+}
+/* #1525: Off is one row (HQ, picker, +, ×); with a contact the 60×80 portrait spans two rows —
+ * "HQ" over the name, then the picker, + and × — so the picker keeps its width at 390px. */
+.headMain {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex: 1;
+  min-width: 0;
+}
+.headContact {
+  align-items: stretch;
+}
+.headContact .headMain {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--sp-1);
+}
+/* The portrait's scan frame (#1531): decorative, Full only; a slow line passes over the face,
+ * paused with the ambient pause (hidden tab, idle) through `nj-ambient`. */
+.portraitFrame {
+  position: relative;
+  flex: none;
+  display: block;
+  line-height: 0;
+  outline: 1px solid var(--hud-dim);
+  outline-offset: 2px;
+  overflow: hidden;
+  --nj-scan-travel: 80px;
+}
+.portraitFrame::after {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 2px;
+  background: var(--hud);
+  opacity: 0;
+  pointer-events: none;
+  animation: global(nj-scan-once) 4.2s linear infinite;
+}
+.headPortrait {
+  width: 60px;
+  height: 80px;
+}
+.who {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.whoName {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.headTools {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: 1;
+  min-width: 0;
+}
+.back {
+  composes: icon from "../ui/actionButton.module.css";
+  flex: none;
+}
+/* The callsign: a hazard notch, then HQ in display caps. */
+.title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-title);
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--hud-text);
+}
+.title::before {
+  content: "";
+  flex: none;
+  width: 22px;
+  height: 10px;
+  background: repeating-linear-gradient(-45deg, var(--hud) 0 3px, transparent 3px 6px);
+  opacity: 0.85;
+}
+.sp {
+  flex: 1;
+}
+.newBtn {
+  composes: icon from "../ui/actionButton.module.css";
+  flex: none;
+}
+.newBtn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.greeting {
+  margin: 0 0 var(--sp-3);
+  font-size: var(--fs-body);
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.needsEndpoint {
+  margin: 0;
+  padding: var(--sp-3);
+  border: 1px dashed var(--line-strong);
+  border-left: 2px solid var(--status-degraded);
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.needsEndpoint a {
+  color: var(--accent-text);
+}
+
+/* #1171: the pending answer, on the NIGHTJAR acquire bar (`nj-acquire`, the Loader's look): HUD,
+ * not a status colour — it says "working", not "healthy". Only `transform` and `opacity` move. */
+.working {
+  margin-top: 6px;
+  animation: global(nj-fade-in) var(--t-base) var(--ease-out) both;
+}
+.scan {
+  margin: 0;
+}
+.workingRow {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  margin-top: var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.step {
+  flex: 1;
+  min-width: 0;
+}
+.step::after {
+  content: "▍";
+  margin-left: 4px;
+  color: var(--hud-text);
+  animation: global(nj-caret) 1s steps(1, end) infinite;
+}
+.elapsed {
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+/* A match row that has just arrived settles in rather than popping (fade + rise, never a scale). */
+.arrive {
+  animation: global(nj-arrive) var(--t-base) var(--ease-out) both;
+}
+
+/* The error row: a failure is a state — the red rule and --danger-text. */
+.errorRow.errorRow {
+  color: var(--danger-text);
+  border-left: 3px solid var(--status-down);
+  padding-left: var(--sp-3);
+}
+
+/* The composer box: a chamfered field over the mission composer's own box. */
+.box.box {
+  border: 1px solid var(--border);
+  border-top: 2px solid var(--hud-dim);
+  clip-path: polygon(
+    var(--cut-sm) 0,
+    100% 0,
+    100% calc(100% - var(--cut-sm)),
+    calc(100% - var(--cut-sm)) 100%,
+    0 100%,
+    0 var(--cut-sm)
+  );
+  transition: border-color var(--t-fast) var(--ease-out);
+}
+.box.box:focus-within {
+  border-color: var(--hud-dim);
+  border-top-color: var(--hud);
+}
+
+/* Reduced and Off (the motion mode, #1531 — Match device follows the OS query). The portrait's
+ * scan is decorative; it simply is not drawn. */
+:root:not([data-motion="full"]) .working,
+:root:not([data-motion="full"]) .arrive,
+:root:not([data-motion="full"]) .step::after {
+  animation: none;
+}
+:root:not([data-motion="full"]) .portraitFrame::after {
+  display: none;
+}
+
+/* The composer's hint keeps to "Enter to send" on a phone, where the rest ran under Send. */
+@media (max-width: 800px) {
+  .hintMore {
+    display: none;
+  }
+}
+
+/* THE CONVERSATION SWITCHER (#1443, the mockup's `.switch` / `.menu`). It takes the head's spare
+ * room (it replaced `.sp`) and shows the current conversation's title, truncated. */
+.switchWrap {
+  /* Not positioned: the list anchors to the head, so it is the head's width, not this one's. */
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.switch {
+  composes: nj-plate from global;
+  --nj-face: var(--bg-1);
+  --nj-edge: var(--line-strong);
+  width: 100%;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-3);
+  border: 1px solid transparent;
+  color: var(--text-2);
+  text-align: left;
+  cursor: pointer;
+  transition: color var(--t-fast) var(--ease-out);
+}
+.switch:hover,
+.switchOpen {
+  --nj-edge: var(--hud);
+}
+.switch:focus-visible,
+.menuItem:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.switchTitle {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-meta);
+  color: var(--text-1);
+}
+/* ANOTHER conversation has an unseen update: a marker in the plate's square top-right corner, out
+ * of the title's way (the plate is positioned: nightjar.css). */
+.switchUpdates {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 7px;
+  height: 7px;
+  background: var(--hud);
+  pointer-events: none;
+}
+/* HQ's conversation switcher on THE menu chrome (ui/menu.module.css, #1531). It stays a drop-down
+ * at every width and spans the whole head (it opens inside the HQ panel, which on a phone already
+ * IS the full-width sheet): a search field on top, then the rows, which scroll on their own. */
+.menu {
+  composes: panel from "../ui/menu.module.css";
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: calc(var(--z-raised) + 4);
+  display: flex;
+  flex-direction: column;
+  max-height: min(70vh, 560px);
+  overflow: hidden;
+  padding: 0;
+}
+.menuSearch {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 44px;
+  margin: var(--sp-2);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--line-strong);
+  background: var(--bg-0);
+  color: var(--text-3);
+}
+.menuSearch:focus-within {
+  border-color: var(--hud);
+}
+.menuSearch input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 42px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text-1);
+  font: inherit;
+  font-size: var(--fs-row);
+}
+.menuList {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  outline: none;
+}
+/* A section heading: the day, or "Updates" pinned on top. Sticky, so a long list keeps saying
+ * which day it is showing. */
+.menuGroup {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-raised);
+  padding: var(--sp-1) var(--sp-3);
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.menuGroupUpdates {
+  color: var(--hud-text);
+}
+.menuItem {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  min-height: 52px;
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 3px solid transparent;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+.menuItem:hover {
+  background: color-mix(in srgb, var(--hud) 10%, transparent);
+}
+/* The conversation on screen: the HUD rail, as the operator's own turns carry it. */
+.menuCur {
+  border-left-color: var(--hud);
+  background: color-mix(in srgb, var(--hud) 8%, transparent);
+}
+/* Up to two lines: the first question is the title, and its first words are often "Hey, …". */
+.menuTitle {
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  font-size: var(--fs-row);
+  line-height: 1.35;
+  color: var(--text-2);
+}
+.menuItemUnread .menuTitle,
+.menuCur .menuTitle {
+  color: var(--text-1);
+}
+.menuItemUnread .menuTitle {
+  font-weight: 600;
+}
+.menuMeta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+/* A conversation with an unseen update (#1443 Phase 4): the accent marker plus words — never the
+ * colour alone. */
+.menuUnread {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--hud-text);
+}
+.menuUnreadDot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  background: var(--hud);
+}
+.menuNow {
+  color: var(--text-2);
+}
+.menuTime {
+  white-space: nowrap;
+}
+.menuEmpty,
+.menuFoot {
+  padding: var(--sp-2) var(--sp-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.menuFoot {
+  flex: none;
+  border-top: 1px solid var(--line);
+}
+/* The update budget is spent (#1517): a notice in the notice voice, never a status colour. */
+.followNotice {
+  margin: var(--sp-3) 0;
+  padding: var(--sp-1) var(--sp-3);
+  border-left: 2px solid var(--line-strong);
+  font: var(--fs-meta)/1.5 var(--font-mono);
+  color: var(--text-muted);
+}
+
+/* ---- shared files (#1707) ------------------------------------------------------------------
+ * Staged pills above the composer and the composer's Attach / Camera plates. The buttons are
+ * the shared `ui/actionButton.module.css` variants (NIGHTJAR §6, docs/design.md): one primitive,
+ * never a look-alike. A component sheet keeps only layout here. */
+.iconBtn {
+  composes: icon from "../ui/actionButton.module.css";
+  flex: 0 0 auto;
+}
+.pillX {
+  composes: icon compact from "../ui/actionButton.module.css";
+  flex: 0 0 auto;
+}
+/* The per-file Secret switch (#1786): a compact ghost with its state in words. */
+.pillSecret {
+  composes: ghost compact from "../ui/actionButton.module.css";
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.pillSecret[aria-checked="true"] {
+  color: var(--hud-text);
+  border-color: var(--hud-dim);
+}
+.pills {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin-bottom: var(--sp-2);
+}
+.pill {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 4px var(--sp-2);
+  border: 1px solid var(--line-strong);
+  background: var(--bg-2);
+  font-size: var(--fs-meta);
+  min-width: 0;
+}
+.pillFailed {
+  border-color: var(--status-down);
+}
+.pillName {
+  font-family: var(--font-mono);
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.pillMeta {
+  margin-left: auto;
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pillFailed .pillMeta {
+  color: var(--danger-text);
+}
+
+/* ---- the file cards (#1707) — image inline, text View+Download, anything else Download ---- */
+.cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+.card {
+  border: 1px solid var(--line-strong);
+  background: var(--bg-2);
+  padding: var(--sp-2) var(--sp-3);
+}
+.cardHead {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+.cardName {
+  font-family: var(--font-mono);
+  font-size: var(--fs-row);
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.cardMeta {
+  font-size: var(--fs-meta);
+  color: var(--text-3);
+}
+.cardActions {
+  margin-left: auto;
+  display: flex;
+  gap: var(--sp-2);
+}
+.cardBtn {
+  composes: ghost compact from "../ui/actionButton.module.css";
+}
+.cardImg {
+  display: block;
+  margin-top: var(--sp-2);
+  max-width: 300px;
+  width: 100%;
+  border: 1px solid var(--line);
+  background: var(--bg-0);
+}
+.cardFallback {
+  margin-top: var(--sp-2);
+  font-size: var(--fs-meta);
+  color: var(--warn-text);
+}
+.cardPreview {
+  margin-top: var(--sp-2);
+  padding: var(--sp-2);
+  background: var(--bg-0);
+  border: 1px solid var(--line);
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 84px;
+  overflow-y: auto;
+}
+.cardPreview::-webkit-scrollbar {
+  width: 8px;
+}
+.cardPreview::-webkit-scrollbar-track {
+  background: var(--bg-1);
+}
+.cardPreview::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+}
+.cardNote {
+  margin-top: 2px;
+  font-size: var(--fs-micro);
+  color: var(--text-3);
+}
+.pillState {
+  margin-left: auto;
+  color: var(--text-2);
+}
+.pillWhy {
+  margin-left: auto;
+  color: var(--danger-text);
+}
+
+/* Pending cleanup (#1720 round 5): a removed file the server has not let go of yet, said out
+ * loud — the quota it holds is never silently promised as free. */
+.cleanup {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  padding: 4px var(--sp-2);
+  margin-bottom: var(--sp-2);
+  border-left: 2px solid var(--status-draft);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.cleanupWhy {
+  color: var(--text-3);
+  font-size: var(--fs-micro);
+}
+
+/* A refused submission kept for the operator (#1720 round 7): never dropped, never merged over
+ * a newer draft — Restore joins it back, Discard releases its files' quota. */
+.recovered {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  padding: 4px var(--sp-2);
+  margin-bottom: var(--sp-2);
+  border-left: 2px solid var(--warn-text, var(--status-degraded));
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+.recoveredText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.recoveredActions {
+  margin-left: auto;
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+}
+.recoveredBtn {
+  composes: ghost compact from "../ui/actionButton.module.css";
+}
+/* HQ's page (#1776): the list owns switching, so the head names the conversation instead. */
+.pageTitle {
+  flex: 1 1 auto;
+  font-size: var(--fs-meta);
+  color: var(--text-1);
+}
+
+/* THE HINT NEVER PAINTS OVER A PLATE (#1775). `.footHint` is `flex: none` + nowrap, and the
+ * lead may shrink below its content — at sidebar width (the box is ~460px even on a desktop)
+ * the hint overflowed its lead and covered Attach/Camera/Send. It now truncates, and the box's
+ * OWN container query (the composer is `container-type: inline-size`) drops the hint tail and
+ * then the hint as the four controls crowd one row. A viewport query cannot see this: the
+ * sidebar is narrow at every desktop width. */
+.hint {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@container (max-width: 560px) {
+  .hintMore {
+    display: none;
+  }
+}
+@container (max-width: 380px) {
+  .hint {
+    display: none;
+  }
+}
+
+/* THE PROCESS ROW (#2076): what HQ is doing and what it did. ONE <details>, the API pane's
+ * activity pattern (StructuredPane `.activity`): a hairline plate on --bg-1 whose summary is 44px
+ * on every pointer. Built from tokens only; no new colour. The list never scrolls on its own —
+ * the thread does. */
+.proc {
+  position: relative;
+  margin-top: 6px;
+  border: 1px solid var(--line-strong);
+  background: var(--bg-1);
+  min-width: 0;
+  /* Its own container: in the 440px sidebar a step takes two lines on any pointer. */
+  container-type: inline-size;
+}
+.procSummary {
+  list-style: none;
+  cursor: pointer;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-3);
+  font: 500 var(--fs-micro) / 1.3 var(--font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.procSummary::-webkit-details-marker {
+  display: none;
+}
+.procSummary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+/* The acquire bar rides the row's top edge, inside the summary so it shows collapsed. */
+.procBar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  margin: 0;
+}
+.procChev {
+  flex: none;
+  color: var(--hud-text);
+}
+.proc[open] .procChev {
+  transform: rotate(90deg);
+}
+.procNow {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-1);
+}
+.procLive .procNow::after {
+  content: "▍";
+  margin-left: 4px;
+  color: var(--hud-text);
+  animation: global(nj-caret) 1s steps(1, end) infinite;
+}
+.procSettled {
+  color: var(--text-2);
+}
+.procTally {
+  flex: none;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.procList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--line);
+}
+.procStep {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto 52px;
+  gap: 2px var(--sp-3);
+  align-items: baseline;
+  padding: 7px var(--sp-3);
+  border-bottom: 1px solid var(--line);
+}
+.procStep:last-child {
+  border-bottom: 0;
+}
+.procN {
+  font: 500 var(--fs-micro) / 1.6 var(--font-mono);
+  letter-spacing: 0.1em;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.procWhat {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+}
+.procLabel {
+  flex: none;
+  max-width: 100%;
+  font-size: var(--fs-row);
+  color: var(--text-1);
+}
+.procArg {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 400 var(--fs-meta) / 1.5 var(--font-mono);
+  color: var(--text-2);
+}
+.procRes {
+  font: 500 var(--fs-meta) / 1.5 var(--font-mono);
+  color: var(--text-2);
+  white-space: nowrap;
+  text-align: right;
+}
+.procRefused {
+  color: var(--danger-text);
+}
+.procUnknown {
+  color: var(--warn-text);
+}
+.procDur {
+  font: 500 var(--fs-meta) / 1.5 var(--font-mono);
+  color: var(--text-3);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* The step running now: the HUD ground, a 2px HUD rail, an LED and its word. */
+.procCur {
+  background: var(--hud-tint);
+  box-shadow: inset 2px 0 0 var(--hud);
+}
+.procCur .procN,
+.procCur .procDur {
+  color: var(--hud-text);
+}
+.procCur .procRes {
+  display: inline-flex;
+  align-items: center;
+  justify-self: end;
+  gap: 6px;
+  color: var(--hud-text);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-size: var(--fs-micro);
+}
+.procLed {
+  --led: var(--hud);
+  animation: none;
+}
+.procMore {
+  border-top: 1px solid var(--line);
+  padding: var(--sp-2) var(--sp-3) var(--sp-3);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--fs-row);
+  color: var(--text-2);
+}
+.procByTool {
+  margin: 0;
+  font: 400 var(--fs-meta) / 1.5 var(--font-mono);
+  color: var(--text-3);
+}
+/* Under a stopped turn: one quiet line. */
+.procQuiet {
+  margin: var(--sp-2) 0 0;
+  font-size: var(--fs-row);
+  line-height: 1.5;
+  color: var(--text-2);
+}
+/* A phone, or the sidebar's own narrow measure: two lines a step, each at least 44px. */
+@media (pointer: coarse), (max-width: 800px) {
+  .procSummary {
+    padding: 0 var(--sp-2);
+    letter-spacing: 0.06em;
+  }
+  .procStep {
+    grid-template-columns: 26px minmax(0, 1fr) auto;
+    min-height: 44px;
+    padding: 8px var(--sp-3);
+    box-sizing: border-box;
+  }
+  .procWhat {
+    display: contents;
+  }
+  .procN {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .procLabel {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .procDur {
+    grid-column: 3;
+    grid-row: 1;
+  }
+  .procArg {
+    grid-column: 2;
+    grid-row: 2;
+  }
+  .procRes,
+  .procCur .procRes {
+    grid-column: 3;
+    grid-row: 2;
+  }
+}
+@container (max-width: 560px) {
+  .procStep {
+    grid-template-columns: 26px minmax(0, 1fr) auto;
+    min-height: 44px;
+    padding: 8px var(--sp-3);
+    box-sizing: border-box;
+  }
+  .procWhat {
+    display: contents;
+  }
+  .procN {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .procLabel {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .procDur {
+    grid-column: 3;
+    grid-row: 1;
+  }
+  .procArg {
+    grid-column: 2;
+    grid-row: 2;
+  }
+  .procRes,
+  .procCur .procRes {
+    grid-column: 3;
+    grid-row: 2;
+  }
+}
+/* Reduced and Off motion (#1531): the row holds still. The acquire bar's own rule stops its
+ * sweep (nightjar.css); the caret and the chevron stop here. */
+:root:not([data-motion="full"]) .procLive .procNow::after {
+  animation: none;
+}
+
+/* STOP (#2076): it takes Send's exact slot while a turn runs. An outlined danger plate — never
+ * filled: red stays rare — with a square glyph, at the 44px floor. */
+/* Stop beside Send (#2103): a square, 44px in both directions, outlined danger. */
+.stop {
+  composes: danger from "../ui/actionButton.module.css";
+  width: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+  flex: none;
+}
+.stopSquare {
+  width: 10px;
+  height: 10px;
+  background: currentColor;
+  flex: none;
+}
+/* "Esc to stop": under the button, for a keyboard — never on a coarse pointer or a phone-width
+ * layout. */
+/* The row under the box: what Send does while HQ works (left), the Stop shortcut (right). */
+.underBox {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  margin-top: 6px;
+  min-height: 16px;
+}
+.queueNote {
+  min-width: 0;
+  font: 500 var(--fs-micro) / 1.4 var(--font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.queueNoteWarn {
+  color: var(--warn-text);
+}
+/* A question that waits or never ran (#2103): the Commander's own bubble, dashed and dimmed,
+ * with its state and its one action beneath it. */
+.you.youQueued {
+  border: 1px dashed var(--line-strong);
+  background: transparent;
+}
+.you.youQueued .text {
+  color: var(--text-2);
+}
+.queueLine {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  margin-top: 4px;
+  font: 500 var(--fs-micro) / 1 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.queueWarn > [role="status"] {
+  color: var(--warn-text);
+}
+.queueAct {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0;
+  background: none;
+  border: 0;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: var(--text-1);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.queueAct:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
+.queueAct:disabled {
+  color: var(--text-3);
+  cursor: default;
+}
+@media (pointer: coarse), (max-width: 800px) {
+  .queueAct {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
+.stopHint {
+  flex: none;
+  text-align: right;
+  font: 500 var(--fs-micro) / 1 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.stopHint kbd {
+  font: inherit;
+  color: var(--text-2);
+  border: 1px solid var(--line-strong);
+  padding: 2px 5px;
+}
+@media (pointer: coarse), (max-width: 800px) {
+  .stopHint {
+    display: none;
+  }
+}
+
+/* The line above a turn's folded specialist cards (#1938): how many wait, how many are decided. */
+.foldTally {
+  margin: var(--sp-3) 0 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  line-height: 1.5;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.foldTally b {
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+/* Hints in the empty thread (#2265): "TRY ASKING HQ" and three example questions. Each is a
+ * full-width clipped-corner button on the chip face (>= 56px: the 44px target rule), a mono kind
+ * label above the question. No status colour; hover and focus move the edge to --hud, focus adds
+ * the inset ring (docs/design.md). */
+.hqHints {
+  min-width: 0;
+  margin-top: var(--sp-5);
+}
+.hqHintsHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+}
+.hqHintsLabel {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  font-weight: 400;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+/* The flat 6px accent square: the non-status bullet (never an LED). */
+.hqHintsLabel::before {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  background: var(--accent);
+}
+.hqHintsMore {
+  min-height: 44px;
+  padding: 0 var(--sp-2);
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.hqHintsMore:hover {
+  color: var(--text-1);
+}
+.hqHintsMore:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.hqHintsLock {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-row);
+  color: var(--text-2);
+}
+.hqHintsLock::before {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  background: var(--line-strong);
+}
+.hqHintList {
+  display: grid;
+  /* A shrinkable column: a long question wraps inside the panel, never widens it. */
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.hqHint {
+  --c: 8px;
+  position: relative;
+  isolation: isolate;
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  min-width: 0;
+  min-height: 56px;
+  padding: 9px 14px 10px 16px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.hqHint::before,
+.hqHint::after {
+  content: "";
+  position: absolute;
+  z-index: var(--z-under);
+  pointer-events: none;
+  clip-path: polygon(var(--c) 0, 100% 0, 100% calc(100% - var(--c)), calc(100% - var(--c)) 100%, 0 100%, 0 var(--c));
+}
+.hqHint::before {
+  inset: 0;
+  background: var(--line-strong);
+}
+.hqHint::after {
+  inset: 1px;
+  background: color-mix(in srgb, var(--text-1) 5%, var(--bg-1));
+}
+.hqHint:not(:disabled):hover::before,
+.hqHint:focus-visible::before {
+  background: var(--hud);
+}
+.hqHint:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.hqHint:disabled {
+  cursor: default;
+}
+.hqHintKind {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.hqHintText {
+  font-size: var(--fs-body);
+  line-height: 1.35;
+  color: var(--text-1);
+}
+.hqHint:disabled .hqHintKind,
+.hqHint:disabled .hqHintText {
+  color: var(--text-3);
+}
