@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from agent_sessions import voice_calls
 from agent_sessions.voice_cues import CUE_LINES
 from test_voice_call_end import Clock
@@ -208,6 +210,9 @@ def test_a_spoken_question_gets_its_cue_and_a_fast_answer_none(monkeypatch):
         r.call.state = "listening"
         await r.ev(t="user_started")
         await r.ev(t="utterance", text="How is the docs migration doing?")
+        await asyncio.sleep(0.1)
+        assert progress_says(r) == []  # no lookup yet: no "let me check"
+        r.call._track({"type": "progress", "step": "tool", "tool": "find_sessions"})
         for _ in range(200):
             if progress_says(r):
                 break
@@ -231,6 +236,39 @@ def test_a_spoken_question_gets_its_cue_and_a_fast_answer_none(monkeypatch):
         assert progress_says(fast) == [] and fast.said_text()[-1] == "Done."
 
     run(go_fast())
+
+
+@pytest.mark.parametrize("tool", [None, "ask_operator", "propose_session_change"])
+def test_no_cue_for_a_turn_that_looks_nothing_up(monkeypatch, tool):
+    """The operator, 2026-11-25: "it should not say 'let me check' to all, only when it really
+    looks up stuff". Small talk on a slow model, a question back, a card: no cue."""
+    no_skip(monkeypatch)
+    monkeypatch.setattr(voice_calls, "CUE_AFTER_S", 0.01)
+    r = Rig(monkeypatch)
+    ready(r, EN[0])
+    release = asyncio.Event()
+    begin = voice_calls.ask_orchestrator.begin
+
+    async def slow(cid, turn_id, text, **kw):
+        await release.wait()
+        return await begin(cid, turn_id, text, **kw)
+
+    monkeypatch.setattr(voice_calls.ask_orchestrator, "begin", slow)
+
+    async def go():
+        r.call.state = "listening"
+        await r.ev(t="user_started")
+        await r.ev(t="utterance", text="How's your day going?")
+        if tool:
+            await asyncio.sleep(0.05)
+            r.call._track({"type": "progress", "step": "tool", "tool": tool})
+        await asyncio.sleep(0.3)
+        assert progress_says(r) == []
+        release.set()
+        await r.call.turn_task
+        assert r.said_text()[-1] == "Done."
+
+    run(go())
 
 
 def test_a_cue_reported_ready_after_the_call_ended_says_nothing(monkeypatch):

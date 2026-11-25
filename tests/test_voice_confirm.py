@@ -30,6 +30,9 @@ NEEDS_YOU_ANSWER = "Here is what is waiting on you."
 
 class Rig:
     def __init__(self, monkeypatch, view: dict | None = None, route_status: int = 200):
+        # Words right after a question are judged like any interjection unless a test turns the
+        # continuation window on (`test_voice_interject`): the rig speaks within milliseconds.
+        monkeypatch.setattr(voice_calls, "CONTINUATION_S", 0.0, raising=False)
         self.to_client: list = []
         self.to_worker: list = []
         self.routes: list = []

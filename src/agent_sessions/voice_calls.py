@@ -124,6 +124,11 @@ UNFINISHED_PAUSE_S = 3.0
 DRAFT_TICK_S = 0.05
 #: A spoken confirmation's window, from the moment its read-back finished playing (#1397 P2).
 CHALLENGE_S = 20.0
+#: Words heard this soon after HQ's turn began, before it ran any tool, are the SAME request
+#: carried on after a pause ("…sessions with this handoff title." / "I want you to review all of
+#: them."): they go into that turn as a steer, never judged, so they can never be queued as a
+#: second question and answered twice (the Commander's 21:24 call on 2026-11-25).
+CONTINUATION_S = 8.0
 #: How long a 202 (a session starting, an operation running) is followed to its end state.
 OUTCOME_POLL_S = 30.0
 OUTCOME_EVERY_S = 1.5
@@ -1333,6 +1338,18 @@ class Call:
             and ask_orchestrator.turn_live(self.cid, ct[0])
         )
 
+    def _continues_turn(self, turn_id: str) -> bool:
+        """Words now are the running turn's own request carried on (`CONTINUATION_S`): it began
+        moments ago, has run no tool, said no aside, and no words are held behind it."""
+        work = self.work
+        return (
+            work is not None
+            and not work.get("acted")
+            and not work.get("last_aside")
+            and not self.held_later.get(turn_id)
+            and time.monotonic() - work["since"] < CONTINUATION_S
+        )
+
     def _reserve_interjection(self, text: str, heard: dict) -> int:
         """Claim words heard while HQ works (#2113 P3), SYNCHRONOUSLY: they join words still
         pending (reserved or being judged) and take the newest sequence number, so the older
@@ -1373,6 +1390,16 @@ class Call:
         if ct is None or ct[0] != cur["turn_id"] or not self._interjectable():
             self.interjection = None
             self._dispatch(cur["text"], cur["heard"], self.generation)
+            return
+        if self._continues_turn(cur["turn_id"]) and ask_orchestrator.steer(
+            self.cid, cur["turn_id"], cur["text"]
+        ):
+            # The same request, carried on after a pause: the running turn takes the words in
+            # its next request. Nothing is said over the Commander, nothing waits, no judgement.
+            self.interjection = None
+            self.steer_since.setdefault(
+                cur["turn_id"], cur["heard"].get("busy_since", time.monotonic())
+            )
             return
         self._side(
             self._judge_interjection(
@@ -2572,12 +2599,19 @@ class Call:
             await self.set_state("thinking")
             if self.work is not None:
                 self.work["since"] = time.monotonic()
-        if cue and self.cues_ready:  # none ready: nothing to wait for, the cadence is unchanged
-            await asyncio.sleep(CUE_AFTER_S)
-            await self.cue_tick()
+        # The cue waits for a real lookup (the operator, 2026-11-25: "it should not say 'let me
+        # check' to all, only when it really looks up stuff"): small talk, a question back, or a
+        # card is answered without one. None ready: nothing to wait for, the cadence is unchanged.
+        pending = cue and bool(self.cues_ready)
+        next_tick = time.monotonic() + PROGRESS_TICK_S
         while self.state != "ended":
-            await asyncio.sleep(PROGRESS_TICK_S)
-            await self.progress_tick()
+            await asyncio.sleep(CUE_AFTER_S if pending else PROGRESS_TICK_S)
+            if pending and (self.work or {}).get("looked_up"):
+                pending = False
+                await self.cue_tick()
+            if not pending or time.monotonic() >= next_tick:
+                next_tick = time.monotonic() + PROGRESS_TICK_S
+                await self.progress_tick()
 
     def _track(self, ev: dict) -> None:
         """What the running turn is doing now, from its own progress events (#1702)."""
@@ -2600,10 +2634,16 @@ class Call:
         if step == "thinking":
             work.update(phase="model", phase_since=now, tool=None)
         elif step == "tool":
-            work.update(phase="tool", phase_since=now, tool=str(ev.get("tool") or ""))
+            name = str(ev.get("tool") or "")
+            work.update(phase="tool", phase_since=now, tool=name, acted=True)
+            spec = ask_orchestrator.TOOLS.get(name)
+            if spec is not None and spec.kind == "read":
+                work["looked_up"] = True  # a real lookup: the thinking cue may play now
         elif step in FIND_STEPS and work["phase"] != "tool":
             # The no-tools fallback runs the find pipeline without a `tool` event.
-            work.update(phase="tool", phase_since=now, tool="find_sessions")
+            work.update(
+                phase="tool", phase_since=now, tool="find_sessions", acted=True, looked_up=True
+            )
 
     async def progress_tick(self) -> None:
         """Say where the running turn is, if HQ has been quiet long enough (#1702): FIRST_PROGRESS_S

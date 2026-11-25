@@ -270,6 +270,57 @@ def test_switch_stops_the_turn_quietly_and_asks_the_new_words_after_it_settled(r
     assert _questions(rig.call.cid)[-1] == "Forget that, how is staging?"
 
 
+# ---- the same request, carried on after a pause ---------------------------------------------
+
+
+def test_words_right_after_the_question_join_its_turn_and_are_answered_once(rig, held, monkeypatch):
+    """The Commander's 2026-11-25 call: "…sessions with this handoff title" started a turn, and
+    "I want you to review all of them." came 2 s later, before HQ had run a tool. Judged `later`,
+    it was queued as a second question and HQ did the whole job, and answered, twice. Within
+    `CONTINUATION_S` of the turn, with no tool run yet, the words are a steer: never judged, one
+    turn, one answer."""
+    monkeypatch.setattr(voice_calls, "CONTINUATION_S", 30.0, raising=False)
+    rig.interject_verdict = ("later", "Sure, finishing this first.")  # must never be asked
+
+    async def scenario():
+        script = held(call("list_projects", cid="a"), answer("Twelve handoffs, all retitled."))
+        await _working(rig, script, "I have a lot of sessions with this handoff title.")
+        await _speak(rig, "I want you to review all of them.")
+        await _until(lambda: ask_orchestrator.turn_live(rig.call.cid, rig.call.call_turn[0]))
+        script.go.set()
+        await _until(lambda: "Twelve handoffs, all retitled." in rig.said_text())
+
+    run(scenario())
+    assert rig.interjected == []  # no judgement: it is the same request
+    assert _questions(rig.call.cid) == ["I have a lot of sessions with this handoff title."]
+    assert _statuses(rig.call.cid) == ["pending", "done"]  # ONE turn, never a queued second
+    recs = [r for r in ask_store.read(rig.call.cid) if r["type"] == "interjection"]
+    assert [r["text"] for r in recs] == ["I want you to review all of them."]
+    assert rig.said_text() == ["Twelve handoffs, all retitled."]  # nothing said over them
+
+
+def test_words_after_hq_ran_a_tool_are_judged_as_before(rig, held, monkeypatch):
+    """Once the turn has run a tool, new words are an interjection again, whatever the clock."""
+    monkeypatch.setattr(voice_calls, "CONTINUATION_S", 30.0, raising=False)
+    rig.interject_verdict = ("later", "Sure, finishing this first.")
+
+    async def scenario():
+        script = held(
+            call("list_projects", cid="a"), answer("The epic is in phase three."),
+            answer("Two sessions need you."), free=1,
+        )  # fmt: skip
+        await _working(rig, script)
+        await _until(lambda: (rig.call.work or {}).get("acted"))
+        await _speak(rig, "Also, what needs me?")
+        await _until(lambda: "Sure, finishing this first." in rig.said_text())
+        script.go.set()
+        await _until(lambda: "Two sessions need you." in rig.said_text())
+
+    run(scenario())
+    assert len(rig.interjected) == 1
+    assert _questions(rig.call.cid)[-1] == "Also, what needs me?"
+
+
 # ---- no verdict ----------------------------------------------------------------------------------
 
 
