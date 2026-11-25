@@ -338,13 +338,14 @@ async def search(turn: TurnConnectors, args: dict) -> tuple[dict, dict]:
             )
         else:
             ref = f"issue:{row['owner']}/{row['repo']}#{row['number']}"
-            items.append(
-                {
-                    "ref": ref,
-                    "title": _guard(row["title"], TITLE_MAX, secrets),
-                    "state": row["state"],
-                }
-            )
+            item = {
+                "ref": ref,
+                "title": _guard(row["title"], TITLE_MAX, secrets),
+                "state": row["state"],
+            }
+            if row.get("url"):  # the adapter's validated web page (`common.web_url`)
+                item["url"] = row["url"]
+            items.append(item)
     items = _guard_all(items, secrets)  # type: ignore[assignment]
     result = _wrap(bound, {"kind": kind, "items": items})
     while not _fits(result) and items:
@@ -398,6 +399,8 @@ async def read(turn: TurnConnectors, args: dict) -> tuple[dict, dict]:
                 "comments_total": total,
                 "comments": comments,
             }
+            if issue.get("url"):  # the adapter's validated web page (`common.web_url`)
+                payload["url"] = issue["url"]
             if not issue["comments_complete"]:
                 payload["comments_note"] = "the comment thread is too long to read here"
             elif len(comments) < total:

@@ -13,8 +13,9 @@ memory remains **off by default**; a folder that isn't a project can't have a pr
 
 Tell HQ **“Remember that research findings should include primary sources”**, then ask about the
 preference in another conversation. HQ saves the operator's exact words with their source.
-Recall happens on demand: starting a conversation or a call loads no notebook contents. HQ can
-search project and specialist notes when a question needs them, with notebook citations.
+Starting a conversation or a call loads no notebook contents. HQ searches its own, project and
+specialist notes by itself whenever a request touches past decisions, projects, people or your
+preferences, with notebook citations.
 
 Open **Library → Memory → HQ** to inspect source quotes, edit, forget, export or clear its notes.
 Corrections and deletions proposed in HQ need your confirmation. Its **Remember useful facts**

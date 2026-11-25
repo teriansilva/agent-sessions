@@ -12,7 +12,7 @@ from __future__ import annotations
 import base64
 import binascii
 import re
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from ...connector_http import ConnectorError
 
@@ -65,6 +65,39 @@ def sha(v: object) -> str:
     if not isinstance(v, str) or not SHA_RE.fullmatch(v):
         raise ConnectorError("bad_reply", "the forge answered without a commit sha")
     return v
+
+
+#: The longest web URL an item may carry (a validated one is far shorter).
+WEB_URL_MAX = 500
+
+
+def web_url(raw: object, web_origin: str | None, o: str, r: str, kind: str, n: int) -> str | None:
+    """An issue's or PR's web page as the forge reported it (``html_url``), or None.
+
+    Kept only when it is exactly the page this adapter expects: ``https``, the connector's OWN web
+    origin, no credentials, query or fragment, and the path ``/<o>/<r>/<kind>/<n>`` built from the
+    validated parts (compared case-blind, as both forges treat names). So the link can only point at
+    the item it labels on the host the Commander configured — never at a URL from item text."""
+    if not (web_origin and web_origin.startswith("https://")) or not isinstance(raw, str):
+        return None
+    if len(raw) > WEB_URL_MAX or not raw.isprintable() or not (valid_name(o) and valid_name(r)):
+        return None
+    try:
+        parts = urlsplit(raw)
+    except ValueError:
+        return None
+    expected = f"/{seg(o)}/{seg(r)}/{kind}/{n}"
+    if (
+        parts.scheme != "https"
+        or parts.username is not None
+        or parts.password is not None
+        or parts.query
+        or parts.fragment
+        or parts.netloc.lower() != urlsplit(web_origin).netloc.lower()
+        or parts.path.lower() != expected.lower()
+    ):
+        return None
+    return raw
 
 
 def contents_path(repo_base: str, path: str) -> str:

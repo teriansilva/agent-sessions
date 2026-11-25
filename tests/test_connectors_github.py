@@ -544,3 +544,67 @@ def test_a_rebinding_github_name_connects_only_to_the_vetted_address(gh, monkeyp
     assert rq.url.host == HOST_IP and rq.headers["host"] == "api.github.com"
     assert rq.extensions.get("sni_hostname") == "api.github.com"
     assert lookups == ["api.github.com"]
+
+
+# ---- an item's web page (html_url) -------------------------------------------------------------
+
+
+def _serve_html_url(monkeypatch, gh, url_for) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        resp = gh.handler(request)
+        body = resp.json()
+        rows = body.get("items") if isinstance(body, dict) and "items" in body else [body]
+        for row in rows if isinstance(rows, list) else []:
+            if isinstance(row, dict) and isinstance(row.get("number"), int):
+                row["html_url"] = url_for(row["number"], "pull_request" in row)
+        kept = {k: v for k, v in resp.headers.items() if k.lower() != "content-length"}
+        return httpx.Response(resp.status_code, json=body, headers=kept)
+
+    monkeypatch.setattr(connector_http, "_TRANSPORT", httpx.MockTransport(handler))
+
+
+def _urls() -> list:
+    turn, (_, issues, pulls, issue, pr) = _turn_with_refs(
+        (hq.search, {"kind": "issues", "query": "flake"}),
+        (hq.search, {"kind": "pulls", "query": "flake"}),
+        (hq.read, {"item_ref": "issue:ops/app#1"}),
+        (hq.read, {"item_ref": "issue:ops/app#2"}),
+    )
+    return [
+        issues["untrusted_connector_content"]["items"][0].get("url"),
+        pulls["untrusted_connector_content"]["items"][0].get("url"),
+        issue["untrusted_connector_content"].get("url"),
+        pr["untrusted_connector_content"].get("url"),
+    ]
+
+
+def test_github_items_carry_their_github_com_page(gh, monkeypatch):
+    """The API is api.github.com; an item's page is github.com, and a PR's is /pull/<n>."""
+    _serve_html_url(
+        monkeypatch,
+        gh,
+        lambda n, pull: f"https://github.com/ops/app/{'pull' if pull else 'issues'}/{n}",
+    )
+    _ready()
+    assert _urls() == [
+        "https://github.com/ops/app/issues/1",
+        "https://github.com/ops/app/pull/2",
+        "https://github.com/ops/app/issues/1",
+        "https://github.com/ops/app/pull/2",
+    ]
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "https://api.github.com/repos/ops/app/issues/{n}",  # the API, not the page
+        "https://github.com.evil/ops/app/issues/{n}",
+        "https://gist.github.com/ops/app/issues/{n}",
+        "https://github.com/ops/app/issues/{n}?x=1",
+        "https://github.com/someone/else/issues/{n}",
+    ],
+)
+def test_a_github_web_url_off_its_own_page_is_dropped(gh, monkeypatch, bad):
+    _serve_html_url(monkeypatch, gh, lambda n, pull: bad.format(n=n))
+    _ready()
+    assert _urls() == [None, None, None, None]

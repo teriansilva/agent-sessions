@@ -1357,3 +1357,88 @@ def test_contexts_sharing_a_very_long_prefix_are_still_distinct(forge, monkeypat
     body, pages = _ci_read(forge, monkeypatch, _paged_status(rows, state="success"))
     assert len(pages) == 2 and body["checks_total"] == 70
     assert body["state"] == "failure"
+
+
+# ---- an item's web page (html_url) -------------------------------------------------------------
+
+
+def _serve_html_url(monkeypatch, forge, url_for) -> None:
+    """Wrap the fake forge so every issue/PR it returns carries ``html_url`` = url_for(n, pull)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        resp = forge.handler(request)
+        body = resp.json()
+        rows = body if isinstance(body, list) else [body]
+        for row in rows:
+            if isinstance(row, dict) and isinstance(row.get("number"), int):
+                row["html_url"] = url_for(row["number"], row.get("pull_request") is not None)
+        return httpx.Response(resp.status_code, json=body)
+
+    monkeypatch.setattr(connector_http, "_TRANSPORT", httpx.MockTransport(handler))
+
+
+def _web_urls(t: hq.TurnConnectors) -> dict[str, object]:
+    issues, _ = run(hq.search(t, {"connector_index": 0, "query": "flake", "kind": "issues"}))
+    pulls, _ = run(hq.search(t, {"connector_index": 0, "query": "flake", "kind": "pulls"}))
+    issue, _ = run(hq.read(t, {"connector_index": 0, "item_ref": "issue:ops/app#1"}))
+    pr, _ = run(hq.read(t, {"connector_index": 0, "item_ref": "issue:ops/app#2"}))
+    return {
+        "issue_hit": issues["untrusted_connector_content"]["items"][0].get("url"),
+        "pull_hit": pulls["untrusted_connector_content"]["items"][0].get("url"),
+        "issue": issue["untrusted_connector_content"].get("url"),
+        "pull": pr["untrusted_connector_content"].get("url"),
+    }
+
+
+def test_issues_and_prs_carry_their_web_page_on_the_connectors_own_host(forge, monkeypatch):
+    """HQ can hand the Commander a link (the forge's own html_url), checked to be the page of
+    THAT item on the configured host."""
+    _serve_html_url(
+        monkeypatch, forge, lambda n, pull: f"{ORIGIN}/ops/app/{'pulls' if pull else 'issues'}/{n}"
+    )
+    _ready()
+    t = _turn()
+    run(hq.list_connectors(t))
+    assert _web_urls(t) == {
+        "issue_hit": f"{ORIGIN}/ops/app/issues/1",
+        "pull_hit": f"{ORIGIN}/ops/app/pulls/2",
+        "issue": f"{ORIGIN}/ops/app/issues/1",
+        "pull": f"{ORIGIN}/ops/app/pulls/2",
+    }
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "https://evil.example/ops/app/issues/{n}",  # another host
+        "http://git.example/ops/app/issues/{n}",  # not https
+        "https://git.example.evil/ops/app/issues/{n}",  # a lookalike host
+        "https://user:pw@git.example/ops/app/issues/{n}",  # credentials
+        "https://git.example/ops/app/issues/{n}?next=https://evil.example",  # a query
+        "https://git.example/ops/app/issues/{n}#x",  # a fragment
+        "https://git.example/ops/other/issues/{n}",  # another repo
+        "https://git.example/ops/app/issues/99",  # another item
+        "https://git.example/ops/app/wiki/{n}",  # not an issue page
+        "javascript:alert(1)//git.example/ops/app/issues/{n}",
+        "https://git.example/ops/app/issues/{n}\n",  # a control character
+    ],
+)
+def test_a_web_url_that_is_not_that_items_page_on_this_host_is_dropped(forge, monkeypatch, bad):
+    _serve_html_url(monkeypatch, forge, lambda n, pull: bad.format(n=n))
+    _ready()
+    t = _turn()
+    run(hq.list_connectors(t))
+    assert _web_urls(t) == {"issue_hit": None, "pull_hit": None, "issue": None, "pull": None}
+
+
+def test_web_url_needs_an_https_web_origin():
+    from agent_sessions.connectors.adapters import common
+
+    good = "https://git.example/ops/app/issues/1"
+    assert common.web_url(good, "https://git.example", "ops", "app", "issues", 1) == good
+    assert common.web_url(good, "https://GIT.example", "Ops", "App", "issues", 1) == good
+    assert common.web_url(good, None, "ops", "app", "issues", 1) is None
+    assert common.web_url(good, "http://git.example", "ops", "app", "issues", 1) is None
+    assert common.web_url(None, "https://git.example", "ops", "app", "issues", 1) is None
+    long = good + "x" * common.WEB_URL_MAX
+    assert common.web_url(long, "https://git.example", "ops", "app", "issues", 1) is None

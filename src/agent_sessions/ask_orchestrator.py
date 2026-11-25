@@ -4332,8 +4332,8 @@ TOOLS: dict[str, Tool] = {
             "ends_turn",
             _spec(
                 "ask_operator",
-                "Ask the operator ONE question when a detail you need is missing or ambiguous, "
-                "instead of guessing. Offer up to four short options (each is the exact reply "
+                "Ask the operator ONE question when a choice really matters and nothing points "
+                "to a sensible default. Offer up to four short options (each is the exact reply "
                 "the operator can pick) and/or allow a free-text answer. Ends your turn.",
                 {
                     "question": {"type": "string"},

@@ -36,6 +36,7 @@ from .common import (
     text,
     valid_name,
     valid_path,
+    web_url,
 )
 
 __all__ = ["valid_name", "valid_path"]
@@ -73,6 +74,18 @@ CONCLUSIONS = {
 }
 
 
+#: The adapter's fixed API origin and the web origin its items' pages live on.
+API_ORIGIN = "https://api.github.com"
+WEB_ORIGIN = "https://github.com"
+
+
+def _web(bound: Bound, raw: object, o: str, r: str, n: int, pull: bool) -> str | None:
+    """The item's ``html_url``, kept only on github.com for the fixed API origin
+    (`common.web_url`). GitHub's PR page is ``/pull/<n>``."""
+    origin = WEB_ORIGIN if bound.origin.rstrip("/").lower() == API_ORIGIN else None
+    return web_url(raw, origin, o, r, "pull" if pull else "issues", n)
+
+
 def _repo_path(o: str, r: str) -> str:
     if not (valid_name(o) and valid_name(r)):
         raise ConnectorError("refused", "not a repository name")
@@ -105,7 +118,7 @@ async def probe(bound: Bound) -> dict:
 
 
 async def search(bound: Bound, kind: str, query: str) -> list[dict]:
-    """``[{owner, repo, number?, title, state?, description?, pull?}]`` — raw text."""
+    """``[{owner, repo, number?, title, state?, description?, pull?, url?}]`` — raw text."""
     if kind == "repos":
         page = await _get(bound, "/search/repositories", {"q": query, "per_page": SEARCH_LIMIT})
         rows = page.get("items") if isinstance(page, dict) else None
@@ -138,6 +151,7 @@ async def search(bound: Bound, kind: str, query: str) -> list[dict]:
         owner, name = (parts[1], parts[2]) if len(parts) == 3 else ("", "")
         number = row.get("number")
         if valid_name(owner) and valid_name(name) and count(number):
+            pull = row.get("pull_request") is not None
             out.append(
                 {
                     "owner": owner,
@@ -145,7 +159,8 @@ async def search(bound: Bound, kind: str, query: str) -> list[dict]:
                     "number": number,
                     "title": text(row.get("title")),
                     "state": text(row.get("state"), 20),
-                    "pull": row.get("pull_request") is not None,
+                    "pull": pull,
+                    "url": _web(bound, row.get("html_url"), owner, name, number, pull),
                 }
             )
     return out[:SEARCH_LIMIT]
@@ -221,6 +236,7 @@ async def read_issue(bound: Bound, o: str, r: str, n: int) -> dict:
         "pull": None,
         "comments_complete": comments_complete,
         "comments_total": total if comments_complete else None,
+        "url": _web(bound, issue.get("html_url"), o, r, n, issue.get("pull_request") is not None),
     }  # fmt: skip
     if issue.get("pull_request") is not None:
         pr = await _get(bound, f"{base}/pulls/{n}")

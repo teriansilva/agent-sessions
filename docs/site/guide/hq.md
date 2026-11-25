@@ -535,7 +535,8 @@ follows you to every device.
 HQ can also read from your other services. The forge connectors are **Forgejo** (and Gitea or
 Codeberg, which speak the same API) and **GitHub**, and there is a storage connector for **Nextcloud** files. Through a forge, HQ can search your repositories, issues and
 pull requests, read an issue or PR with its recent comments (a very long thread is read without
-its comments, and HQ says so), check a commit's CI status, and read text files at a commit. It **only reads**: there is no sending, commenting or merging through a connector.
+its comments, and HQ says so), check a commit's CI status, and read text files at a commit. An issue or PR comes with the link to its page on that
+forge, so HQ can give it to you. It **only reads**: there is no sending, commenting or merging through a connector.
 
 Set one up in **Settings → AI → HQ → Connectors**. You use your own account: create a personal
 access token in Forgejo under *Settings → Applications* with `read:user`, `read:issue` and `read:repository`
