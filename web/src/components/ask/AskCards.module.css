@@ -1080,3 +1080,95 @@
 .changed s {
   color: var(--text-3);
 }
+/* A skill imported from a repository (#2145): the pinned source in mono, a fixed-layout files
+ * table (a long third-party path wraps anywhere inside its cell, never ellipsized: every byte of a
+ * path is part of what the operator reviews), flags in words, and the caution note on the
+ * degraded edge, never red: nothing failed. */
+.mono {
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+}
+.ftab {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  border: 1px solid var(--line);
+  font-size: var(--fs-label);
+}
+.ftab th {
+  padding: 6px var(--sp-3);
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-1);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 400;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  text-align: left;
+  color: var(--text-3);
+}
+.ftab td {
+  padding: 6px var(--sp-3);
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+  font-family: var(--font-mono);
+  color: var(--text-1);
+}
+.ftab tr:last-child td {
+  border-bottom: 0;
+}
+.ftab .num {
+  width: 76px;
+  white-space: nowrap;
+  text-align: right;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.pathCell {
+  overflow-wrap: anywhere;
+}
+.flag,
+.flagWarn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: var(--sp-2);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.flagWarn {
+  color: var(--warn-text);
+}
+.caution {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: flex-start;
+  margin-top: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 3px solid var(--status-degraded);
+  background: var(--surface-3);
+  font-size: var(--fs-label);
+  line-height: 1.45;
+  color: var(--text-2);
+}
+.caution svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--warn-text);
+}
+.caution strong {
+  color: var(--text-1);
+}
+.caution code {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+@media (max-width: 800px) {
+  .ftab .num {
+    width: 64px;
+    padding-inline: var(--sp-2);
+  }
+}

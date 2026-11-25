@@ -1242,7 +1242,9 @@ export interface AskOperationCard {
     // The route's store refused it and nothing changed (#1938).
     | "refused"
     | "unknown"
-    | "gone";
+    | "gone"
+    /** A skill import the Library can't store (#2145): staged settled, offers nothing. */
+    | "refused";
   /** The outcome sentence, once settled. */
   summary: string;
   reason: string;
@@ -1272,6 +1274,15 @@ export interface AskOperationCard {
  *  automation's scope lines as the server renders them. Text, rendered as text — never markup. */
 export type AskLibraryContent =
   | { kind: "files"; files: { path: string; text: string | null }[]; relies?: AskReliesRow[] }
+  | {
+      /** A skill read from a repository link (#2145): the pinned source, one row per file (its
+       *  size, lines and a flag), the files verbatim, and every reason it can't be saved. */
+      kind: "import";
+      source: string;
+      rows: AskImportRow[];
+      files: { path: string; text: string }[];
+      refused: string[];
+    }
   | {
       kind: "diff";
       diff: {
@@ -1367,6 +1378,15 @@ export type AskFlowStep = {
   /** How often a reviewer may send work back here, when the step reworks. */
   rework: number | null;
 };
+
+/** One file of an imported skill as the card's table shows it. `bytes` is null when the server
+ *  withheld it (over the size cap); `flag` names why a file stands out. */
+export interface AskImportRow {
+  path: string;
+  bytes: number | null;
+  lines: number | null;
+  flag: "" | "script" | "binary" | "oversize" | "link" | "submodule" | "path";
+}
 
 export type AskOperationDecision = Pick<
   AskOperationCard,

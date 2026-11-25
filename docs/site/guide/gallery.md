@@ -74,6 +74,14 @@ Instead of **Update available**, a copy can show one of these:
 | *This has been withdrawn from the gallery.* | The entry was withdrawn. Your copy keeps working. |
 | *Its gallery history can't be read…* | Its saved gallery history is damaged. Changes wait until it is restored. |
 
+## Skills imported from a repository
+
+HQ can also import a skill from a public repository link you give it
+([Import a skill from a repository](/guide/hq#import-a-skill-from-a-repository)). Such a skill is
+yours to edit like any other, and its page says **From a repository (unverified)** with the link
+and the commit it was read at. That line is a note, not a check: the gallery's signatures don't
+cover it, it never shows **Update available**, and BattleLab never reads the repository again.
+
 ## When something goes wrong
 
 | You see | What to do |

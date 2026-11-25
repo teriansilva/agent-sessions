@@ -67,6 +67,8 @@ TRUSTED_DRAFT_PATHS: frozenset[tuple[str, ...]] = frozenset(
         ("scope_digest",),
         ("origin",),
         ("operation",),
+        # An import's commit id (#2145): read from the fetched repository by the server.
+        ("repo_origin", "commit"),
         # The automation routes' own rendered consent lines ("Permission bypass: off" reads as
         # credential-shaped to the heuristic). The model text they quote — the instruction — is
         # guarded where it lives, in `config` / `body`.
@@ -643,6 +645,22 @@ def _files_said(fields: dict) -> str:
     return f"{n} file{'s' if n != 1 else ''}"
 
 
+def _bytes_said(n: int) -> str:
+    return f"{n} B" if n < 1024 else f"{n / 1024:.1f} KB"
+
+
+def _import_said(fields: dict, facts: dict) -> str:
+    """The import card's sentence (#2145); a refused import says it can't be saved, and why is on
+    the card's outcome row."""
+    if fields.get("refused"):
+        return f"“{fields['name']}” can't be saved as it is: nothing was saved."
+    return (
+        f"Saves a new skill, “{fields['name']}” ({_files_said(fields)}, "
+        f"{_bytes_said(int(fields.get('bytes') or 0))}), to your Library. A skill is an inert copy "
+        "until a playbook or project uses it."
+    )
+
+
 def library_ops() -> tuple:
     from .ask_operations import Operation
 
@@ -720,6 +738,30 @@ def library_ops() -> tuple:
             ),
             lambda f, x: f"Saves a new skill, “{f['name']}” ({_files_said(f)}), to your Library. "
             "A skill is an inert copy until a playbook or project uses it.",
+            _saved("Saved to your Library."),
+            _not_saved,
+            draft=True,
+        ),
+        Operation(
+            "skill.import",
+            sk,
+            "import",
+            "Import skill",
+            "Save skill",
+            "reversible",
+            "none",
+            ("name", "new_id", "files", "bytes", "source", "refused"),
+            lambda t, f, x: (
+                "POST",
+                "/api/library/skills",
+                {
+                    "new_id": _content(f)["new_id"],
+                    "files": _content(f)["files"],
+                    # The server-built source, always in an import's draft (`_prepare_import`).
+                    **{k: v for k, v in _content(f).items() if k == "repo_origin"},
+                },
+            ),
+            _import_said,
             _saved("Saved to your Library."),
             _not_saved,
             draft=True,
@@ -921,6 +963,7 @@ async def prepare(
     app,
     operator,
     specialists: dict | None = None,
+    repos=None,
 ) -> dict:
     """What `propose_library` stages: ``{"op", "target", "title", "fields", "draft"}``. Every
     draft is validated by its store WITHOUT writing; every target is one this turn returned.
@@ -1013,6 +1056,9 @@ async def prepare(
         name = _skill_name(files, new_id)
         draft = {"files": files, "before": {}, "new_id": new_id}
         return _staged(op, "", name, {"name": name, "new_id": new_id, "files": len(files)}, draft)
+
+    if op.id == "skill.import":
+        return await _prepare_import(op, args, repos)
 
     if op.id == "skill.edit":
         sid = _known(known, "skill", args)
@@ -1126,11 +1172,68 @@ def _staged(
     return out
 
 
+async def _prepare_import(op, args: dict, repos) -> dict:
+    """``skill.import {source, path, new_id}`` (#2145): the server re-reads ``path`` from the
+    commit ``source`` was minted for THIS turn — HQ never hands in bytes. A folder the Library
+    can't store stages a REFUSED card naming every reason (``refused`` set); nothing can be saved
+    from it. The draft is written durably at staging, so Save never needs the fetched repository."""
+    from . import skill_repo
+
+    snap = repos.get(args.get("source")) if repos is not None else None
+    if snap is None:
+        raise Refused(
+            "refused: source must be a skillsrc ref inspect_skill_repo returned in this turn",
+            "unknown_source",
+        )
+    path = args.get("path")
+    if path is None:
+        path = ""
+    if not isinstance(path, str):
+        raise Refused("path must be a skill folder inspect_skill_repo listed", "bad_arguments")
+    path = path.strip("/")
+    new_id = _skill_id(args.get("new_id"))
+    try:
+        read = await asyncio.to_thread(skill_repo.read_skill, snap, path)
+    except skill_repo.Refused as e:
+        raise Refused(str(e), e.code) from None
+    name = read.files and _skill_name(read.files, new_id) or (path.rsplit("/", 1)[-1] or new_id)
+    origin = {"url": snap.url, "commit": snap.commit, "path": path}
+    source = f"{skill_repo.display(snap.url)} @ {snap.commit[:7]} · {path + '/' if path else '/'}"
+    draft = {
+        "files": read.files,
+        "before": {},
+        "new_id": new_id,
+        "repo_origin": origin,
+        "source": source,
+        "rows": read.rows,
+        "refused": read.reasons,
+    }
+    total = sum(r["bytes"] or 0 for r in read.rows)
+    fields = {
+        "name": name,
+        "new_id": new_id,
+        "files": len(read.rows),
+        "bytes": total,
+        "source": source,
+        "refused": len(read.reasons),
+    }
+    return _staged(op, "", name, fields, draft)
+
+
 # ---- the card's content (GET /api/ask/proposals/{id}/content) ------------------------------------
 
 
 def content_view(op_id: str, draft: dict) -> dict:
     """What the card shows of a draft, for the operator's browser only (never the model)."""
+    if op_id == "skill.import":
+        files = draft.get("files") or {}
+        return {
+            "kind": "import",
+            "source": str(draft.get("source") or ""),
+            "rows": list(draft.get("rows") or []),
+            "files": [{"path": p, "text": v} for p, v in sorted(files.items())],
+            "refused": list(draft.get("refused") or []),
+        }
     if op_id.startswith(("playbook.", "skill.")):
         files = draft.get("files") or {}
         before = draft.get("before") or {}

@@ -60,6 +60,7 @@ export const TOOL_LABELS: Record<string, { label: string; noun?: [string, string
   playbook_schema: { label: "Reading the playbook format" },
   list_skills: { label: "Listing your skills", noun: ["skill", "skills"] },
   skill_detail: { label: "Reading a skill" },
+  inspect_skill_repo: { label: "Reading a skill repository", noun: ["skill", "skills"] },
   list_automations: { label: "Listing your automations", noun: ["automation", "automations"] },
   automation_detail: { label: "Reading an automation" },
   list_secrets: { label: "Listing your secrets' names", noun: ["secret", "secrets"] },

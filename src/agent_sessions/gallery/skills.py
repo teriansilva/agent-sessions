@@ -7,7 +7,7 @@ import os
 import secrets
 
 from ..playbooks import store
-from . import contract, files, origins, storage
+from . import contract, files, origins, repo_origin, storage
 
 
 @contextlib.contextmanager
@@ -39,6 +39,9 @@ def _read(root_fd, local_id):
             "revision": tree.digest(),
             "files": {k: v.decode("utf-8") for k, v in tree.files.items()},
             "gallery_origin": status,
+            # Display-only and unverified (#2145): where an HQ import says the bytes came from.
+            # Never trust, never a refresh or update offer; a damaged record reads as None.
+            "repo_origin": repo_origin.read(fd),
             "editable": True,
         }
     finally:
@@ -64,7 +67,7 @@ def listing():
         return {"skills": out, "limit_reached": len(names) > 128}
 
 
-def _stage(fd, tree, local_id, pointer):
+def _stage(fd, tree, local_id, pointer, repo=None):
     name = f".staging-{local_id}-{secrets.token_hex(8)}"
     os.mkdir(name, 0o700, dir_fd=fd)
     descriptors = {}
@@ -90,6 +93,10 @@ def _stage(fd, tree, local_id, pointer):
         for child in descriptors.values():
             os.fsync(child)
         origins.bind(descriptors[""], pointer)
+        if repo is not None:
+            # On the STAGING directory, so the one publishing rename carries bytes and source
+            # together: a save that fails leaves neither (#2145).
+            repo_origin.bind(descriptors[""], repo)
         if files.read(descriptors[""]).digest() != tree.digest():
             raise store.Conflict("Skill changed while staging.")
         return name
@@ -101,29 +108,38 @@ def _stage(fd, tree, local_id, pointer):
             os.close(child)
 
 
-def save(local_id, contents, *, publication=None):
-    """Create a new skill only. Existing identities are never replaced."""
+def save(local_id, contents, *, publication=None, repo=None):
+    """Create a new skill only. Existing identities are never replaced. ``repo`` is an HQ
+    import's display-only source (`repo_origin.check`), never combined with a gallery origin."""
     store.skill_id(local_id)
     tree = files.tree(contents)
+    if repo is not None:
+        if publication is not None:
+            raise contract.GalleryError("A skill has one source: the gallery or a repository.")
+        repo = repo_origin.check(repo)
     with locked(exclusive=True) as fd:
         if store._exists_locally(fd, local_id):
             raise store.Conflict("That local skill ID already exists.")
         if len([n for n in os.listdir(fd) if not n.startswith(".")]) >= 128:
             raise contract.GalleryError("Local skill library is full.")
         pointer = publication.origin if publication else None
-        staging = _stage(fd, tree, local_id, pointer)
+        staging = _stage(fd, tree, local_id, pointer, repo)
         if publication:
             publication.prepare(fd, staging, local_id, tree)
         not_durable = store._publish_new(fd, staging, local_id)
         try:
             result = _read(fd, local_id)
             origin = result["gallery_origin"]
-            valid = result["revision"] == tree.digest() and (
-                origin is None
-                and pointer is None
-                or origin is not None
-                and origin["state"] == "verified"
-                and origin["pointer"] == pointer
+            valid = (
+                result["revision"] == tree.digest()
+                and result["repo_origin"] == repo
+                and (
+                    origin is None
+                    and pointer is None
+                    or origin is not None
+                    and origin["state"] == "verified"
+                    and origin["pointer"] == pointer
+                )
             )
         except (OSError, ValueError, store.StoreError):
             valid = False

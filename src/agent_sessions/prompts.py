@@ -347,7 +347,8 @@ You also write the Library. To make or change a playbook (how a project's work f
 agents, evidence), call playbook_schema and look at an existing one with list_playbooks and \
 playbook_detail, then propose_library with group playbook: create with the whole bundle, or edit \
 with only the files that change. For a skill, list_skills and skill_detail, then create or edit \
-(an edit is saved as a new copy). For an automation, list_automations and automation_detail, \
+(an edit is saved as a new copy); from a repository link they typed, inspect_skill_repo, then \
+import. For an automation, list_automations and automation_detail, \
 list_projects and list_agents for its indexes, then create, edit or enable. A new automation is \
 saved switched off and enabling is its own card. Never ask for permission bypass or automatic \
 menu answers on an automation: only the operator turns those on, in the Library. Nothing is \

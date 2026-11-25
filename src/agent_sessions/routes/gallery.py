@@ -15,7 +15,7 @@ NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 MAX_BODY = 4 * 1024 * 1024
 
 
-async def body(request, fields):
+async def body(request, fields, optional=frozenset()):
     chunks = []
     total = 0
     async for chunk in request.stream():
@@ -32,7 +32,7 @@ async def body(request, fields):
         )
     except (ValueError, UnicodeError, RecursionError):
         raise contract.GalleryError("Expected unambiguous JSON.") from None
-    if not isinstance(value, dict) or set(value) != fields:
+    if not isinstance(value, dict) or not fields <= set(value) <= fields | optional:
         raise contract.GalleryError("Unexpected or missing gallery request fields.")
     return value
 
@@ -152,8 +152,14 @@ def register(app, *, logged_in, csrf_guard):
     async def skill_create(request: Request):
         # A new local skill from scratch (#1611): HQ's "write me a skill". NOREPLACE, inert, no
         # origin — `skills.save` refuses an id that exists (409) and runs the shared tree checks.
-        value = await body(request, {"new_id", "files"})
-        return response(await call(library.create_skill, value["new_id"], value["files"]), 201)
+        # An HQ import (#2145) adds `repo_origin`: display-only, unverified, saved with the bytes.
+        value = await body(request, {"new_id", "files"}, frozenset({"repo_origin"}))
+        return response(
+            await call(
+                library.create_skill, value["new_id"], value["files"], value.get("repo_origin")
+            ),
+            201,
+        )
 
     @app.get("/api/library/skills/{id}", dependencies=[Depends(logged_in)])
     async def skill_detail(request: Request):

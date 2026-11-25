@@ -393,6 +393,34 @@ answer. If nothing matches, it says the manual doesn't cover it without asking t
 question routing **off**, an endpoint without tools searches your sessions for every message
 and doesn't consult the manual.
 
+## Import a skill from a repository
+
+Paste a link to a public git repository and ask HQ to import a skill from it, for example
+*"Import the pdf-forms skill from https://github.com/acme/agent-skills"*. A link to a folder on
+the forge's web page (`…/tree/main/skills/pdf-forms`) works too. No connector is needed.
+
+1. BattleLab reads the repository at its latest commit and HQ tells you which commit it read and
+   which skills it found (each folder with a `SKILL.md`: its name, what it does, how many files and
+   how large).
+2. For the skill you named, HQ puts a card on screen: the source (`host/owner/repo @ commit ·
+   folder/`), every file with its size, and each file's full text. Scripts are marked, and a note
+   above **Save skill** reminds you that agents will read these instructions.
+3. **Save skill** stores exactly those files as a new skill in Library → Skills. A later change to
+   the repository changes nothing you saved; nothing is ever fetched again.
+
+Some things to know:
+
+- Only a link **you typed** in that message is read. HQ never follows a link it found somewhere
+  else, such as in a file it read.
+- Only public `https` repositories. A private repository, or an `ssh` link, goes through a
+  [connector](#connectors).
+- A repository larger than 32 MB, or one that takes longer than a minute to read, is refused.
+- A skill the Library can't store gets a **Refused** card instead: it lists what was read and why
+  (a binary file, a file over 128 KB, a symbolic link, more than 64 files). Nothing is saved.
+- With several skills in one repository, HQ asks which ones you want, and makes one card each.
+- The saved skill shows **From a repository (unverified)** with the link and commit. Unlike a
+  gallery copy it is not verified, and BattleLab never offers updates for it.
+
 ## Showing it on screen
 
 Ask HQ to show you something and the screen follows, typed or on a call: "pull up the api-rebase

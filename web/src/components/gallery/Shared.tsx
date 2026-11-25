@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode, type RefObject } from "react";
 import { Link, useBlocker } from "react-router-dom";
-import { ChevronRight, ExternalLink, GalleryHorizontal } from "lucide-react";
+import { ChevronRight, ExternalLink, GalleryHorizontal, GitBranch } from "lucide-react";
 import { ApiError, api } from "../../lib/api";
 import { galleryUpdatePath } from "../../lib/routes";
 import type {
@@ -8,6 +8,7 @@ import type {
   GalleryKind,
   GalleryOperation,
   GalleryOrigin,
+  RepoOrigin as RepoOriginT,
 } from "../../types/gallery";
 import { PlaybookDialog } from "../playbooks/PlaybookDialog";
 import buttons from "../ui/actionButton.module.css";
@@ -116,6 +117,43 @@ const ORIGIN_NOTE = {
 
 /** A local copy that came from the gallery: one line, an "Update available" badge when — and only
  *  when — `updateStatus` says so, and the evidence folded into Technical details (#1440). */
+/** `host/owner/repo` of a repository link, as the import card showed it. */
+function repoDisplay(url: string): string {
+  try {
+    const u = new URL(url);
+    return `${u.host}${u.pathname}`.replace(/\/+$/, "").replace(/\.git$/, "");
+  } catch {
+    return url;
+  }
+}
+
+/** Where an HQ import says a skill came from (#2145). Display-only and UNVERIFIED: never the
+ *  gallery's Verified provenance, no update offer, nothing re-fetched. #2144 moves this line into
+ *  the shared detail layout's origin slot. */
+export function RepoOrigin({ value }: { value?: RepoOriginT | null }) {
+  if (!value) return null;
+  const folder = value.path ? `${value.path}/` : "/";
+  return (
+    <section className={styles.origin} aria-label="Repository source" data-testid="repo-origin">
+      <p className={styles.originLine}>
+        <GitBranch size={14} aria-hidden />
+        <span>
+          From a repository (unverified) · {repoDisplay(value.url)} @ {value.commit.slice(0, 7)} ·{" "}
+          {folder}
+        </span>
+      </p>
+      <p className={styles.why}>
+        Copied from{" "}
+        <a href={value.url} target="_blank" rel="noopener noreferrer">
+          {value.url}
+        </a>{" "}
+        at commit <code>{value.commit}</code>. BattleLab never checks it again and never offers
+        updates for it.
+      </p>
+    </section>
+  );
+}
+
 export function Origin({
   value,
   kind,

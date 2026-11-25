@@ -200,7 +200,8 @@ OPERATION_STATES = frozenset(
         "interrupted",
         "unconfirmed",
         "unsettled",
-        # The route's store refused it and nothing changed (#1938).
+        # Nothing changed and nothing can run: the route's store refused it (#1938), or a skill
+        # import the Library can't store was staged settled (#2145).
         "refused",
     }
 )

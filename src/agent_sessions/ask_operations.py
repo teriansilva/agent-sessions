@@ -47,8 +47,11 @@ UNCONFIRMED = "unconfirmed"
 #: is not yet released). The ONE state confirmed again: an operation with its own idempotent
 #: runner (`Operation.run`) picks up where it stopped.
 UNSETTLED = "unsettled"
-#: The route's own store refused it and NOTHING changed (#1938: archiving built-in staff, a full
-#: pool). Never used where the route may have acted before refusing: that stays ``failed``.
+#: The card ended with NOTHING changed and nothing left to run. Two ways in: the route's own store
+#: refused it at confirm (#1938: archiving built-in staff, a full pool; never used where the route
+#: may have acted before refusing, which stays ``failed``), or it was staged ALREADY SETTLED (#2145:
+#: an import whose files the Library can't store; it shows what was read and every reason, and
+#: offers no Save and no Dismiss).
 REFUSED = "refused"
 STATES = frozenset(
     {
@@ -1289,6 +1292,7 @@ async def stage(
     append_card: Callable,
     draft: dict | None = None,
     expected: dict | None = None,
+    refused: str = "",
 ) -> dict:
     """Stage one operation: facts read as the operator, the draft (a library save, #1611) written
     through the store boundary, the card written FIRST, the entry SECOND (a card whose entry never
@@ -1416,7 +1420,8 @@ async def stage(
         "id": pid,
         "turn_id": turn_id,
         "kind": KIND,
-        "state": PENDING,
+        "state": REFUSED if refused else PENDING,
+        **({"outcome": refused, "settled_at": time.time()} if refused else {}),
         "ts": time.time(),
         "op": op.id,
         "target": target,

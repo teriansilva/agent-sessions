@@ -379,7 +379,9 @@ def edit_skill_copy(local_id, new_id, revision, origin, files, operation_id):
         return _complete(operation_id, skills.save(new_id, files, publication=publication))
 
 
-def create_skill(new_id, files):
-    """A new local skill from scratch (#1611): no source, no origin. Existing ids are refused."""
+def create_skill(new_id, files, repo_origin=None):
+    """A new local skill from scratch (#1611): no gallery origin. Existing ids are refused. An HQ
+    import (#2145) passes its display-only, unverified repository source, saved atomically with
+    the files and never treated as provenance the gallery verified."""
     store.skill_id(new_id)
-    return skills.save(new_id, files)
+    return skills.save(new_id, files, repo=repo_origin)

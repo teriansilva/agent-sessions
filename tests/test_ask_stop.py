@@ -445,9 +445,9 @@ def test_a_long_turn_drops_old_results_on_the_wire_and_still_answers(app, ai, mo
         return {"text": "w" * 3_000, "part": next(parts)}, {"length": 3_000}
 
     tool(monkeypatch, "look", "read", big)
-    # Room for the system prompt, the question and the newest whole result (15,000 since #1938's
-    # specialists paragraph and #2251's steps paragraph grew the prompt).
-    budget = len(json.dumps(ask_orchestrator.tool_specs())) + 15_000
+    # Room for the system prompt, the question and the newest whole result (15,500 since #1938's
+    # specialists paragraph, #2251's steps paragraph and #2145's import clause grew the prompt).
+    budget = len(json.dumps(ask_orchestrator.tool_specs())) + 15_500
     monkeypatch.setattr(ask_orchestrator, "REQUEST_BUDGET_CHARS", budget)
     script = ai(*[call("look", cid=f"r{i}") for i in range(30)], answer("all read"))
     turn = app.ask(app.new(), "read them all").json()["turn"]

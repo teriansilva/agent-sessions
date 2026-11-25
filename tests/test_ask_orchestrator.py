@@ -329,6 +329,7 @@ def test_the_tool_list_and_each_tools_kind_are_pinned():
         "playbook_schema": "read",
         "list_skills": "read",
         "skill_detail": "read",
+        "inspect_skill_repo": "read",
         "list_automations": "read",
         "automation_detail": "read",
         "propose_library": "proposal",

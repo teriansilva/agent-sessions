@@ -660,7 +660,8 @@ const OPERATION_OUTCOMES: Record<
   unconfirmed: { word: "Ran, unconfirmed", tone: "warn", detail: (p) => p.summary },
   // A move that committed but did not finish (#1786): Finish runs it again from where it stopped.
   unsettled: { word: "Not finished", tone: "warn", detail: (p) => p.summary },
-  // The store refused it and nothing changed (#1938): a warning, never the red of a failure.
+  // Nothing changed: the store refused it (#1938), or a skill import the Library can't store was
+  // staged settled (#2145). A warning, never the red of a failure.
   refused: { word: "Refused", tone: "warn", detail: (p) => p.summary || "Nothing changed." },
   unknown: {
     word: "Status unavailable",

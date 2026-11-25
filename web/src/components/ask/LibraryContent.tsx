@@ -6,11 +6,12 @@
  *  is TEXT: a file or an instruction is never rendered as markup. A long file is collapsed after
  *  `PREVIEW_LINES` with a "Show all" control; nothing is ever withheld before the operator taps
  *  Confirm, it is only folded. */
+import { TriangleAlert } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { ApiError, api } from "../../lib/api";
-import type { AskLibraryContent, AskOperationCard } from "../../types/api";
+import type { AskImportRow, AskLibraryContent, AskOperationCard } from "../../types/api";
 import c from "./AskCards.module.css";
 import { libraryHref } from "./libraryHref";
 import { RELIES_NOTE, ReliesList, SpecialistContent } from "./SpecialistContent";
@@ -54,6 +55,107 @@ function DiffBody({ text }: { text: string }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+const formatSize = (n: number | null) =>
+  n === null ? "—" : n < 1024 ? `${n} B` : `${(n / 1024).toFixed(1)} KB`;
+
+/** Why a file stands out, in words: never a colour alone. */
+const FLAG: Record<AskImportRow["flag"], { word: string; warn: boolean } | null> = {
+  "": null,
+  script: { word: "Script", warn: false },
+  binary: { word: "Binary", warn: true },
+  oversize: { word: "Over 128 KB", warn: true },
+  link: { word: "Link", warn: true },
+  submodule: { word: "Submodule", warn: true },
+  path: { word: "Path not allowed", warn: true },
+};
+
+/** A skill read from a repository link (#2145): the pinned source, every file in a table (a long
+ *  path wraps inside its cell; size and lines keep their columns), the files verbatim, and the
+ *  third-party caution directly above Save. A refused import shows what was read and flags each
+ *  file it can't store; its reasons are the card's outcome line. */
+function ImportBody({ content }: { content: Extract<AskLibraryContent, { kind: "import" }> }) {
+  const scripts = content.rows.filter((r) => r.flag === "script").map((r) => r.path);
+  const refused = content.refused.length > 0;
+  return (
+    <div data-testid="ask-import">
+      <dl className={c.kv}>
+        <dt>Source</dt>
+        <dd className={c.mono} data-testid="ask-import-source">
+          {content.source}
+        </dd>
+      </dl>
+      <div className={c.blockLabel}>Files</div>
+      <table className={c.ftab} data-testid="ask-import-files">
+        <thead>
+          <tr>
+            <th scope="col">Path</th>
+            <th scope="col" className={c.num}>
+              Size
+            </th>
+            <th scope="col" className={c.num}>
+              Lines
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {content.rows.map((r) => {
+            const flag = FLAG[r.flag];
+            return (
+              <tr key={r.path} data-testid="ask-import-row" data-flag={r.flag}>
+                <td className={c.pathCell}>
+                  {r.path}
+                  {flag ? (
+                    <span className={flag.warn ? c.flagWarn : c.flag}>
+                      {flag.warn ? <TriangleAlert size={12} aria-hidden /> : null}
+                      {flag.word}
+                    </span>
+                  ) : null}
+                </td>
+                <td className={c.num}>{formatSize(r.bytes)}</td>
+                <td className={c.num}>{r.lines === null ? "—" : r.lines.toLocaleString("en")}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      {refused ? null : (
+        <>
+          <div className={c.blockLabel}>Files, verbatim</div>
+          {content.files.map((f) => {
+            const row = content.rows.find((r) => r.path === f.path);
+            return (
+              <div key={f.path} className={c.file}>
+                <div className={c.fileHead}>
+                  <span>{f.path}</span>
+                  <span className={c.fileLines}>
+                    {formatSize(row?.bytes ?? null)} · {f.text.split("\n").length} lines
+                  </span>
+                </div>
+                <Folded text={f.text} testid="ask-library-file" />
+              </div>
+            );
+          })}
+          <div className={c.caution} role="note" data-testid="ask-import-caution">
+            <TriangleAlert size={14} aria-hidden />
+            <div>
+              <strong>
+                Third-party content: agents will read these instructions. Review before saving.
+              </strong>
+              {scripts.length ? (
+                <span>
+                  {" "}
+                  It includes {scripts.length === 1 ? "a script" : "scripts"},{" "}
+                  <code>{scripts.join(", ")}</code>, that an agent using this skill may run.
+                </span>
+              ) : null}
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -141,6 +243,7 @@ export function LibraryContent({
       </div>
     );
   }
+  if (content.kind === "import") return <ImportBody content={content} />;
   if (content.kind === "specialist") return <SpecialistContent content={content} stale={stale} />;
   // The specialists a playbook relies on (#1938) sit above its files; the note under them says
   // what saving does not do.

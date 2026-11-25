@@ -48,10 +48,18 @@ export interface LocalSkill {
   revision: string;
   files: Record<string, string>;
   gallery_origin?: GalleryOrigin | null;
+  /** Where an HQ import says it came from (#2145): display-only and unverified, never trust. */
+  repo_origin?: RepoOrigin | null;
   editable: boolean;
   error?: string;
   durable?: boolean;
   durable_reason?: string;
+}
+export interface RepoOrigin {
+  url: string;
+  commit: string;
+  path: string;
+  unverified: true;
 }
 export interface GalleryInspection {
   preview?: {

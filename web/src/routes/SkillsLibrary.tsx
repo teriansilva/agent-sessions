@@ -26,7 +26,13 @@ import {
 import { LibraryGrid, LibraryHead, LibraryToolbar, type Facet } from "../components/library/LibraryGrid";
 import lib from "../components/library/library.module.css";
 import { useShareImports } from "../components/share/useShareImports";
-import { FileRow, LeaveGuard, Origin, PendingOperation } from "../components/gallery/Shared";
+import {
+  FileRow,
+  LeaveGuard,
+  Origin,
+  PendingOperation,
+  RepoOrigin,
+} from "../components/gallery/Shared";
 import { beginOperation, finishOperation, errorText, ownValue } from "../components/gallery/operations";
 import buttons from "../components/ui/actionButton.module.css";
 import styles from "../components/gallery/gallery.module.css";
@@ -78,6 +84,8 @@ function skillProvenance(skill: LocalSkill, source: LibrarySource) {
       </>
     );
   if (source === "imported") return <ImportedMark />;
+  // Copied by HQ from a repository link (#2145): display-only, never verified.
+  if (skill.repo_origin) return "From a repository (unverified)";
   return "Local copy · no gallery origin";
 }
 
@@ -396,6 +404,7 @@ function Editor({
         id={base.id}
         revision={base.revision}
       />
+      <RepoOrigin value={base.repo_origin} />
       {error && (
         <p role="alert" className={styles.error}>
           {error} Your unsaved edits remain here.
