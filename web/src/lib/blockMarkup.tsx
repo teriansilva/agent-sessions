@@ -7,11 +7,12 @@ import { inlineMarkup } from "./inlineMarkup";
  *
  *    `- ` / `* ` / `+ ` lines → <ul><li>     `1. ` / `1) ` lines → <ol><li>
  *    `# …` … `###### …`       → <strong> line      ``` fences      → <pre><code>
- *    blank line               → paragraph break    inline          → `inlineMarkup` (bold, italic, code)
+ *    blank line               → paragraph break    inline          → `inlineMarkup` (bold, italic,
+ *                                                                code, links to the docs site)
  *
  *  Same rule as `inlineMarkup` (#744): there is NO html sink — no `dangerouslySetInnerHTML`, no
- *  markdown library — so a link, an image, raw HTML or anything else outside the subset stays the
- *  literal characters it is. The text is a transcript the app doesn't control; prompt-injected
+ *  markdown library — so an image, raw HTML, a link to anywhere but the docs site, or anything
+ *  else outside the subset stays the literal characters it is. The text is a transcript the app doesn't control; prompt-injected
  *  markup must never become live markup in the app's chrome.
  *
  *  It never throws on a partial message: the server caps last words from the END (`…` + tail), so

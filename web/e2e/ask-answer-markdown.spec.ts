@@ -3,7 +3,7 @@
  *  The answer model writes markdown (bullets, bold labels, an italic aside, code). It used to land
  *  as raw text — `- **Find sessions** —` with the stars showing. Now it goes through `blockMarkup`,
  *  the same enumerated, html-sink-free subset the NEEDS YOU last words use, so a link stays the
- *  characters it is. What a DOM emulator cannot prove: that the list is laid out as a list inside
+ *  characters it is — unless it points at the docs site, which HQ is told to cite. What a DOM emulator cannot prove: that the list is laid out as a list inside
  *  the narrow sidebar and a phone, and that a code block scrolls inside the answer instead of
  *  pushing the page sideways.
  */
@@ -27,7 +27,7 @@ const ANSWER = [
   "```",
 ].join("\n");
 
-async function mockShell(page: Page) {
+async function mockShell(page: Page, answer = ANSWER) {
   await page.route("**/api/**", (r) => r.fulfill({ json: {} }));
   await page.route("**/api/config", (r) =>
     r.fulfill({
@@ -84,7 +84,7 @@ async function mockShell(page: Page) {
       id: "ask_" + "d".repeat(32),
       created_at: 1,
       updated_at: 2,
-      turns: [turnOf("what can you do?", { answer: ANSWER })],
+      turns: [turnOf("what can you do?", { answer })],
     },
   ]);
 }
@@ -131,6 +131,63 @@ test("an answer's bullets, bold, italic and code render as such — and nothing 
   const panelBox = (await panel.boundingBox())!;
   expect(preBox.x + preBox.width).toBeLessThanOrEqual(
     panelBox.x + panelBox.width + 1,
+  );
+  expect(
+    await page.evaluate(
+      () =>
+        document.documentElement.scrollWidth <=
+        document.documentElement.clientWidth,
+    ),
+  ).toBe(true);
+});
+
+/** HQ answering a how-to from the manual: it cites each page it read, as the prompt asks. */
+const CITED = [
+  "A playbook flow is the ordered set of steps a playbook lays out for a piece of work. ([Playbooks](https://docs.battlelabos.com/guide/playbooks#start-from-an-example))",
+  "",
+  "When you ask me to plan a mission, I apply the deployed procedure that fits the goal. ([Missions in HQ](https://docs.battlelabos.com/guide/missions#hq-plans-every-mission))",
+  "",
+  "More: https://docs.battlelabos.com/guide/playbooks#what-runs-today. Not this: [docs](https://evil.example/guide).",
+].join("\n");
+
+test("an answer's citations to the manual are links that open in a new tab — nothing else is", async ({
+  page,
+}) => {
+  await mockShell(page, CITED);
+  await page.goto("/dashboard");
+  const panel = await openAsk(page);
+  await pickConversation(panel);
+  const answer = panel.getByTestId("ask-answer");
+  await expect(answer).toContainText("A playbook flow");
+
+  const links = answer.locator("a");
+  await expect(links).toHaveCount(3);
+  await expect(links.nth(0)).toHaveText("Playbooks");
+  await expect(links.nth(0)).toHaveAttribute(
+    "href",
+    "https://docs.battlelabos.com/guide/playbooks#start-from-an-example",
+  );
+  await expect(links.nth(1)).toHaveText("Missions in HQ");
+  await expect(links.nth(2)).toHaveAttribute(
+    "href",
+    "https://docs.battlelabos.com/guide/playbooks#what-runs-today",
+  );
+  for (const i of [0, 1, 2]) {
+    await expect(links.nth(i)).toHaveAttribute("target", "_blank");
+    await expect(links.nth(i)).toHaveAttribute("rel", "noopener noreferrer");
+  }
+
+  // The citation reads as "(Playbooks)", not as markdown; the off-site link stays literal.
+  const text = (await answer.textContent()) ?? "";
+  expect(text).toContain("(Playbooks)");
+  expect(text).not.toContain("](https://docs.battlelabos.com");
+  expect(text).toContain("[docs](https://evil.example/guide)");
+
+  // The long bare URL wraps inside the answer; the page never scrolls sideways.
+  const linkBox = (await links.nth(2).boundingBox())!;
+  const answerBox = (await answer.boundingBox())!;
+  expect(linkBox.x + linkBox.width).toBeLessThanOrEqual(
+    answerBox.x + answerBox.width + 1,
   );
   expect(
     await page.evaluate(

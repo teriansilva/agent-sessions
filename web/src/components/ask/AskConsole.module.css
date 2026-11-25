@@ -133,6 +133,10 @@
   font-family: var(--font-mono);
   font-size: var(--fs-meta);
 }
+.md a {
+  color: var(--accent-text);
+  overflow-wrap: anywhere;
+}
 .md pre {
   padding: 6px var(--sp-2);
   border: 1px solid var(--line);
