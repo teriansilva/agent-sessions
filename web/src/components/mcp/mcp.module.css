@@ -358,6 +358,44 @@
   font-size: var(--fs-body);
   color: var(--text-1);
 }
+/* A refused repository link (#2353): amber, HQ's "Refused" tone — nothing failed, nothing was
+   registered. */
+.alertWarn {
+  justify-items: stretch;
+  border-left-color: var(--status-degraded);
+  background: color-mix(in srgb, var(--status-degraded) 10%, var(--bg-1));
+}
+.alertWarn h2 {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--warn-text);
+}
+.alertWarn .btnRow {
+  justify-content: flex-start;
+}
+.origin {
+  display: grid;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+.origin :global(.nj-label) {
+  margin: 0;
+}
+.disclaimer {
+  color: var(--text-1);
+}
+.checks .res.resQuiet {
+  color: var(--text-2);
+}
+/* The picked source tile says so in words, not by colour alone. */
+.selected {
+  composes: tag;
+  justify-self: start;
+  gap: 4px;
+  color: var(--text-1);
+  border-color: var(--hud);
+}
 
 /* ------------------------------------------------------------------ wizard */
 .stepGrid {

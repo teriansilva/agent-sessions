@@ -670,3 +670,146 @@ def test_an_install_card_never_shows_one_source_and_installs_another(
     assert "source changed" in said and "Nothing was installed" in said
     assert reviews["installed"] == []
     assert not mcp_registry.get(sid).get("installed")
+
+
+# ---- create from a repository link (#2353) ------------------------------------------------------
+
+_LINK = "https://github.com/owner/repo"
+_SHA = "3f2a9c1e5b7d40a8c6f2e19d3b4a7c58e0f1d26b"
+_LINK_SRC = {"kind": "npm", "package": "@acme/mcp-server", "version": "1.4.0"}
+
+
+@pytest.fixture
+def links(monkeypatch, reviews):
+    """The resolver as a fixture (its own tests read real fixture repositories): every link it was
+    asked for, and the resolution the route then holds."""
+    from agent_sessions import mcp_gitsource, mcp_jobs
+
+    mcp_jobs._reset_for_tests()
+    seen: list[str] = []
+
+    def resolve(url, *, cancel=None, progress=None):
+        seen.append(url)
+        if "refused" in url:
+            raise mcp_gitsource.LinkRefused(
+                "this repository declares both an npm and a Python package. BattleLab never "
+                "picks one for you, so nothing was registered",
+                "both_manifests",
+            )
+        return {
+            "source": dict(_LINK_SRC),
+            "origin": {"url": _LINK, "commit": _SHA},
+            "facts": {
+                "repository": "github.com/owner/repo",
+                "commit": _SHA,
+                "declared": {"manifest": "package.json", "kind": "npm", **{
+                    "package": "@acme/mcp-server", "version": "1.4.0"}},
+                "release": {"registry": "registry.npmjs.org", "record_field": "repository",
+                            "names": "github.com/owner/repo", "license": "MIT",
+                            "install_scripts": ["postinstall"]},
+            },
+        }  # fmt: skip
+
+    monkeypatch.setattr(mcp_gitsource, "resolve", resolve)
+    yield seen
+    mcp_jobs._reset_for_tests()
+
+
+def _link_card(live, ai, source=None, question=f"add the MCP server at {_LINK}"):
+    args = {"action": "create", "name": "acme", "source": source or {"kind": "repository",
+            "url": _LINK}}  # fmt: skip
+    return _ask(live, ai, call("propose_mcp", args), question=question)
+
+
+def test_a_typed_link_stages_a_create_card_with_its_facts_and_registers_it(live, ai, mcp, links):
+    cid, script = _link_card(live, ai)
+    (card,) = _cards(live, cid)
+    assert card["op"] == "mcp.create" and card["title"] == "acme"
+    assert (
+        "the npm package @acme/mcp-server 1.4.0 that github.com/owner/repo declares at 3f2a9c1"
+        in card["text"]
+    )
+    assert links == [_LINK]
+    shown = live.c.get(f"/api/ask/proposals/{card['action_id']}/content", headers=live.hdr).json()
+    assert shown["kind"] == "mcp_link"
+    link = shown["link"]
+    assert link["repository"] == "github.com/owner/repo" and link["commit"] == "3f2a9c1"
+    assert link["names"] == "github.com/owner/repo" and link["manifest"] == "package.json"
+    assert link["disclaimer"] == "Installs the published release; not built from this commit."
+    assert link["integrity"] == "sha512-9fK2xQe7vB0m" and link["dependencies"] == 23
+    # What the operator sees of the server never shows the binding id; the tap sends it.
+    assert "resolution_id" not in shown["server"]
+    assert mcp_registry.list_servers() == []  # staging registered nothing
+    assert _decide(live, card["action_id"]).status_code == 202
+    assert _settled(live, cid, card["action_id"])["state"] == "done"
+    (rec,) = mcp_registry.list_servers()
+    assert rec["source"] == _LINK_SRC and rec["origin"] == {"url": _LINK, "commit": _SHA}
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "add the MCP server from the repository you found",  # only in tool content
+        f"add the MCP server at {_LINK}/tree/main",  # a longer link: a prefix is not the link
+        "add the MCP server at https://github.com/owner/repo-evil",
+    ],
+)
+def test_a_link_the_commander_did_not_type_is_refused(live, ai, mcp, links, question):
+    cid, script = _link_card(live, ai, question=question)
+    assert _cards(live, cid) == [] and links == []
+    (step,) = [r for r in ask_store.read(cid) if r.get("name") == "propose_mcp"]
+    assert step["meta"]["error"] == "not_typed"
+
+
+def test_a_link_source_never_carries_a_package_of_hqs_choosing(live, ai, mcp, links):
+    src = {"kind": "repository", "url": _LINK, "package": "@evil/server"}
+    cid, script = _link_card(live, ai, source=src)
+    assert _cards(live, cid) == [] and links == []
+    assert "never from HQ" in json.dumps(_result(script, 1))
+
+
+def test_a_refused_link_is_said_in_words_and_stages_nothing(live, ai, mcp, links):
+    url = "https://github.com/owner/refused"
+    cid, script = _link_card(live, ai, {"kind": "repository", "url": url}, f"add {url}")
+    assert _cards(live, cid) == [] and mcp_registry.list_servers() == []
+    said = json.dumps(_result(script, 1))
+    assert "both an npm and a Python package" in said and "Nothing was registered" in said
+
+
+def test_a_link_card_whose_package_changed_after_resolving_is_refused_at_confirm(
+    live, ai, mcp, links
+):
+    cid, _ = _link_card(live, ai)
+    (card,) = _cards(live, cid)
+    path = ask_store._draft_path(cid, card["action_id"])
+    data = json.loads(path.read_text())
+    data["server"]["source"] = {"kind": "npm", "package": "@evil/server", "version": "1.4.0"}
+    path.write_text(json.dumps(data, sort_keys=True))
+    _decide(live, card["action_id"])
+    assert _settled(live, cid, card["action_id"])["state"] == "stale"
+    assert mcp_registry.list_servers() == []
+    # The route refuses the same swap on its own: the source must be the resolution's.
+    method, path_, body = ask_operations.CATALOG["mcp.create"].route(
+        "", {"_content": {"server": data["server"]}}, {}
+    )
+    r = live.c.post(path_, json=body, headers=live.hdr)
+    assert r.status_code == 409 and mcp_registry.list_servers() == []
+
+
+@pytest.mark.parametrize("gone", ["expired", "restart"])
+def test_a_link_card_tapped_after_its_resolution_is_gone_says_read_it_again(
+    live, ai, mcp, links, monkeypatch, gone
+):
+    from agent_sessions import mcp_jobs
+
+    cid, _ = _link_card(live, ai)
+    (card,) = _cards(live, cid)
+    if gone == "expired":
+        monkeypatch.setattr(mcp_jobs, "RESOLUTION_TTL_S", -1)
+    else:
+        mcp_jobs._reset_for_tests()  # what an app restart leaves
+    _decide(live, card["action_id"])
+    settled = _settled(live, cid, card["action_id"])
+    assert settled["state"] == "failed", settled
+    assert "read the link again" in settled["summary"]
+    assert mcp_registry.list_servers() == []

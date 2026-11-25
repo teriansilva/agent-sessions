@@ -3769,6 +3769,9 @@ async def _propose_mcp(turn: _Turn, args: dict) -> tuple[dict, dict]:
             known_projects=turn.mcp_projects,
             app=app,
             operator=operator,
+            # A repository link must be one the Commander TYPED (#2353): a call's words and a
+            # continuation's question are not.
+            question=turn.question if turn.via is None else None,
         )
     except ask_library.Refused as e:
         raise _ToolRefused(str(e), e.code) from None
@@ -4850,7 +4853,10 @@ TOOLS: dict[str, Tool] = {
                 "Propose an MCP server card. Nothing changes until the operator confirms it. "
                 "create (name, source, optional label, args, settings, probe): registers a "
                 "server; source is {kind: remote, url} (https) or {kind: npm | pypi, package, "
-                "version (exact), optional entrypoint}; settings are {key, value} for plain "
+                "version (exact), optional entrypoint}, or {kind: repository, url} for a "
+                "repository link the Commander typed IN THIS MESSAGE (pass it exactly as typed; "
+                "the server reads the package it declares and its published release, and the "
+                "card shows both); settings are {key, value} for plain "
                 "values and {key, kind: credential, variable, optional prefix} naming a Variables "
                 "secret, NEVER a credential's value; probe is {tool, arguments} with a read-only "
                 "tool. install (id): a package server; the review runs now and the card shows "

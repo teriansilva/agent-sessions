@@ -23,7 +23,7 @@ import type {
 } from "../types/shelf";
 import type { ShareCatalog, ShareChoice, ShareImports, SharePreview, ShareResult } from "../types/share";
 import type { GalleryIndex, GalleryInspection, GalleryOperation, GalleryKind, GalleryComparison, GalleryFiles, LocalSkill } from "../types/gallery";
-import type { McpCheckRow, McpOperation, McpReviewFacts, McpServerDetail, McpServerInput, McpServerSummary, McpServerUpdate } from "../types/mcp";
+import type { McpCheckRow, McpOperation, McpResolution, McpReviewFacts, McpServerDetail, McpServerInput, McpServerSummary, McpServerUpdate } from "../types/mcp";
 import type { CollectionInput, SecretAccessEntry, SharedVariable, SharedVariableInput, SharedVariableUpdate, SharedVariablesResponse, VariableCollection } from "../types/variables";
 import type { SessionCapacity, Resources, ResourceSettings, ResourceValues } from "../types/resources";
 import type {
@@ -86,6 +86,8 @@ import {
   HQ_TASKS_STOP_ALL_API,
   mcpInstallPath,
   mcpOperationPath,
+  mcpOperationStopPath,
+  MCP_RESOLVE_LINK_API,
   mcpReviewPath,
 } from "./apiPaths";
 import type {
@@ -2028,6 +2030,11 @@ export const api = {
   installMcpServer: (id: string, reviewId: string, requestId: string) =>
     mutateJson<McpOperation<McpServerSummary>>("POST", mcpInstallPath(id), { request_id: requestId, review_id: reviewId }),
   /** A review or install operation; 404 once the app restarted and forgot it. */
+  /** Start reading a repository link (#2353): an operation with no server whose result is the
+   *  draft source, origin, facts and P1b's review. */
+  resolveMcpLink: (url: string, requestId: string) =>
+    mutateJson<McpOperation<McpResolution>>("POST", MCP_RESOLVE_LINK_API, { url, request_id: requestId }),
+  stopMcpOperation: (requestId: string) => mutateJson<McpOperation>("POST", mcpOperationStopPath(requestId), {}),
   mcpOperation: <T>(requestId: string) => getJsonWithDetail<McpOperation<T>>(mcpOperationPath(requestId)),
   /** A project's OWN credential values for this server (write-only; only variables it names). */
   setMcpOwnCredentials: (id: string, projectId: string, values: Record<string, string>) =>

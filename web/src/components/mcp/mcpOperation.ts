@@ -22,8 +22,15 @@ export const START_RETRIES = 2;
 export const POLL_MISSES = 30;
 export const OPERATION_LOST = "The operation was lost; try again.";
 
-/** The operation ended on the server: it failed with these words, or the server no longer knows it. */
-export class OperationEnded extends Error {}
+/** The operation ended on the server: it failed with these words, or the server no longer knows it.
+ *  `op` is the failed operation when the server answered with one (a refused link's `details`). */
+export class OperationEnded extends Error {
+  readonly op?: McpOperation<unknown>;
+  constructor(message: string, op?: McpOperation<unknown>) {
+    super(message);
+    this.op = op;
+  }
+}
 
 /** No answer, or a gateway's: the server may or may not have the request, so the same id is safe
  *  (and right) to send again. */
@@ -35,6 +42,8 @@ export interface OperationIo<T> {
   poll: (requestId: string) => Promise<McpOperation<T>>;
   /** Wait `ms`; `false` once the page is gone (stop, send nothing more). */
   wait: (ms: number) => Promise<boolean>;
+  /** Every answer while it runs (a link's resolution shows its progress, #2353). */
+  onUpdate?: (op: McpOperation<T>) => void;
 }
 
 /** Start (or rejoin) operation `requestId` and poll it to its end. Resolves with its result, or
@@ -44,6 +53,7 @@ export async function settleOperation<T>(requestId: string, io: OperationIo<T>):
   for (let attempt = 0; ; attempt++) {
     try {
       op = await io.start(requestId);
+      io.onUpdate?.(op);
       break;
     } catch (e) {
       if (!transient(e) || attempt >= START_RETRIES) throw e;
@@ -55,13 +65,14 @@ export async function settleOperation<T>(requestId: string, io: OperationIo<T>):
     if (!(await io.wait(OPERATION_POLL_MS))) return null;
     try {
       op = await io.poll(requestId);
+      io.onUpdate?.(op);
       misses = 0;
     } catch (e) {
       if (e instanceof ApiError && e.status === 404) throw new OperationEnded(OPERATION_LOST);
       if (!transient(e) || ++misses > POLL_MISSES) throw e;
     }
   }
-  if (op.state === "failed") throw new OperationEnded(op.error || `The ${op.kind} failed.`);
+  if (op.state === "failed") throw new OperationEnded(op.error || `The ${op.kind} failed.`, op as McpOperation<unknown>);
   return op.result as T;
 }
 
@@ -79,7 +90,11 @@ export function useMcpOperation() {
       alive.current = false;
     };
   }, []);
-  return useCallback(async <T,>(key: string, start: (requestId: string) => Promise<McpOperation<T>>): Promise<T | null> => {
+  return useCallback(async <T,>(
+    key: string,
+    start: (requestId: string) => Promise<McpOperation<T>>,
+    onUpdate?: (op: McpOperation<T>) => void,
+  ): Promise<T | null> => {
     const id = pending.current?.key === key ? pending.current.id : crypto.randomUUID();
     pending.current = { key, id };
     const forget = () => {
@@ -89,6 +104,7 @@ export function useMcpOperation() {
       const result = await settleOperation<T>(id, {
         start,
         poll: (rid) => api.mcpOperation<T>(rid),
+        onUpdate,
         wait: (ms) => new Promise((resolve) => window.setTimeout(() => resolve(alive.current), ms)),
       });
       if (result !== null) forget();

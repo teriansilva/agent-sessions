@@ -13,7 +13,15 @@ from collections.abc import Callable
 from fastapi import Depends, FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
-from .. import mcp_check, mcp_install, mcp_jobs, mcp_registry, projects, template_vars
+from .. import (
+    mcp_check,
+    mcp_gitsource,
+    mcp_install,
+    mcp_jobs,
+    mcp_registry,
+    projects,
+    template_vars,
+)
 from .templates import _err, _expected, _json, _json_object
 from .upload import NO_STORE
 
@@ -100,6 +108,10 @@ def _detail(sid: str) -> dict:
     }
 
 
+def _started(op: mcp_jobs.Operation) -> JSONResponse:
+    return JSONResponse(op.view(), status_code=202, headers=NO_STORE)
+
+
 def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
     @app.get("/api/mcp/servers")
     async def list_servers(project: str | None = None, _user: str = Depends(logged_in)):
@@ -115,8 +127,44 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
     async def create_server(
         request: Request, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
     ):
-        result = await _run(mcp_registry.create, await _json_object(request))
+        """Register a server. ``resolution_id`` (#2353) binds a link's server-held resolution:
+        its source and display-only origin are persisted together, a different ``source`` is a
+        409, and an unknown or expired id is a 404 (resolve the link again). ``origin`` itself is
+        never accepted from a client (422)."""
+        payload = await _json_object(request)
+        if "origin" in payload:
+            raise _err(422, "origin comes only from a resolved link: send its resolution_id")
+        rid = payload.pop("resolution_id", None)
+
+        def run():
+            if rid is None:
+                return mcp_registry.create(payload)
+            bound = mcp_jobs.resolution(rid)
+            rec = mcp_registry.create(payload, resolution=bound)
+            mcp_jobs.consume(rid)
+            return rec
+
+        result = await _run(run)
         return result if isinstance(result, Response) else _json(_summary(result), 201)
+
+    @app.post("/api/mcp/servers/resolve-link")
+    async def resolve_link(
+        request: Request, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ):
+        """Start reading a repository link (#2353): the package its root declares, the published
+        release, the registry's repository record matched to the link, then P1b's review of that
+        release. A polled operation (`GET /api/mcp/operations/{request_id}`) that registers
+        nothing; its result is the draft source, the origin and the facts, held server-side under
+        its id for `create`'s ``resolution_id``."""
+        payload = await _json_object(request)
+        url = payload.get("url")
+        if set(payload) != {"url", "request_id"} or not isinstance(url, str):
+            raise _err(422, "send the repository link (url) and a request_id (a UUID)")
+        try:
+            op = mcp_jobs.start_resolve(payload["request_id"], url.strip(), mcp_gitsource.run)
+        except mcp_registry.RegistryError as e:
+            return _error(e)
+        return _started(op)
 
     @app.get("/api/mcp/servers/{sid}")
     async def get_server(sid: str, _user: str = Depends(logged_in)):
@@ -172,9 +220,6 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
                 return _error(e)
         return _json(row)
 
-    def _started(op: mcp_jobs.Operation) -> JSONResponse:
-        return JSONResponse(op.view(), status_code=202, headers=NO_STORE)
-
     @app.post("/api/mcp/servers/{sid}/review")
     async def review_server(
         sid: str,
@@ -222,6 +267,16 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         except mcp_registry.RegistryError as e:
             return _error(e)
         return _started(op)
+
+    @app.post("/api/mcp/operations/{op_id}/stop")
+    async def stop_operation(
+        op_id: str, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+    ):
+        """Stop reading a link (#2353): the fetch is killed and the resolution fails as stopped."""
+        try:
+            return _json(mcp_jobs.stop(op_id).view())
+        except mcp_registry.RegistryError as e:
+            return _error(e)
 
     @app.get("/api/mcp/operations/{op_id}")
     async def mcp_operation(op_id: str, _user: str = Depends(logged_in)):

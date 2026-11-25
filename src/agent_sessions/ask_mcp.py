@@ -27,6 +27,17 @@ HQ (a model) reads the Library's MCP servers the way the Library page does (``GE
   only ever ADDED. One without credentials or a passing check for its current set is refused at
   staging, and the route refuses it again under its own fences; the card says why in words.
 
+A create can also name a repository link the Commander TYPED in this message (#2353, ``source:
+{kind: repository, url}``): the link must be a complete URL token of their words
+(`skill_repo.operator_url`), never one seen only in tool content or a call. It is resolved
+server-side at staging (``POST /api/mcp/servers/resolve-link``, waited on like the install
+review): the package its root declares, the published release whose repository record names the
+link, and P1b's review. The card shows those facts and "Installs the published release; not built
+from this commit." directly above Register, and its bound draft carries the resolution's id
+(``resolution_id``), never an origin: the route persists the server-held source and origin, and a
+draft whose source no longer matches it is refused. A resolution that expired before the tap is
+refused in words; HQ reads the link again.
+
 Credentials never reach HQ: a project's own value is a `secret.create` card for that project
 (`ask_secrets`, the operator types it), and the shared value a project uses is a `secret.bind`
 card. None of these cards is ever confirmed by voice (`voice_calls._voice_operation`) or
@@ -62,6 +73,11 @@ INTEGRITY_SHOWN = 12
 #: is bounded by the installer's own tool timeout.
 REVIEW_WAIT_S = 330.0
 REVIEW_POLL_S = 0.5
+#: How long staging a link's create card waits for its resolution (#2353): the fetch's own clock,
+#: two registry reads and the review above.
+RESOLVE_WAIT_S = 420.0
+#: Characters of a link's refusal the model is told (guarded whole first).
+LINK_SAID_MAX = 400
 #: Fixed namespace for an install's request id: the same server + review is the same operation,
 #: so a second tap of one card never runs a second install.
 _INSTALL_NS = uuid.UUID("5c1f0e7a-2163-4b1e-9c1a-6d0a9f3e2163")
@@ -262,9 +278,11 @@ def _never(msg: str) -> Refused:
     return Refused(f"refused: {msg}", "never")
 
 
-def _create_payload(args: dict, servers: list[dict]) -> dict:
+def _create_payload(args: dict, servers: list[dict], *, link: bool = False) -> dict:
     """The server a create card registers, validated by the registry's own rules without writing.
-    Raises ``Refused``: ``never`` for anything that would carry a credential's value."""
+    Raises ``Refused``: ``never`` for anything that would carry a credential's value. ``link``: the
+    source is a repository link resolved later (#2353), so it is left out here and the rest is
+    checked as a package server's."""
     from . import mcp_registry, template_suggest
 
     extra = set(args) - _CREATE_KEYS
@@ -305,12 +323,12 @@ def _create_payload(args: dict, servers: list[dict]) -> dict:
             "read-only tool"
         )
     try:
-        source = mcp_registry._source(args.get("source"))
-        transport = mcp_registry._transport(source)
+        source = None if link else mcp_registry._source(args.get("source"))
+        transport = "stdio" if source is None else mcp_registry._transport(source)
         payload = {
             "name": mcp_registry._check_name(args.get("name"), servers, None),
             "label": mcp_registry._text(args.get("label", ""), "the label", cap=80),
-            "source": source,
+            **({"source": source} if source is not None else {}),
             "args": mcp_registry._args(args.get("args"), transport),
             "settings": mcp_registry._settings(settings, transport),
         }
@@ -329,7 +347,13 @@ def _credentials_of(payload: dict) -> list[str]:
 def _describe_create(f: dict, x: dict) -> str:
     creds = f.get("credentials") or ""
     plain = int(f.get("plain") or 0)
-    parts = [f"Registers the MCP server “{f['server_name']}” ({f.get('source_said') or ''})"]
+    origin = f.get("origin_said")
+    parts = [
+        f"Registers the MCP server “{f['server_name']}”: the {f.get('source_said') or ''} that "
+        f"{origin} declares at {f.get('origin_commit') or ''}"
+        if origin
+        else f"Registers the MCP server “{f['server_name']}” ({f.get('source_said') or ''})"
+    ]
     said = []
     if plain:
         said.append(f"{plain} plain setting{'s' if plain != 1 else ''}")
@@ -350,6 +374,16 @@ def _created(status: int, body: object, x: dict) -> tuple[str, str]:
     if 200 <= status < 300:
         return _ops().DONE, "Registered. Nothing is installed or switched on yet."
     return _ops()._plain(status, body, "")
+
+
+def _not_created(status: int, detail: str, x: dict) -> str:
+    if status == 404 and "resolve the link again" in (detail or ""):
+        # A link's resolution is held in memory for a while (#2353): HQ reads the link again.
+        return (
+            "Not registered: the link's reading is no longer held (it expired, or BattleLab "
+            "restarted). Ask HQ to read the link again. Nothing changed."
+        )
+    return f"Not registered: {detail or 'refused'}. Nothing changed."
 
 
 def _scripts_said(names: list[str]) -> str:
@@ -532,7 +566,7 @@ def mcp_ops() -> tuple[Operation, ...]:
             lambda t, f, x: ("POST", "/api/mcp/servers", (f.get("_content") or {}).get("server")),
             _describe_create,
             _created,
-            lambda st, d, x: f"Not registered: {d or 'refused'}. Nothing changed.",
+            _not_created,
             draft=True,
             follow_up=True,
         ),
@@ -605,14 +639,30 @@ def _project_ids(raw: object, known_projects: dict) -> list[str]:
 
 
 async def prepare(
-    action: object, args: dict, *, known: dict, known_projects: dict, app, operator
+    action: object,
+    args: dict,
+    *,
+    known: dict,
+    known_projects: dict,
+    app,
+    operator,
+    question: str | None = None,
 ) -> dict:
-    """What `propose_mcp` stages: ``{op, target, title, fields, draft?}``. Raises ``Refused``."""
+    """What `propose_mcp` stages: ``{op, target, title, fields, draft?}``. Raises ``Refused``.
+    ``question``: the Commander's typed message this turn (None on a call or a continuation),
+    the only place a repository link may come from (#2353)."""
     op = _ops().by_action(GROUP, action) if isinstance(action, str) else None
     if op is None:
         raise Refused("action must be create, install, check or enable", "bad_arguments")
     if "value" in args or "values" in args:
         raise _never("HQ never carries a credential's value — the operator types it on a card")
+    source_arg = args.get("source")
+    if (
+        op.id == "mcp.create"
+        and isinstance(source_arg, dict)
+        and (source_arg.get("kind") == "repository")
+    ):
+        return await _prepare_link(op, args, question, app, operator)
     if op.id == "mcp.create":
         payload = _create_payload(args, await _servers(app, operator))
         source = payload["source"]
@@ -661,6 +711,135 @@ async def prepare(
         return {"op": op, "target": sid, "title": title, "fields": fields}
     fields = _enable_fields(args, rec, detail, known_projects)
     return {"op": op, "target": sid, "title": title, "fields": fields}
+
+
+# ---- a create from a repository link (#2353) ----------------------------------------------------
+
+
+async def _prepare_link(op, args: dict, question: str | None, app, operator) -> dict:
+    """A create card for the package a typed repository link declares, resolved server-side NOW;
+    the card binds the resolution's id, never an origin or a package HQ chose."""
+    from . import skill_repo
+
+    source = args["source"]
+    if set(source) - {"kind", "url"}:
+        raise Refused(
+            "refused: a repository source is {kind: repository, url}; the package and its version "
+            "come from the repository, never from HQ",
+            "bad_arguments",
+        )
+    if question is None:
+        raise Refused(
+            "refused: a repository is read only from a link the Commander typed in HQ", "not_typed"
+        )
+    try:
+        typed = skill_repo.operator_url(source.get("url"), question)
+    except skill_repo.Refused as e:
+        raise Refused(str(e), e.code) from None
+    payload = _create_payload(args, await _servers(app, operator), link=True)
+    res = await _await_resolution(app, operator, typed)
+    resolved = res.get("source")
+    origin = res.get("origin") if isinstance(res.get("origin"), dict) else {}
+    facts = res.get("facts") if isinstance(res.get("facts"), dict) else {}
+    if not isinstance(resolved, dict) or not isinstance(origin.get("commit"), str):
+        raise Refused("refused: the link's reading came back incomplete; try again", "link_refused")
+    payload["source"] = resolved
+    kind = "npm package" if resolved.get("kind") == "npm" else "PyPI package"
+    fields = {
+        "server_name": payload["name"],
+        "source_said": f"{kind} {resolved.get('package')} {resolved.get('version')}",
+        "package": True,
+        "plain": sum(1 for s in payload["settings"] if s["kind"] == "plain"),
+        "credentials": ", ".join(_credentials_of(payload)),
+        "origin_said": str(facts.get("repository") or ""),
+        "origin_commit": origin["commit"][:7],
+    }
+    draft = {
+        "server": {**payload, "resolution_id": str(res.get("resolution_id") or "")},
+        "link": _link_view(res, facts, origin),
+    }
+    return {"op": op, "target": "", "title": payload["name"], "fields": fields, "draft": draft}
+
+
+def _integrity_shown(integrity: str) -> str:
+    """ "sha512-…" (npm) or "sha256:…" (PyPI): the algorithm and a short prefix of the digest."""
+    cut = min((i for i in (integrity.find("-"), integrity.find(":")) if i >= 0), default=-1)
+    return integrity[: cut + 1 + INTEGRITY_SHOWN] if 0 < cut <= 8 else ""
+
+
+def _link_view(res: dict, facts: dict, origin: dict) -> dict:
+    """What the link card shows of its resolution: the repository, the package it declares, the
+    registry record that names it, then the release P1b reviewed. Display only: the tap builds
+    nothing from it."""
+    declared = facts.get("declared") if isinstance(facts.get("declared"), dict) else {}
+    release = facts.get("release") if isinstance(facts.get("release"), dict) else {}
+    review = res.get("review") if isinstance(res.get("review"), dict) else {}
+    scripts = [str(x) for x in review.get("install_scripts_declared") or []]
+    return {
+        "repository": str(facts.get("repository") or ""),
+        "commit": origin["commit"][:7],
+        "manifest": str(declared.get("manifest") or ""),
+        "kind": str(declared.get("kind") or ""),
+        "package": str(declared.get("package") or ""),
+        "version": str(declared.get("version") or ""),
+        "registry": str(release.get("registry") or ""),
+        "record_field": str(release.get("record_field") or ""),
+        "names": str(release.get("names") or ""),
+        "integrity": _integrity_shown(str(review.get("integrity") or "")),
+        "dependencies": int(review.get("dependencies") or 0),
+        "install_scripts": _scripts_said(scripts or list(release.get("install_scripts") or [])),
+        "runs": str(review.get("runs") or "")[:120],
+        "license": str(release.get("license") or review.get("license") or "")[:80],
+        "disclaimer": str(res.get("disclaimer") or ""),
+    }
+
+
+def _link_said(text: str) -> str:
+    """A link's refusal as the model may be told it: guarded WHOLE (a field the store boundary
+    would change is dropped), then cut."""
+    from . import ask_store
+
+    one = " ".join(text.split())
+    if not one:
+        return ""
+    try:
+        guarded = ask_store.guard_text(one, max(len(one), 1))
+    except ask_store.StoreRefused:
+        return ""
+    if guarded != one:
+        return ""
+    return one[:LINK_SAID_MAX] + ("…" if len(one) > LINK_SAID_MAX else "")
+
+
+async def _await_resolution(app, operator, url: str) -> dict:
+    """Start reading the link (an operation, `mcp_jobs`) and wait for its result in process. A
+    Stop of the turn, or the wait running out, stops the read."""
+    rid = str(uuid.uuid4())
+    r = await asgi_call.call(
+        app, operator, "POST", "/api/mcp/servers/resolve-link", {"url": url, "request_id": rid}
+    )
+    if r.status != 202 or not isinstance(r.body, dict):
+        why = _link_said(r.detail or "") or "it could not be read"
+        raise Refused(f"refused: the link was not read: {why}", "link_refused")
+    deadline = time.monotonic() + RESOLVE_WAIT_S
+    op = r.body
+    try:
+        while op.get("state") == "running":
+            if time.monotonic() > deadline:
+                raise Refused("refused: reading the link is taking too long; try again", "busy")
+            await asyncio.sleep(REVIEW_POLL_S)
+            r = await asgi_call.call(app, operator, "GET", f"/api/mcp/operations/{rid}", None)
+            if r.status != 200 or not isinstance(r.body, dict):
+                raise Refused("refused: the link's reading was lost; try again", "link_refused")
+            op = r.body
+    except (asyncio.CancelledError, Refused):
+        with contextlib.suppress(Exception):
+            await asgi_call.call(app, operator, "POST", f"/api/mcp/operations/{rid}/stop", None)
+        raise
+    if op.get("state") != "done" or not isinstance(op.get("result"), dict):
+        why = _link_said(str(op.get("error") or "")) or "it could not be read"
+        raise Refused(f"refused: {why}. Nothing was registered", "link_refused")
+    return op["result"]
 
 
 async def _review(app, operator, rec: dict) -> dict:
@@ -772,7 +951,15 @@ def _revision(rec: dict) -> str:
 
 def content_view(draft: dict) -> dict:
     """What a create card shows of its bound draft (the operator's browser only, never the
-    model): the server exactly as it will be registered."""
+    model): the server exactly as it will be registered, and for a repository link (#2353) what
+    the link resolved to, with the disclaimer directly above Register."""
+    if isinstance(draft.get("link"), dict):
+        server = {k: v for k, v in (draft.get("server") or {}).items() if k != "resolution_id"}
+        return {
+            "kind": "mcp_link",
+            "link": draft["link"],
+            "server": json.dumps(server, indent=2, ensure_ascii=False),
+        }
     return {
         "kind": "files",
         "files": [

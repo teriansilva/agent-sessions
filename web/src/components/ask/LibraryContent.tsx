@@ -11,7 +11,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { ApiError, api } from "../../lib/api";
-import type { AskImportRow, AskLibraryContent, AskOperationCard } from "../../types/api";
+import type { AskImportRow, AskLibraryContent, AskMcpLink, AskOperationCard } from "../../types/api";
 import c from "./AskCards.module.css";
 import { libraryHref } from "./libraryHref";
 import { RELIES_NOTE, ReliesList, SpecialistContent } from "./SpecialistContent";
@@ -160,6 +160,72 @@ function ImportBody({ content }: { content: Extract<AskLibraryContent, { kind: "
   );
 }
 
+/** An MCP server from a repository link (#2353): the repository and commit, the package it
+ *  declares, the registry record that names it, then the published release P1b reviewed — and the
+ *  disclaimer last, directly above Register. Words only: nothing here is built into the request. */
+function McpLinkBody({ link, server }: { link: AskMcpLink; server: string }) {
+  const kind = link.kind === "pypi" ? "PyPI" : "npm";
+  return (
+    <div data-testid="ask-mcp-link">
+      <dl className={c.kv}>
+        <dt>Source</dt>
+        <dd className={c.mono} data-testid="ask-mcp-link-source">
+          {link.repository} @ {link.commit}
+        </dd>
+        <dt>Declares</dt>
+        <dd>
+          <span className={c.mono}>{link.manifest}</span> → {kind} <span className={c.mono}>{link.package}</span>{" "}
+          {link.version}
+        </dd>
+        <dt>Registry</dt>
+        <dd>
+          its <span className={c.mono}>{link.record_field}</span> names <span className={c.mono}>{link.names}</span>,
+          the link’s repository
+        </dd>
+      </dl>
+      <div className={c.blockLabel}>The published release</div>
+      <dl className={c.kv}>
+        <dt>Package</dt>
+        <dd className={c.mono}>
+          {link.package} {link.version}
+        </dd>
+        <dt>Registry</dt>
+        <dd>{link.registry}</dd>
+        {link.integrity ? (
+          <>
+            <dt>Integrity</dt>
+            <dd className={c.mono}>{link.integrity}…</dd>
+          </>
+        ) : null}
+        <dt>Dependencies</dt>
+        <dd>{link.dependencies} · pinned in a lock when it is installed</dd>
+        <dt>Install scripts</dt>
+        <dd>{link.install_scripts ? `${link.install_scripts} declared · never run` : "none declared"}</dd>
+        {link.runs ? (
+          <>
+            <dt>Runs</dt>
+            <dd className={c.mono}>{link.runs}</dd>
+          </>
+        ) : null}
+        {link.license ? (
+          <>
+            <dt>License</dt>
+            <dd>{link.license}</dd>
+          </>
+        ) : null}
+      </dl>
+      <div className={c.blockLabel}>Registers</div>
+      <Folded text={server} testid="ask-library-file" />
+      <div className={c.caution} role="note" data-testid="ask-mcp-disclaimer">
+        <TriangleAlert size={14} aria-hidden />
+        <div>
+          <strong>{link.disclaimer || "Installs the published release; not built from this commit."}</strong>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const STATUS_LINE: Record<string, string> = {
   off: "Saved off: nothing runs until you enable it.",
   enabled: "Remains enabled: changes affect its next and later runs.",
@@ -244,6 +310,7 @@ export function LibraryContent({
     );
   }
   if (content.kind === "import") return <ImportBody content={content} />;
+  if (content.kind === "mcp_link") return <McpLinkBody link={content.link} server={content.server} />;
   if (content.kind === "specialist") return <SpecialistContent content={content} stale={stale} />;
   // The specialists a playbook relies on (#1938) sit above its files; the note under them says
   // what saving does not do.

@@ -121,8 +121,8 @@ test.describe("wizard", () => {
     await mockMcp(page, f);
     await page.goto(MCP_NEW_PATH);
     await expect(page.getByTestId("mcp-step-source")).toBeVisible();
-    // Git is offered and not pickable yet.
-    await expect(page.getByRole("radio", { name: /Git repository/ })).toBeDisabled();
+    // #2353: the fourth kind took the old "Git repository · Later" slot; picking it is its own spec.
+    await expect(page.getByRole("radio", { name: /Repository link/ })).toBeEnabled();
     await page.getByLabel("Server URL").fill("https://mcp.example.com/mcp");
     await expect(page.getByLabel("Name", { exact: true })).toHaveValue("example");
     await page.getByLabel("Label (optional)").fill("Example");

@@ -1275,6 +1275,13 @@ export interface AskOperationCard {
 export type AskLibraryContent =
   | { kind: "files"; files: { path: string; text: string | null }[]; relies?: AskReliesRow[] }
   | {
+      /** An MCP server from a repository link (#2353): what the link resolved to, and the server
+       *  exactly as it will be registered (its binding id is never shown; the tap sends it). */
+      kind: "mcp_link";
+      link: AskMcpLink;
+      server: string;
+    }
+  | {
       /** A skill read from a repository link (#2145): the pinned source, one row per file (its
        *  size, lines and a flag), the files verbatim, and every reason it can't be saved. */
       kind: "import";
@@ -1378,6 +1385,25 @@ export type AskFlowStep = {
   /** How often a reviewer may send work back here, when the step reworks. */
   rework: number | null;
 };
+
+/** What a repository link resolved to, as HQ's create card shows it (`ask_mcp._link_view`). */
+export interface AskMcpLink {
+  repository: string;
+  commit: string;
+  manifest: string;
+  kind: string;
+  package: string;
+  version: string;
+  registry: string;
+  record_field: string;
+  names: string;
+  integrity: string;
+  dependencies: number;
+  install_scripts: string;
+  runs: string;
+  license: string;
+  disclaimer: string;
+}
 
 /** One file of an imported skill as the card's table shows it. `bytes` is null when the server
  *  withheld it (over the size cap); `flag` names why a file stands out. */

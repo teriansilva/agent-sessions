@@ -55,13 +55,14 @@ const NEXT: [string, string][] = [
   ["Enable", "pick the projects whose sessions get it."],
 ];
 
-export function WhatHappensNext({ current }: { current: number }) {
+/** `sourceNote` replaces what Source says (a repository link IS read at Source, #2353). */
+export function WhatHappensNext({ current, sourceNote }: { current: number; sourceNote?: string }) {
   return (
     <ol className={styles.next}>
       {NEXT.map(([b, t], i) => (
         <li key={b} className={i === current ? styles.cur : undefined} aria-current={i === current ? "step" : undefined}>
           <span>
-            <b>{b}</b> — {t}
+            <b>{b}</b> — {i === 0 && sourceNote ? sourceNote : t}
           </span>
         </li>
       ))}

@@ -21,6 +21,7 @@ import { ConfirmDialog } from "../components/templates/ConfirmDialog";
 import { Caution, CheckReport, ProjectSquare, ReviewFacts, RunAgainLabel, StateWords } from "../components/mcp/McpBits";
 import { SettingsEditor } from "../components/mcp/SettingsEditor";
 import { useMcpOperation } from "../components/mcp/mcpOperation";
+import { OriginNote } from "../components/mcp/RepoLink";
 import { bindShared, errorText, storeNewCredentials, useProjects, useSecrets } from "../components/mcp/mcpData";
 import {
   SECRET_MIN,
@@ -789,6 +790,7 @@ function SettingsTab({
       </Panel>
       <Panel rail="short" faceClassName={styles.face}>
         <Callsign title="Source" value={s.source.kind} />
+        {s.origin && <OriginNote origin={s.origin} source={s.source} />}
         {s.source.kind === "remote" ? (
           <Field label="Server URL" mono type="url" value={url} onChange={(e) => setUrl(e.target.value)} hint="https only." />
         ) : (

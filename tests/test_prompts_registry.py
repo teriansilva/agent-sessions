@@ -129,6 +129,9 @@ HTTP_MODULES = frozenset(
         "connector_smtp",  # #1836 the email connector's transport (SMTP, never HTTP)
         "signin_callback",  # #2106 a loopback sign-in's callback, to the sign-in's own listener
         "mcp_launch",  # #2163 the project MCP relay, to the URL the operator registered
+        # #2353 a repository link's published release: the npm / PyPI registry's own metadata,
+        # through P1b's egress proxy (registry hosts only), never a URL found in that metadata.
+        "mcp_gitsource",
         # #2190 the Home Free agent uploads a SHARED artifact's blobs to its own relay's upload
         # path (never a prompt, never a credential beyond the relay's one-time token in the URL)
         "artifactlink",
@@ -154,6 +157,11 @@ POST_SITES = {
     # BattleLab's; and the one DELETE that ends its MCP session.
     ("mcp_launch", "_post"): 1,
     ("mcp_launch", "_end_session"): 1,
+    # #2353 one bounded, anonymous GET of a release's metadata, to a URL built from the fixed
+    # registry origin and validated package parts, through `mcp_egress` (registry hosts only), no
+    # redirects, no ambient proxy, TLS verified. No prompt; a repository URL in the answer is
+    # only parsed (`mcp_gitsource.identity`), never requested.
+    ("mcp_gitsource", "_registry_get"): 1,
     ("memory_embeddings", "_request"): 1,  # pinned vetted origin, bounded non-chat vectors
     ("gallery_client", "_get"): 1,  # public signed content; fixed origin, anonymous bounded GET
     # #1259 fixed public GitHub feed, anonymous bounded GET (public `read_asset` since #2082 P3:

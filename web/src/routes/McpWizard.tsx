@@ -1,7 +1,11 @@
 /** Library → MCP servers → Add (#2163 P1c): the five-step setup on the app's one wizard shell —
  *  Source · Review · Settings · Check · Enable.
  *
- *  - **Source** registers the server (nothing is fetched). Git is shown, and not pickable yet.
+ *  - **Source** registers the server (nothing is fetched). A **Repository link** (#2353) registers
+ *    nothing yet: Review reads the link (a polled operation, stoppable), shows where the package
+ *    comes from with "not built from this commit", then P1b's review of the published release;
+ *    Install registers it bound to that resolution and installs exactly that lock. Every state
+ *    before registration offers Cancel, never Finish later.
  *  - **Review** shows what will run. A remote server has nothing to install; a package is resolved
  *    into a lock (`/review`) and installed only when the operator presses Install (`/install`).
  *    Both are operations the page polls (`useMcpOperation`): a package can take minutes.
@@ -11,13 +15,22 @@
  *  - **Enable** turns the server on per project. A project without its own credentials gets the
  *    shared ones bound (Variables' explicit reference); one whose set has no passing check is
  *    checked first and stays off if that fails. */
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Box, GitBranch, Globe, KeyRound, Package, Power } from "lucide-react";
+import { Box, Check, GitBranch, Globe, KeyRound, Package, Power } from "lucide-react";
 
-import { api } from "../lib/api";
+import { ApiError, api } from "../lib/api";
 import { MCP_PATH, mcpServerPath } from "../lib/routes";
-import type { McpCheckRow, McpReviewFacts, McpServerDetail, McpServerSummary, McpSource } from "../types/mcp";
+import type {
+  McpCheckRow,
+  McpLinkFacts,
+  McpResolution,
+  McpResolveProgress,
+  McpReviewFacts,
+  McpServerDetail,
+  McpServerSummary,
+  McpSource,
+} from "../types/mcp";
 import { WizardShell, type WizardStep } from "../components/wizard/WizardShell";
 import { Callsign, Panel } from "../components/hud/Panel";
 import { Field, Seg } from "../components/hud/Controls";
@@ -33,7 +46,9 @@ import {
   WhatHappensNext,
 } from "../components/mcp/McpBits";
 import { SettingsEditor } from "../components/mcp/SettingsEditor";
-import { useMcpOperation } from "../components/mcp/mcpOperation";
+import { OperationEnded, useMcpOperation } from "../components/mcp/mcpOperation";
+import { LinkRefusal, OriginFacts, ResolveProgress } from "../components/mcp/RepoLink";
+import { linkDisplay, linkError, nameFromLink, normalizeLink } from "../components/mcp/repoLinkModel";
 import { bindShared, errorText, storeNewCredentials, useProjects, useSecrets } from "../components/mcp/mcpData";
 import {
   argsFromText,
@@ -55,7 +70,10 @@ import {
 } from "../components/mcp/mcpModel";
 import styles from "../components/mcp/mcp.module.css";
 
-type Kind = "remote" | "npm" | "pypi";
+type Kind = "remote" | "npm" | "pypi" | "repo";
+
+const LINK_SOURCE_NOTE =
+  "where the server comes from. A repository link is read at one commit; no package is downloaded yet.";
 
 const STEPS: WizardStep[] = [
   { id: "source", label: "Source" },
@@ -86,6 +104,7 @@ export default function McpWizard() {
   // ---- step 1: source
   const [kind, setKind] = useState<Kind>("remote");
   const [url, setUrl] = useState("");
+  const [link, setLink] = useState("");
   const [pkg, setPkg] = useState("");
   const [version, setVersion] = useState("");
   const [entrypoint, setEntrypoint] = useState("");
@@ -99,7 +118,7 @@ export default function McpWizard() {
       kind === "remote"
         ? { kind, url: url.trim() }
         : {
-            kind,
+            kind: kind === "repo" ? "npm" : kind,
             package: pkg.trim(),
             version: version.trim(),
             ...(kind === "pypi" && entrypoint.trim() ? { entrypoint: entrypoint.trim() } : {}),
@@ -107,13 +126,15 @@ export default function McpWizard() {
     [kind, url, pkg, version, entrypoint],
   );
   // The name follows the source until the operator types one of their own.
-  const name = nameTouched ? nameInput : suggestName(source);
+  const name = nameTouched ? nameInput : kind === "repo" ? nameFromLink(link) : suggestName(source);
+  const isPkgKind = kind === "npm" || kind === "pypi";
 
   const sourceErrors = {
     url: kind === "remote" && !/^https:\/\/\S+$/.test(url.trim()) ? "An https:// address." : "",
-    pkg: kind !== "remote" && !pkg.trim() ? "The package's name on the registry." : "",
+    link: kind === "repo" ? linkError(link) : "",
+    pkg: isPkgKind && !pkg.trim() ? "The package's name on the registry." : "",
     version:
-      kind !== "remote" && !/^\d+(\.\d+)*([-.+][0-9A-Za-z.-]+)?$/.test(version.trim())
+      isPkgKind && !/^\d+(\.\d+)*([-.+][0-9A-Za-z.-]+)?$/.test(version.trim())
         ? "An exact version, e.g. 1.4.2. Ranges and ‘latest’ are refused."
         : "",
     name: nameError(name),
@@ -123,6 +144,7 @@ export default function McpWizard() {
   const saveSource = async () => {
     setTried(true);
     if (!sourceValid) return;
+    if (kind === "repo") return void readLink();
     setBusy(true);
     setError("");
     try {
@@ -154,7 +176,94 @@ export default function McpWizard() {
   // ---- step 2: review
   const [facts, setFacts] = useState<McpReviewFacts | null>(null);
   const [reviewError, setReviewError] = useState("");
-  const isPackage = server?.transport === "stdio";
+  // A repository link (#2353): read on Review, before anything is registered.
+  const [resolution, setResolution] = useState<McpResolution | null>(null);
+  const [refusal, setRefusal] = useState<{ error: string; details: McpLinkFacts | null } | null>(null);
+  const [progress, setProgress] = useState<McpResolveProgress>({});
+  const [linkNote, setLinkNote] = useState("");
+  const resolveOp = useMcpOperation();
+  const readSeq = useRef(0);
+  const readId = useRef("");
+  const linkRead = kind === "repo" && !server; // the link's own Review: nothing registered yet
+  const isPackage = server?.transport === "stdio" || linkRead;
+  /** Read the link (an operation the page polls); a newer read or Stop drops an older one's answer. */
+  const runResolve = async (target: string) => {
+    const seq = ++readSeq.current;
+    setResolution(null);
+    setRefusal(null);
+    setProgress({});
+    try {
+      const res = await resolveOp(
+        `link:${normalizeLink(target)}:${seq}`,
+        (rid) => {
+          readId.current = rid;
+          return api.resolveMcpLink(target, rid);
+        },
+        (op) => {
+          if (seq === readSeq.current) setProgress(op.progress ?? {});
+        },
+      );
+      if (res && seq === readSeq.current) setResolution(res);
+    } catch (e) {
+      if (seq !== readSeq.current) return;
+      setRefusal({ error: errorText(e), details: e instanceof OperationEnded ? (e.op?.details ?? null) : null });
+    }
+  };
+  const readLink = async () => {
+    setError("");
+    setLinkNote("");
+    const target = link.trim();
+    if (server) {
+      if (server.origin && normalizeLink(server.origin.url) === normalizeLink(target)) {
+        setStep(1);
+        return;
+      }
+      // Registered only just now, here, from another source: start again from this link.
+      setBusy(true);
+      try {
+        await api.deleteMcpServer(server.id, server.updated_at);
+        setServer(null);
+        setFacts(null);
+      } catch (e) {
+        setError(errorText(e));
+        return;
+      } finally {
+        setBusy(false);
+      }
+    } else if (resolution && normalizeLink(resolution.origin.url) === normalizeLink(target)) {
+      setStep(1);
+      return;
+    }
+    setStep(1);
+    void runResolve(target);
+  };
+  const stopReading = () => {
+    readSeq.current += 1;
+    const rid = readId.current;
+    if (rid) void api.stopMcpOperation(rid).catch(() => undefined);
+    setProgress({});
+    setStep(0);
+  };
+  /** Install for a link: register it bound to the resolution (its source and origin, server-side),
+   *  then install exactly the lock Review showed. An expired resolution is read again. */
+  const registerFromLink = async (): Promise<McpServerSummary | null> => {
+    if (!resolution) return null;
+    try {
+      return await api.createMcpServer({
+        name,
+        label: label.trim(),
+        source: resolution.source,
+        resolution_id: resolution.resolution_id,
+      });
+    } catch (e) {
+      if (e instanceof ApiError && (e.status === 404 || e.status === 409)) {
+        setLinkNote("The link’s reading was no longer held, so it was read again. Review it and press Install.");
+        void runResolve(link.trim());
+        return null;
+      }
+      throw e;
+    }
+  };
   const installed = !!server?.installed && sameSource((server.installed as { source?: McpSource }).source, server.source);
   // Both run on the server as polled operations (#2163 P1b): a package can take minutes.
   const reviewOp = useMcpOperation();
@@ -171,13 +280,22 @@ export default function McpWizard() {
     }
   };
   const install = async () => {
-    if (!server || !facts) return;
     setBusy(true);
     setError("");
     try {
-      const next = await installOp(`${server.id}:${facts.review_id}`, (rid) =>
-        api.installMcpServer(server.id, facts.review_id, rid),
-      );
+      let target = server;
+      let reviewed = facts;
+      if (!target && linkRead) {
+        target = await registerFromLink();
+        if (!target) return;
+        reviewed = resolution?.review ?? null;
+        setServer(target);
+        setFacts(reviewed);
+      }
+      if (!target || !reviewed) return;
+      const sid = target.id;
+      const rv = reviewed.review_id;
+      const next = await installOp(`${sid}:${rv}`, (rid) => api.installMcpServer(sid, rv, rid));
       if (!next) return;
       setServer(next);
       setStep(2);
@@ -379,7 +497,8 @@ export default function McpWizard() {
   ][step];
   const nextDisabled =
     busy ||
-    (step === 1 && isPackage && !installed && !facts) ||
+    (step === 1 && linkRead && !resolution) ||
+    (step === 1 && !linkRead && isPackage && !installed && !facts) ||
     (step === 3 && (checking || !check)) ||
     (step === 4 && (!detail || (mode === "selected" && targets.length === 0)));
   // The shell draws `nextNote` in danger ink (it says why Next may not do what you hope), so it is
@@ -390,7 +509,15 @@ export default function McpWizard() {
       : undefined;
 
   const leaveGuard =
-    (step === 0 && !server && !!(url || pkg || version)) || (step === 2 && dirty);
+    (step === 0 && !server && !!(url || pkg || version || link)) || (step === 2 && dirty);
+  // A refused link offers no Install at all: Cancel, Back and Try another link only.
+  const refusedLink = step === 1 && linkRead && !!refusal;
+  const pickedTag = (
+    <span className={styles.selected} data-testid="mcp-kind-selected">
+      <Check size={12} aria-hidden="true" />
+      Selected
+    </span>
+  );
 
   const scopeLabel = "shared credentials";
   const body = (() => {
@@ -398,7 +525,10 @@ export default function McpWizard() {
       case 0:
         return (
           <Panel rail="short" faceClassName={styles.face}>
-            <Callsign title="Source" value={{ remote: "remote server", npm: "npm package", pypi: "PyPI package" }[kind]} />
+            <Callsign
+              title="Source"
+              value={{ remote: "remote server", npm: "npm package", pypi: "PyPI package", repo: "repository link" }[kind]}
+            />
             <fieldset className={styles.choices} data-testid="mcp-source-kinds">
               <legend className="nj-sr-only">Source kind</legend>
               {(
@@ -406,6 +536,12 @@ export default function McpWizard() {
                   ["remote", Globe, "Remote server (URL)", "Someone else runs it. Sessions connect over HTTPS."],
                   ["npm", Box, "npm package", "Installed once into BattleLab’s own folder; each session starts it over stdio."],
                   ["pypi", Package, "PyPI package", "Installed with uv into its own environment, wheels only; started over stdio."],
+                  [
+                    "repo",
+                    GitBranch,
+                    "Repository link",
+                    "A public repository, read at one commit. Installs the npm or PyPI release it publishes.",
+                  ],
                 ] as const
               ).map(([value, Icon, title, text]) => (
                 <label key={value} className={styles.choice}>
@@ -422,19 +558,30 @@ export default function McpWizard() {
                     {title}
                   </span>
                   <p>{text}</p>
+                  {kind === value && pickedTag}
                 </label>
               ))}
-              <label className={styles.choice}>
-                <input type="radio" name="mcp-kind" value="git" disabled aria-describedby="mcp-git-later" />
-                <span className={styles.choiceHead}>
-                  <GitBranch size={16} aria-hidden="true" />
-                  Git repository <span className={styles.tag}>Later</span>
-                </span>
-                <p id="mcp-git-later">Build from a pinned commit. Not available yet.</p>
-              </label>
             </fieldset>
             <div className={styles.fields}>
-              {kind === "remote" ? (
+              {kind === "repo" ? (
+                <Field
+                  className={styles.full}
+                  label="Repository link"
+                  mono
+                  type="url"
+                  inputMode="url"
+                  placeholder="https://github.com/owner/repo"
+                  value={link}
+                  onChange={(e) => setLink(e.target.value)}
+                  hint={
+                    <>
+                      Only the repository root — no <code>/tree/</code> or <code>/blob/</code> links. BattleLab installs its{" "}
+                      <em>published</em> npm or PyPI release; nothing is built from the code.
+                    </>
+                  }
+                  error={tried && sourceErrors.link ? sourceErrors.link : undefined}
+                />
+              ) : kind === "remote" ? (
                 <Field
                   className={styles.full}
                   label="Server URL"
@@ -506,8 +653,38 @@ export default function McpWizard() {
       case 1:
         return (
           <Panel rail="short" faceClassName={styles.face}>
-            <Callsign title="What will run" value={server?.name} />
-            {!server ? null : !isPackage ? (
+            <Callsign
+              title="What will run"
+              value={server?.name ?? (linkRead ? (resolution ? name : linkDisplay(link)) : undefined)}
+            />
+            {linkRead ? (
+              refusal ? (
+                <LinkRefusal error={refusal.error} details={refusal.details} onRetry={() => setStep(0)} />
+              ) : !resolution ? (
+                <ResolveProgress link={link} progress={progress} onStop={stopReading} />
+              ) : (
+                <>
+                  {linkNote && (
+                    <p className={styles.note} role="status">
+                      {linkNote}
+                    </p>
+                  )}
+                  <OriginFacts resolution={resolution} />
+                  <ReviewFacts facts={resolution.review} />
+                  <Caution title="Third-party code">
+                    It runs as your user inside every session that gets this server. Review before installing.
+                  </Caution>
+                  {busy ? (
+                    <p className={styles.note} role="status" data-testid="mcp-op-note">
+                      Registering it and installing exactly this lock. A package can take a few minutes; the install
+                      carries on even if you leave this page.
+                    </p>
+                  ) : (
+                    <p className={styles.note}>No package has been downloaded yet: Install fetches exactly this lock.</p>
+                  )}
+                </>
+              )
+            ) : !server ? null : !isPackage ? (
               <>
                 <RemoteFacts url={(server.source as { url: string }).url} />
                 <Caution title="Third-party server">
@@ -536,6 +713,7 @@ export default function McpWizard() {
               </>
             ) : (
               <>
+                {server.origin && resolution && <OriginFacts resolution={resolution} />}
                 <ReviewFacts facts={facts} />
                 <Caution title="Third-party code">
                   It runs as your user inside every session that gets this server. Review before installing.
@@ -791,7 +969,7 @@ export default function McpWizard() {
       onJump={setStep}
       heading={HEADINGS[step]}
       onBack={step > 0 ? () => setStep(step - 1) : undefined}
-      onNext={goNext}
+      onNext={refusedLink ? undefined : goNext}
       nextLabel={nextLabel}
       nextDisabled={nextDisabled}
       nextNote={nextNote}
@@ -820,7 +998,7 @@ export default function McpWizard() {
         </div>
         <Panel rail="short" faceClassName={styles.face} className={styles.aside}>
           <Callsign title="What happens next" />
-          <WhatHappensNext current={step} />
+          <WhatHappensNext current={step} sourceNote={kind === "repo" ? LINK_SOURCE_NOTE : undefined} />
           {projects && projects.length === 0 && step === 4 && (
             <p className={styles.note}>You have no projects yet.</p>
           )}

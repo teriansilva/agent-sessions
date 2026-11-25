@@ -12,7 +12,16 @@
 import type { Page, Route } from "@playwright/test";
 
 import { MCP_OPERATIONS_API } from "../src/lib/apiPaths";
-import type { McpCheckRow, McpOperation, McpReviewFacts, McpServerDetail, McpServerSummary, McpSetting } from "../src/types/mcp";
+import type {
+  McpCheckRow,
+  McpLinkFacts,
+  McpOperation,
+  McpResolution,
+  McpReviewFacts,
+  McpServerDetail,
+  McpServerSummary,
+  McpSetting,
+} from "../src/types/mcp";
 import { commonMocks } from "./mission-directions";
 
 export const PROJECTS = [
@@ -35,7 +44,11 @@ export interface FakeVar {
 
 /** An operation as the fake keeps it: the view, plus how many reads it has left and (install)
  *  the review it installs. */
-export type FakeOp = McpOperation & { polls: number; reviewId?: string };
+export type FakeOp = McpOperation & { polls: number; reviewId?: string; link?: string; reserved?: string; consumed?: boolean };
+
+/** What reading a repository link answers (#2353): its resolution, or a refusal in words with what
+ *  was read before it. A link the fake does not know is "no git repository". */
+export type FakeLink = { resolution: Omit<McpResolution, "resolution_id"> } | { error: string; details?: McpLinkFacts };
 
 export interface Fake {
   servers: Rec[];
@@ -58,6 +71,8 @@ export interface Fake {
   opPolls: number;
   /** The next install fails with these words (`InstallError`), then clears. */
   installFails: string;
+  /** Repository links by their link as typed (`mcp_gitsource.resolve`'s stand-in, #2353). */
+  links: Record<string, FakeLink>;
 }
 
 let seq = 0;
@@ -230,6 +245,7 @@ export function emptyFake(): Fake {
     ops: {},
     opPolls: 1,
     installFails: "",
+    links: {},
   };
 }
 
@@ -306,7 +322,106 @@ const opView = (op: FakeOp): McpOperation => ({
   updated_at: op.updated_at,
   result: op.result,
   error: op.error,
+  ...(op.kind === "resolve" ? { progress: op.progress, details: op.details ?? null } : {}),
 });
+
+export const LINK = "https://github.com/owner/repo";
+export const LINK_SHA = "3f2a9c1e5b7d40a8c6f2e19d3b4a7c58e0f1d26b";
+
+/** A link that resolves to `@acme/mcp-server 1.4.0`, whose npm record names the repository. */
+export function linkResolution(): Omit<McpResolution, "resolution_id"> {
+  const source = { kind: "npm" as const, package: "@acme/mcp-server", version: "1.4.0" };
+  const declared = { manifest: "package.json" as const, kind: "npm" as const, package: source.package, version: source.version };
+  return {
+    source,
+    origin: { url: LINK, commit: LINK_SHA },
+    facts: {
+      repository: "github.com/owner/repo",
+      url: LINK,
+      commit: LINK_SHA,
+      found: [declared],
+      declared,
+      release: { registry: "registry.npmjs.org", record_field: "repository", names: "github.com/owner/repo", license: "MIT" },
+    },
+    review: { ...reviewFacts(record({ name: "x", source }), "a1b2c3d4e5f60718"), entrypoints: ["acme-mcp"], entrypoint: "acme-mcp", runs: "node …/acme-mcp" },
+    disclaimer: "Installs the published release; not built from this commit.",
+  };
+}
+
+const RESOLVE_STEPS = ["commit", "manifest", "release", "repository", "review"] as const;
+
+/** `mcp_jobs.start_resolve`: no server; the same id with another link is a 409. */
+function startResolve(r: Route, f: Fake, body: Record<string, unknown>) {
+  if (!body || Object.keys(body).sort().join() !== "request_id,url" || typeof body.url !== "string")
+    return json(r, { detail: "send the repository link (url) and a request_id (a UUID)" }, 422);
+  const id = body.request_id;
+  if (typeof id !== "string" || !UUID.test(id)) return json(r, { detail: "request_id must be a UUID" }, 422);
+  const existing = f.ops[id];
+  if (existing) {
+    if (existing.kind !== "resolve" || existing.link !== body.url.trim())
+      return json(r, { detail: "that request_id belongs to another operation or link; resolve with a new one" }, 409);
+    return json(r, opView(existing), 202);
+  }
+  const op: FakeOp = {
+    id,
+    server: null,
+    kind: "resolve",
+    state: "running",
+    created_at: NOW,
+    updated_at: NOW,
+    result: null,
+    error: null,
+    progress: { step: "commit" },
+    details: null,
+    polls: f.opPolls,
+    link: body.url.trim(),
+    reserved: newId(),
+  };
+  f.ops[id] = op;
+  return json(r, opView(op), 202);
+}
+
+/** A read of a running resolution: it moves through its steps, then settles. */
+function readResolve(f: Fake, op: FakeOp) {
+  const known = f.links[op.link ?? ""];
+  const at = RESOLVE_STEPS.indexOf(op.progress?.step ?? "commit");
+  const next = RESOLVE_STEPS[Math.min(at + 1, RESOLVE_STEPS.length - 1)];
+  const res = known && "resolution" in known ? known.resolution : null;
+  op.progress = {
+    step: next,
+    commit: LINK_SHA,
+    ...(res?.facts.declared && at >= 1 ? { ...res.facts.declared } : {}),
+  };
+  if (--op.polls > 0) return;
+  if (!known) Object.assign(op, { state: "failed", error: "there is no git repository at that link" });
+  else if ("error" in known) Object.assign(op, { state: "failed", error: known.error, details: known.details ?? null });
+  else Object.assign(op, { state: "done", result: { ...known.resolution, resolution_id: op.id } });
+  op.updated_at = NOW;
+}
+
+/** `POST /api/mcp/servers` with a `resolution_id`: the server-held source and origin, once. */
+function createFromResolution(r: Route, f: Fake, body: Record<string, unknown>) {
+  if ("origin" in body) return json(r, { detail: "origin comes only from a resolved link: send its resolution_id" }, 422);
+  const op = f.ops[body.resolution_id as string];
+  if (!op || op.kind !== "resolve" || op.state !== "done" || !op.result)
+    return json(r, { detail: "this link's resolution is no longer held (it expired, or BattleLab restarted); resolve the link again" }, 404);
+  if (op.consumed) return json(r, { detail: "a server was already registered from this resolution; resolve again" }, 409);
+  const res = op.result as McpResolution;
+  if (body.source && JSON.stringify(body.source) !== JSON.stringify(res.source))
+    return json(r, { detail: "the source differs from the package the link resolved to; resolve the link again" }, 409);
+  op.consumed = true;
+  const rec = record({
+    id: op.reserved,
+    name: body.name as string,
+    label: (body.label as string) ?? "",
+    source: res.source,
+    transport: "stdio",
+    origin: res.origin,
+    updated_at: NOW,
+  });
+  f.servers.push(rec);
+  return json(r, summary(f, rec), 201);
+}
 
 /** `mcp_jobs.start`: the same id returns the same operation; another id while one runs for this
  *  server is a 409; anything else starts one, answered 202. */
@@ -342,6 +457,7 @@ function startOp(r: Route, f: Fake, rec: Rec, kind: "review" | "install", body: 
 
 /** One read of an operation: it settles once its `polls` run out. */
 function readOp(f: Fake, op: FakeOp) {
+  if (op.state === "running" && op.kind === "resolve") return readResolve(f, op);
   if (op.state !== "running" || --op.polls > 0) return;
   const rec = f.servers.find((s) => s.id === op.server);
   if (!rec) Object.assign(op, { state: "failed", error: "no such MCP server" });
@@ -399,6 +515,9 @@ export async function mockMcp(page: Page, f: Fake): Promise<void> {
     const method = req.method();
     const body = req.postData() ? req.postDataJSON() : null;
     if (method !== "GET") f.calls.push({ method, path, body });
+    if (path === "/api/mcp/servers/resolve-link" && method === "POST") return startResolve(r, f, body);
+    if (path === "/api/mcp/servers" && method === "POST" && body && "resolution_id" in body)
+      return createFromResolution(r, f, body);
     if (path === "/api/mcp/servers") {
       if (method === "GET") {
         if (f.listErrors > 0) {
@@ -428,6 +547,8 @@ export async function mockMcp(page: Page, f: Fake): Promise<void> {
       const fields = { ...body };
       delete fields.expected_updated_at;
       if (fields.settings) fields.settings = settingsIn(fields.settings, rec.transport);
+      // A changed source clears the display-only origin (#2353).
+      if (fields.source && JSON.stringify(fields.source) !== JSON.stringify(rec.source)) delete rec.origin;
       const bumps = ["settings", "source", "args", "probe"].some((k) => k in fields);
       Object.assign(rec, fields, { updated_at: rec.updated_at + 1, rev: rec.rev + (bumps ? 1 : 0) });
       return json(r, summary(f, rec));
@@ -465,6 +586,14 @@ export async function mockMcp(page: Page, f: Fake): Promise<void> {
       return json(r, detail(f, rec));
     }
     return json(r, { detail: "not in the fake" }, 404);
+  });
+  await page.route(new RegExp(`${MCP_OPERATIONS_API}/[^/?]+/stop$`), async (r) => {
+    const path = new URL(r.request().url()).pathname;
+    f.calls.push({ method: "POST", path, body: null });
+    const op = f.ops[decodeURIComponent(path.split("/").slice(-2)[0])];
+    if (!op) return json(r, { detail: "no such operation" }, 404);
+    if (op.state === "running") Object.assign(op, { state: "failed", error: "stopped: the link was not read" });
+    return json(r, opView(op));
   });
   await page.route(new RegExp(`${MCP_OPERATIONS_API}/[^/?]+$`), async (r) => {
     const id = decodeURIComponent(new URL(r.request().url()).pathname.slice(MCP_OPERATIONS_API.length + 1));

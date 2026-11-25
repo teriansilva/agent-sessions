@@ -28,6 +28,13 @@ export type McpStateKind =
   | "disabled"
   | "not_enabled";
 
+/** Where a package server was added from (#2353): display only, set by the server from a resolved
+ *  repository link, cleared when the source changes. */
+export interface McpOrigin {
+  url: string;
+  commit: string;
+}
+
 export interface McpServerSummary {
   id: string;
   name: string;
@@ -42,6 +49,7 @@ export interface McpServerSummary {
   enabled: boolean;
   rev: number;
   installed: { installed_at?: number; integrity?: string } | null;
+  origin?: McpOrigin;
   created_at: number;
   updated_at: number;
   tool_count: number;
@@ -113,13 +121,63 @@ export interface McpReviewFacts {
  *  `running`. `done` carries what the route used to answer; `failed` carries the reason in words. */
 export interface McpOperation<T = unknown> {
   id: string;
-  server: string;
-  kind: "review" | "install";
+  server: string | null;
+  kind: "review" | "install" | "resolve";
   state: "running" | "done" | "failed";
   created_at: number;
   updated_at: number;
   result: T | null;
   error: string | null;
+  /** A link's resolution only (#2353): what has been read so far. */
+  progress?: McpResolveProgress;
+  /** A refused resolution only: what was read before the refusal. */
+  details?: McpLinkFacts | null;
+}
+
+/** The manifest a repository root declares (#2353). */
+export interface McpDeclared {
+  manifest: "package.json" | "pyproject.toml";
+  kind: "npm" | "pypi";
+  package: string;
+  version: string;
+  dynamic?: boolean;
+}
+
+export interface McpResolveProgress {
+  step?: "commit" | "manifest" | "release" | "repository" | "review";
+  commit?: string;
+  manifest?: string;
+  kind?: "npm" | "pypi";
+  package?: string;
+  version?: string;
+}
+
+/** What reading a repository link found (`mcp_gitsource.resolve`'s facts). */
+export interface McpLinkFacts {
+  repository: string;
+  url?: string;
+  commit: string;
+  found?: McpDeclared[];
+  declared?: McpDeclared;
+  release?: {
+    registry: string;
+    record_field: string;
+    names?: string;
+    license?: string;
+    direct_dependencies?: number;
+    install_scripts?: string[];
+  };
+}
+
+/** `POST /api/mcp/servers/resolve-link`'s result: the draft source, the origin, the facts, and
+ *  P1b's review of that release. Registered by `create` with `resolution_id`. */
+export interface McpResolution {
+  resolution_id: string;
+  source: McpSource;
+  origin: McpOrigin;
+  facts: McpLinkFacts;
+  review: McpReviewFacts;
+  disclaimer: string;
 }
 
 export interface McpServerInput {
@@ -130,6 +188,8 @@ export interface McpServerInput {
   settings?: McpSettingInput[];
   probe?: Omit<McpProbe, "confirmed_write"> & { confirmed_write?: boolean } | null;
   projects?: "all" | string[];
+  /** A resolved repository link (#2353): the server binds its source and origin. */
+  resolution_id?: string;
 }
 
 export type McpServerUpdate = Partial<McpServerInput> & { enabled?: boolean };

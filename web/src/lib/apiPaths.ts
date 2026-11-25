@@ -36,6 +36,9 @@ export const mcpReviewPath = (sid: string) => `${MCP_SERVERS_API}/${encodeURICom
 export const mcpInstallPath = (sid: string) => `${MCP_SERVERS_API}/${encodeURIComponent(sid)}/install`;
 export const MCP_OPERATIONS_API = "/api/mcp/operations";
 export const mcpOperationPath = (requestId: string) => `${MCP_OPERATIONS_API}/${encodeURIComponent(requestId)}`;
+/** Reading a repository link (#2353): an operation with no server, and its Stop. */
+export const MCP_RESOLVE_LINK_API = `${MCP_SERVERS_API}/resolve-link`;
+export const mcpOperationStopPath = (requestId: string) => `${mcpOperationPath(requestId)}/stop`;
 
 /** `POST` — take back one queued HQ question (#2103). It names the turn, like Stop. */
 export const askWithdrawTurnPath = (cid: string, turnId: string) =>

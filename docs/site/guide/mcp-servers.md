@@ -37,7 +37,11 @@ leaves a registered server where it is; you can continue on its page.
    - **npm package** or **PyPI package**: give the package name and an **exact version**
      (`1.4.2`). Ranges and `latest` are refused. A PyPI package with more than one command can
      name the one to start.
-   - **Git repository** is shown as *Later*. It can't be picked yet.
+   - **Repository link**: paste a public repository's link, such as
+     `https://github.com/owner/repo` (the repository itself: a `/tree/` or `/blob/` link is
+     refused). BattleLab reads the repository at its current commit and installs **the npm or
+     PyPI release it publishes**. Nothing is built from the repository's code. See
+     [From a repository link](#from-a-repository-link) below.
 
    The name is how agents see the tools. It is suggested from the source; change it if you like.
    If you also registered a server of the same name in your CLI's own config, remove that one.
@@ -68,6 +72,45 @@ leaves a registered server where it is; you can continue on its page.
      Enable. If that check fails, the project stays off and the row says why.
    - with no shared value and none of its own, the row says **Add credentials first** and links to
      the server's Projects tab.
+
+### From a repository link
+
+With **Repository link**, **Review** first reads the link. The page lists what it has read so far:
+the default branch's commit, the manifest at the root, the published release, and whether the
+release's repository record names the link. **Stop reading** ends it. The repository is read,
+but no server is registered and no package is downloaded while it is, so the footer offers
+**Cancel**.
+
+The rules are fixed, and BattleLab never guesses:
+
+- The root holds **exactly one** package manifest: `package.json` (npm) or a `pyproject.toml` with
+  a `[project]` table (PyPI). A repository with both is refused, and so is one with neither.
+- The manifest names the package and states a **fixed version**. A missing version, or a
+  `pyproject.toml` whose version is `dynamic`, is refused.
+- That exact version must be **published** on npm or PyPI (PyPI: with a wheel). An unpublished
+  repository is refused: BattleLab doesn't build packages from source.
+- The release's own repository record (npm's `repository`, PyPI's Source, Repository or Homepage
+  link) must name the same host, owner and repository as your link. Anything else is refused.
+  This catches a typo or a package with a borrowed name. It doesn't prove the release was built
+  from that commit.
+
+A refusal says why in words and registers nothing. **Try another link** goes back to Source.
+
+When the link resolves, Review shows the repository and commit, the package it declares, the
+registry record that names it, and *"Installs the published release; not built from this
+commit."* Then come the release's facts, as for any package. **Install** registers the server and
+installs exactly that lock. From there, Settings, Check and Enable are the same as for an npm or
+PyPI package.
+
+The server keeps where it came from (`github.com/owner/repo @ 3f2a9c1`). Its page shows it under
+**Settings → Source**, for display only. Saving a different source (another version, say) removes
+it, because it no longer describes what is installed.
+
+In **HQ**, *"add the MCP server at https://github.com/owner/repo"* drafts the same card with the
+same facts and the same sentence, directly above **Register**. HQ only reads a link that you
+typed in your message, never one it found in a page or a tool result. If the card sits until its
+reading expires (after a few hours, or after BattleLab restarts), Register says so and HQ reads
+the link again.
 
 ## The server's page
 

@@ -349,7 +349,23 @@ def _bump(previous: float) -> float:
     return now if now > previous else previous + 1e-6
 
 
-def create(payload: object) -> dict:
+def _origin(raw: dict) -> dict:
+    """A resolution's display-only provenance (#2353): the repository link and its commit. Set by
+    the SERVER from a resolution (`mcp_jobs.resolution`), never from a client field."""
+    url, commit = raw.get("url"), raw.get("commit")
+    if (
+        not isinstance(url, str)
+        or not isinstance(commit, str)
+        or not re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?", commit)
+    ):
+        raise RegistryError("a resolution's origin is malformed")
+    return {"url": _text(url, "the origin", cap=URL_MAX), "commit": commit}
+
+
+def create(payload: object, *, resolution: dict | None = None) -> dict:
+    """Register a server. With ``resolution`` (a link's server-held ``{id, source, origin}``,
+    #2353) the record takes that source, that origin and the id its review was staged under, in
+    the same write; a ``source`` in the payload that differs from it is refused (Conflict)."""
     if not isinstance(payload, dict):
         raise RegistryError("a server is an object")
     unknown = set(payload) - {
@@ -364,16 +380,30 @@ def create(payload: object) -> dict:
     }
     if unknown:
         raise RegistryError("unknown server field")
-    source = _source(payload.get("source"))
+    origin = None
+    if resolution is not None:
+        bound = _source(resolution["source"])
+        if "source" in payload and _source(payload["source"]) != bound:
+            raise Conflict(
+                "the source differs from the package the link resolved to; resolve the link again"
+            )
+        source, origin = bound, _origin(resolution["origin"])
+        if not ID_RE.fullmatch(str(resolution.get("id") or "")):
+            raise RegistryError("a resolution's server id is malformed")
+    else:
+        source = _source(payload.get("source"))
     transport = _transport(source)
     settings = _settings(payload.get("settings"), transport)
     with fence():
         doc = read()
         if len(doc["servers"]) >= SERVERS_MAX:
             raise RegistryError(f"at most {SERVERS_MAX} MCP servers")
+        sid = secrets.token_hex(8) if resolution is None else resolution["id"]
+        if any(s["id"] == sid for s in doc["servers"]):
+            raise Conflict("a server was already registered from this resolution; resolve again")
         now = time.time()
         rec = {
-            "id": secrets.token_hex(8),
+            "id": sid,
             "name": _check_name(payload.get("name"), doc["servers"], None),
             "label": _text(payload.get("label", ""), "the label", cap=80),
             "source": source,
@@ -389,6 +419,8 @@ def create(payload: object) -> dict:
             "created_at": now,
             "updated_at": now,
         }
+        if origin is not None:
+            rec["origin"] = origin
         doc["servers"].append(rec)
         _write(doc)
     return rec
@@ -435,6 +467,10 @@ def update(sid: str, payload: object, expected: float) -> dict:
                     "a server keeps its kind: remote stays remote, a package stays a package"
                 )
             new["source"] = source
+            if source != rec["source"]:
+                # Provenance belongs to the source it was resolved for (#2353): it comes back only
+                # through a new resolution, never by keeping a link beside another package.
+                new.pop("origin", None)
         if "args" in payload:
             new["args"] = _args(payload["args"], rec["transport"])
         if "settings" in payload:

@@ -498,6 +498,20 @@ class Snapshot:
     def blob(self, oid: str) -> bytes:
         return _local(self, ["cat-file", "blob", oid])
 
+    def entry(self, path: str) -> tuple[str, str, str] | None:
+        """One path's ``(mode, type, oid)`` at the pinned commit, or None when it is absent. Read
+        from the objects when the listing was cut (`TREE_ENTRIES_MAX`), so a file is never taken
+        for missing only because the walk stopped before it (#2353: a root manifest)."""
+        if path in self.entries or not self.truncated:
+            return self.entries.get(path)
+        out = _local(self, ["ls-tree", "-z", "--full-tree", self.commit, "--", path])
+        for raw in out.split(b"\0"):
+            meta, _, name = raw.partition(b"\t")
+            fields = meta.decode("ascii", "replace").split()
+            if len(fields) == 3 and name.decode("utf-8", "surrogateescape") == path:
+                return (fields[0], fields[1], fields[2])
+        return None
+
 
 def fetch(url: str, ref: str | None = None, *, cancel: threading.Event | None = None) -> Snapshot:
     """Fetch ``url`` (at ``ref``, else its default branch) into a private folder. Blocking.
