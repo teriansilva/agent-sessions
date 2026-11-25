@@ -126,6 +126,10 @@ VIAS = frozenset({"call", "card"})
 #: A user record's step-list key (#2251, `ask_steps.owed`): what settled, and where.
 STEPS_KEY_RE = re.compile(r"^(next|hold|done):[0-9a-f]{16}:s[0-9a-f]{8}:[0-9a-f]{16}$")
 STEPS_SEEN_MAX = 8
+#: The card states a turn's model request carried (#2372), kept on its final status so the next
+#: turn knows which settlements HQ has already been told about. Bounded; the newest win.
+CARDS_SEEN_MAX = 64
+_CARD_STATE_RE = re.compile(r"^[a-z_]{1,20}$")
 
 RECORD_TYPES = frozenset(
     {
@@ -594,6 +598,23 @@ def _admit(rec: dict, secrets: list[str]) -> dict:
                 raise ValueError("malformed steps_seen")
             if seen:
                 out["steps_seen"] = list(seen)
+        cards = rec.get("cards_seen")
+        if cards is not None:
+            if (
+                status != "done"
+                or not isinstance(cards, dict)
+                or len(cards) > CARDS_SEEN_MAX
+                or not all(
+                    isinstance(k, str)
+                    and _ACTION_ID_RE.match(k)
+                    and isinstance(v, str)
+                    and _CARD_STATE_RE.match(v)
+                    for k, v in cards.items()
+                )
+            ):
+                raise ValueError("malformed cards_seen")
+            if cards:
+                out["cards_seen"] = dict(cards)
     elif kind == "summary":
         # A background summary of the exchanges up to and including turn `upto` (#2137 P2): HQ's
         # own words about the conversation, through the store boundary like any text, bound to
@@ -863,6 +884,7 @@ def _admit_call_record(kind: str, rec: dict, text: Callable[[object, int], str])
         tid = rec.get("turn_id")
         if tid is not None:
             out["turn_id"] = _turn_id(rec)
+        _admit_card_ref(rec, out)
     elif kind == "said":
         skind = rec.get("kind")
         if skind not in SAID_KINDS:
@@ -871,10 +893,22 @@ def _admit_call_record(kind: str, rec: dict, text: Callable[[object, int], str])
         out["text"] = text(rec.get("text"), TEXT_MAX)
         if rec.get("turn_id") is not None:
             out["turn_id"] = _turn_id(rec)
+        _admit_card_ref(rec, out)
     else:  # counts
         for k in ("heard_dropped", "heard_said"):
             out[k] = _bounded_int(rec.get(k, 0), "count")
     return out
+
+
+def _admit_card_ref(rec: dict, out: dict) -> None:
+    """The card a call's decision or outcome was about (#2372): a card id, nothing else. It lets
+    HQ's history correlate the Commander's spoken decision with that card's outcomes."""
+    card = rec.get("card")
+    if card is None:
+        return
+    if not (isinstance(card, str) and _ACTION_ID_RE.match(card)):
+        raise ValueError("malformed card id")
+    out["card"] = card
 
 
 def _records_bytes(records: list[dict]) -> bytes:

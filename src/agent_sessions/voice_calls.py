@@ -127,6 +127,15 @@ CHALLENGE_S = 20.0
 #: How long a 202 (a session starting, an operation running) is followed to its end state.
 OUTCOME_POLL_S = 30.0
 OUTCOME_EVERY_S = 1.5
+#: Past `OUTCOME_POLL_S`, an accepted card is still followed at this rate, for at most this long
+#: (#2372): a slow launch's end is still told.
+OUTCOME_LATE_EVERY_S = 5.0
+OUTCOME_LATE_MAX_S = 15 * 60.0
+STILL_STARTING_LINE = "Still starting. I'll tell you when it's up."
+#: Card outcome lines kept awaiting their `played` ack (#2372); the oldest go unrecorded past it.
+SAID_PENDING_KEPT = 32
+#: A conversation card's id (`ask_store`'s action id shape).
+_CARD_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 #: The call panel's "What needs me?" chip (#2137): asked of HQ like any spoken question. There is
 #: no keyword shortcut any more — a phrase list once swallowed a whole spoken request because it
 #: contained "what … need … you" (2026-11-18), and HQ never saw it.
@@ -427,6 +436,15 @@ class Call:
     side_tasks: set = field(default_factory=set, repr=False)
     #: Cards tapped on screen during this call: a voice settlement already under way skips them.
     tapped: set = field(default_factory=set, repr=False)
+    #: Cards whose end the call has ATTEMPTED to say (#2372): one terminal announcement per card,
+    #: never repeated even if it went unheard. What HQ is told about the card's state comes from
+    #: the card facts, never from this.
+    _told_end: set = field(default_factory=set, repr=False)
+    #: A card's outcome lines sent but not yet played (#2372, Hermes 8935): recorded as `said`
+    #: only on their `played` ack, so an interrupted or undelivered line is never claimed.
+    _said_pending: dict = field(default_factory=dict, repr=False)
+    #: The call-owned follower per accepted card still launching past the window (#2372).
+    _followers: dict = field(default_factory=dict, repr=False)
     #: The contact's resolved voice profile (#1397 P3): voice, style (only if advertised), speed.
     profile: dict | None = None
     #: The call's language (#1397 P3): the operator's fixed choice, else the last one detected.
@@ -526,6 +544,7 @@ class Call:
         sid: str | None = None,
         heard: bool = True,
         cue: bool = False,
+        card: str | None = None,
     ) -> str | None:
         """`heard=False`: its `played` ack is no sign of the operator (#1702 status lines — HQ
         talking while it waits proves nobody is listening). `cue`: a thinking-cue line (#2339),
@@ -545,13 +564,23 @@ class Call:
         del self.audible[:-AUDIBLE_KEPT]
         await self.client({"t": "caption", "who": "hq", "id": sid, "text": text, "kind": kind,
                            "turn_id": turn_id})  # fmt: skip
+        if self.state == "ended":
+            return None  # hung up during the caption send: nothing recorded, nothing spoken
         if kind in ask_store.SAID_KINDS:
             # What HQ said outside an answer (#2137): the greeting, a read-back, an outcome, the
             # still-there question. Kept in the conversation so HQ's next turn knows it was said.
             rec = {"type": "said", "kind": kind, "text": text}
             if ask_store.valid_turn_id(turn_id):
                 rec["turn_id"] = turn_id
-            self._record(rec)
+            if card is not None:
+                # A card's outcome (#2372) is recorded only once PLAYED (`on_played`): never
+                # claimed as said when it was cut off, muted or never delivered (Hermes 8935).
+                rec["card"] = card
+                self._said_pending[sid] = rec
+                while len(self._said_pending) > SAID_PENDING_KEPT:
+                    self._said_pending.pop(next(iter(self._said_pending)))
+            else:
+                self._record(rec)
         lang = self.language if self.tts_takes_language else None
         voice = self._say_voice()
         # The first say in a voice and language asks the worker to get that language's thinking
@@ -565,6 +594,9 @@ class Call:
         msg = {"t": "say", "id": sid, "text": text, "language": lang, "voice": voice}
         if cue:
             msg["cue"] = True
+        if self.state == "ended":
+            self._said_pending.pop(sid, None)
+            return None  # hung up while the cues were asked for: never sent after the stop
         await self.worker(msg)
         return sid
 
@@ -773,13 +805,18 @@ class Call:
         )  # fmt: skip
         return hid
 
-    def _link(self, hid: str | None, route: str, turn_id: str | None = None) -> None:
-        """Where heard words went (#2137): appended, never rewritten. Words only ever on `heard`."""
+    def _link(
+        self, hid: str | None, route: str, turn_id: str | None = None, card: str | None = None
+    ) -> None:
+        """Where heard words went (#2137): appended, never rewritten. Words only ever on `heard`.
+        `card`: the card those words settled (#2372), so HQ's history ties them to its outcome."""
         if hid is None:
             return
         rec: dict = {"type": "heard_link", "heard_id": hid, "route": route}
         if turn_id is not None:
             rec["turn_id"] = turn_id
+        if card is not None:
+            rec["card"] = card
         self._record(rec)
         log.info("voice call %s heard %s: %s%s", self.id, hid, route,
                  f" (turn {turn_id})" if turn_id else "")  # fmt: skip
@@ -905,6 +942,9 @@ class Call:
         never acks, so it never arms (#1397 P2)."""
         if isinstance(say_id, str):
             self._quiet_from(say_id)  # played out: from here it is only the room's echo tail
+            said = self._said_pending.pop(say_id, None)
+            if said is not None:
+                self._record(said)  # played out to its end: now it was said (#2372)
         if say_id in self.say_ids and self.state != "ended":
             self.say_ids.remove(say_id)  # heard ONCE: a duplicate or old ack is not new speech
             now = time.monotonic()
@@ -2131,7 +2171,9 @@ class Call:
                     self._judge_reply(ch, text, snap, late=late, turn=turn, heard_id=heard_id)
                 )
                 return True
-        return await self._apply_verdict(ch, first, text, verdict, idx, snap=snap)
+        return await self._apply_verdict(
+            ch, first, text, verdict, idx, snap=snap, heard_id=heard_id
+        )
 
     async def _judge_reply(
         self,
@@ -2155,7 +2197,14 @@ class Call:
             # A verdict that settles or re-arms: the whole freshness fence, or it decides nothing.
             if self._judge_still_holds(ch, snap):
                 await self._apply_verdict(
-                    ch, ch["cards"][0], text, got[0], got[1], captioned=True, snap=snap
+                    ch,
+                    ch["cards"][0],
+                    text,
+                    got[0],
+                    got[1],
+                    captioned=True,
+                    snap=snap,
+                    heard_id=heard_id,
                 )
             return
         # `other` or NO verdict authorises nothing, so a bare turn start (room noise, a breath)
@@ -2218,9 +2267,11 @@ class Call:
         *,
         captioned: bool = False,
         snap: dict | None = None,
+        heard_id: str | None = None,
     ) -> bool:
         """Act on what the reply means. False only for `other` (a new question). `snap`: the call
-        as of the reply — a settlement goes ahead only if it still holds then."""
+        as of the reply — a settlement goes ahead only if it still holds then. `heard_id`: the
+        words' record, linked to the card they settle (#2372)."""
 
         async def caption() -> None:
             if not captioned:
@@ -2241,6 +2292,10 @@ class Call:
             card = first if verdict == "choose" else ch["cards"][idx]
             if verdict == "dismiss":
                 card = {**card, "dismiss": True}  # its own route, with the screen's dismiss
+            if heard_id is not None and _card_ref(card) is not None:
+                # The words that decide it (#2372): tied to the card only once its route really
+                # runs (`settle`), never before a fence that may still stop it (Hermes 8935).
+                card = {**card, "heard_id": heard_id}
             await caption()
             await self.client({"t": "challenge", "cards": []})
             self._side(self._settle_then_next(card, ch["queue"], ch["gen"], snap))
@@ -2409,6 +2464,11 @@ class Call:
             body = {"decision": "confirm"}
         if snap is not None and not self._settle_fence_holds(snap):
             return  # something newer took the call while this settlement was being prepared
+        ref, hid = _card_ref(card), card.get("heard_id")
+        if ref is not None and isinstance(hid, str):
+            # Past every fence, synchronously before the route (#2372): HQ's history may now say
+            # these words went to the card's route. Written for a route that really runs.
+            self._link(hid, "confirm", card=ref)
         try:
             resp = await asgi_call.call(self.app, self.operator, method, path, body)
         except Exception:  # noqa: BLE001 — never speak an exception; say it failed
@@ -2418,12 +2478,50 @@ class Call:
         await self.client({"t": "settled", "card": card["id"], "ok": ok,
                            "status": resp.status if resp else 0,
                            **({"dismissed": True} if card.get("dismiss") else {})})  # fmt: skip
-        await self.say(outcome_sentence(card, resp), kind="outcome")
+        await self.say(outcome_sentence(card, resp), kind="outcome", card=ref)
         if resp is not None and resp.status == 202 and card["kind"] in _PROPOSAL_KINDS:
             # Accepted is not finished: follow the card to its end state and say THAT.
             final = await self._follow(card["id"])
-            await self.client({"t": "settled", "card": card["id"], "final": final})
-            await self.say(final_sentence(card, final), kind="outcome")
+            if final is None:
+                # Still launching past the window (#2372: a 39 s API-session start went unsaid).
+                # Say so, and keep ONE call-owned follower on it that tells the end when it lands.
+                await self.say(STILL_STARTING_LINE, kind="outcome", card=ref)
+                if self.state != "ended" and card["id"] not in self._followers:
+                    task = asyncio.create_task(self._follow_late(card))
+                    self._followers[card["id"]] = task
+                    task.add_done_callback(
+                        lambda _t, pid=card["id"]: self._followers.pop(pid, None)
+                    )
+                return
+            await self._tell_end(card, final)
+
+    async def _tell_end(self, card: dict, final: str) -> None:
+        """A card's end, said ONCE (#2372): a repeated observation says nothing, and nothing is
+        said, or recorded as said, once the call has ended."""
+        if card["id"] in self._told_end or self.state == "ended":
+            return
+        self._told_end.add(card["id"])
+        await self.client({"t": "settled", "card": card["id"], "final": final})
+        if self.state == "ended":
+            return  # hung up during that send: nothing is said (`say` checks again too)
+        await self.say(final_sentence(card, final), kind="outcome", card=_card_ref(card))
+
+    async def _follow_late(self, card: dict) -> None:
+        """Follow an accepted card past `OUTCOME_POLL_S` at a low rate until it ends, the call
+        ends, or `OUTCOME_LATE_MAX_S` passes (#2372). An unreadable state is not an end: it is
+        read again, and never spends the card's one announcement."""
+        from . import ask_proposals
+
+        deadline = time.monotonic() + OUTCOME_LATE_MAX_S
+        while time.monotonic() < deadline and self.state != "ended":
+            await asyncio.sleep(OUTCOME_LATE_EVERY_S)
+            status, entries = await asyncio.to_thread(ask_proposals.views, self.cid)
+            if self.state == "ended":
+                return  # re-checked after the read: a hang-up during it says nothing
+            state = (entries.get(card["id"]) or {}).get("state") if status == "ok" else None
+            if state not in (None, "pending", "deciding"):
+                await self._tell_end(card, state)
+                return
 
     async def _follow(self, pid: str) -> str | None:
         from . import ask_proposals
@@ -2768,6 +2866,9 @@ class Call:
         q = self._queue()
         if w is not None and not w.done() and (q is None or q.empty()):
             w.cancel()
+        # Late followers only read and speak (#2372): they stop with the call.
+        for task in list(self._followers.values()):
+            task.cancel()
         # Side tasks are NOT cancelled: a settlement checks the call before it starts, and one
         # already inside its card's route must finish that route, never stop half way.
         self.ended_reason = reason
@@ -3652,6 +3753,15 @@ _FINAL_MESSAGE = {
     "interrupted": "It may have been sent, but I couldn't confirm it. Check the chat; "
     "I won't send it again.",
 }
+
+
+def _card_ref(card: dict) -> str | None:
+    """The id of a card HQ proposed in this conversation (the ones with a stored state), else
+    None: a Needs-you row is not a conversation card."""
+    cid = card.get("id")
+    if card.get("kind") in _PROPOSAL_KINDS and isinstance(cid, str) and _CARD_ID_RE.match(cid):
+        return cid
+    return None
 
 
 def final_sentence(card: dict, state: str | None) -> str:
