@@ -84,7 +84,6 @@ export interface PublicSnapshot {
   event_cursor: number;
   state: string;
   active_turn: string | null;
-  model: string | null;
   turns: PublicTurn[];
   omitted_turns: number;
   pending_requests: PublicRequest[];

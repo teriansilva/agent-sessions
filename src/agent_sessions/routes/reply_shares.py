@@ -125,7 +125,7 @@ def register(
 
         def build() -> tuple[dict, str]:
             # Off the loop: redaction reads the secret store, and PBKDF2 is deliberately slow.
-            snapshot = reply_share.content(turn, agent, share_api.redactor())
+            snapshot = reply_share.content(turn, share_api.redactor())
             return reply_share.seal(
                 snapshot, share_id=share_id, expires_at=expires_at, password=password or None
             )

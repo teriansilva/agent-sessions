@@ -216,10 +216,12 @@ export function ReplyViewer() {
 
         {open && (
           <main className={own.main} data-testid="reply-open">
-            <article className={own.reply} aria-label={`Reply from ${open.content.agent}`}>
+            <article className={own.reply} aria-label="Reply from Agent">
               <p className={own.who}>
                 <Avatar spec={{ kind: "agent" }} className={own.avatar} />
-                <span>{open.content.agent}</span>
+                {/* Never `content.agent`: a link sealed before it was always "Agent" carries the
+                    engine's name, and a visitor reads only that an agent wrote this. */}
+                <span>Agent</span>
                 {when(open.content.ts) && <time className={own.ts}>{when(open.content.ts)}</time>}
               </p>
               {hidden(open.content) && (

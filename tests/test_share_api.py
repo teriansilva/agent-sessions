@@ -96,7 +96,6 @@ def test_the_projection_is_an_allowlist():
         "event_cursor",
         "state",
         "active_turn",
-        "model",
         "turns",
         "omitted_turns",
         "pending_requests",
@@ -116,6 +115,7 @@ def test_the_projection_is_an_allowlist():
         "saved_in",
         "payload",
         "bypass",
+        "gpt-x",  # the model, requested or effective
         "s3cret-value-123",
         "second line",
     ):

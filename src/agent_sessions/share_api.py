@@ -305,16 +305,15 @@ def _request(q: dict, r: _Redactor) -> dict:
 
 def project(snapshot: dict, authors: dict[str, dict], r: _Redactor, share_id: str) -> dict:
     """The visitor's view of an operator snapshot. Allowlist only: ``cwd``, ``native``,
-    ``context``, approval payloads/choices/grants, error ``reason``, the requested model and the
-    permission mode never reach it. (A turn's ``turn_id`` equals its operation id in this
-    runtime; it is shown because the viewer needs it, and no public input accepts an operation
-    id — the server mints them.)"""
+    ``context``, approval payloads/choices/grants, error ``reason``, the model (requested or
+    effective) and the permission mode never reach it: a visitor reads "Agent", not what runs it.
+    (A turn's ``turn_id`` equals its operation id in this runtime; it is shown because the viewer
+    needs it, and no public input accepts an operation id — the server mints them.)"""
     return {
         "revision": snapshot.get("revision"),
         "event_cursor": snapshot.get("event_cursor"),
         "state": r(snapshot.get("state")),
         "active_turn": snapshot.get("active_turn"),
-        "model": r(snapshot.get("model_effective")),
         "turns": [_turn(t, authors, r, share_id) for t in snapshot.get("turns") or []],
         "omitted_turns": snapshot.get("omitted_turns") or 0,
         "pending_requests": [_request(q, r) for q in snapshot.get("pending_requests") or []],

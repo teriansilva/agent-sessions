@@ -48,7 +48,6 @@ function snap(over: Partial<PublicSnapshot> = {}): PublicSnapshot {
     event_cursor: 1,
     state: "idle",
     active_turn: null,
-    model: null,
     turns: [],
     omitted_turns: 0,
     pending_requests: [],

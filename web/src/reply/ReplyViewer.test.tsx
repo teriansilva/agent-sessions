@@ -37,7 +37,10 @@ describe("ReplyViewer (#1956)", () => {
     at(`/r/${plain.envelope.id}#k=${plain.key}`);
     render(<ReplyViewer />);
     expect(await screen.findByTestId("reply-open", {}, { timeout: 10_000 })).toBeInTheDocument();
-    expect(screen.getByText("Claude")).toBeInTheDocument();
+    // The fixture was sealed with the engine's name (as links made before it was dropped were):
+    // the visitor still reads only "Agent".
+    expect(screen.getByText("Agent")).toBeInTheDocument();
+    expect(screen.queryByText(/Claude/)).toBeNull();
     expect(screen.getByTestId("reply-tools-hidden")).toHaveTextContent("4 commands & tools hidden");
     expect(screen.getByText(/Split the pools/)).toBeInTheDocument();
     expect(calls).toHaveLength(1);

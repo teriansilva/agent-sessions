@@ -60,10 +60,11 @@ def _turn(**over) -> dict:
 
 
 def test_the_snapshot_is_the_reply_and_a_tool_count_nothing_else():
-    body = reply_share.content(_turn(), "Codex", _redactor())
+    body = reply_share.content(_turn(), _redactor())
     assert set(body) == {"v", "agent", "reply", "ts", "tools_hidden", "tools_more"}
     assert body["reply"] == "The fix: rotate [secret] and restart."
     assert body["tools_hidden"] == 2 and body["tools_more"] is True
+    assert body["agent"] == "Agent"  # never the engine or the model behind it
     flat = json.dumps(body)
     for leak in (
         SECRET,
@@ -84,17 +85,17 @@ def test_the_snapshot_is_the_reply_and_a_tool_count_nothing_else():
 )
 def test_only_a_finished_reply_can_be_shared(state):
     with pytest.raises(reply_share.ReplyShareError):
-        reply_share.content(_turn(state=state), "Codex", _redactor())
+        reply_share.content(_turn(state=state), _redactor())
 
 
 def test_a_turn_without_a_reply_is_refused():
     with pytest.raises(reply_share.ReplyShareError):
-        reply_share.content(_turn(reply="   "), "Codex", _redactor())
+        reply_share.content(_turn(reply="   "), _redactor())
 
 
 def test_a_cut_reply_is_trimmed_and_marked_like_a_public_link_shows_it():
     long = "x" * 5000 + SECRET
-    body = reply_share.content(_turn(reply=long, reply_truncated=True), "Codex", _redactor())
+    body = reply_share.content(_turn(reply=long, reply_truncated=True), _redactor())
     assert body["reply"].startswith(share_api.CUT_MARK) and body["reply"].endswith(
         share_api.CUT_MARK
     )
@@ -105,7 +106,7 @@ def test_a_cut_reply_is_trimmed_and_marked_like_a_public_link_shows_it():
 
 
 def _body():
-    return reply_share.content(_turn(), "Claude", _redactor())
+    return reply_share.content(_turn(), _redactor())
 
 
 def test_seal_round_trips_and_the_key_is_only_in_the_link():

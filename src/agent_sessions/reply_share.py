@@ -4,7 +4,8 @@ snapshot.
 **A snapshot, never a live read.** The reply is copied when the operator shares it: redacted with
 the visitor redactor (``share_api.redactor``, fail closed), its command / tool steps reduced to a
 COUNT (never a name, an argument or an output), and nothing else of the session — no prompt, no
-other turn, no path, no model. Later edits of the session change nothing a visitor sees.
+other turn, no path, no model and no engine name (the author is always just "Agent"). Later
+edits of the session change nothing a visitor sees.
 
 **Sealed with a key only the link carries.** The snapshot is encrypted (AES-256-GCM) under a key
 derived from a random 32-byte ``K`` — and, with a password, from the password too
@@ -75,7 +76,11 @@ def expiry(choice: object, now: float | None = None) -> int | None:
     return None if span is None else int((now if now is not None else time.time()) + span)
 
 
-def content(turn: dict, agent: str, redact) -> dict:
+#: The only author name a reply link carries: never the engine or the model behind it.
+AGENT_LABEL = "Agent"
+
+
+def content(turn: dict, redact) -> dict:
     """The one block a visitor reads, from a COMPLETED agent turn of the runtime's snapshot.
 
     ``redact`` is a ``share_api`` redactor: secrets become ``[secret]`` and a cut edge is trimmed
@@ -89,7 +94,7 @@ def content(turn: dict, agent: str, redact) -> dict:
     tools = turn.get("tools") or []
     return {
         "v": VERSION,
-        "agent": redact(agent) or "Agent",
+        "agent": AGENT_LABEL,
         "reply": redact(reply, start=cut_start, end=bool(turn.get("reply_truncated"))),
         "ts": turn.get("reply_ts") or turn.get("ts"),
         "tools_hidden": len(tools),
