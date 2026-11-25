@@ -139,6 +139,27 @@ _DRAFT_ATTACH_MAX = 50
 _TAG_MAX = 32
 
 
+def _tag_facets(rows: list[dict]) -> list[dict]:
+    """The tag filter's options (#2338): every distinct custom tag over ``rows``, with its count.
+
+    Grouped case-insensitively, the way ``tag=`` matches, so ``Bug`` and ``bug`` are ONE option
+    whose count is what picking it returns. The label is the group's lexicographically first
+    spelling (deterministic across requests). ``key`` is the group's ``casefold()``: the value a
+    client sends back as ``tag=``, so it never has to reproduce Python's case folding (``straße``
+    and ``STRASSE`` share the key ``strasse``). Untagged rows are not an option."""
+    groups: dict[str, dict] = {}
+    for r in rows:
+        raw = (r.get("tag") or "").strip()
+        if not raw:
+            continue
+        key = raw.casefold()
+        g = groups.setdefault(key, {"tag": raw, "key": key, "count": 0})
+        g["count"] += 1
+        if raw < g["tag"]:
+            g["tag"] = raw
+    return [groups[k] for k in sorted(groups)]
+
+
 def _clean_draft_payload(payload: object) -> dict | None:
     """Validate + normalize a PUT /draft body into the stored shape, or None to clear (#477).
 
@@ -853,6 +874,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         engine: str | None = Query(None),
         mission: str | None = Query(None),
         cluster: str | None = Query(None),
+        tag: str | None = Query(None),
         snapshot: str | None = Query(None),
         running: str | None = Query(None, pattern="^(live|working)$"),
     ) -> JSONResponse:
@@ -874,6 +896,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 engine=engine,
                 mission=mission,
                 cluster=cluster,
+                tag=tag,
                 snapshot=snapshot,
                 running=running,
             )
@@ -1000,6 +1023,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         engine: str | None,
         mission: str | None = None,
         cluster: str | None = None,
+        tag: str | None = None,
         snapshot: str | None = None,
         running: str | None = None,
     ) -> dict:
@@ -1059,6 +1083,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         facets = {
             "projects": project_facets,
             "engines": sorted({r["engine"] for r in scoped}),
+            "tags": _tag_facets(scoped),
         }
         # Mission facets (#948): computed over the SAME unfiltered scoped set as the project and
         # agent facets, so the dropdown keeps every option however the list is filtered. Only
@@ -1111,6 +1136,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         mission_f = (mission or "").strip() or None
         # `none` = in no cluster and held by no mission. A cluster id is `tc_<hex>`.
         cluster_f = (cluster or "").strip() or None
+        # Custom tag (#2338): compared like the facet groups it, trimmed and case-insensitive.
+        tag_f = (tag or "").strip().casefold() or None
         if running is not None and not running_ok:
             # A running filter the runtime probe cannot answer (#1123): every row would read as
             # "not running", so the filtered list would claim nothing is running. Say so instead.
@@ -1171,6 +1198,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                     return False
             if engine_f is not None and r["engine"] != engine_f:
                 return False
+            if tag_f is not None and (r.get("tag") or "").strip().casefold() != tag_f:
+                return False
             # `live` = an agent is running; `working` = running AND visibly printing (#1085/#1123).
             if running == "live" and not r["running"]:
                 return False
@@ -1195,7 +1224,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # Filter BEFORE limit/offset so total + next_offset describe the filtered
         # set and "load more" stays within results.
         rows = [r for r in scoped if _keep(r)]
-        filtered = bool(q_norm or project_f or engine_f or mission_f or cluster_f or running)
+        filtered = bool(
+            q_norm or project_f or engine_f or tag_f or mission_f or cluster_f or running
+        )
         # Attention guarantee 3 (#2325): a child that needs the operator never matches a filter,
         # so when its main session is filtered out the page says how many such sessions there are
         # (uncapped) and names EVERY such main session (four short fields each, bounded by the

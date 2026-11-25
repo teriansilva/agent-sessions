@@ -18,6 +18,7 @@ vi.mock("../lib/api", async (importOriginal) => {
       unfavorite: vi.fn(),
       setSessionProject: vi.fn(),
       reviewNow: vi.fn(),
+      setTag: vi.fn(),
     },
   };
 });
@@ -624,6 +625,106 @@ test("an announced Unarchive of a session this list does not carry re-reads the 
   expect(mockSessions).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 0 }));
 });
 
+// ---- Filter by tag (#2338) ----
+
+test("a tag filter goes to the server at once, and its facet reaches the bar (#2338)", async () => {
+  mockSessions.mockResolvedValue({
+    ...pageOf([sess("A")]),
+    facets: { projects: [], engines: [], tags: [{ tag: "bug", key: "bug", count: 1 }] },
+  });
+  const { result } = renderHook(() => useSessionsList());
+  await waitFor(() => expect(result.current.facets.tags).toEqual([{ tag: "bug", key: "bug", count: 1 }]));
+  act(() => result.current.update({ tag: "bug" }));
+  // A dropdown pick is not debounced like the search box.
+  await waitFor(() =>
+    expect(mockSessions).toHaveBeenLastCalledWith(
+      expect.objectContaining({ tag: "bug", offset: 0 }),
+    ),
+  );
+});
+
+test("tagging a row re-reads the list: a patch cannot move the tag facet or filter (#2338)", async () => {
+  mockSessions.mockResolvedValueOnce(pageOf([sess("A")]));
+  vi.mocked(api.setTag).mockResolvedValueOnce({ id: "claude:A", tag: "bug" });
+  const { result } = renderHook(() => useSessionsList());
+  await waitFor(() => expect(result.current.sessions.map((s) => s.title)).toEqual(["A"]));
+  const calls = mockSessions.mock.calls.length;
+  mockSessions.mockResolvedValueOnce({
+    ...pageOf([{ ...sess("A"), tag: "bug" }]),
+    facets: { projects: [], engines: [], tags: [{ tag: "bug", key: "bug", count: 1 }] },
+  });
+  await act(async () => {
+    await result.current.setTag("claude:A", "bug");
+  });
+  // The row shows its tag at once (the patch)…
+  expect(result.current.sessions[0].tag).toBe("bug");
+  // …and the server's answer brings the new option.
+  await waitFor(() => expect(result.current.facets.tags).toEqual([{ tag: "bug", key: "bug", count: 1 }]));
+  expect(mockSessions.mock.calls.length).toBe(calls + 1);
+  expect(mockSessions).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 0 }));
+});
+
+test("a tag save that resolves after the filter changed re-reads the CURRENT filter (#2338 review)", async () => {
+  const page = (title: string, tag: string): SessionsPage => ({
+    ...pageOf([{ ...sess(title), tag }]),
+    facets: {
+      projects: [],
+      engines: [],
+      tags: [
+        { tag: "bug", key: "bug", count: 1 },
+        { tag: "release", key: "release", count: 1 },
+      ],
+    },
+  });
+  // The server answers by the query it was asked: rows for `bug` or for `release`.
+  mockSessions.mockImplementation(async (q) =>
+    q?.tag === "release" ? page("R", "release") : page("B", "bug"),
+  );
+  let resolveSave!: (v: { id: string; tag: string }) => void;
+  vi.mocked(api.setTag).mockReturnValueOnce(new Promise((r) => (resolveSave = r)));
+  const { result } = renderHook(() => useSessionsList());
+  act(() => result.current.update({ tag: "bug" }));
+  await waitFor(() => expect(result.current.sessions.map((s) => s.title)).toEqual(["B"]));
+
+  // Start a save on the `bug` list, then switch to `release` before the server answers it.
+  let save!: Promise<void>;
+  act(() => {
+    save = result.current.setTag("claude:B", "bug");
+  });
+  act(() => result.current.update({ tag: "release" }));
+  await waitFor(() => expect(result.current.sessions.map((s) => s.title)).toEqual(["R"]));
+
+  await act(async () => {
+    resolveSave({ id: "claude:B", tag: "bug" });
+    await save;
+  });
+  // The re-read after the save asks for the filter in force now, and the rows stay in it.
+  await waitFor(() =>
+    expect(mockSessions).toHaveBeenLastCalledWith(
+      expect.objectContaining({ tag: "release", offset: 0 }),
+    ),
+  );
+  expect(result.current.filters.tag).toBe("release");
+  expect(result.current.sessions.map((s) => s.title)).toEqual(["R"]);
+});
+
+test("a tag change announced from the pane re-reads the list too (#2338)", async () => {
+  const { announceSessionRowChanged } = await import("../lib/sessionRowEvents");
+  mockSessions.mockResolvedValueOnce(pageOf([sess("A")]));
+  const { result } = renderHook(() => useSessionsList());
+  await waitFor(() => expect(result.current.sessions.map((s) => s.title)).toEqual(["A"]));
+  const calls = mockSessions.mock.calls.length;
+  mockSessions.mockResolvedValueOnce({
+    ...pageOf([{ ...sess("A"), tag: "bug" }]),
+    facets: { projects: [], engines: [], tags: [{ tag: "bug", key: "bug", count: 1 }] },
+  });
+  await act(async () => {
+    announceSessionRowChanged("claude:A", { tag: "bug" });
+  });
+  await waitFor(() => expect(result.current.facets.tags).toEqual([{ tag: "bug", key: "bug", count: 1 }]));
+  expect(mockSessions.mock.calls.length).toBe(calls + 1);
+});
+
 // ---- the Shared scope (#2198): client-only ----
 
 test("the scope model: three scopes, and Shared leaves the server's flag alone (#2198)", () => {
@@ -673,7 +774,9 @@ test("entering Shared, searching it and leaving it sends no /api/sessions reques
 test("the list's reset clears the local filters and leaves the Shared search alone (#2198)", async () => {
   mockSessions.mockResolvedValue(pageOf([sess("A")]));
   const { result } = renderHook(() => useSessionsList());
-  act(() => result.current.update({ q: "x", project: "p-1", engine: "e", sharedQ: "gpu" }));
+  act(() =>
+    result.current.update({ q: "x", project: "p-1", engine: "e", tag: "bug", sharedQ: "gpu" }),
+  );
   act(() => result.current.clear());
   expect(result.current.filters).toEqual({
     q: "",
@@ -681,6 +784,7 @@ test("the list's reset clears the local filters and leaves the Shared search alo
     engine: "",
     mission: "",
     cluster: "",
+    tag: "",
     archived: false,
     shared: false,
     sharedQ: "gpu",

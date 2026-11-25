@@ -375,6 +375,9 @@ test("Set tag… opens the inline editor and saves via api.setTag, updating the 
   await user.click(screen.getByRole("menuitem", { name: /set session tag/i }));
   const input = screen.getByRole("textbox", { name: /session tag/i });
   await user.type(input, "prod");
+  // The save is followed by a re-read (#2338: the tag filter's options come from the server),
+  // which answers with the row as the server now has it.
+  mockSessions.mockResolvedValue(pageOf([{ ...sess("claude:a", "First"), tag: "prod" }]));
   await user.click(screen.getByRole("button", { name: /save tag/i }));
   expect(api.setTag).toHaveBeenCalledWith("claude:a", "prod");
   expect(await screen.findByText("prod")).toBeInTheDocument();

@@ -320,3 +320,115 @@ test("leaving the Shared tab when it then disappears puts focus on the tab now s
   expect(tabNames()).toEqual(["Active", "Archived"]);
   expect(screen.getByRole("tab", { name: "Archived" })).toHaveFocus();
 });
+
+// ---- Filter by tag (#2338) -----------------------------------------------------------------
+
+const tagFacets = {
+  ...facets,
+  tags: [
+    { tag: "Bug", key: "bug", count: 2 },
+    { tag: "🔥 release", key: "🔥 release", count: 1 },
+  ],
+};
+
+test("the tag dropdown lists every tag with its count, on its own row (#2338)", () => {
+  const onChange = vi.fn();
+  render(<FiltersBar filters={base} facets={tagFacets} onChange={onChange} onClear={noop} />);
+  const select = screen.getByLabelText("Filter by tag") as HTMLSelectElement;
+  expect([...select.options].map((o) => o.textContent)).toEqual([
+    "All tags",
+    "Bug (2)",
+    "🔥 release (1)",
+  ]);
+  // Not crammed into the agent/mission row.
+  expect(select.parentElement).not.toBe(screen.getByLabelText("Filter by agent").parentElement);
+  fireEvent.change(select, { target: { value: "🔥 release" } });
+  expect(onChange).toHaveBeenCalledWith({ tag: "🔥 release" });
+});
+
+test("the tag dropdown is offered only while tags exist or one is selected (#2338)", () => {
+  const { rerender } = render(
+    <FiltersBar filters={base} facets={facets} onChange={noop} onClear={noop} />,
+  );
+  expect(screen.queryByLabelText("Filter by tag")).toBeNull(); // older server: no facet
+  rerender(
+    <FiltersBar filters={base} facets={{ ...facets, tags: [] }} onChange={noop} onClear={noop} />,
+  );
+  expect(screen.queryByLabelText("Filter by tag")).toBeNull(); // nothing tagged
+  // A selected tag no session carries any more stays listed, so the control shows its value.
+  rerender(
+    <FiltersBar
+      filters={{ ...base, tag: "gone" }}
+      facets={{ ...facets, tags: [] }}
+      onChange={noop}
+      onClear={noop}
+    />,
+  );
+  const select = screen.getByLabelText("Filter by tag") as HTMLSelectElement;
+  expect(select).toHaveValue("gone");
+  expect([...select.options].map((o) => o.value)).toEqual(["", "gone"]);
+});
+
+test("a selected tag counts as a filter: Clear shows and the folded header says so (#2338)", () => {
+  const onClear = vi.fn();
+  render(
+    <FiltersBar
+      filters={{ ...base, tag: "bug" }}
+      facets={tagFacets}
+      onChange={noop}
+      onClear={onClear}
+    />,
+  );
+  // The stored value is the group key, so it selects the "Bug" option exactly.
+  const select = screen.getByLabelText("Filter by tag") as HTMLSelectElement;
+  expect(select).toHaveValue("bug");
+  expect(select.selectedOptions[0].textContent).toBe("Bug (2)");
+  expect(screen.getByTestId("filters-toggle")).toHaveTextContent("Active · 1 filter");
+  fireEvent.click(screen.getByLabelText("Clear filters"));
+  expect(onClear).toHaveBeenCalled();
+});
+
+test("the tag dropdown is a local filter: not shown on Shared (#2338)", () => {
+  render(
+    <FiltersBar
+      filters={{ ...base, tag: "bug", shared: true }}
+      facets={tagFacets}
+      onChange={noop}
+      onClear={noop}
+      sharedCount={2}
+    />,
+  );
+  expect(screen.queryByLabelText("Filter by tag")).toBeNull();
+  // …nor counted there: the folded header names only the Shared search.
+  expect(screen.getByTestId("filters-toggle")).toHaveTextContent(/Shared$/);
+});
+
+test("a group whose spelling differs from the saved key is still ONE selected option (#2338 review)", () => {
+  // The server folds `straße` and `STRASSE` into the key `strasse` (Python casefold); the browser
+  // only compares keys, so it never shows the same group twice.
+  render(
+    <FiltersBar
+      filters={{ ...base, tag: "strasse" }}
+      facets={{ ...facets, tags: [{ tag: "STRASSE", key: "strasse", count: 2 }] }}
+      onChange={noop}
+      onClear={noop}
+    />,
+  );
+  const select = screen.getByLabelText("Filter by tag") as HTMLSelectElement;
+  expect([...select.options].map((o) => o.textContent)).toEqual(["All tags", "STRASSE (2)"]);
+  expect(select).toHaveValue("strasse");
+});
+
+test("a long or emoji tag keeps the select inside the bar (#2338)", () => {
+  const long = { tag: "🔥🔥 a-very-long-tag-name-xx", key: "🔥🔥 a-very-long-tag-name-xx", count: 12 };
+  render(
+    <FiltersBar
+      filters={{ ...base, tag: long.tag }}
+      facets={{ ...facets, tags: [long] }}
+      onChange={noop}
+      onClear={noop}
+    />,
+  );
+  expect(screen.getByLabelText("Filter by tag")).toHaveValue(long.tag);
+  expect(screen.getByRole("option", { name: `${long.tag} (12)` })).toBeInTheDocument();
+});

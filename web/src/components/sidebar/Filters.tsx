@@ -8,7 +8,7 @@ import {
   type SessionScope,
 } from "../../hooks/useSessionsList";
 import { isClusterId } from "../../lib/clusters";
-import type { ProjectRef, SessionClusterFacet } from "../../types/api";
+import type { ProjectRef, SessionClusterFacet, SessionTagFacet } from "../../types/api";
 import styles from "./Filters.module.css";
 
 interface Props {
@@ -19,6 +19,7 @@ interface Props {
     missions?: { id: string; title: string; count: number }[];
     no_mission?: number;
     clusters?: SessionClusterFacet[];
+    tags?: SessionTagFacet[];
   };
   /** The server could not apply a mission filter (#948). */
   missionFilterUnavailable?: boolean;
@@ -83,11 +84,11 @@ function scopeLabel(filters: Filters, facets: Props["facets"]): string {
 
 /** What the folded header says is in force, so a collapsed block can never hide a filter that is
  *  quietly narrowing the list. The scope has its own chip; this is Active/Archived/Shared and how
- *  many of search and agent are set — "+N" beside a scope chip, "N filters" without one. In the
+ *  many of search, agent and tag are set — "+N" beside a scope chip, "N filters" without one. In the
  *  Shared scope (#2198) only its own search counts: the local filters are not in force there. */
 function summary(filters: Filters, scoped: boolean): string {
   const tab = scopeOf(filters);
-  const n = (tab === "shared" ? [filters.sharedQ] : [filters.q, filters.engine]).filter(
+  const n = (tab === "shared" ? [filters.sharedQ] : [filters.q, filters.engine, filters.tag]).filter(
     Boolean,
   ).length;
   const parts = [TAB_LABEL[tab]];
@@ -95,7 +96,7 @@ function summary(filters: Filters, scoped: boolean): string {
   return parts.join(" · ");
 }
 
-/** Search, the agent and mission dropdowns (server facets), Active/Archived/Shared and the project
+/** Search, the agent, mission and tag dropdowns (server facets), Active/Archived/Shared and the project
  *  tree, behind ONE collapsible "Filters" header (#1069 follow-up: on a phone the open block took a
  *  third of the drawer). The tree is the project filter, so there is no project dropdown and no
  *  second fold for it (#2187). Open by default; the operator's choice is remembered per device.
@@ -119,9 +120,11 @@ export function FiltersBar({
   const tab = scopeOf(filters);
   const shared = tab === "shared";
   const sharedQ = filters.sharedQ ?? "";
+  const tag = filters.tag ?? "";
+  const tags = facets.tags ?? [];
   const hasFilter = shared
     ? !!sharedQ
-    : !!(filters.q || filters.project || filters.engine || mission || filters.cluster);
+    : !!(filters.q || filters.project || filters.engine || mission || filters.cluster || tag);
   // The project / cluster / mission chip names a filter of the LOCAL list: not in force on Shared.
   const scope = shared ? "" : scopeLabel(filters, facets);
   const tabs: SessionScope[] =
@@ -283,6 +286,29 @@ export function FiltersBar({
               ) : null}
             </div>
           )}
+          {/* The tag filter (#2338) gets its own row: a third select in the agent/mission row
+              would truncate every label in a 300px sidebar. Offered while a session in scope has
+              a tag, and while one is selected; the selected tag stays listed even when no session
+              carries it any more, so the control never shows a value it does not offer. An
+              option's value is the server's group key, so the stored filter is compared exactly
+              and the browser never has to reproduce Python's case folding. */}
+          {!shared && (tags.length > 0 || tag) ? (
+            <div className={styles.selects}>
+              <select
+                aria-label="Filter by tag"
+                value={tag}
+                onChange={(e) => onChange({ tag: e.target.value })}
+              >
+                <option value="">All tags</option>
+                {tag && !tags.some((t) => t.key === tag) ? <option value={tag}>{tag}</option> : null}
+                {tags.map((t) => (
+                  <option key={t.key} value={t.key}>
+                    {`${t.tag} (${t.count})`}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : null}
           {missionFilterUnavailable && !shared ? (
             <div className={styles.note} role="status">
               The mission filter could not be applied — mission memberships are unavailable.

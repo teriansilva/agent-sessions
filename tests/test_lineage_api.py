@@ -72,6 +72,25 @@ def test_search_never_matches_a_child_and_the_attention_strip_counts_it(c):
     assert main["attention_outside"]["count"] == 0
 
 
+def test_a_tag_filter_that_hides_a_main_shows_its_childs_attention_outside(c):
+    """#2338 review: a tag filter is a filter like any other — a main session it hides takes its
+    subagent's attention into the strip, never silently off the page."""
+    lineage.link(K2, K1, "launch")
+    _needs_you(K2)
+    metadata.patch(K1, tag="bug")
+    # Tag-only mismatch: the main is hidden, and the strip names it.
+    miss = c.get("/api/sessions?tag=release").json()
+    assert K1 not in _ids(miss)
+    assert miss["attention_outside"]["count"] == 1
+    assert [m["id"] for m in miss["attention_outside"]["mains"]] == [K1]
+    # Matching tag: the main is listed and carries its child's attention; nothing is outside.
+    hit = c.get("/api/sessions?tag=BUG").json()
+    assert _ids(hit) == [K1] and hit["sessions"][0]["attention"] == [K2]
+    assert hit["attention_outside"]["count"] == 0
+    # A blank tag is no filter: the unfiltered page shape, with no strip.
+    assert "attention_outside" not in c.get("/api/sessions", params={"tag": "  "}).json()
+
+
 def test_facets_and_engine_filter_count_main_sessions_only(c):
     lineage.link(K2, K1, "launch")
     page = c.get("/api/sessions?engine=claude&limit=50").json()

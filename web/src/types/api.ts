@@ -1743,6 +1743,9 @@ export interface SessionsPage {
     /** Every topic cluster, with its count in scope (#1997). Absent when the answer is unknown
      *  (a store could not be read) or clusters are off. */
     clusters?: SessionClusterFacet[];
+    /** Every distinct custom tag in scope, case variants grouped, with its count (#2338). Absent
+     *  on older servers. */
+    tags?: SessionTagFacet[];
   };
   /** A `mission` filter was requested but the mission store could not be read (#948). */
   mission_filter_unavailable?: boolean;
@@ -1759,6 +1762,15 @@ export interface SessionsPage {
   /** The pinned scan to pass on the NEXT page (#1007 Phase 3). Present only when the request sent
    *  `snapshot`, and it may differ from what was sent (an expired pin is replaced, never an error). */
   snapshot?: string;
+}
+
+/** A tag filter option (#2338): the tag as displayed, the group key to send back as `tag=`, and
+ *  how many sessions in scope carry it. */
+export interface SessionTagFacet {
+  tag: string;
+  /** The server's `casefold()` of the tag: one key per case-insensitive group. */
+  key: string;
+  count: number;
 }
 
 /** The mission that holds a session, as stamped on session rows (#948). */
@@ -2937,6 +2949,8 @@ export interface SessionsQuery {
   mission?: string;
   /** A cluster id, or `none` for sessions in no cluster and no mission (#1997). */
   cluster?: string;
+  /** A custom tag (#551), matched trimmed and case-insensitively (#2338). */
+  tag?: string;
   /** Pin one server scan across a paging sequence (#1007 Phase 3): `new` on the first page, then
    *  the `snapshot` the previous page returned. Omitted (the sidebar), nothing is pinned. */
   snapshot?: string;

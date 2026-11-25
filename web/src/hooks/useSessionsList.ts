@@ -18,6 +18,7 @@ import type {
   ProjectRef,
   Session,
   SessionClusterFacet,
+  SessionTagFacet,
   SessionMissionFacet,
   SessionsPage,
   SessionsQuery,
@@ -43,6 +44,8 @@ export interface Filters {
   /** A cluster id, `none` for sessions in no cluster and no mission, or "" for all (#1997).
    *  Optional for the same reason as `mission`. */
   cluster?: string;
+  /** A custom tag, or "" for all (#2338). Optional for the same reason as `mission`. */
+  tag?: string;
   archived: boolean;
   /** The Shared scope (#2198): the list shows what peers share with this instance instead of
    *  this instance's own sessions. Client-only: it is never part of the `/api/sessions` query,
@@ -75,6 +78,7 @@ const EMPTY: Filters = {
   engine: "",
   mission: "",
   cluster: "",
+  tag: "",
   archived: false,
   shared: false,
   sharedQ: "",
@@ -88,6 +92,8 @@ interface Facets {
   no_mission?: number;
   /** Absent when the server could not tell, or clusters are off (#1997). */
   clusters?: SessionClusterFacet[];
+  /** Absent on servers older than #2338. */
+  tags?: SessionTagFacet[];
 }
 
 /** The sidebar's data layer: filtered + paginated session list with server facets.
@@ -160,6 +166,7 @@ export function useSessionsList() {
       engine: filters.engine || undefined,
       mission: filters.mission || undefined,
       cluster: filters.cluster || undefined,
+      tag: filters.tag || undefined,
       archived: filters.archived,
       limit: PAGE,
     }),
@@ -169,6 +176,7 @@ export function useSessionsList() {
       filters.engine,
       filters.mission,
       filters.cluster,
+      filters.tag,
       filters.archived,
     ],
   );
@@ -400,12 +408,29 @@ export function useSessionsList() {
     [applyRowPatch],
   );
 
+  // The LATEST fetch, for continuations that run after an await or from a window event: a
+  // `fetchPage` captured earlier carries the query of its moment, and a read issued with it after
+  // the filters changed would be the newest request and win (#2338 review).
+  const fetchRef = useRef(fetchPage);
+  useEffect(() => {
+    fetchRef.current = fetchPage;
+  }, [fetchPage]);
+
   // Set/clear the custom tag (#551): patch the row in place from the server's echoed value
   // (already trimmed + capped), so the summary line reflects it without a refetch.
   const setTag = useCallback(
     async (id: string, tag: string) => {
       const r = await api.setTag(id, tag);
       applyRowPatch(id, { tag: r.tag });
+      // …and then ask the server (#2338): the tag filter's options and members come from it, so a
+      // patch cannot add a new tag to the dropdown or move the row out of a `tag` filter. The same
+      // visible replacement read as a mission change.
+      // The save may resolve after the filters changed: read with the CURRENT query.
+      reconcile.current = true;
+      void fetchRef.current(0, true, {
+        limit: Math.max(PAGE, sessionsCount.current),
+        keepOnError: true,
+      });
     },
     [applyRowPatch],
   );
@@ -478,10 +503,6 @@ export function useSessionsList() {
 
   // A session's mission changed from anywhere in this tab — the row menu or the pane header (#948).
   // Applied to the list's OWN rows, which the shared store mirrors, so every consumer flips at once.
-  const fetchRef = useRef(fetchPage);
-  useEffect(() => {
-    fetchRef.current = fetchPage;
-  }, [fetchPage]);
   useEffect(() => {
     const onChange = (e: Event) => {
       const d = (e as CustomEvent<SessionMissionChange>).detail;
@@ -528,8 +549,13 @@ export function useSessionsList() {
     const onChange = (e: Event) => {
       const d = (e as CustomEvent<SessionRowChange>).detail;
       if (!d) return;
-      if (applyRowPatch(d.key, d.patch)) return;
-      if (d.patch.archived === undefined || d.patch.archived !== archivedScope.current) return;
+      const patched = applyRowPatch(d.key, d.patch);
+      // A tag change also moves the tag filter's options and members (#2338), which only the
+      // server can recompute: ask it, whether or not this list holds the row.
+      const tagChanged = d.patch.tag !== undefined;
+      const intoScope =
+        !patched && d.patch.archived !== undefined && d.patch.archived === archivedScope.current;
+      if (!tagChanged && !intoScope) return;
       reconcile.current = true;
       void fetchRef.current(0, true, {
         limit: Math.max(PAGE, sessionsCount.current),

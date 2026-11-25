@@ -2291,6 +2291,104 @@ def test_set_tag_unknown_session_404(auth_cfg, fake_jsonl):
     assert r.status_code == 404
 
 
+# --- Filter by custom tag (#2338) -------------------------------------------------------
+
+_U1 = "11111111-1111-1111-1111-111111111111"
+_U2 = "22222222-2222-2222-2222-222222222222"
+_U3 = "33333333-3333-3333-3333-333333333333"
+
+
+def _tag(c, csrf, cfg, uuid, tag):
+    hdr = {"X-CSRF-Token": csrf, "Origin": cfg.origin}
+    r = c.post(f"/api/sessions/claude:{uuid}/tag", json={"tag": tag}, headers=hdr)
+    assert r.status_code == 200
+
+
+def test_filter_by_tag_is_trimmed_and_case_insensitive(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    _tag(c, csrf, auth_cfg, _U1, "Bug")
+    _tag(c, csrf, auth_cfg, _U2, "bug")
+    _tag(c, csrf, auth_cfg, _U3, "release")
+    for value in ("bug", "BUG", "  Bug  "):
+        d = c.get("/api/sessions", params={"tag": value, "limit": 50}).json()
+        assert d["total"] == 2, value
+        assert {s["uuid"] for s in d["sessions"]} == {_U1, _U2}
+    d = c.get("/api/sessions?tag=release&limit=50").json()
+    assert [s["uuid"] for s in d["sessions"]] == [_U3]
+    # A tag nobody carries matches nothing; it is not ignored.
+    assert c.get("/api/sessions?tag=nope&limit=50").json()["total"] == 0
+    # Empty / whitespace-only is no filter: all four live sessions.
+    assert c.get("/api/sessions", params={"tag": "  ", "limit": 50}).json()["total"] == 4
+
+
+def test_tag_filter_combines_with_other_filters(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    _tag(c, csrf, auth_cfg, _U1, "bug")
+    _tag(c, csrf, auth_cfg, _U3, "bug")
+    d = c.get(f"/api/sessions?tag=bug&project={_REPO_A}&limit=50").json()
+    assert [s["uuid"] for s in d["sessions"]] == [_U1]
+
+
+def test_tag_filter_runs_before_paging(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    _tag(c, csrf, auth_cfg, _U1, "bug")
+    _tag(c, csrf, auth_cfg, _U3, "bug")
+    p0 = c.get("/api/sessions?tag=bug&limit=1&offset=0").json()
+    assert p0["total"] == 2 and len(p0["sessions"]) == 1 and p0["next_offset"] == 1
+    p1 = c.get("/api/sessions?tag=bug&limit=1&offset=1").json()
+    assert p1["total"] == 2 and len(p1["sessions"]) == 1 and p1["next_offset"] is None
+    assert {p0["sessions"][0]["uuid"], p1["sessions"][0]["uuid"]} == {_U1, _U3}
+
+
+def test_tag_facets_group_case_variants_and_ignore_the_filters(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    assert c.get("/api/sessions?limit=50").json()["facets"]["tags"] == []
+    _tag(c, csrf, auth_cfg, _U1, "bug")
+    _tag(c, csrf, auth_cfg, _U2, "Bug")
+    _tag(c, csrf, auth_cfg, _U3, "🔥 release")
+    want = [
+        {"tag": "Bug", "key": "bug", "count": 2},
+        {"tag": "🔥 release", "key": "🔥 release", "count": 1},
+    ]
+    assert c.get("/api/sessions?limit=50").json()["facets"]["tags"] == want
+    # Computed before the filters: picking one tag (or a search) keeps every option.
+    assert c.get("/api/sessions?tag=bug&limit=50").json()["facets"]["tags"] == want
+    assert c.get("/api/sessions?q=zzz-nothing&limit=50").json()["facets"]["tags"] == want
+
+
+def test_tag_filter_casefolds_unicode_and_counts_live_rows(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    # casefold, not lower: "STRASSE" and "straße" are one tag, as the facet groups them.
+    _tag(c, csrf, auth_cfg, _U1, "straße")
+    _tag(c, csrf, auth_cfg, _U2, "STRASSE")
+    d = c.get("/api/sessions", params={"tag": "Strasse", "limit": 50}).json()
+    assert {s["uuid"] for s in d["sessions"]} == {_U1, _U2}
+    # live_total is over the FILTERED set too (nothing runs in the fixture).
+    assert d["total"] == 2 and d["live_total"] == 0
+    assert d["facets"]["tags"] == [{"tag": "STRASSE", "key": "strasse", "count": 2}]
+    # The key is a value `tag=` accepts and matches the same group.
+    d = c.get("/api/sessions", params={"tag": "strasse", "limit": 50}).json()
+    assert d["total"] == 2
+
+
+def test_tag_facets_are_scoped_by_archived(auth_cfg, fake_jsonl):
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    _tag(c, csrf, auth_cfg, _U1, "live-only")
+    _tag(c, csrf, auth_cfg, "44444444-4444-4444-4444-444444444444", "old")
+    live = c.get("/api/sessions?limit=50").json()
+    assert live["facets"]["tags"] == [{"tag": "live-only", "key": "live-only", "count": 1}]
+    arch = c.get("/api/sessions?archived=1&limit=50").json()
+    assert arch["facets"]["tags"] == [{"tag": "old", "key": "old", "count": 1}]
+    d = c.get("/api/sessions?archived=1&tag=old&limit=50").json()
+    assert [s["uuid"] for s in d["sessions"]] == ["44444444-4444-4444-4444-444444444444"]
+
+
 # --- Per-session color endpoint (#571) -----------------------------------------------
 
 

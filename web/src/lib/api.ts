@@ -740,6 +740,7 @@ export function sessionsUrl(q: SessionsQuery = {}): string {
   if (q.engine) p.set("engine", q.engine);
   if (q.mission) p.set("mission", q.mission);
   if (q.cluster) p.set("cluster", q.cluster);
+  if (q.tag?.trim()) p.set("tag", q.tag.trim());
   if (q.snapshot) p.set("snapshot", q.snapshot);
   return `/api/sessions?${p.toString()}`;
 }
