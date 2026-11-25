@@ -1,0 +1,23 @@
+id	kind	symbol	resource	action	principal_source	frequency	status	note
+secrets-launch	broker	secrets_broker:launch_env	credentials	use	login	cold	unscoped	mints a per-launch secrets capability; audit has no actor today; P2 mints only after authorize() and records actor and execution account
+memory-principal	broker	memory_service:worker	project	view	login	warm	unscoped	memory Principal is scopes plus an operator flag; the flag becomes instance administrator and the _hq scope becomes per-user
+memory-bind	broker	memory_broker:bind	project	edit	login	cold	unscoped	binds a launch to its memory scopes; P2 binds only scopes the launching actor may use
+artifacts-launch	broker	artifact_broker:launch_env	artifact	manage	login	cold	unscoped	per-launch artifact capability; artifacts and repositories have no owner today
+mcp-credentials	broker	mcp_registry:resolve	credentials	use	login	cold	unscoped	resolves MCP credentials per project; P2 adds the user's credential-use grant on top
+agent-account-env	broker	agent_accounts:launch_env	credentials	use	login	cold	unscoped	points a launch at one agent account home (#1820); pools become per runtime account
+bell-add	notification	notifications:add	self	write	none	warm	unscoped	one notifications.json ledger with no recipient field; per-recipient after authorize() in P3a
+push-fanout	notification	notifications:fanout	self	write	none	warm	unscoped	sends to every push subscription; per-user subscription sets, bounded concurrency
+push-send	notification	webpush:send	self	write	none	warm	unscoped	the Web Push transport; the payload carries title, project and link only
+notify-routes	notification	notify_routes:pass_once	self	write	none	cold	unscoped	sends bell events to the Commander's own Telegram, Matrix or mail; becomes per-user
+needs-you	notification	needs_you_notify:sync_once	session	view	none	warm	unscoped	the one needs-you producer; per-recipient episodes in P3a, still one producer
+supervisor	background	orchestrator:run_pass	session	send	none	warm	unscoped	the supervisor pass can deliver into sessions; carries the initiating actor in P4
+missions-advance	background	mission_runner:advance	mission	intervene	none	warm	unscoped	advances a running mission; reauthorizes at each effect handoff in P4
+mission-dispatch	background	mission_dispatch:run	mission	intervene	none	warm	unscoped	dispatches mission steps into sessions
+mission-steps	background	mission_steps:start_step	mission	intervene	none	cold	unscoped	starts a mission step
+automations	background	automation_runner:execute	library	use	none	cold	unscoped	runs an automation under its consent receipt; the receipt gains the consenting user
+webhook-actions	background	webhook_actions:handle	library	use	hmac	cold	unscoped	runs a webhook's action; the webhook gains an owning user
+hq-dispatch	background	hq_dispatch:pass_once	self	write	none	warm	unscoped	HQ dispatches; per-user HQ in P1
+pty-launch	launch	routes.terminal:register	session	start	login	cold	unscoped	the terminal LAUNCH branch inside ws_term (registered by routes.terminal.register) admits through session_capacity.admit
+headless-dispatch	launch	headless_dispatch:dispatch	session	start	none	cold	unscoped	headless launches for missions and automations; a session_capacity.admit birth point
+native-launch	launch	native_containment:launch_argv	session	start	login	cold	unscoped	the one API-session launcher (systemd-run --user unit); the P0 confinement backend wraps it
+capacity-admit	launch	session_capacity:admit	instance	system.read	none	cold	unscoped	the one host-wide slot gate; per-user shares intersect it
