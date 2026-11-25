@@ -1521,6 +1521,15 @@ class Federation:
     async def _dial_peer(self, peer: store.Peer) -> None:
         try:
             for endpoint in ep.ordered(peer.endpoints):
+                # Trust is read AGAIN before EACH connection is begun (#2315). ``peer`` comes from
+                # the round's list, which may predate a revoke: the round spawns this dial only once
+                # the channel is gone, and ``revoke`` drops it only after its commit, so the first
+                # read sees that revoke. A revoke that completes while an earlier endpoint's attempt
+                # is still out is seen before the next endpoint is dialed (Hermes on #2364).
+                # Without these reads the revoker opened a fresh handshake to the key it had just
+                # revoked, and that peer answered with a frame.
+                if await asyncio.to_thread(self.store.trusted_key, peer.public_key) is None:
+                    return
                 transport = None
                 try:
                     transport = await self._dial(endpoint)

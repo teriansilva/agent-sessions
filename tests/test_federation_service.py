@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import logging
 import os
 import sqlite3
@@ -55,6 +56,7 @@ class Net:
         if name in self.down or name not in self.nodes:
             raise service.DialError("unreachable")
         near, far = pipe()
+        far.served_by = name  # which instance answered: wire assertions say whose bytes these are
         self.served.append(far)
         target = self.nodes[name]
         asyncio.get_running_loop().create_task(target.serve(far))
@@ -424,8 +426,74 @@ def test_revoke_ends_trust_first_and_the_key_is_refused_afterwards(tmp_path, mon
         await until(lambda: len(net.served) > before)
         await asyncio.sleep(0.2)
         assert not peers_of(a)[b.peer_id]["connected"]
+        # Every connection since is beta dialing alpha (alpha never dials a key it revoked, #2315),
+        # and alpha answers each with the handshake reply alone: not one application frame.
+        assert {end.served_by for end in net.served[before:]} == {"alpha"}
         assert all(len(end.sent) <= 1 for end in net.served[before:])
         assert await a.revoke(b.peer_id)  # idempotent
+        await _stop(a, b)
+
+    run(go())
+
+
+def test_a_dial_round_read_before_a_revoke_never_dials_the_revoked_key(tmp_path, monkeypatch):
+    """#2315: the round's peer list can be read before a revoke commits. The dial it then spawns
+    reads trust again before any byte goes out, so the revoker never handshakes with that key."""
+    monkeypatch.setattr(service, "DIAL_TICK_S", 3600)  # no background round: this test drives it
+
+    async def go():
+        net = Net()
+        a, b = net.add("alpha", tmp_path), net.add("beta", tmp_path)
+        a.start()
+        b.start()
+        await _trusted_pair(net, a, b)
+        await _same_channel(a, b)
+        stale = await asyncio.to_thread(a.store.list_peers)  # beta still trusted in this read
+        assert any(p.peer_id == b.peer_id and p.trusted for p in stale)
+        await a.revoke(b.peer_id)
+        assert a.channel_for(b.peer_id) is None
+        monkeypatch.setattr(a.store, "list_peers", lambda: stale)
+        before = len(net.served)
+        await a._dial_round()
+        await asyncio.sleep(0.2)  # let any dial the round spawned reach the network
+        assert [end.served_by for end in net.served[before:]] == []
+        await _stop(a, b)
+
+    run(go())
+
+
+def test_a_revoke_during_a_failing_endpoint_never_dials_the_next_one(tmp_path, monkeypatch):
+    """#2315 (Hermes on #2364): a revoke that completes while the first endpoint's attempt is out
+    stops the dial there: the next endpoint is never dialed."""
+    monkeypatch.setattr(service, "DIAL_TICK_S", 3600)  # no background round: this test drives it
+
+    async def go():
+        net = Net()
+        a, b = net.add("alpha", tmp_path), net.add("beta", tmp_path)
+        a.start()
+        b.start()
+        await _trusted_pair(net, a, b)
+        await _same_channel(a, b)
+        peers = await asyncio.to_thread(a.store.list_peers)
+        peer = next(p for p in peers if p.peer_id == b.peer_id)
+        first = {"t": "direct", "url": "wss://down.example/ws/fed"}
+        second = {"t": "direct", "url": net.url("beta")}
+        peer = dataclasses.replace(peer, endpoints=(first, second))
+        dialed: list[str] = []
+
+        async def dial(endpoint):
+            dialed.append(endpoint["url"])
+            if endpoint is first:
+                await a.revoke(b.peer_id)  # completes while this attempt is still out
+                raise service.DialError("unreachable")
+            return await net.dial(endpoint)
+
+        monkeypatch.setattr(a, "_custom_dial", dial)
+        before = len(net.served)
+        await a._dial_peer(peer)
+        await asyncio.sleep(0.2)
+        assert dialed == [first["url"]]
+        assert net.served[before:] == []
         await _stop(a, b)
 
     run(go())
