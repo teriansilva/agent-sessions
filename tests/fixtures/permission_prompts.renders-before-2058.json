@@ -1,0 +1,11 @@
+{
+  "claude_permission_answered.raw": "72dc63f2a070b517b7778c380fc2c4ff699ff92d82615badf4ab407e21b4f392",
+  "claude_permission_bash.raw": "a775c076b435315e95db0eb8188248715ee4b6c960ae56835f7ed841c185e2a2",
+  "claude_permission_bash_cursor2.raw": "b910d8b29a1fe4b597ec9b018a28b88fb1d0eb40e372b033c4ea9fb02e6df464",
+  "claude_permission_write.raw": "fe24eb2acb9cee28f13c0a573f95b107dd220c5b3dd28691bee7eba4308bfc9e",
+  "opencode_permission_always_stage.raw": "892d949adc4d2afe44511e4a76c897ae55e28ae70aec3a662b43dfc769093ce0",
+  "opencode_permission_grep.raw": "ff434ad3d02112262eaae84f745d27ef5814b6b4a2dd1eb42f71847e9de06d01",
+  "opencode_permission_shell.raw": "bd642c14b49e70f6f4f16a2243777c434049420434c4790dd632f51337d28e38",
+  "opencode_permission_shell_cursor2.raw": "0384389f6515ff43142efed0d1b20fed63e35f5c218d98086d25987d23413733",
+  "opencode_permission_shell_truncated.raw": "d86d555deace21cdd3884e3ce95cf0f58accc750169ea0cb2626446845b5bebf"
+}

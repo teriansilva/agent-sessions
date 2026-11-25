@@ -8,6 +8,8 @@ against the real CLIs.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -392,7 +394,8 @@ def test_leaving_an_alternate_screen_whose_entry_was_cut_off_is_unknown():
         b"\x1bc",
         b"\x1b(0",  # line-drawing charset
         b"\x0e",  # shift-out
-        b"\x08",
+        b"\x7f",  # DEL (backspace itself is modelled since #2058: see the tests at the end)
+        b"\x1b[?45h",  # reverse wrap
         b"\x1b[8;10;20t",  # resize the window
         b"\x1bPq#0;2;0;0;0\x1b\\",  # sixel graphics
         b"\x1b",  # a torn sequence
@@ -430,3 +433,140 @@ def test_inert_controls_keep_the_frame_trusted(tail):
     cells = vtscreen.render_cells(raw + tail, *OC)
     assert cells
     assert permission_prompts.parse("\n".join(c.text for c in cells), "opencode", cells)
+
+
+# --- backspace is modelled (#2058) ---------------------------------------------------------------
+
+#: sha256 of each capture's three renders (cells with colours, the strict grid, the reviewer's
+#: text), computed on `main@2b47f807`, the commit before the renderer modelled backspace.
+RENDERS_BEFORE_2058 = json.loads((FIX / "permission_prompts.renders-before-2058.json").read_text())
+
+
+@pytest.mark.parametrize("name", sorted(ALL))
+def test_every_permission_capture_renders_byte_identically_to_before_backspace_was_modelled(name):
+    raw = _raw(name)
+    assert b"\x08" not in raw  # no capture holds a backspace, so none may change
+    geom = ALL[name][1]
+    cells = vtscreen.render_cells(raw, *geom)
+    renders = {
+        "cells": [[c.text, list(c.fg), list(c.bg)] for c in cells],
+        "grid": vtscreen.render_grid(raw, *geom),
+        "text": vtscreen.render(raw, *geom),
+    }
+    blob = json.dumps(renders, ensure_ascii=False, sort_keys=True).encode()
+    assert hashlib.sha256(blob).hexdigest() == RENDERS_BEFORE_2058[name]
+
+
+def _read(raw: bytes, engine: str, geom: tuple[int, int]):
+    cells = vtscreen.render_cells(raw, *geom)
+    return permission_prompts.parse("\n".join(c.text for c in cells), engine, cells), cells
+
+
+@pytest.mark.parametrize("name", ["opencode_permission_shell.raw", "claude_permission_bash.raw"])
+def test_a_backspace_that_changes_no_cell_leaves_the_same_dialog(name):
+    """BS moves the cursor and draws nothing: the reader sees the dialog that is on the screen."""
+    engine, geom = ALL[name]
+    before, _ = _read(_raw(name), engine, geom)
+    after, _ = _read(_raw(name) + b"\x08", engine, geom)
+    assert before and after == before
+    assert permission_prompts.digest(after) == permission_prompts.digest(before)
+
+
+#: The tails `tests/fixtures/shell_backspace_record.py` appended to `claude_permission_bash.raw`
+#: for the two recorded adversarial rings. Each has the screen tmux 3.4 showed beside it.
+SWAP_TAIL = b"\x1b[20;10H\x08\x08\x08No \x1b[23;9H\x08\x08Yes"
+COMMAND_TAIL = b"\x1b[16;57H\x08\x08\x08\x08\x08x.sh "
+
+
+def _adversarial(name: str, tail: bytes):
+    """The ring through the REAL reader, after checking that the frame it read is, row for row,
+    the screen the reference terminal showed for the same bytes."""
+    raw = _raw(f"{name}.raw")
+    assert raw == _raw("claude_permission_bash.raw") + tail and b"\x08" in tail
+    shown = (FIX / f"{name}.tmux.txt").read_text()
+    parsed, cells = _read(raw, "claude", CL)
+    assert [c.text for c in cells] == shown.strip("\n").split("\n")
+    grid = vtscreen.render_grid(raw, *CL)
+    assert "\n".join(row.rstrip() for row in grid).rstrip("\n") + "\n" == shown
+    return parsed, shown.split("\n")
+
+
+def test_a_command_overwritten_with_backspaces_is_read_as_the_screen_shows_it():
+    """Backspaces rewrite the end of the command inside a dialog whose every option is still as
+    claude drew it. The reader shows the command that is on the screen, never the one that was
+    there, and the dialog is no longer the one an answer was authorised against."""
+    honest, _ = _read(_raw("claude_permission_bash.raw"), "claude", CL)
+    forged, shown = _adversarial("claude_permission_bash_backspace_command", COMMAND_TAIL)
+    assert honest["detail"].splitlines()[0].endswith("touch probe-dir-1213/f.txt")
+    assert (
+        forged["detail"].splitlines()[0] == "mkdir -p probe-dir-1213 && touch probe-dir-1213/x.sh"
+    )
+    assert "   mkdir -p probe-dir-1213 && touch probe-dir-1213/x.sh" in shown
+    assert "   mkdir -p probe-dir-1213 && touch probe-dir-1213/f.txt" not in shown
+    assert forged["options"] == honest["options"]
+
+    # The binding moved with the screen: an answer prepared for the honest dialog is refused.
+    assert forged["identity"] != honest["identity"]
+    assert not permission_prompts.same_prompt(honest, forged)
+    assert permission_prompts.digest(forged) != permission_prompts.digest(honest)
+
+
+def test_options_overwritten_with_backspaces_are_never_read_as_what_they_were():
+    """Backspaces turn `1. Yes` into `1. No` and `3. No` into `3. Yes`. The frame is trusted and
+    is exactly what the terminal showed, and it is not a dialog claude draws (its first option
+    is the plain yes, its last the no), so the reader offers no buttons at all. What it must
+    never do is what a reader that skipped BS would: still see `1. Yes`."""
+    forged, shown = _adversarial("claude_permission_bash_backspace_swap", SWAP_TAIL)
+    assert " ❯ 1. No" in shown and "   3. Yes" in shown
+    assert " ❯ 1. Yes" not in shown and "   3. No" not in shown
+    assert forged is None
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        b"\x1b[20;100HX\x08\x08",  # a write in the last column, then BS in the pending wrap
+        b"\x1b[20;999H\x1b[C\x08",  # the cursor pushed to the margin, then BS
+        b"\x1b[20;100HX\x1b[D\x08No ",  # the margin, a step left (CUB), then BS (#2328 review)
+        b"\x1b[?45h\x1b[20;1H\x08",  # reverse wrap switched on, then BS at column 0
+        b"\x1b[20;10H\xcc\x81\x08\x08\x08No ",  # a combining mark, then the overwrite
+    ],
+)
+def test_a_backspace_the_renderer_cannot_place_exactly_leaves_no_dialog(tail):
+    raw = _raw("claude_permission_bash.raw")
+    assert _read(raw, "claude", CL)[0]
+    assert vtscreen.render_cells(raw + tail, *CL) == []
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        # 1049's entry overwrites the cursor DECRC restores (xterm.js: `.../fZtxt`).
+        b"\x1b[16;57H\x1b7\x1b[16;54H\x1b[?1049h\r\x1b[?1049l\x1b8\x08Z",
+        # 47 keeps the alternate screen's row; a CHA fixes the column only (xterm.js: row 17).
+        b"\x1b[16;57H\x1b[?47h\x1b[17;1H\x1b[?47l\x1b[57G\x08Z",
+        b"\x1b[16;57H\x1b[?1047h\x1b[17;1H\x1b[?1047l\x1b[57G\x08Z",
+        # Review 8836: a saved cursor past a CUP, and a 47 entry with a 1049 exit.
+        b"\x1b[16;57H\x1b[?47h\x1b[17;57H\x1b[?47l\x1b7\x1b[1;1H\x1b8\x08Z",
+        b"\x1b[16;54H\x1b7\x1b[16;57H\x1b[?47h\r\x1b[?1049l\x08Z",
+    ],
+    ids=["decrc_after_1049", "47_row", "1047_row", "decsc_past_cup", "47_entry_1049_exit"],
+)
+def test_a_backspace_at_a_position_the_model_cannot_vouch_for_leaves_no_dialog(tail):
+    """#2328 review 8833: both reader-level reproductions. Without the refusal the reader returns
+    the command ending `f.txZ`, which the real terminal never showed."""
+    raw = _raw("claude_permission_bash.raw").replace(b"\x1b[?1049h", b"", 1)
+    assert _read(raw, "claude", CL)[0]
+    assert vtscreen.render_cells(raw + tail, *CL) == []
+
+
+@pytest.mark.parametrize("mode", [b"1049", b"1047", b"47"])
+def test_a_backspace_from_an_unpinned_column_through_the_alternate_screen_leaves_no_dialog(mode):
+    """#2328 review 8829: the capture with its opening `CSI ? 1049 h` removed, so the tail's own
+    buffer switch is the only one. A row's end reached at the margin, a step left (unpinned), a
+    round trip through the alternate screen, then BS and a write. xterm.js lands the write one
+    cell left of this model; the frame must not be trusted."""
+    raw = _raw("claude_permission_bash.raw").replace(b"\x1b[?1049h", b"", 1)
+    assert _read(raw, "claude", CL)[0]
+    tail = b"\x1b[16;100HX\x1b[44D\x1b[?" + mode + b"h\r\x1b[?" + mode + b"l\x08Z"
+    assert vtscreen.render_cells(raw + tail, *CL) == []

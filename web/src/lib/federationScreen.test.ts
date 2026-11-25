@@ -425,7 +425,7 @@ describe("what the dialog and the rows say of a terminal", () => {
       "A secret that is cut off, one a program lays out across lines itself, or one we don't know about is not hidden.",
     );
     expect(TERMINAL_NOT_SHOWN).toBe(
-      "No screen is sent after a control we can't redraw exactly, such as a backspace in a shell, or while the screen shows any character outside plain Latin, Greek and Cyrillic text, punctuation, arrows, symbols and box drawing: emoji, CJK, Hangul, Arabic, Indic and similar scripts, or combining characters. An agent that draws emoji is often not viewable.",
+      "No screen is sent after a control we can't redraw exactly, such as an edit in the middle of a shell line, or while the screen shows any character outside plain Latin, Greek and Cyrillic text, punctuation, arrows, symbols and box drawing: emoji, CJK, Hangul, Arabic, Indic and similar scripts, or combining characters. An agent that draws emoji is often not viewable.",
     );
     expect(TERMINAL_LIMIT_DETAIL).toBe(
       "It is a picture of the screen as text. The peer cannot type, resize or scroll back.",

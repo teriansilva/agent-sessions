@@ -258,7 +258,10 @@ async def test_a_frame_that_cannot_be_rendered_and_trusted_is_unavailable_and_no
         elif case == "oversize_grid":
             paint(key, rows=250, cols=450)
         else:
-            paint(key, SHELL + b"\x08")
+            # A control the renderer does not model (delete character). Until #2058 this case
+            # was a backspace; that is modelled now, and
+            # `test_a_shell_line_edited_with_backspaces_is_readable` took its place.
+            paint(key, SHELL + b"\x1b[P")
         made = await p.grant(key)
         wire.clear()
         for extra in ({}, {"wait": 2}):
@@ -267,6 +270,36 @@ async def test_a_frame_that_cannot_be_rendered_and_trusted_is_unavailable_and_no
         assert bodies == [UNAVAILABLE, UNAVAILABLE]
         assert MARK.encode() not in b"".join(wire)
         assert p.a.frame_waits == {}
+
+
+#: What a real `bash` wrote while `echo pasword` was typed, erased back to `pas` with four
+#: backspaces and finished (`tests/fixtures/shell_backspace.PROVENANCE.md`).
+EDITED_SHELL = (FIX / "shell_backspace_edit.raw").read_bytes()
+
+
+@pytest.mark.anyio
+async def test_a_shell_line_edited_with_backspaces_is_readable(
+    tmp_path,
+    monkeypatch,
+    wire,  # noqa: F811
+    live,  # noqa: F811
+):
+    """#2058, replacing #2056's regression that a shell stream with a backspace is
+    `unavailable`: the renderer models BS, so a peer sees the line as the shell left it. What
+    stays `unavailable` is a backspace nobody pinned (in the pending wrap at the right margin)
+    and every control the renderer does not model (the `untrusted` case above)."""
+    assert EDITED_SHELL.count(b"\x08 \x08") == 4
+    async with paired(tmp_path, monkeypatch) as p:
+        made, key = await terminal_grant(p, EDITED_SHELL)
+        frame = await p.call("terminal.frame", ref(made))
+        assert frame["lines"][:3] == ["$ echo password", "password", "$"]
+        assert set(frame["lines"][3:]) == {""}
+        assert b"pasword" not in b"".join(wire)  # the erased spelling is not on the screen
+
+        write(key, b"\x1b[3;80HX\x08")  # a write in the last column, then a backspace
+        wire.clear()
+        assert await p.refused("terminal.frame", ref(made)) == "unavailable"
+        assert answers(wire) == [UNAVAILABLE]
 
 
 # ── redaction ─────────────────────────────────────────────────────────
@@ -735,7 +768,7 @@ async def test_several_watchers_cost_one_render_per_change_and_each_call_is_reda
         assert renders == [key, key] and len(redactions) == 8
 
         # A refusal is kept the same way: an unreadable screen is not rendered once per poll.
-        write(key, b"\x08")
+        write(key, b"\x1b[P")  # delete character: not modelled (a backspace is, #2058)
         for _ in range(3):
             assert await p.refused("terminal.frame", ref(made)) == "unavailable"
         assert renders == [key, key, key]
@@ -1842,9 +1875,14 @@ def test_two_real_instances_share_a_real_terminal_session_view_only(
     monkeypatch,
 ):
     """Two real apps, paired through their operator APIs, and a real terminal session on the
-    owner: a `dtach` master (running `cat` where the shell provider runs `bash`, so the bytes are
-    the same on every host) that the production headless reader drains into the real ring.
-    `shares.session_state` is the real one: the session exists in the shell provider's own store.
+    owner: a `dtach` master running a real interactive `bash`, as the shell provider does, that
+    the production headless reader drains into the real ring. `shares.session_state` is the real
+    one: the session exists in the shell provider's own store.
+
+    Until #2058 this ran `cat`: one erased character made a shell's screen unreadable to a peer.
+    Now the owner types with typos and erases them, and the peer sees the lines as the shell
+    left them. The shell has no rc file and a fixed prompt, so its bytes are the same on every
+    host, and it starts only once the reader is attached (the `read`), so none are missed.
 
     Grant, read a frame, type on the owner, see the new frame, revoke. Throughout, the owner's
     session gets no input, no resize and no extra `dtach` client."""
@@ -1865,10 +1903,18 @@ def test_two_real_instances_share_a_real_terminal_session_view_only(
     stream = session_stream.SessionStream("shell", native)
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     try:
-        subprocess.run([ptybridge.DTACH_BIN, "-n", str(sock), "-E", "-z", "/bin/cat"], check=True)
+        bash = ["/bin/bash", "--norc", "--noprofile"]
+        # PS1 is set in the gate: the non-interactive `bash -c` unsets an inherited one, and the
+        # default prompt names the bash version.
+        gate = "read -rs _; export PS1='$ '; exec /bin/bash --norc --noprofile -i"
+        env = ["/usr/bin/env", "-i", "TERM=xterm", "PATH=/usr/bin:/bin"]
+        subprocess.run(
+            [ptybridge.DTACH_BIN, "-n", str(sock), "-E", "-z", *env, *bash, "-c", gate], check=True
+        )
         _wait(lambda: ptybridge.session_exists("shell", native), timeout=60)
         on_a(stream.start())  # the server-owned reader: nobody has this session open
         _wait(lambda: len(_dtach_processes(sock)) == 2, timeout=60)  # the master and that reader
+        os.write(stream._master, b"\n")  # the reader is attached: let the shell start
 
         made = a.post("/grants", {"session_key": key, "peer_id": b_id, "level": "send"})
         assert made.status_code == 422, made.text  # a terminal is view only
@@ -1893,18 +1939,20 @@ def test_two_real_instances_share_a_real_terminal_session_view_only(
         # PTY has (the default, which dtach relays to the program) when it attached.
         assert termios.tcgetwinsize(stream._master) == (24, 80)
         assert (scrollback._LAST_ROWS[key], scrollback.ring_cols(key)) == (24, 80)
-        os.write(stream._master, b"hello from the owner\n")
+        # `helo`, two backspaces, `llo`: the line editor erases with BS SP BS
+        os.write(stream._master, b"echo helo\x7f\x7fllo from the owner\n")
 
         # read a frame: beta's operator sees the owner's screen through beta's own API
-        typed = ["hello from the owner"] * 2  # the echo of what was typed, and `cat`'s own line
+        typed = ["$ echo hello from the owner", "hello from the owner", "$"]
 
         def shows(lines: list[str], at: int = 0):
             got = frame()
-            return got if got and got["lines"][at : at + 2] == lines else None
+            return got if got and got["lines"][at : at + len(lines)] == lines else None
 
         first = _wait(lambda: shows(typed), timeout=30)
         assert first["rows"] == 24 and first["cols"] == 80 and first["settled"] is True
-        assert set(first["lines"][2:]) == {""}
+        assert set(first["lines"][3:]) == {""}
+        assert scrollback._BUFFERS[key].count(b"\x08 \x08") == 2  # the shell did erase twice
         # the session verbs of an API session do not serve it
         assert b.http.get(f"{base}/snapshot", headers=b.read).status_code == 404
 
@@ -1914,7 +1962,7 @@ def test_two_real_instances_share_a_real_terminal_session_view_only(
             assert frame() == first
         same = b.http.get(f"{base}/frame?have={first['fingerprint']}&wait=1", headers=b.read)
         assert same.json() == {"fingerprint": first["fingerprint"], "unchanged": True}
-        # `cat` echoes every byte it is sent, so an unchanged byte count is "no input arrived"
+        # The shell echoes every key it is sent, so an unchanged byte count is "no input arrived"
         assert (scrollback._TOTALS[key], termios.tcgetwinsize(stream._master)) == before
         assert len(_dtach_processes(sock)) == 2  # no extra dtach client attached
 
@@ -1922,12 +1970,13 @@ def test_two_real_instances_share_a_real_terminal_session_view_only(
         parked = pool.submit(frame, f"?have={first['fingerprint']}&wait=20")
         _wait(lambda: a.fed.frame_waits.get(b_id) == 1)
         started = time.monotonic()
-        os.write(stream._master, b"a second line\n")
+        os.write(stream._master, b"echo a secx\x7fond line\n")
         second = parked.result(40)
         assert time.monotonic() - started < 15  # the output woke it, not the end of its 20 s
-        assert second["lines"][2] == "a second line"
+        assert second["lines"][2].startswith("$ e")
         assert second["fingerprint"] != first["fingerprint"]
-        second = _wait(lambda: shows(["a second line"] * 2, at=2), timeout=30)
+        retyped = ["$ echo a second line", "a second line", "$"]
+        second = _wait(lambda: shows(retyped, at=2), timeout=30)
 
         # revoke: a parked read answers 404, and so does everything after it
         held = pool.submit(

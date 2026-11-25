@@ -180,11 +180,11 @@ In detail:
 - **Not hidden:** a known secret that is only partly on the screen (its start scrolled off);
   one that a program breaks across lines itself, for example inside a box or a narrow pane; and
   any secret BattleLab does not know.
-- **No screen at all** is sent after a control BattleLab cannot redraw exactly, such as a
-  backspace in a shell, or while the screen shows any character outside plain Latin, Greek and
-  Cyrillic text, punctuation, arrows, symbols and box drawing: emoji, CJK, Hangul, Arabic,
-  Indic and similar scripts, or combining characters. An agent that draws emoji is often not
-  viewable. The peer then reads *This screen can't be shown right now.*
+- **No screen at all** is sent after a control BattleLab cannot redraw exactly, such as an
+  edit in the middle of a shell line, or while the screen shows any character outside plain
+  Latin, Greek and Cyrillic text, punctuation, arrows, symbols and box drawing: emoji, CJK,
+  Hangul, Arabic, Indic and similar scripts, or combining characters. An agent that draws emoji
+  is often not viewable. The peer then reads *This screen can't be shown right now.*
 - The owner's terminal is never touched by a share: nothing is typed, resized or attached.
 
 If you cannot accept these limits for a session, do not share its terminal.
@@ -387,8 +387,8 @@ happened.
   when it is cut off or laid out across lines by a program
   ([above](#a-terminal-s-screen)).
 - **The terminal view shows less than a terminal.** No colour, no cursor, no scrollback. Many
-  screens are not viewable at all: any screen with emoji or a non-Latin script, and often a
-  shell someone is typing in.
+  screens are not viewable at all: any screen with emoji or a non-Latin script, and a shell
+  line edited in the middle.
 - **Two instances are updated separately.** A newer instance may share something an older one
   does not know. The older one does not list such a share and guesses nothing about it. An
   older owner can also report *busy* for a message it already delivered, which is why your

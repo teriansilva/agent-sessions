@@ -447,7 +447,8 @@ def test_unreadable_holds_refuse(world, monkeypatch):
         b"\x1b[3L",  # insert lines
         b"\x1bM",  # reverse index
         b"\x1bc",  # full reset
-        b"\x08",  # backspace
+        b"\x1b[?45h",  # reverse wrap (backspace itself is modelled since #2058: next test)
+        b"\x1b[42;65HX\x08",  # a backspace in the pending wrap at the right margin
     ],
 )
 def test_an_unmodelled_screen_mutation_after_the_tap_refuses_inside_the_fence(world, tail):
@@ -468,3 +469,40 @@ def test_an_unmodelled_screen_mutation_after_the_tap_refuses_inside_the_fence(wo
     scrollback._buffer_append(phys, tail)
     assert scrollback.live_tail_frame(phys, orchestrator.PROMPT_SCREEN_CHARS) == ("", None)
     assert actuator.screen_matches(phys, pre)[0] is False
+
+
+@pytest.mark.parametrize(
+    "tail,same",
+    [
+        # Moves the cursor and changes no cell. What `same` asserts is `actuator.screen_matches`
+        # (the fingerprint, prompt class and permission digest), not the rendered text, which is
+        # right-stripped per row (#2328 review 8829).
+        (b"\x08", True),
+        (b"\x1b[42;41H\x08 \x08", False),  # the erase idiom takes the `t` off `Reject`
+        (b"\x1b[42;41H" + b"\x08" * 6 + b"Accept", False),  # `Reject` overwritten in place
+        (b"\x1b[42;17H" + b"\x08" * 4 + b"ONCE", False),  # `Allow once` overwritten in place
+    ],
+    ids=["cursor_only", "erase_idiom", "third_option_overwritten", "first_option_overwritten"],
+)
+def test_a_backspace_after_the_tap_is_read_and_only_an_unchanged_dialog_is_answered(
+    world, tail, same
+):
+    """#2058: backspace is modelled, so it no longer refuses by itself (it used to be one of the
+    unmodelled mutations above). What it leaves on the screen is READ, inside the fence: a
+    backspace that changed no cell keeps the dialog, one used to rewrite an option does not."""
+    _paint(OC_SID, "opencode_permission_shell.raw")
+    phys = engines.physical_key(OC_SID)
+    screen, cells = scrollback.live_tail_frame(phys, orchestrator.PROMPT_SCREEN_CHARS)
+    live = permission_prompts.parse(screen, "opencode", cells)
+    pre = {
+        "key": phys,
+        "screen_fingerprint": orchestrator._screen_fingerprint(screen),
+        "prompt_class": orchestrator._prompt_class(screen),
+        "permission_digest": permission_prompts.digest(live),
+        "engine": "opencode",
+    }
+    scrollback._buffer_append(phys, tail)
+    after, after_cells = scrollback.live_tail_frame(phys, orchestrator.PROMPT_SCREEN_CHARS)
+    assert after_cells  # the frame is trusted and read, not refused
+    assert (after == screen) is same
+    assert actuator.screen_matches(phys, pre)[0] is same

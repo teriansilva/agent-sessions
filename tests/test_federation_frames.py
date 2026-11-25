@@ -116,7 +116,16 @@ def test_the_untrimmed_render_is_the_frame_the_trimmed_readers_show(name, geom):
 
 
 @pytest.mark.parametrize(
-    "tail", [b"\x08", b"\x1b[2P", b"\x1b[5S", b"\x1b[3;9r", b"\x1b[8;10;20t", b"\x1b"]
+    "tail",
+    [
+        b"\x1b[1;65HX\x08",  # a backspace at the right margin (elsewhere it is modelled, #2058)
+        b"\x1b[?45h",  # reverse wrap
+        b"\x1b[2P",
+        b"\x1b[5S",
+        b"\x1b[3;9r",
+        b"\x1b[8;10;20t",
+        b"\x1b",
+    ],
 )
 def test_the_untrimmed_render_keeps_the_fail_closed_trust_checks(tail):
     raw = (FIX / "opencode_permission_shell.raw").read_bytes()
@@ -235,8 +244,17 @@ def test_the_export_never_shows_the_frame_from_before_a_trailing_full_screen_era
 
 
 def test_the_export_has_no_escape_strip_fallback_for_a_frame_it_cannot_trust():
-    paint(b"$ pasword\x08\x08\x08\x08sword\r\n", 24, 80)  # a backspace: not modelled exactly
+    paint(b"$ pasword\x1b[4P\r\n", 24, 80)  # delete character: not modelled
     assert "pasword" in scrollback.live_tail_text(KEY)  # the forgiving reader shows something
+    assert refused() == "untrusted"
+
+
+def test_the_export_reads_a_line_edited_with_backspaces():
+    """#2058: backspace is modelled, so this ring (which was the refused one above) exports."""
+    paint(b"$ pasword\x08\x08\x08\x08sword\r\n", 24, 80)
+    assert scrollback.screen_export(KEY).grid[0].rstrip() == "$ password"
+    assert scrollback.live_tail_text(KEY) == "$ password"
+    scrollback._buffer_append(KEY, b"\x1b[1;80HX\x08")  # ...but not one at the right margin
     assert refused() == "untrusted"
 
 

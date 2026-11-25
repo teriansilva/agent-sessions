@@ -13,7 +13,9 @@ through a screen model instead yields the frame a human would see.
 Scope, deliberately narrow:
 
 * Only the sequences real agent TUIs use to position and erase — CUP/HVP, CUU/CUD/CUF/CUB,
-  CHA, VPA, ED, EL — plus ``\\r`` / ``\\n`` / ``\\t`` and bottom-row scrolling. SGR (colour),
+  CHA, VPA, ED, EL — plus ``\\r`` / ``\\n`` / ``\\t`` / ``\\b`` and bottom-row scrolling.
+  Backspace (#2058) is what a shell's line editor erases with (``\\b \\b``): one cell left,
+  nothing erased, never past column 0 (see :meth:`_Screen.backspace`). SGR (colour),
   DECSET/DECRST private modes, OSC strings, scroll-region (DECSTBM) and charset selects are
   recognised only so they can be *skipped*: none of them changes which character sits in
   which cell, which is all the reviewer needs.
@@ -61,7 +63,7 @@ _TOKEN = re.compile(
     rb"|\x1b[@-Z\\^_]"  # other ESC singles
     rb"|\x1b[()][0-9A-Za-z]"  # charset designation
     rb"|\x1b[ #%].?"  # ESC + intermediate
-    rb"|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]"  # remaining C0, except \t \n \r
+    rb"|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]"  # remaining C0, except \t \n \r (BS is modelled)
 )
 
 # A full-screen erase as the LAST thing in the captured bytes means we sliced the ring
@@ -190,6 +192,8 @@ class _Screen:
         "main",
         "untrusted",
         "inexact",
+        "unpinned",
+        "lost",
     )
 
     def __init__(self, rows: int, cols: int, *, colours: bool = False) -> None:
@@ -198,7 +202,7 @@ class _Screen:
         self.grid: list[list[str]] = [[" "] * cols for _ in range(rows)]
         self.row = 0
         self.col = 0
-        self.saved = (0, 0)
+        self.saved = (0, 0, False)
         # The current pen, as the SGR colour it names (`"2;245;167;66"`, `"5;208"`, `"33"`), or
         # "" for the terminal default. Only kept when `colours` is on.
         self.fg = ""
@@ -209,7 +213,9 @@ class _Screen:
         # authorisation read. `main` holds the normal buffer while the alternate one is up.
         self.in_alt = False
         self.main: tuple | None = None
-        #: Why this frame cannot be trusted for authorisation, or None (colours mode only).
+        #: Why this frame cannot be trusted for authorisation, or None. Set from the control
+        #: allow-list in colours mode, and by :meth:`backspace` where it will not guess. Only
+        #: the strict readers (`render_cells`, `render_grid`) consult it.
         self.untrusted: str | None = None
         #: Why this screen's COLUMNS cannot be trusted, or None: the first written character
         #: that does not occupy exactly one cell (see :func:`_one_cell`). :meth:`write` gives
@@ -217,6 +223,24 @@ class _Screen:
         #: what has scrolled off, may differ from the real terminal. Readers that only need the
         #: text ignore this; :func:`render_grid`, whose coordinates are relied on, refuses.
         self.inexact: str | None = None
+        #: The cursor's column may differ from the app's reference terminal (xterm.js) by one,
+        #: since it was last set absolutely (CR, CUP/HVP, CHA inside the screen). Only a printable
+        #: written in the last column reaches ``col == cols`` the way xterm.js does; xterm.js
+        #: clamps that state to the last cell before any relative move, and clamps moves and tabs
+        #: to the last cell, where this model keeps ``col == cols``. So it is set by a relative
+        #: move (``CSI A/B/C/D``) that starts at the margin, by a move or tab that ends there, and
+        #: by a cursor restored there. Only :meth:`backspace` consults it (#2328 review); the same
+        #: divergence for a printable is #2337.
+        self.unpinned = False
+        #: The cursor's ROW and column may both differ from xterm.js (#2328 reviews 8833, 8836).
+        #: Set by EVERY alternate-screen exit, whatever the mode or whether its entry was seen,
+        #: and by EVERY cursor restore (DECRC, SCORC). xterm.js keeps a saved cursor per buffer,
+        #: 1049's entry overwrites the normal one, 47/1047 keep the alternate screen's cursor on
+        #: exit, and mixed entry/exit modes combine those; rather than model each combination,
+        #: none of them is trusted. Only a full CUP/HVP clears it, and because every restore sets
+        #: it again, no saved value can carry an old position back. CR and CHA fix the column
+        #: alone, so they do not. Only :meth:`backspace` consults it.
+        self.lost = False
 
     def alt(self, on: bool) -> None:
         """DECSET/DECRST 1049 / 1047 / 47 — switch between the normal and alternate buffers.
@@ -225,17 +249,23 @@ class _Screen:
         normal buffer — whatever the alternate screen showed (a dialog) is GONE from view. Leaving
         an alternate screen whose entry this slice never saw (the ring was cut inside it) cannot
         restore anything true, so the screen is blanked: unknown, never the old dialog.
+
+        :attr:`unpinned` (#2328 review 8829) is saved with the buffer and comes back with it (also
+        set if that column is the margin, which xterm.js clamps). Leaving, in any mode, sets
+        :attr:`lost`: what cursor xterm.js has afterwards depends on the entry and exit modes.
         """
         if on:
             if not self.in_alt:
-                self.main = (self.grid, self.fgs, self.bgs, self.row, self.col)
+                self.main = (self.grid, self.fgs, self.bgs, self.row, self.col, self.unpinned)
                 self.in_alt = True
             self._blank_all()
             return
         if self.in_alt and self.main is not None:
-            self.grid, self.fgs, self.bgs, self.row, self.col = self.main
+            self.grid, self.fgs, self.bgs, self.row, self.col, unpinned = self.main
+            self.unpinned = unpinned or self.col >= self.cols
         else:
             self._blank_all()
+        self.lost = True
         self.in_alt = False
         self.main = None
 
@@ -286,11 +316,50 @@ class _Screen:
             i += 1
 
     def save_cursor(self) -> None:
-        self.saved = (self.row, self.col)
+        self.saved = (self.row, self.col, self.unpinned)
 
     def restore_cursor(self) -> None:
-        self.row, self.col = self.saved
+        self.row, self.col, unpinned = self.saved
         self._clamp()
+        self.unpinned = self.unpinned or unpinned or self.col >= self.cols
+        self.lost = True  # which saved cursor xterm.js restores depends on the buffer history
+
+    def backspace(self) -> None:
+        """BS (0x08): the cursor moves one cell left. Nothing is erased, it stops at column 0,
+        and it never climbs to the row above (reverse wrap is off by default in a terminal, and
+        a stream that switches it on is refused: DEC mode 45 is not on the allow-list). The
+        line editor's erase, ``BS SP BS``, then blanks one cell by the ordinary write (#2058).
+
+        These cases are NOT modelled, and mark the frame untrusted instead of guessing:
+
+        * **A cursor position this model cannot vouch for** (:attr:`lost`): after an
+          alternate-screen exit or a cursor restore (DECRC/SCORC), until a CUP/HVP sets it
+          absolutely.
+
+        * **The right margin** (``col == cols``: a character was written in the last column and
+          the wrap is pending, or a move was clamped there), **or any column reached from it by
+          a relative move** (:attr:`unpinned`, e.g. ``CSI D`` then BS: xterm.js clamps before it
+          moves, this model does not). Terminals disagree about BS in this
+          state. tmux 3.4 keeps the cursor on the last cell (``abcde BS X`` on five columns
+          shows ``abcdX``; measured, ``tests/fixtures/shell_backspace.PROVENANCE.md``); the
+          reference #2058 names, xterm with default resources, could not be measured on the
+          recording host. Until a capture of it is checked in, none of one BS, repeated BS or
+          the printable that follows is pinned. ``bash`` never emits it: its line editor
+          forces the wrap (``SP CR``) as soon as a line reaches the last column.
+        * **After a character that is not one cell wide** (:attr:`inexact`). The cursor's column
+          is no longer the real screen's, so the cell a BS steps onto, and what is then written
+          over, would not be the one a terminal overwrites.
+
+        In each, the cursor stays where it is: the forgiving readers, which ignore
+        :attr:`untrusted`, get what they got before BS was modelled."""
+        if self.lost:
+            self.untrusted = self.untrusted or "backspace at a cursor position not pinned"
+        elif self.col >= self.cols or self.unpinned:
+            self.untrusted = self.untrusted or "backspace at the right margin (pending autowrap)"
+        elif self.inexact is not None:
+            self.untrusted = self.untrusted or f"backspace after {self.inexact}"
+        elif self.col > 0:
+            self.col -= 1
 
     def _clamp(self) -> None:
         self.row = max(0, min(self.rows - 1, self.row))
@@ -317,8 +386,10 @@ class _Screen:
                 self._newline()
             elif ch == "\r":
                 self.col = 0
+                self.unpinned = False
             elif ch == "\t":
                 self.col = min(self.cols, (self.col // 8 + 1) * 8)
+                self.unpinned = self.unpinned or self.col >= self.cols
             else:
                 if self.inexact is None and not _one_cell(ch):
                     self.inexact = f"a character that is not one cell wide (U+{ord(ch):04X})"
@@ -358,9 +429,12 @@ class _Screen:
         except ValueError:
             return  # a colon-separated SGR sub-parameter; nothing positional to do
         n = ps[0] if ps else 0
+        if final in "ABCD" and self.col >= self.cols:
+            self.unpinned = True  # a relative move from the pending wrap (xterm.js clamps first)
         if final in ("H", "f"):
             self.row = (n or 1) - 1
             self.col = (ps[1] - 1) if len(ps) > 1 and ps[1] else 0
+            self.unpinned = self.lost = False
             self._clamp()
         elif final == "A":
             self.row -= max(1, n)
@@ -376,6 +450,7 @@ class _Screen:
             self._clamp()
         elif final == "G":
             self.col = (n or 1) - 1
+            self.unpinned = False
             self._clamp()
         elif final == "d":
             self.row = (n or 1) - 1
@@ -401,6 +476,8 @@ class _Screen:
         elif final == "u":  # SCORC — restore cursor
             self.restore_cursor()
         # Everything else (SGR `m`, DECSTBM `r`, …) leaves cells alone.
+        if final in ("H", "f", "C", "G") and self.col >= self.cols:
+            self.unpinned = True  # clamped into the margin; xterm.js clamps to the last cell
 
     def _kept_rows(self) -> tuple[int, int]:
         """The row span `display` keeps: blank leading and trailing rows trimmed."""
@@ -524,6 +601,11 @@ def _untrusted(m: re.Match) -> str | None:
         return None  # G0 = ASCII
     if tok in (b"\x07", b"\x0f", b"\x00"):
         return None  # BEL; SI (back to G0); NUL
+    if tok == b"\x08":
+        # BS, modelled by `_Screen.backspace` (#2058), which itself refuses the two cases it
+        # cannot place exactly. This token and no other: DEL, reverse wrap (`CSI ? 45 h`) and
+        # the insert/delete-character controls stay refused.
+        return None
     return f"control {tok[:8]!r}"
 
 
@@ -552,6 +634,8 @@ def _feed_screen(data: bytes, rows: int, cols: int, *, colours: bool = False) ->
         decsc = m.group("decsc")
         if decsc:
             screen.save_cursor() if decsc == b"7" else screen.restore_cursor()
+        elif m.group(0) == b"\x08":
+            screen.backspace()
     if pos < len(data):
         screen.write(data[pos:])
     return screen

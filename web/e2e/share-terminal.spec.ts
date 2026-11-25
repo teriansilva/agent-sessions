@@ -66,7 +66,7 @@ const LEAD =
 const UNPROTECTED =
   "A secret that is cut off, one a program lays out across lines itself, or one we don't know about is not hidden.";
 const NOT_SHOWN =
-  "No screen is sent after a control we can't redraw exactly, such as a backspace in a shell, or while the screen shows any character outside plain Latin, Greek and Cyrillic text, punctuation, arrows, symbols and box drawing: emoji, CJK, Hangul, Arabic, Indic and similar scripts, or combining characters. An agent that draws emoji is often not viewable.";
+  "No screen is sent after a control we can't redraw exactly, such as an edit in the middle of a shell line, or while the screen shows any character outside plain Latin, Greek and Cyrillic text, punctuation, arrows, symbols and box drawing: emoji, CJK, Hangul, Arabic, Indic and similar scripts, or combining characters. An agent that draws emoji is often not viewable.";
 const DETAIL = "It is a picture of the screen as text. The peer cannot type, resize or scroll back.";
 const LIMIT_TEXT = `Know the limit${LEAD} ${UNPROTECTED}${NOT_SHOWN}${DETAIL}`;
 const UNAVAILABLE = "This screen can't be shown right now.";

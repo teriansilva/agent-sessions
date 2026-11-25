@@ -456,14 +456,14 @@ test("a terminal: the limit is the first thing in the body, with the unprotected
     "Know the limit" +
       "The peer sees this terminal's screen. A secret we know of is hidden when all of it is on one line or it wraps at the screen's edge. " +
       "A secret that is cut off, one a program lays out across lines itself, or one we don't know about is not hidden." +
-      "No screen is sent after a control we can't redraw exactly, such as a backspace in a shell, or while the screen shows any character outside plain Latin, Greek and Cyrillic text, punctuation, arrows, symbols and box drawing: emoji, CJK, Hangul, Arabic, Indic and similar scripts, or combining characters. An agent that draws emoji is often not viewable." +
+      "No screen is sent after a control we can't redraw exactly, such as an edit in the middle of a shell line, or while the screen shows any character outside plain Latin, Greek and Cyrillic text, punctuation, arrows, symbols and box drawing: emoji, CJK, Hangul, Arabic, Indic and similar scripts, or combining characters. An agent that draws emoji is often not viewable." +
       "It is a picture of the screen as text. The peer cannot type, resize or scroll back.",
   );
   expect(limit.querySelector("b")?.textContent).toBe(
     "A secret that is cut off, one a program lays out across lines itself, or one we don't know about is not hidden.",
   );
   expect(within(limit).getByTestId("share-peer-not-shown").textContent).toBe(
-    "No screen is sent after a control we can't redraw exactly, such as a backspace in a shell, or while the screen shows any character outside plain Latin, Greek and Cyrillic text, punctuation, arrows, symbols and box drawing: emoji, CJK, Hangul, Arabic, Indic and similar scripts, or combining characters. An agent that draws emoji is often not viewable.",
+    "No screen is sent after a control we can't redraw exactly, such as an edit in the middle of a shell line, or while the screen shows any character outside plain Latin, Greek and Cyrillic text, punctuation, arrows, symbols and box drawing: emoji, CJK, Hangul, Arabic, Indic and similar scripts, or combining characters. An agent that draws emoji is often not viewable.",
   );
   // Before the peer picker in the document, not only in the box model.
   const firstPeer = within(dialog).getByRole("radio", { name: /gpu-box/ });

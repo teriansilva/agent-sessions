@@ -9,10 +9,13 @@ stream that produced the review "Idle: agent appears to be typing random charact
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 import pytest
 
 from agent_sessions import vtscreen
+
+FIX = Path(__file__).parent / "fixtures"
 
 # A real codex frame: sync-update markers, absolute cursor moves, truecolor SGR, erase-line,
 # and the `ESC [ 0 SP q` cursor-style sequence whose intermediate byte desyncs naive parsers.
@@ -149,3 +152,253 @@ def test_terminated_and_unterminated_string_controls_are_both_consumed():
     assert vtscreen.render(b"a\x1bPunterminated", 5, 40) == "a"
     assert vtscreen.render(b"a\x1b_apc payload\x1b\\b", 5, 40) == "ab"
     assert vtscreen.render(b"a\x1b^pm payload\x1b\\b", 5, 40) == "ab"
+
+
+# ---- backspace (#2058) -----------------------------------------------------------------------
+#
+# BS moves the cursor one cell left, erases nothing and stops at column 0. The recorded rings are
+# what a real `bash` wrote to a PTY (`tests/fixtures/shell_backspace.PROVENANCE.md`); each has the
+# screen tmux 3.4 showed for the same bytes beside it, so the tests need no terminal at run time.
+
+SHELL_RINGS = {
+    "shell_backspace_edit": (24, 80),
+    "shell_backspace_edit_dumb": (24, 80),
+    "shell_backspace_col0": (24, 80),
+    "shell_backspace_wrap": (6, 20),
+    "shell_backspace_margin": (6, 20),
+}
+
+
+def _ring(name: str) -> bytes:
+    return (FIX / f"{name}.raw").read_bytes()
+
+
+def _shown(grid: list[str] | None) -> str:
+    """A strict grid the way `tmux capture-pane -p` prints a screen."""
+    assert grid is not None, "the frame was refused"
+    return "\n".join(row.rstrip() for row in grid).rstrip("\n") + "\n"
+
+
+def _strict(data: bytes, rows: int, cols: int) -> list[str] | None:
+    """Both strict readers, which must agree: the grid, or None when the frame is refused."""
+    grid = vtscreen.render_grid(data, rows, cols)
+    cells = vtscreen.render_cells(data, rows, cols)
+    if grid is None:
+        assert cells == []
+        return None
+    assert "\n".join(c.text for c in cells) == vtscreen.render(data, rows, cols)
+    return grid
+
+
+@pytest.mark.parametrize("name", sorted(SHELL_RINGS))
+def test_a_recorded_shell_ring_with_backspaces_renders_as_the_reference_terminal_shows_it(name):
+    rows, cols = SHELL_RINGS[name]
+    reference = (FIX / f"{name}.tmux.txt").read_text()
+    assert _shown(_strict(_ring(name), rows, cols)) == reference
+    assert vtscreen.render(_ring(name), rows, cols) + "\n" == reference
+
+
+@pytest.mark.parametrize("name", ["shell_backspace_edit", "shell_backspace_edit_dumb"])
+def test_a_bash_line_edited_with_backspaces_renders_as_the_final_line(name):
+    raw = _ring(name)
+    assert raw.count(b"\x08 \x08") == 4  # the line editor's erase, once per erased character
+    assert _shown(_strict(raw, 24, 80)) == "$ echo password\npassword\n$\n"
+
+
+def test_backspace_moves_the_cursor_left_and_erases_nothing():
+    assert _strict(b"abc\x08", 2, 10) == ["abc       ", " " * 10]
+    assert _strict(b"abc\x08\x08X", 2, 10)[0] == "aXc       "
+    assert _strict(b"abc\x08 \x08", 2, 10)[0] == "ab        "  # the erase idiom
+    assert vtscreen.render(b"pasword\x08\x08\x08\x08sword", 2, 20) == "password"
+
+
+def test_backspace_stops_at_column_zero():
+    assert _strict(b"\x08\x08ab\x08\x08\x08\x08X", 2, 10)[0] == "Xb        "
+    # ...on a later row too: it never climbs to the row above.
+    assert _strict(b"up\r\n\x08\x08\x08Y", 2, 10) == ["up        ", "Y         "]
+    # A real program doing it, under a real shell.
+    assert _shown(_strict(_ring("shell_backspace_col0"), 24, 80)).splitlines()[1] == "Xb"
+
+
+def test_backspace_never_wraps_back_onto_the_row_above():
+    # Seven characters on a five-column screen: `fg` is on the second row. No number of
+    # backspaces leaves that row (reverse wrap is off, as it is by default in a terminal).
+    assert _strict(b"abcdefg" + b"\x08" * 5 + b"X", 3, 5) == ["abcde", "Xg   ", "     "]
+    # The line editor crosses a wrap by moving up itself, and that renders as the final line.
+    raw = _ring("shell_backspace_wrap")
+    assert b"\x08" in raw and b"\x1b[A" in raw
+    assert _shown(_strict(raw, 6, 20)).splitlines()[0] == "$ echo abcdefREST"
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [b"\x08", b"\x08\x08", b"\x08" * 7, b"\x08X", b"\x08\x08X", b"\x08 \x08", b"\x08\r\nnext"],
+    ids=["one", "two", "many", "one_then_text", "two_then_text", "erase_idiom", "then_a_new_line"],
+)
+def test_backspace_at_the_right_margin_is_refused_because_no_reference_pins_it(tail):
+    """`abcde` on five columns leaves the cursor in the pending-autowrap state (`col == cols`).
+
+    What BS does there is where terminals are known to disagree. tmux 3.4, measured (see the
+    provenance file), keeps the cursor on the last cell: `abcde BS X` shows `abcdX`, two BS
+    `abcXe`. The reference #2058 names is xterm with default resources, and there is no xterm
+    on the recording host to measure. So no case is pinned, and one BS, repeated BS and the
+    printable that follows all leave the frame untrusted. Nothing is guessed."""
+    assert _strict(b"abcde", 3, 5) == ["abcde", "     ", "     "]  # the state itself is trusted
+    assert _strict(b"abcde" + tail, 3, 5) is None
+    # The same margin reached without writing in the last column (the model cannot tell them
+    # apart: both are `col == cols`).
+    assert _strict(b"ab\x1b[9C" + tail, 3, 5) is None
+    # One column short of the margin nothing is pending, and the frame is read.
+    assert _strict(b"abcd" + tail, 3, 5) is not None
+    # The forgiving reader still answers; at the margin it leaves the cursor where it was.
+    assert vtscreen.render(b"abcde" + tail, 3, 5).startswith("abcde")
+
+
+@pytest.mark.parametrize(
+    "seq",
+    [
+        b"abcde\x1b[D\x08X",  # PR #2328 review: CUB off the pending wrap, then BS
+        b"abcde\x1b[2D\x1b[C\x08X",  # back and forth, still never set absolutely
+        b"abcde\x1b[A\x08X",  # up from the pending wrap
+        b"abcde\x1b7\r\x1b8\x08X",  # the margin saved, a CR, then restored (DECSC/DECRC)
+        b"abcde\x1b[s\r\x1b[u\x08X",  # the same with SCOSC/SCORC
+        b"ab\x1b[9C\x1b[D\x08X",  # the margin reached by a clamped move, then CUB
+        # Through the alternate screen (#2328 review 8829): the flag is saved with the buffer.
+        b"abcde\x1b[D\x1b[?1049h\r\x1b[?1049l\x08X",
+        b"abcde\x1b[D\x1b[?1047h\r\x1b[?1047l\x08X",
+        b"abcde\x1b[D\x1b[?47h\r\x1b[?47l\x08X",
+        # 47/1047 do not restore the cursor in xterm.js, so ANY column after leaving is unpinned.
+        b"abc\x1b[?1047h\r\x1b[?1047l\x08X",
+        # An exit whose entry this slice never saw restores an unknown cursor.
+        b"abc\x1b[?1049l\x08X",
+    ],
+    ids=[
+        "cub",
+        "cub_cuf",
+        "cuu",
+        "decsc",
+        "scosc",
+        "clamped_then_cub",
+        "alt_1049",
+        "alt_1047",
+        "alt_47",
+        "alt_1047_any_column",
+        "alt_exit_unseen",
+    ],
+)
+def test_backspace_from_a_column_reached_relatively_from_the_margin_is_refused(seq):
+    """xterm.js, the app's reference terminal, clamps the pending-wrap cursor to the last cell
+    before any relative move; this model does not, so after a relative move from the margin the
+    two columns may differ by one. `abcde CSI D BS X` shows `abXde` in xterm.js and would be
+    `abcXe` here. A BS there is refused until the column is set absolutely again."""
+    assert _strict(seq, 3, 5) is None
+
+
+@pytest.mark.parametrize(
+    "seq, row0",
+    [
+        (b"abcde\r\x08X", "Xbcde"),  # CR: column 0, BS stays there
+        (b"abcde\x1b[1;4H\x08X", "abXde"),  # CUP
+        (b"abcde\x1b[4G\x08X", "abXde"),  # CHA
+    ],
+    ids=["cr", "cup", "cha"],
+)
+def test_an_absolute_column_after_the_margin_makes_backspace_exact_again(seq, row0):
+    assert _strict(seq, 3, 5) == [row0, "     ", "     "]
+
+
+@pytest.mark.parametrize(
+    "seq",
+    [
+        b"ab\x1b7c\x1b[?1049h\r\x1b[?1049l\x1b8\x08X",  # 1049's entry overwrites the saved cursor
+        b"ab\x1b7\x1b[?1047hxy\x1b8\x08X",  # a restore inside the other buffer
+        b"abc\x1b[?47h\r\n\x1b[?47l\r\x08X",  # 47 keeps the alt row; a CR fixes the column only
+        b"abc\x1b[?47h\r\n\x1b[?47l\x1b[3G\x08X",  # ... and so does a CHA
+        b"abc\x1b[?1047h\r\n\x1b[?1047l\r\x08X",
+        b"abc\x1b[?1047h\r\n\x1b[?1047l\x1b[3G\x08X",
+        # Review 8836: a saved cursor cannot launder a lost position past a CUP ...
+        b"abc\x1b[?47h\r\n\x1b[?47l\x1b7\x1b[1;1H\x1b8\x08X",
+        b"abc\x1b[?1047h\r\n\x1b[?1047l\x1b[s\x1b[1;1H\x1b[u\x08X",
+        # ... and a 1049 exit after a 47 entry restores a cursor 1049's entry never saved.
+        b"ab\x1b7c\x1b[?47h\r\x1b[?1049l\x08X",
+        # Refused by design, though exact in xterm.js: no restore and no exit is trusted.
+        b"ab\x1b7cd\x1b8\x08X",
+        b"abc\x1b[?1049h\r\x1b[?1049l\x08X",
+    ],
+    ids=[
+        "decrc_after_1049",
+        "decrc_across_buffers",
+        "47_cr",
+        "47_cha",
+        "1047_cr",
+        "1047_cha",
+        "decsc_launders_past_cup",
+        "scosc_launders_past_cup",
+        "47_entry_1049_exit",
+        "decrc_same_buffer",
+        "1049_round_trip",
+    ],
+)
+def test_backspace_at_a_position_the_model_cannot_vouch_for_is_refused(seq):
+    """#2328 review 8833. xterm.js keeps a saved cursor per buffer (1049's entry writes the
+    normal one), and 47/1047 leave the cursor where the alternate screen left it, row included.
+    Here: `ab ESC7 c 1049h CR 1049l ESC8 BS X` is `abX` in xterm-headless 5.5.0 and would be
+    `aXc`; `abc 47h CR LF 47l CR BS X` puts the X on the SECOND row there. Every alternate-screen
+    exit and every cursor restore is untrusted, including the ones xterm.js would agree with
+    (review 8836: modelling the combinations kept missing one). Only a full CUP/HVP pins the
+    position again."""
+    assert vtscreen.render_grid(seq, 3, 5) is None
+    assert vtscreen.render_cells(seq, 3, 5) == []
+
+
+@pytest.mark.parametrize(
+    "seq, row0",
+    [
+        (b"abc\x1b[?47h\r\n\x1b[?47l\x1b[1;3H\x08X", "aXc  "),  # a CUP pins it again
+        (b"abc\x1b[?1049h\r\x1b[?1049l\x1b[1;3H\x08X", "aXc  "),
+        (b"ab\x1b7cd\x1b8\x1b[1;3H\x08X", "aXcd "),  # after a restore too
+    ],
+    ids=["cup_after_47", "cup_after_1049", "cup_after_decrc"],
+)
+def test_a_pinned_position_keeps_backspace_exact(seq, row0):
+    """Read with the grid alone: the forgiving reader `_strict` compares with does not model the
+    alternate screen."""
+    assert vtscreen.render_grid(seq, 3, 5) == [row0, "     ", "     "]
+
+
+#: Every C0 control and DEL the strict readers accept. BS is the one #2058 added.
+TRUSTED_C0 = {0x00, 0x07, 0x08, 0x09, 0x0A, 0x0D, 0x0F}
+
+
+def test_the_trust_list_grew_by_backspace_and_nothing_else():
+    assert _strict(b"abc\x08", 3, 10) is not None
+    for code in [*range(0x20), 0x7F]:
+        frame = _strict(b"abc" + bytes([code]) + b"d", 3, 10)
+        assert (frame is not None) == (code in TRUSTED_C0), hex(code)
+
+
+@pytest.mark.parametrize(
+    "control",
+    [
+        b"\x1b[?45h",  # reverse wrap
+        b"\x1b[?1045h",  # xterm's extended reverse wrap
+        b"\x1b[?45l",  # even switching it off: the mode is not modelled at all
+        b"\x1b[P",  # delete character, the other way a line editor erases
+        b"\x1b[@",  # insert character
+        b"\x7f",  # DEL
+        b"\x1b[?7l",  # autowrap off, which would change what BS means at the margin
+    ],
+)
+def test_reverse_wrap_and_every_other_unsupported_control_are_still_refused(control):
+    for data in (b"abc" + control, control + b"abc\x08\x08X", b"abc\x08" + control + b"X"):
+        assert _strict(data, 3, 10) is None
+    assert _strict(b"abc\x08\x08X", 3, 10) is not None  # the backspaces alone are read
+
+
+def test_backspace_after_a_character_of_unknown_width_is_refused():
+    """The grid gives every character one column. A combining mark takes none on a real screen,
+    so a BS after it lands one cell further left there than here: `1. Yes` + U+0301, three
+    backspaces and `No ` shows `1. No` on a terminal and would read `1. YNo` here."""
+    assert vtscreen.render_cells(b"1. Yes\xcc\x81", 2, 20)  # read today, and still
+    assert vtscreen.render_cells(b"1. Yes\xcc\x81\x08\x08\x08No ", 2, 20) == []
+    assert vtscreen.render_grid(b"1. Yes\xcc\x81\x08\x08\x08No ", 2, 20) is None
