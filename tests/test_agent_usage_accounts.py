@@ -503,3 +503,27 @@ def test_an_idle_accounts_held_episode_ends_when_its_own_quota_retreats(tmp_path
     pct["a-1"] = 50.0
     au.refresh(path=store, engines=["claude"], budgets=BUDGETS)
     assert not [k for k in au.load(store)["alerted"] if k.startswith("claude@a-1:")]
+
+
+def test_a_signed_out_login_says_so_instead_of_no_quota_lines(monkeypatch):
+    """Measured 2026-11-25: a signed-out default home answers `-p /usage` with a cost summary and
+    `auth status` with `loggedIn: false` (exit 1). The row must say "not signed in"."""
+
+    def fake_run(argv, **kw):
+        if "/usage" in argv:
+            return 0, "Total cost:            $0.0000\nTotal duration (API):  0s\n"
+        return 1, json.dumps({"loggedIn": False, "authMethod": "none", "apiProvider": "firstParty"})
+
+    monkeypatch.setattr(au, "_run", fake_run)
+    monkeypatch.setattr(au, "_binary_name", lambda engine: "claude")
+    rep = au.probe_claude(binary="/opt/claude", engine="claude")
+    assert rep.windows == []
+    assert rep.error == "claude is not signed in"
+    assert rep.email is None
+
+
+def test_an_unreadable_status_is_not_a_sign_out_verdict():
+    assert au.claude_signed_out("") is False
+    assert au.claude_signed_out("garbage {not json") is False
+    assert au.claude_signed_out(json.dumps({"loggedIn": True})) is False
+    assert au.claude_signed_out(json.dumps({"loggedIn": False})) is True

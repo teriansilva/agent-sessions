@@ -566,7 +566,24 @@ def probe_claude(binary: str | None = None, *, engine: str | None = None) -> Rep
     email, plan = parse_claude_auth_status(out) if code == 0 else (None, None)
     report.email = email
     report.plan = report.plan or plan
+    if not report.windows and claude_signed_out(out):
+        # A signed-out home prints a cost summary for `/usage`, not a quota: say what is wrong
+        # rather than "no quota lines". The last good figures are kept as for any failed read.
+        report.error = f"{_binary_name(engine)} is not signed in"
     return report
+
+
+def claude_signed_out(text: str) -> bool:
+    """Whether ``claude auth status`` says this home has no login (``loggedIn: false``, measured on
+    2.1.x with exit 1). Anything unparseable is not a verdict: False."""
+    start = text.find("{")
+    if start < 0:
+        return False
+    try:
+        doc = json.loads(text[start:])
+    except ValueError:
+        return False
+    return isinstance(doc, dict) and doc.get("loggedIn") is False
 
 
 #: claude's status command. Prints JSON (measured on 2.1.x): ``loggedIn``, ``email``,
