@@ -649,6 +649,131 @@ def test_archive_older_route_sweeps_exactly_the_shared_candidates(live, fake_jso
     assert r.status_code == 200 and r.json()["archived"] == 0
 
 
+# ---- #2396: a bulk archive executes exactly the set the card bound ------------------------------
+
+
+def _flip_before_route(monkeypatch, path_suffix: str, flip) -> None:
+    """Run ``flip`` AFTER the tap's last facts read, right before the route is dispatched: the
+    interval a facts check alone cannot cover (Hermes 141613)."""
+    real = ask_operations.asgi_call.call
+
+    async def call(app, operator, method, path, body=None, **kw):
+        if method == "POST" and path.endswith(path_suffix):
+            flip()
+        return await real(app, operator, method, path, body, **kw)
+
+    monkeypatch.setattr(ask_operations.asgi_call, "call", call)
+
+
+def test_member_digest_is_the_cards_and_the_routes_one_algorithm():
+    from agent_sessions.routes import sessions as session_routes
+
+    keys = [S_B, S_A, "opencode:ses_x"]
+    assert session_routes.members_digest(keys) == ask_operations._digest(keys)
+    assert session_routes.members_digest(keys) == session_routes.members_digest(sorted(keys))
+    assert session_routes.members_digest([S_A]) != session_routes.members_digest([S_B])
+
+
+def test_archive_older_route_refuses_a_set_other_than_the_one_expected(live, fake_jsonl):
+    from agent_sessions import engines
+    from agent_sessions.routes import sessions as session_routes
+
+    before = {engines.session_key(s): s.archived for s in engines.scan_all()}
+    r = live.c.post(
+        "/api/sessions/archive-older",
+        json={"hours": 1, "expect_members": session_routes.members_digest([S_A])},
+        headers=live.hdr,
+    )
+    assert r.status_code == 409 and r.json()["reason"] == "members_changed", r.text
+    assert {engines.session_key(s): s.archived for s in engines.scan_all()} == before
+    for bad in (True, -1, 10**12, "1", 1.5):
+        r = live.c.post(
+            "/api/sessions/archive-older",
+            json={"hours": 1, "expect_members": bad},
+            headers=live.hdr,
+        )
+        assert r.status_code == 422, (bad, r.text)
+
+
+def test_archive_older_route_sweeps_the_expected_set(live, fake_jsonl, monkeypatch):
+    from agent_sessions import engines
+    from agent_sessions.routes import sessions as session_routes
+
+    (first,) = [s for s in engines.scan_all() if engines.session_key(s) == S_A]
+    monkeypatch.setattr(session_routes, "archive_older_candidates", lambda cutoff: [first])
+    r = live.c.post(
+        "/api/sessions/archive-older",
+        json={"hours": 1, "expect_members": session_routes.members_digest([S_A])},
+        headers=live.hdr,
+    )
+    assert r.status_code == 200 and r.json() == {"archived": 1, "skipped": 0}, r.text
+
+
+def test_archive_older_set_changing_after_the_last_facts_read_runs_nothing(
+    live, ai, fake_jsonl, monkeypatch
+):
+    """A session crosses the idle cutoff between the tap's facts re-read and the route's own
+    enumeration: the route refuses before reserving, freezing or reaping anything."""
+    from agent_sessions import engines, missions
+    from agent_sessions.routes import sessions as session_routes
+
+    first, second = [
+        s for s in engines.scan_all() if engines.session_key(s) in (S_A, S_B)
+    ]  # fmt: skip
+    candidates = [first]
+    monkeypatch.setattr(session_routes, "archive_older_candidates", lambda cutoff: list(candidates))
+    reserved: list = []
+    real_reserve = missions.reserve_session
+
+    def reserve(key, *a, **k):
+        reserved.append(key)  # the first thing the sweep does to a member, before any freeze
+        return real_reserve(key, *a, **k)
+
+    monkeypatch.setattr(missions, "reserve_session", reserve)
+    ai(
+        call("propose_session_change", {"action": "archive_older", "days": 3}, cid="p"),
+        answer("Proposed."),
+    )
+    cid = live.new()
+    assert live.ask(cid, "archive old sessions").status_code == 200
+    _flip_before_route(monkeypatch, "/archive-older", lambda: candidates.append(second))
+    assert _confirm(live, _card(live, cid)["action_id"]).status_code == 202
+    card = _settled(live, cid)
+    assert card["state"] == "stale" and "sessions it covers changed" in card["reason"], card
+    assert not any(s.archived for s in engines.scan_all() if engines.session_key(s) in (S_A, S_B))
+    assert reserved == []  # refused before any member was reserved, frozen or reaped
+
+
+def test_project_archive_set_changing_after_the_last_facts_read_writes_nothing(
+    live, ai, monkeypatch
+):
+    """A session joins the project between the tap's facts re-read and the route's enumeration:
+    the route refuses before the project's own flag is written or any member is touched."""
+    from agent_sessions.routes import sessions as session_routes
+
+    pid = _project(live, "scratch")
+    members = [(None, S_A, None)]
+    monkeypatch.setattr(session_routes, "project_members", lambda p, index: list(members))
+    cid, _ = _propose_project(live, ai, "archive")
+    _flip_before_route(monkeypatch, f"/{pid}/archive", lambda: members.append((None, S_B, None)))
+    assert _confirm(live, _card(live, cid)["action_id"]).status_code == 202
+    card = _settled(live, cid)
+    assert card["state"] == "stale" and "sessions it covers changed" in card["reason"], card
+    assert not projects.load()[pid].archived  # the entity flag was never written
+
+
+def test_project_archive_route_without_a_body_archives_as_before(live):
+    pid = _project(live, "scratch")
+    r = live.c.post(f"/api/projects/{pid}/archive", headers=live.hdr)
+    assert r.status_code == 200 and r.json()["archived"] is True, r.text
+    pid2 = _project(live, "other")
+    r = live.c.post(f"/api/projects/{pid2}/archive", json={"expect_members": 1}, headers=live.hdr)
+    assert r.status_code == 409 and r.json()["reason"] == "members_changed", r.text
+    assert not projects.load()[pid2].archived
+    r = live.c.post(f"/api/projects/{pid2}/archive", content=b"{", headers=live.hdr)
+    assert r.status_code == 422
+
+
 def test_the_folder_precondition_refuses_a_stale_list_and_writes_nothing(live):
     pid = _project(live, "scratch")
     projects.update(pid, folders=["/srv/a"])

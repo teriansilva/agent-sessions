@@ -699,11 +699,19 @@ const OPERATION_GROUP: Record<string, string> = {
   mcp: "MCP server",
 };
 
-/** What a card HQ ran itself is called (#2390, #2391): the verb once it went through, "By HQ" for
- *  any other outcome (the outcome line says what happened). */
+/** What a card HQ ran itself is called (#2390, #2391, #2396): the verb once it went through,
+ *  "By HQ" for any other outcome (the outcome line says what happened). */
 const BY_HQ_VERB: Record<string, string> = {
   "automation.run_now": "Ran by HQ",
   "mission.relay": "Sent by HQ",
+  // The destructive class (#2396): said by what it did.
+  "session.archive": "Archived by HQ",
+  "session.close": "Closed by HQ",
+  "sessions.archive_older": "Archived by HQ",
+  "project.archive": "Archived by HQ",
+  "project.delete": "Deleted by HQ",
+  "playbook.edit": "Saved by HQ",
+  "memory.delete": "Forgotten by HQ",
 };
 function operationByHq(p: AskOperationCard): string {
   if (p.state !== "done" && p.state !== "partly_done") return "By HQ";

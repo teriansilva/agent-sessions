@@ -6,6 +6,7 @@ archive/unarchive, and bulk archive-older. Moved verbatim from ``main.create_app
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import threading
@@ -497,6 +498,43 @@ def project_members(pid: str, index: dict) -> list[tuple[object, str, metadata.S
         if ref.kind == "project" and ref.id == pid:
             out.append((s, key, m))
     return out
+
+
+#: The digest's range: a fact is a str, int or bool, and a hex string would read as
+#: credential-shaped (#1559 review), so a set's identity is a bounded int.
+MEMBERS_DIGEST_RANGE = 10**12
+#: A bulk archive refused because its members are not the set the caller bound (#2396).
+MEMBERS_CHANGED = "members_changed"
+
+
+def members_digest(keys) -> int:
+    """The identity of a set of session keys, as HQ's card binds it (#1559) and as the bulk
+    archive routes check it against their own enumeration (`expect_members`, #2396). A JSON array,
+    not a joined string, so no key's characters can blur two members into one."""
+    h = hashlib.sha256(json.dumps(sorted(keys), ensure_ascii=False).encode()).hexdigest()
+    return int(h, 16) % MEMBERS_DIGEST_RANGE
+
+
+def expect_members_of(payload: object) -> int | None:
+    """The optional ``expect_members`` of a bulk archive request: an int digest, or None when
+    absent. Anything else is a 422 (a bool is an int in Python and is refused)."""
+    if not isinstance(payload, dict) or payload.get("expect_members") is None:
+        return None
+    v = payload["expect_members"]
+    if not isinstance(v, int) or isinstance(v, bool) or not 0 <= v < MEMBERS_DIGEST_RANGE:
+        raise HTTPException(status_code=422, detail="expect_members must be a member digest")
+    return v
+
+
+def members_changed() -> JSONResponse:
+    """The refusal when a bulk archive's own enumeration is not the bound set: nothing ran."""
+    return JSONResponse(
+        {
+            "detail": "the sessions it covers changed since this was shown; nothing was archived",
+            "reason": MEMBERS_CHANGED,
+        },
+        status_code=409,
+    )
 
 
 def archive_older_candidates(cutoff: float) -> list:
@@ -1817,7 +1855,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             raise HTTPException(status_code=e.status, detail=str(e)) from None
         return JSONResponse(p.as_dict())
 
-    async def _bulk_project_archive(pid: str, *, archive_members: bool) -> JSONResponse:
+    async def _bulk_project_archive(
+        pid: str, *, archive_members: bool, expect_members: int | None = None
+    ) -> JSONResponse:
         # Project archive/unarchive (#361 Phase 2). Membership = THE resolver's view at
         # call time: sessions explicitly assigned (`project_id == pid`) PLUS sessions
         # folder-resolved into the project; a dangling `project_id` (deleted project)
@@ -1832,6 +1872,14 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         index = projects.load()
         if pid not in index:
             raise HTTPException(status_code=404, detail="unknown project")
+        # ONE enumeration (#2396), off the loop (a fresh scan of every engine), taken before the
+        # entity flag is written: `expect_members` is checked against exactly this list, and this
+        # list is exactly what the loop below walks. A mismatch writes nothing at all.
+        members = await asyncio.to_thread(project_members, pid, index)
+        if expect_members is not None and members_digest([k for _s, k, _m in members]) != (
+            expect_members
+        ):
+            return members_changed()
         try:
             # OFF THE LOOP (#974): the project store's flock may be held by a plan write.
             await asyncio.to_thread(lambda: projects.update(pid, archived=archive_members))
@@ -1844,7 +1892,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             else ("unarchived", "already_unarchived", "failed")
         )
         results: list[dict] = []
-        for s, key, m in project_members(pid, index):
+        for s, key, m in members:
             effective = m.archived if m.archived is not None else s.archived
             if effective == archive_members:
                 results.append({"id": key, "result": already})
@@ -1927,9 +1975,23 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
 
     @app.post("/api/projects/{pid}/archive")
     async def archive_project(
-        pid: str, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)
+        pid: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
     ) -> JSONResponse:
-        return await _bulk_project_archive(pid, archive_members=True)
+        # An optional body (#2396): `{"expect_members": <digest>}` binds the sweep to the set the
+        # caller showed (HQ's card). The project menu sends none and archives as before.
+        raw = await request.body()
+        payload = None
+        if raw.strip():
+            try:
+                payload = json.loads(raw)
+            except ValueError:
+                raise HTTPException(status_code=422, detail="invalid JSON") from None
+        return await _bulk_project_archive(
+            pid, archive_members=True, expect_members=expect_members_of(payload)
+        )
 
     @app.post("/api/projects/{pid}/unarchive")
     async def unarchive_project(
@@ -2368,10 +2430,20 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             or hours > 24 * 3650
         ):
             raise HTTPException(status_code=422, detail="hours must be a positive number")
+        expect = expect_members_of(payload)
         cutoff = time.time() - hours * 3600.0
+        # ONE enumeration (#2396), off the loop: `expect_members` (HQ's card) is checked against
+        # exactly this list before anything is reserved, frozen or reaped, and the loop walks
+        # exactly this list.
+        candidates = await asyncio.to_thread(archive_older_candidates, cutoff)
+        if (
+            expect is not None
+            and members_digest([engines.session_key(s) for s in candidates]) != expect
+        ):
+            return members_changed()
         archived = 0
         skipped = 0
-        for s in archive_older_candidates(cutoff):
+        for s in candidates:
             try:
                 key = engines.session_key(s)
                 prov, native = engines.parse_key(key)

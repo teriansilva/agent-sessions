@@ -14,8 +14,9 @@ always acts and is not stored. An absent block, an unknown class or an unknown v
 ``ask`` (fail closed); an upgrade therefore keeps Ask first (D1).
 
 **What can act in this version** is :data:`ACTABLE` (A1: reversible; A1b, #2391: starts or
-sends). A stored ``act`` for another class is the Commander's own configuration, kept and shown,
-and changes nothing until the child of #2070 that adds its class here ships.
+sends; A1c-destructive, #2396: destructive, RISKY). A stored ``act`` for another class is the
+Commander's own configuration, kept and shown, and changes nothing until the child of #2070 that
+adds its class here ships.
 
 **The effective class** is the action's class when it runs (:func:`effective_class`): the catalog
 table for an operation, except where the action's own facts decide it (an automation run now is
@@ -49,14 +50,15 @@ ASK, ACT = "ask", "act"
 CLASSES = ("reversible", "starts", "destructive", "external", "widens")
 #: The classes labelled RISKY in Settings (D2): they may be set to act, with that label.
 RISKY = frozenset({"destructive", "external", "widens"})
-#: The classes HQ can act on in this version (#2070 A1, A1b #2391). A1c adds the RISKY ones.
-ACTABLE = frozenset({"reversible", "starts"})
+#: The classes HQ can act on in this version (#2070 A1, A1b #2391, A1c-destructive #2396). The
+#: other RISKY classes (external, widens) follow in their own children.
+ACTABLE = frozenset({"reversible", "starts", "destructive"})
 #: The classes that ask first after HQ read untrusted text unless their switch is on (D4, #2391).
 #: Screen and reversible act in a tainted turn (epic §1); every later class is gated.
 TAINT_GATED = frozenset(CLASSES) - {"reversible"}
-#: The classes whose "also after untrusted text" switch exists in this version (A1c adds the RISKY
-#: ones with their own acting).
-UNTRUSTED_SWITCHES = ("starts",)
+#: The classes whose "also after untrusted text" switch exists in this version: every gated class
+#: that can act (#2391 starts, #2396 destructive); external and widens add theirs with their acting.
+UNTRUSTED_SWITCHES = ("starts", "destructive")
 #: Why a gated class asks first in a tainted conversation (D4), said on the card and to HQ.
 TAINT_REASON = "HQ read text from a session or connector in this conversation, so this asks first"
 #: Presets set the classes together; any other mix reads as "custom".

@@ -301,8 +301,11 @@ Every `W` operation above has one **authority class**, the class of its effectiv
 here: they live in `hq_authority.CLASS_OF`, which a test pins to exactly the ids of
 `ask_operations.CATALOG` (so a new operation cannot ship unclassed). Settings → AI → HQ → Authority
 decides, per class, whether HQ stages a card (`ask`, the default after an upgrade) or runs it at
-once (`act`). `reversible` (A1) and `starts` (A1b, #2391: API session starts, connector messages,
-run now, relays, `automation.edit`, `memory.edit`) can act; the session and message kinds' classes
+once (`act`). `reversible` (A1), `starts` (A1b, #2391: API session starts, connector messages,
+run now, relays, `automation.edit`, `memory.edit`) and `destructive` (A1c, #2396: session archive
+and close, archive older, project archive and delete, `playbook.edit`, `memory.delete`; RISKY, its
+own D4 switch; the bulk archives send `expect_members` so the route sweeps exactly the bound set)
+can act; the session and message kinds' classes
 are `hq_authority.KIND_CLASS`, pinned to the proposal kinds, and a start or send asks first after
 untrusted text unless its D4 switch is on. An operation with an operator input (a folder, a
 secret's value or file), a `follow_up` continuation, a terminal start or relay, or a card inside an

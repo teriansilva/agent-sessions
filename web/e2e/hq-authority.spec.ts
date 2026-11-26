@@ -7,6 +7,8 @@
  *  RISKY · ON, a 44 px target, reachable and toggled by the keyboard, CAS-saved (409 → Reload);
  *  the conversation shows Started by HQ (with a working Open), Sent by HQ, Ran by HQ, and a card
  *  that asks first saying why.
+ *  A1c (#2396): Destructive acts (no "kept" note; External still has one); its own switch says it
+ *  lets a hostile report get HQ to archive or delete; a card HQ ran reads Archived / Deleted by HQ.
  *  Screenshots in both themes go to the test's output dir (the issue and PR attach them). */
 import { expect, test, type Page } from "@playwright/test";
 
@@ -39,16 +41,19 @@ async function authority(
 ) {
   const saves: Record<string, unknown>[] = [];
   let classes = { ...start };
-  let untrusted = { starts: opts.untrusted ?? false };
+  let untrusted: Record<string, boolean> = {
+    starts: opts.untrusted ?? false,
+    destructive: false,
+  };
   let revision = 4;
   const view = () => ({
     classes,
     preset: derive(classes),
     revision,
-    actable: ["reversible", "starts"],
+    actable: ["reversible", "starts", "destructive"],
     risky: ["destructive", "external", "widens"],
     untrusted,
-    untrusted_classes: ["starts"],
+    untrusted_classes: ["starts", "destructive"],
   });
   await mockShell(page);
   await page.route("**/api/hq/authority", async (r) => {
@@ -58,7 +63,7 @@ async function authority(
     if (opts.conflict || body.revision !== revision)
       return r.fulfill({ status: 409, json: { detail: "authority changed; reload" } });
     if (body.untrusted) {
-      untrusted = { ...untrusted, ...(body.untrusted as { starts: boolean }) };
+      untrusted = { ...untrusted, ...(body.untrusted as Record<string, boolean>) };
     } else if (typeof body.preset === "string") {
       const act = (c: string) =>
         body.preset === "full" || (body.preset === "standard" && c === "reversible");
@@ -86,7 +91,9 @@ for (const theme of ["dark", "light"] as const) {
     const section = page.getByTestId("hq-authority");
     await expect(section.getByTestId("hq-authority-preset-ask_first")).toHaveAttribute("aria-checked", "true");
     for (const c of ["destructive", "external", "widens"]) {
-      await expect(section.getByTestId(`hq-authority-row-${c}`).getByText("RISKY")).toBeVisible();
+      await expect(
+        section.getByTestId(`hq-authority-row-${c}`).getByText("RISKY", { exact: true }).first(),
+      ).toBeVisible();
     }
     await expect(section.getByTestId("hq-authority-row-reversible").getByText("RISKY")).toHaveCount(0);
     await expect(section.getByTestId("hq-authority-locked")).toContainText("This Authority setting");
@@ -116,7 +123,9 @@ for (const theme of ["dark", "light"] as const) {
     expect(saves[1]).toEqual({ revision: 5, classes: { starts: "act" } });
     await expect(section.getByTestId("hq-authority-custom")).toBeVisible();
     await expect(section.getByTestId("hq-authority-later-starts")).toHaveCount(0);
-    await expect(section.getByTestId("hq-authority-later-destructive")).toBeVisible();
+    // Destructive acts since A1c (#2396); External is still a later class whose choice is kept.
+    await expect(section.getByTestId("hq-authority-later-destructive")).toHaveCount(0);
+    await expect(section.getByTestId("hq-authority-later-external")).toBeVisible();
     await section.screenshot({ path: info.outputPath(`hq-authority-custom-${theme}.png`) });
   });
 }
@@ -379,4 +388,99 @@ for (const theme of ["dark", "light"] as const) {
     await expect.poll(() => bodies.length).toBe(1);
     expect(bodies[0]).toEqual({ decision: "start", bypass: false });
   });
+}
+
+// ---- A1c (#2396): destructive -------------------------------------------------------------------
+
+const DESTRUCTIVE: Classes = { ...ASK, reversible: "act", starts: "act", destructive: "act" };
+
+for (const theme of ["dark", "light"] as const) {
+  test(`authority: Destructive acts, RISKY, with its own untrusted-text switch · ${theme}`, async ({ page }, info) => {
+    const saves = await authority(page, STARTS);
+    await page.goto("/settings/ai-hq");
+    await page.evaluate((value) => (document.documentElement.dataset.theme = value), theme);
+    const section = page.getByTestId("hq-authority");
+    const row = section.getByTestId("hq-authority-row-destructive");
+    await expect(row.getByText("RISKY", { exact: true }).first()).toBeVisible();
+    await expect(section.getByTestId("hq-authority-later-destructive")).toHaveCount(0);
+
+    const sw = section.getByTestId("hq-authority-untrusted-destructive");
+    const toggle = sw.getByRole("switch");
+    await expect(toggle).not.toBeChecked();
+    await expect(toggle).toHaveAccessibleName("Destructive: also after untrusted text");
+    const box = (await sw.boundingBox())!;
+    expect(box.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+    const over = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    expect(over).toBeLessThanOrEqual(0);
+    await tall(page);
+    await section.screenshot({ path: info.outputPath(`hq-authority-a1c-destructive-off-${theme}.png`) });
+
+    // The keyboard reaches it and Space switches it: one CAS write of exactly this switch.
+    await toggle.focus();
+    const ring = await toggle.evaluate((el) => getComputedStyle(el).outlineStyle);
+    expect(ring).not.toBe("none");
+    await page.keyboard.press("Space");
+    await expect.poll(() => saves.length).toBe(1);
+    expect(saves[0]).toEqual({ revision: 4, untrusted: { destructive: true } });
+    await expect(toggle).toBeChecked();
+    await expect(sw).toContainText("A hostile report can now get HQ to archive or delete.");
+    await expect(sw.getByText("RISKY · ON", { exact: true })).toBeVisible();
+    // The starts switch is its own: untouched.
+    await expect(
+      section.getByTestId("hq-authority-untrusted-starts").getByRole("switch"),
+    ).not.toBeChecked();
+
+    // Its Ask / Act row saves exactly the class, against the next revision.
+    await row.getByRole("radio", { name: "Act" }).click();
+    await expect.poll(() => saves.length).toBe(2);
+    expect(saves[1]).toEqual({ revision: 5, classes: { destructive: "act" } });
+    await section.screenshot({ path: info.outputPath(`hq-authority-a1c-destructive-on-${theme}.png`) });
+  });
+
+  test(`authority: a stale Destructive switch save says so and Reload recovers · ${theme}`, async ({ page }) => {
+    const saves = await authority(page, DESTRUCTIVE, { conflict: true });
+    await page.goto("/settings/ai-hq");
+    await page.evaluate((value) => (document.documentElement.dataset.theme = value), theme);
+    const section = page.getByTestId("hq-authority");
+    const toggle = section.getByTestId("hq-authority-untrusted-destructive").getByRole("switch");
+    await toggle.click();
+    await expect.poll(() => saves.length).toBe(1);
+    await expect(section.getByRole("alert")).toContainText("changed elsewhere");
+    await expect(toggle).not.toBeChecked();
+    await section.getByRole("button", { name: "Reload" }).click();
+    await expect(toggle).toBeEnabled();
+  });
+
+  for (const [op, label, kicker, summary] of [
+    ["session.archive", "Archive", "Archived by HQ", "Archived."],
+    ["project.delete", "Delete project", "Deleted by HQ", "Project deleted. Its sessions were kept."],
+  ] as const) {
+    test(`a ${op} HQ ran itself reads ${kicker}, with no buttons · ${theme}`, async ({ page }, info) => {
+      await shell(page, {
+        action_id: PID,
+        kind: "operation",
+        op,
+        risk: op === "project.delete" ? "destructive" : "reversible",
+        label,
+        verb: label,
+        title: "flaky deploy test",
+        text: "Stops its agent and moves it to the archive. You can unarchive it later.",
+        needs: [],
+        state: "done",
+        summary,
+        reason: "",
+        can_confirm: false,
+        can_dismiss: false,
+        decided_by: "hq",
+      });
+      const c = await openCard(page);
+      await page.evaluate((value) => (document.documentElement.dataset.theme = value), theme);
+      await expect(c.getByTestId("ask-operation-kicker")).toHaveText(kicker);
+      await expect(c.getByTestId("ask-operation-by-hq")).toContainText("Authority setting");
+      await expect(c.getByRole("button")).toHaveCount(0);
+      await c.screenshot({ path: info.outputPath(`hq-a1c-${op}-${theme}.png`) });
+    });
+  }
 }

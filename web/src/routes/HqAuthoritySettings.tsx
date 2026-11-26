@@ -38,7 +38,8 @@ const CLASSES: { id: HqAuthorityClass; label: string; examples: string }[] = [
   {
     id: "destructive",
     label: "Destructive",
-    examples: "Archive (stops agents), delete, prune, discard, overwrite a playbook.",
+    examples:
+      "Archive or close a session (stops its agent), archive older sessions, archive or delete a project, save over a playbook, forget a memory note.",
   },
   {
     id: "external",
@@ -95,15 +96,23 @@ function isAuthority(v: unknown): v is HqAuthority {
   );
 }
 
+/** What an "also after untrusted text" switch lets a hostile report do, per class (#2391, #2396). */
+const UNTRUSTED_ALLOWS: Partial<Record<HqAuthorityClass, string>> = {
+  starts: "start or send",
+  destructive: "archive or delete",
+};
+
 /** D4 (#2391): "also after HQ read untrusted text" for one class. Off by default; on is RISKY and
  *  says what it allows. The whole row is the 44 px target; the switch is a real `role="switch"`. */
 function UntrustedSwitch({
   id,
+  label,
   on,
   disabled,
   onChange,
 }: {
   id: HqAuthorityClass;
+  label: string;
   on: boolean;
   disabled: boolean;
   onChange: (on: boolean) => void;
@@ -118,7 +127,7 @@ function UntrustedSwitch({
         Also after HQ read text from a session, connector or file in this conversation
         {on ? (
           <>
-            : <b>on</b>. A hostile report can now get HQ to start or send.
+            : <b>on</b>. A hostile report can now get HQ to {UNTRUSTED_ALLOWS[id] ?? "act"}.
           </>
         ) : (
           <>. Off: HQ asks first then.</>
@@ -132,7 +141,7 @@ function UntrustedSwitch({
         checked={on}
         disabled={disabled}
         aria-describedby={hint}
-        aria-label={`${id === "starts" ? "Starts or sends" : id}: also after untrusted text`}
+        aria-label={`${label}: also after untrusted text`}
         onChange={(e) => onChange(e.currentTarget.checked)}
       />
     </label>
@@ -304,6 +313,7 @@ export function HqAuthoritySettings() {
                     {state.untrusted_classes?.includes(c.id) && (
                       <UntrustedSwitch
                         id={c.id}
+                        label={c.label}
                         on={state.untrusted?.[c.id] === true}
                         disabled={off}
                         onChange={(on) => setUntrusted(c.id, on)}

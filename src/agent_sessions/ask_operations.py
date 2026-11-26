@@ -293,13 +293,16 @@ async def _project_facts(app, operator: asgi_call.Operator, pid: str) -> dict | 
     rows = (r.body or {}).get("projects") if isinstance(r.body, dict) else None
     for p in rows or []:
         if isinstance(p, dict) and p.get("id") == pid:
+            from .routes.sessions import members_digest
+
             members = await asyncio.to_thread(_member_keys, pid)
             folders = [f for f in p.get("folders") or [] if isinstance(f, str)]
             return {
                 "name": str(p.get("name") or "")[:TITLE_MAX],
                 "archived": bool(p.get("archived")),
                 "sessions": len(members),
-                "members": _digest(members),
+                # The digest the route checks its own enumeration against (`expect_members`).
+                "members": members_digest(members),
                 "color": str(p.get("color") or ""),
                 "folders": len(folders),
                 "folder_set": _digest(folders),
@@ -311,10 +314,10 @@ def _older_facts(days: int) -> dict:
     """What archive-older would sweep NOW: the route's own candidates (a fresh scan), counted
     and bound by identity."""
     from . import engines
-    from .routes.sessions import archive_older_candidates
+    from .routes.sessions import archive_older_candidates, members_digest
 
     keys = [engines.session_key(s) for s in archive_older_candidates(time.time() - days * 86400.0)]
-    return {"matched": len(keys), "members": _digest(keys)}
+    return {"matched": len(keys), "members": members_digest(keys)}
 
 
 # ---- outcomes -----------------------------------------------------------------------------------
@@ -324,7 +327,27 @@ def _plain(status: int, body: object, said: str) -> tuple[str, str]:
     return (DONE, said) if 200 <= status < 300 else (FAILED, "")
 
 
+#: A bulk archive route refused because its own enumeration was not the bound set (#2396).
+MEMBERS_MOVED = "the sessions it covers changed since this was proposed; nothing ran"
+
+
+def _members_refused(status: int, body: object) -> bool:
+    from .routes.sessions import MEMBERS_CHANGED
+
+    return status == 409 and isinstance(body, dict) and body.get("reason") == MEMBERS_CHANGED
+
+
+def _expect_members(facts: dict) -> dict:
+    """The bulk archive routes' ``expect_members`` (#2396): the member digest the card bound and
+    the tap re-read, so the route checks it against its OWN enumeration before it touches any
+    session. Every run sends it, tap and act alike."""
+    m = facts.get("members")
+    return {"expect_members": m} if isinstance(m, int) and not isinstance(m, bool) else {}
+
+
 def _bulk_project(status: int, body: object, verb: str) -> tuple[str, str]:
+    if _members_refused(status, body):
+        return STALE, MEMBERS_MOVED
     if not 200 <= status < 300 or not isinstance(body, dict):
         return FAILED, ""
     counts = body.get("counts") if isinstance(body.get("counts"), dict) else {}
@@ -341,6 +364,8 @@ def _bulk_project(status: int, body: object, verb: str) -> tuple[str, str]:
 
 
 def _older(status: int, body: object) -> tuple[str, str]:
+    if _members_refused(status, body):
+        return STALE, MEMBERS_MOVED
     if not 200 <= status < 300 or not isinstance(body, dict):
         return FAILED, ""
     archived, skipped = int(body.get("archived") or 0), int(body.get("skipped") or 0)
@@ -667,7 +692,11 @@ def _ops() -> tuple[Operation, ...]:
             "reversible",
             "none",
             ("days",),
-            lambda k, f, x: ("POST", "/api/sessions/archive-older", {"hours": f["days"] * 24}),
+            lambda k, f, x: (
+                "POST",
+                "/api/sessions/archive-older",
+                {"hours": f["days"] * 24, **_expect_members(x)},
+            ),
             lambda f, x: f"Archives every active session idle for more than {f['days']} "
             f"day{'s' if f['days'] != 1 else ''} ({x.get('matched', 0)} now). Each can be "
             "unarchived.",
@@ -712,7 +741,7 @@ def _ops() -> tuple[Operation, ...]:
             "reversible",
             p,
             (),
-            lambda k, f, x: ("POST", f"/api/projects/{k}/archive", None),
+            lambda k, f, x: ("POST", f"/api/projects/{k}/archive", _expect_members(x) or None),
             lambda f, x: f"Archives the project and its {x.get('sessions', 0)} session"
             f"{'s' if x.get('sessions', 0) != 1 else ''}, stopping their agents. Unarchive "
             "brings them back.",

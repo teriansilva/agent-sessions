@@ -96,8 +96,9 @@ def _act(a, cid, aid, grant=None):
 def test_every_catalog_entry_has_exactly_one_class():
     assert set(hq_authority.CLASS_OF) == set(ask_operations.CATALOG)
     assert set(hq_authority.CLASS_OF.values()) <= set(hq_authority.CLASSES)
-    # A1: the reversible class acts (A1b, #2391: and starts or sends); the RISKY ones are labelled.
-    assert hq_authority.ACTABLE == {"reversible", "starts"}
+    # A1: the reversible class acts (A1b, #2391: and starts or sends; A1c, #2396: destructive); the
+    # RISKY ones are labelled.
+    assert hq_authority.ACTABLE == {"reversible", "starts", "destructive"}
     assert hq_authority.RISKY == {"destructive", "external", "widens"}
 
 
@@ -137,7 +138,8 @@ def test_a_stored_act_for_a_later_class_does_not_act_in_a1():
     snap = hq_authority.snapshot()
     assert hq_authority.acts(snap, "reversible")
     assert hq_authority.acts(snap, "starts")  # A1b (#2391)
-    for klass in ("destructive", "external", "widens"):
+    assert hq_authority.acts(snap, "destructive")  # A1c (#2396)
+    for klass in ("external", "widens"):
         assert not hq_authority.acts(snap, klass)
 
 
@@ -254,14 +256,22 @@ def test_standard_runs_a_rename_at_once_and_logs_it(live, ai):
     assert again.status_code == 200 and again.json()["proposal"]["state"] == "done"
 
 
-def test_a_destructive_entry_stays_a_card_even_under_full_control(live, ai):
+def test_an_external_entry_stays_a_card_even_under_full_control(live, ai, monkeypatch):
     _set("full")
-    pid = _project(live, "scratch")
-    cid, got = _propose_project(live, ai, "archive")
-    assert _result(got["script"]).get("proposed") is True
-    assert "ran" not in _result(got["script"])
+    sorted_: list = []
+    real = asgi_call.call
+
+    async def counted(app, operator, method, path, body=None, **kw):
+        if path == "/api/projects/auto-sort":
+            sorted_.append(path)
+        return await real(app, operator, method, path, body, **kw)
+
+    monkeypatch.setattr(asgi_call, "call", counted)
+    _project(live, "scratch")
+    cid, got = _propose_project(live, ai, "auto_sort")
+    assert "ran" not in _result(got["script"]) or _result(got["script"])["ran"] is False
     assert _card(live, cid)["state"] == "pending"
-    assert not projects.load()[pid].archived
+    assert sorted_ == []
 
 
 def test_the_per_turn_cap_leaves_the_rest_as_cards(live, ai, monkeypatch):
