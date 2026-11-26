@@ -541,3 +541,13 @@
   border-left-color: var(--danger-text);
   background: color-mix(in srgb, var(--danger-text) 10%, transparent);
 }
+/* A batch's ONE voice band (#2389): one yes settles every card below it. */
+.batchBand {
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--accent-soft);
+}
+/* "+ N more" (#2389): every card stays one tap away, at the touch floor. */
+.more {
+  align-self: flex-start;
+  min-height: 44px;
+}

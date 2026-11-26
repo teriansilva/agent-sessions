@@ -145,8 +145,25 @@ _CARD_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 #: no keyword shortcut any more — a phrase list once swallowed a whole spoken request because it
 #: contained "what … need … you" (2026-11-18), and HQ never saw it.
 NEEDS_YOU_CHIP = "What needs me?"
-#: The most Needs-you rows one HQ answer may put to the Commander by voice (`offer_decisions`).
+#: The most Needs-you rows one HQ answer may put to the Commander by voice (`offer_decisions`),
+#: and the most cards of any challenge that is not wholly judged (its replies keep the English
+#: grammar, which names cards by ordinal: at most four).
 OFFERS_MAX = 4
+#: The most JUDGED HQ cards one challenge may hold (#2389): a batch HQ staged ("rename these
+#: twelve") is offered whole, read back in one short sentence, and one yes settles every card.
+BATCH_MAX = 20
+#: How long one card's route may take inside a batch before its outcome is UNKNOWN (#2389): the
+#: route is left to finish on its own, reported, and never retried; the next card goes on.
+ROUTE_TIMEOUT_S = 8.0
+#: The most cards one call follows to their end at once (#2389): every follower, a single
+#: settlement's and a batch's together. Past it, a card's end shows on the screen only.
+FOLLOWED_MAX = 20
+#: How soon a batch re-reads a card its route accepted (202: an HQ operation or a launch runs as
+#: a server task, holding the conversation's decide lock) until it ends (#2389): the next card's
+#: decide would be refused while it runs. The gap doubles up to `ACCEPTED_POLL_MAX_S`, so a slow
+#: launch costs about a dozen reads within the card's `ROUTE_TIMEOUT_S`, a rename one or two.
+ACCEPTED_POLL_S = 0.1
+ACCEPTED_POLL_MAX_S = 1.0
 #: The call's record writer (#2137) retires after this long with nothing to write.
 RECORD_WRITER_IDLE_S = 30.0
 #: How long a question waits for the call's earlier records to be written before HQ reads the
@@ -272,6 +289,17 @@ def _judged(cards: list[dict]) -> bool:
     return bool(cards) and all(c.get("kind") in JUDGED_KINDS for c in cards)
 
 
+def _batch(cards: list[dict]) -> bool:
+    """Two or more cards, all judged (#2389): read back short, and one yes settles them all."""
+    return len(cards) > 1 and _judged(cards)
+
+
+def _voice_cap(cards: list[dict]) -> list[dict]:
+    """The cards one challenge may hold (#2389): `BATCH_MAX` when every card is judged, else
+    `OFFERS_MAX` (a reply to those keeps the grammar's ordinals)."""
+    return cards[: BATCH_MAX if _judged(cards) else OFFERS_MAX]
+
+
 #: HQ cards a spoken reply may DISMISS through their own decide route (#2120): the proposal
 #: sidecar's cards. A nudge (a ledger action) and every Needs-you row keep their own grammar and
 #: routes; "dismiss" there is a cancel, never a refusal.
@@ -284,6 +312,7 @@ def _dismissable(cards: list[dict]) -> bool:
 
 from .voice_text import (  # noqa: E402,F401
     CHUNK_WORDS,
+    batch_summary,
     call_language,
     card_sentences,
     classify_confirmation,
@@ -353,6 +382,9 @@ class Call:
     state: str = "dialing"  # dialing | listening | thinking | speaking | ended
     ended_reason: str = ""
     muted: bool = False
+    #: How often the Commander has muted (#2389): only grows. A spoken yes holds only while no
+    #: mute came after it (`_settle_fence_holds`, `_batch_holds`), whatever the state is now.
+    mutes: int = 0
     #: (#2103: the call's own one-question buffer is gone. A question spoken while HQ works
     #: waits in the conversation's queue, `ask_orchestrator`, like a typed one.)
     #: The first part of a request, held because the Commander was already speaking again when
@@ -450,6 +482,13 @@ class Call:
     _said_pending: dict = field(default_factory=dict, repr=False)
     #: The call-owned follower per accepted card still launching past the window (#2372).
     _followers: dict = field(default_factory=dict, repr=False)
+    #: Batch cards a route accepted (202) and the call follows to their end (#2389): ``{card id:
+    #: {"card", "since"}}``, all read by ONE watcher task (`_watch_loop`) with one store read per
+    #: tick, whatever their number; with `_followers`, at most `FOLLOWED_MAX` cards.
+    _watched: dict = field(default_factory=dict, repr=False)
+    _watcher: asyncio.Task | None = field(default=None, repr=False)
+    #: Store reads the followers made (#2389): the drill reports their rate.
+    follow_reads: int = 0
     #: The contact's resolved voice profile (#1397 P3): voice, style (only if advertised), speed.
     profile: dict | None = None
     #: The call's language (#1397 P3): the operator's fixed choice, else the last one detected.
@@ -976,7 +1015,14 @@ class Call:
         ch["armed_turn"] = self.user_turn  # every turn up to this one began before arming
         ch["expires_at"] = now + CHALLENGE_S
         await self.client(
-            {"t": "challenge", "cards": [c["id"] for c in ch["cards"]], "expires_s": CHALLENGE_S}
+            {
+                "t": "challenge",
+                "cards": [c["id"] for c in ch["cards"]],
+                "expires_s": CHALLENGE_S,
+                # One yes covers every card (#2389): the screen shows ONE voice band, no ordinals.
+                "batch": _batch(ch["cards"]),
+                "turn": ch.get("turn_id"),
+            }
         )
 
     async def on_card_decided(self, card_id: object) -> None:
@@ -1478,6 +1524,9 @@ class Call:
         self.muted = on
         if on:
             self.interjection = None
+            # Every mute revokes a yes already given (#2389, Hermes 8975): an unmute never brings
+            # back an accepted batch's remaining cards, nor a settlement still being prepared.
+            self.mutes += 1
 
     async def _interject_say(self, text: str) -> None:
         work = self.work
@@ -1985,9 +2034,12 @@ class Call:
         # New Library drafts are offered with a spoken summary of their BOUND draft (#1681): read
         # before the generation check below, so a question asked meanwhile still wins.
         ready = gen == self.generation and view.get("status") == "done"
-        summaries = await draft_summaries(view) if ready else {}
-        picks = await folder_picks(view) if ready else {}
-        suggestions = await folder_suggestions(view) if ready else {}
+        # Cards of earlier turns HQ put to the Commander again (`offer_cards`, #2389) join this
+        # turn's own, read from the store NOW: only those still open are offered.
+        voiced = await self._with_card_offers(view) if ready else view
+        summaries = await draft_summaries(voiced) if ready else {}
+        picks = await folder_picks(voiced) if ready else {}
+        suggestions = await folder_suggestions(voiced) if ready else {}
         # Needs-you rows HQ put to the Commander (`offer_decisions`, #2137), built from the LIVE
         # list now: only a row still waiting on the very decision HQ read is offered.
         offered = await self._offered_needs_you(view) if ready else []
@@ -2011,16 +2063,23 @@ class Call:
             # Words said while HQ worked that no longer need an answer (#2354): the thread shows
             # the quiet line, the call says nothing. Its cards are still offered below.
             words = "" if view.get("quiet") is True else speakable(view.get("answer") or "")
-            # offered by voice; any more are screen-only
-            cards = confirmable_cards(
-                view, summaries=summaries, picks=picks, suggestions=suggestions
-            )[:4]
+            # Offered by voice: a batch of judged cards whole up to `BATCH_MAX` (#2389), anything
+            # else up to `OFFERS_MAX`; any more are screen-only.
+            found = confirmable_cards(
+                voiced, summaries=summaries, picks=picks, suggestions=suggestions
+            )
+            again = set(voiced.get("card_offers") or [])
+            found = [{**c, "offered": True} if c["id"] in again else c for c in found]
+            cards = [
+                *_voice_cap([c for c in found if c["kind"] != "pick"]),
+                *[c for c in found if c["kind"] == "pick"][:OFFERS_MAX],
+            ]
             lines = list(
                 card_sentences(
-                    view,
+                    voiced,
                     skip={c["id"] for c in cards},
                     said=words,
-                    reasons=screen_reasons(view, summaries=summaries, suggestions=suggestions),
+                    reasons=screen_reasons(voiced, summaries=summaries, suggestions=suggestions),
                 )
             )
             sid = uuid.uuid4().hex[:12]
@@ -2105,7 +2164,7 @@ class Call:
         keeps the English grammar and is read back for the SCREEN with no challenge armed, so a
         translated or misdetected command can never settle it."""
         await self.void_challenge()
-        cards = cards[:4]
+        cards = _voice_cap(cards)
         if gen is not None and gen != self.generation:
             return
         if self.language not in (None, "en") and not _judged(cards):
@@ -2122,7 +2181,10 @@ class Call:
               # The Needs-you items still to offer, one at a time, after this one (#1681 P2).
               "queue": list(queue or []),
               # What was read out, word for word: what the judge is shown (#1715).
-              "readback": line}  # fmt: skip
+              "readback": line,
+              # The turn that offered it (#2389): the screen keeps its cards until a LATER turn's
+              # selection takes over, whenever its history arrives.
+              "turn_id": turn_id}  # fmt: skip
         self.challenge = ch
         self.challenge_seq += 1
         ch["seq"] = self.challenge_seq
@@ -2164,7 +2226,8 @@ class Call:
         # since — checked again right before the card's route (Hermes 7282, 7288, 7310).
         snap = {"starts": self.user_starts, "typed": self.typed_turns,
                 "armed_at": ch.get("armed_at"), "gen": ch["gen"], "seq": ch["seq"],
-                "expires_at": ch.get("expires_at"), "turn": turn}  # fmt: skip
+                "expires_at": ch.get("expires_at"), "turn": turn,
+                "mutes": self.mutes}  # fmt: skip
         english = self._confirmation_language_ok()
         judged = _judged(ch["cards"])
         if not english and not judged:
@@ -2184,7 +2247,14 @@ class Call:
             # The fixed English phrases decide at once (the fast path); anything they don't cover
             # — any wording, any language — goes to ONE focused judgement (#1715 P1).
             verdict, idx = (
-                classify_confirmation(text, len(ch["cards"]), dismiss=_dismissable(ch["cards"]))
+                classify_confirmation(
+                    text,
+                    len(ch["cards"]),
+                    dismiss=_dismissable(ch["cards"]),
+                    # Only while the read-back's own "Shall I go ahead with all N?" is what was
+                    # asked last: after HQ's "Which one…?" a bare yes answers THAT (Hermes 8973).
+                    batch=_batch(ch["cards"]) and ch.get("clarifying") is None,
+                )
                 if english
                 else ("other", None)
             )
@@ -2219,7 +2289,12 @@ class Call:
         ended."""
         from . import voice_judge
 
-        got = await voice_judge.judge_cards(ch.get("readback") or "", len(ch["cards"]), text)
+        got = await voice_judge.judge_cards(
+            ch.get("readback") or "",
+            len(ch["cards"]),
+            text,
+            voice_judge.descriptors(ch["cards"]),  # #2389: which card is which, as data
+        )
         if got is not None and got[0] != "other":
             # A verdict that settles or re-arms: the whole freshness fence, or it decides nothing.
             if self._judge_still_holds(ch, snap):
@@ -2308,12 +2383,32 @@ class Call:
 
         if verdict == "other":
             return False
-        if verdict in ("dismiss", "ambiguous_dismiss") and not _dismissable(ch["cards"]):
+        if verdict in ("dismiss", "ambiguous_dismiss", "dismiss_all") and not _dismissable(
+            ch["cards"]
+        ):
             verdict = "cancel"  # a judged nudge: "drop it" leaves it, as a no always did
         if snap is not None:
             # An ANSWER from this turn is taken (Hermes 7359): an older reply still being judged
             # is now older than what the Commander did since, so its words step aside.
             self.taken_turn = max(self.taken_turn, snap["turn"])
+        if verdict == "all" and ch.get("clarifying") in ("ambiguous_dismiss", "dismiss_all"):
+            # HQ asked which card to DROP: "all" there is "drop them all", refused — never the
+            # batch's yes (Hermes 8973).
+            verdict = "dismiss_all"
+        if verdict == "all" and snap is not None and _judged(ch["cards"]):
+            if len(ch["cards"]) == 1:
+                verdict, idx = "confirm", 0  # "all" of one card is that card
+            else:
+                # One yes for the whole batch (#2389, the operator on #2070): every card of THIS
+                # challenge — its immutable, ordered id set — each through its own route and
+                # fence, one at a time, and ONE summary. Consumed before anything is awaited.
+                self.challenge = None
+                await caption()
+                await self.client({"t": "challenge", "cards": []})
+                self._side(
+                    self._settle_batch(tuple(ch["cards"]), ch["queue"], ch["gen"], snap, heard_id)
+                )
+                return True
         if verdict in ("confirm", "choose", "dismiss") and idx is not None:
             self.challenge = None  # single use: consumed BEFORE anything is awaited
             card = first if verdict == "choose" else ch["cards"][idx]
@@ -2349,11 +2444,13 @@ class Call:
         # for a confirmation.
         which = which_of(len(ch["cards"]))  # a person's question, never a command (#2342)
         if _judged(ch["cards"]):
-            pick, drop = f"Which one do you mean, {which}?", f"Which one should I drop, {which}?"
+            # No ordinal menu for HQ's own cards (#2389): the judge takes a card by what it is.
+            pick, drop = "Which one do you mean?", "Which one should I drop?"
         else:  # the grammar decides (Hermes 8839): the question names the phrase it takes
             pick, drop = f"Confirm {which}, or cancel?", f"Drop {which}?"
         line = {
             "all": f"I can only do one at a time. {pick}",
+            "dismiss_all": f"I can only drop one at a time. {drop}",
             "broader": "By voice I can only allow it once. For anything more, you'll need to"
             " tap it.",
             "no_allow": "I can't allow this one by voice. Refuse it, or skip it?",
@@ -2362,6 +2459,9 @@ class Call:
         sid = uuid.uuid4().hex[:12]
         # Disarmed BEFORE the line is sent; it re-arms only once THIS line has played.
         ch.update(say_id=sid, sent=False, armed_at=None, expires_at=None)
+        # What the re-armed challenge answers is THIS question now (Hermes 8973): the batch
+        # question no longer stands, and the judge is shown the line HQ just asked.
+        ch.update(clarifying=verdict, readback=line)
         await self.client({"t": "challenge", "cards": []})
         said = await self.say(line, kind="outcome", sid=sid)
         if self.challenge is ch and said is None:
@@ -2411,6 +2511,7 @@ class Call:
             and self.challenge_seq == snap["seq"]
             and self.state != "ended"
             and not self.muted
+            and self.mutes == snap.get("mutes", self.mutes)
             and expires is not None
             and time.monotonic() <= expires
         )
@@ -2429,24 +2530,19 @@ class Call:
             return self.heard_language == "en" and self.language in (None, "en")
         return True
 
-    async def settle(self, card: dict, snap: dict | None = None) -> None:
-        """The card's OWN route, in-process, as the operator (the #1559 mechanism): every guard and
-        re-check a tap gets. What is said is rendered from the route's result. `snap`: a spoken
-        reply's freshness fence, re-checked right before the route — after every await here (the
-        suggest branch's folder lookup included)."""
-        from . import asgi_call
-
+    async def _request(self, card: dict) -> tuple[str, str, dict | None] | str | None:
+        """The card's OWN route and the screen's payload: ``(method, path, body)``; ``"changed"``
+        when a suggested folder no longer holds (nothing runs); ``None``: never settled by voice."""
         kind = card["kind"]
         if card.get("dismiss") and kind in DISMISSABLE_KINDS:
             # A spoken dismiss (#2120): the card's decide route with the screen's own dismiss —
             # exactly what the Dismiss button sends. Nothing of the card runs.
-            method, path = "POST", f"/api/ask/proposals/{card['id']}/decide"
-            body = {"decision": "dismiss"}
-        elif card.get("dismiss"):
-            return  # never anything but a sidecar card's own dismiss
-        elif kind in ("nudge", "needs_you"):
-            method, path, body = "POST", f"/api/pulse/actions/{card['id']}/approve", None
-        elif kind == "suggest":
+            return "POST", f"/api/ask/proposals/{card['id']}/decide", {"decision": "dismiss"}
+        if card.get("dismiss"):
+            return None  # never anything but a sidecar card's own dismiss
+        if kind in ("nudge", "needs_you"):
+            return "POST", f"/api/pulse/actions/{card['id']}/approve", None
+        if kind == "suggest":
             # Still the same EXISTING folder for a card still waiting, at THIS moment: what was
             # read back must still hold. Nothing is ever made on disk by voice (option A).
             s = card["suggest"]
@@ -2457,38 +2553,69 @@ class Call:
             except Exception:  # noqa: BLE001
                 now = None
             if not now or now.get("folder") != s["folder"]:
-                await self.client({"t": "settled", "card": card["id"], "ok": False, "status": 0})
-                await self.say("That one changed in the meantime, so I left it alone.",
-                               kind="outcome")  # fmt: skip
-                return
-            method, path = "POST", f"/api/ask/proposals/{card['id']}/decide"
+                return "changed"
             # `existing`: the store re-checks it is still that real directory as it saves.
             body = {"decision": "confirm", "inputs": {"folder": s["folder"], "existing": True}}
-        elif kind == "pick" and not isinstance(card.get("choice"), dict):
-            return  # never settled without the folder the Commander picked
-        elif kind == "pick":
+            return "POST", f"/api/ask/proposals/{card['id']}/decide", body
+        if kind == "pick" and not isinstance(card.get("choice"), dict):
+            return None  # never settled without the folder the Commander picked
+        if kind == "pick":
             # The card's own decide route, with the folder the Commander picked by number from
             # the card's OWN choices (`ask_operations.folder_choices`) as its input — the payload
             # a tap on the picker sends. The model never saw or chose it.
-            method, path = "POST", f"/api/ask/proposals/{card['id']}/decide"
             body = {"decision": "confirm", "inputs": {"folder": card["choice"]["label"]}}
-        elif kind in ("permission", "menu"):
+            return "POST", f"/api/ask/proposals/{card['id']}/decide", body
+        if kind in ("permission", "menu"):
             # The screen's own route and payload: the RECORDED option's number and label. The
             # route re-checks the live screen against what the escalation recorded (#1213).
             choice = card["choice"]
-            method, path = "POST", f"/api/pulse/actions/{card['id']}/choose"
             body = {"option": choice["option"], "label": choice["label"]}
-        elif kind == "message":
+            return "POST", f"/api/pulse/actions/{card['id']}/choose", body
+        if kind == "message":
             # Exactly the screen's tap (#1833): the decision and nothing else; the stored entry
             # is what is sent.
-            method, path = "POST", f"/api/ask/proposals/{card['id']}/decide"
-            body = {"decision": "send"}
-        elif kind == "session":
-            method, path = "POST", f"/api/ask/proposals/{card['id']}/decide"
+            return "POST", f"/api/ask/proposals/{card['id']}/decide", {"decision": "send"}
+        if kind == "session":
             body = {"decision": "start", "bypass": False}
-        else:  # operation
-            method, path = "POST", f"/api/ask/proposals/{card['id']}/decide"
-            body = {"decision": "confirm"}
+            return "POST", f"/api/ask/proposals/{card['id']}/decide", body
+        # operation
+        return "POST", f"/api/ask/proposals/{card['id']}/decide", {"decision": "confirm"}
+
+    async def _still_open(self, card: dict) -> bool:
+        """A card HQ offered AGAIN (`offer_cards`, #2389) is re-checked in the store right before
+        its route: still pending and not replaced. Unreadable fails closed; its route checks
+        again."""
+        if not card.get("offered"):
+            return True
+        from . import ask_proposals
+
+        try:
+            status, entries = await asyncio.to_thread(ask_proposals.views, self.cid)
+        except Exception:  # noqa: BLE001
+            return False
+        entry = entries.get(card["id"]) if status == "ok" else None
+        return (
+            isinstance(entry, dict)
+            and entry.get("state") == ask_proposals.PENDING
+            and not entry.get("replaced_by")
+        )
+
+    async def settle(self, card: dict, snap: dict | None = None) -> None:
+        """The card's OWN route, in-process, as the operator (the #1559 mechanism): every guard and
+        re-check a tap gets. What is said is rendered from the route's result. `snap`: a spoken
+        reply's freshness fence, re-checked right before the route — after every await here (the
+        suggest branch's folder lookup included)."""
+        from . import asgi_call
+
+        req = await self._request(card)
+        if req is None:
+            return
+        if req == "changed" or not await self._still_open(card):
+            await self.client({"t": "settled", "card": card["id"], "ok": False, "status": 0})
+            await self.say("That one changed in the meantime, so I left it alone.",
+                           kind="outcome")  # fmt: skip
+            return
+        method, path, body = req
         if snap is not None and not self._settle_fence_holds(snap):
             return  # something newer took the call while this settlement was being prepared
         ref, hid = _card_ref(card), card.get("heard_id")
@@ -2513,7 +2640,12 @@ class Call:
                 # Still launching past the window (#2372: a 39 s API-session start went unsaid).
                 # Say so, and keep ONE call-owned follower on it that tells the end when it lands.
                 await self.say(STILL_STARTING_LINE, kind="outcome", card=ref)
-                if self.state != "ended" and card["id"] not in self._followers:
+                if (
+                    self.state != "ended"
+                    and card["id"] not in self._followers
+                    and card["id"] not in self._watched
+                    and len(self._followers) + len(self._watched) < FOLLOWED_MAX
+                ):
                     task = asyncio.create_task(self._follow_late(card))
                     self._followers[card["id"]] = task
                     task.add_done_callback(
@@ -2521,6 +2653,213 @@ class Call:
                     )
                 return
             await self._tell_end(card, final)
+
+    # -- one yes for a batch (#2389) ---------------------------------------------------------------
+
+    def _batch_holds(self, snap: dict) -> bool:
+        """An accepted batch grant still covers the NEXT card (#2389): every check of
+        `_settle_fence_holds` but the clock — no turn begun and nothing typed since the yes, the
+        same generation, no newer challenge ever installed, the call live and unmuted. The yes was
+        held to the window once, when it was accepted; work on earlier cards never runs it out."""
+        return (
+            self.user_starts == snap["starts"]
+            and self.typed_turns == snap["typed"]
+            and self.generation == snap["gen"]
+            and self.challenge is None
+            and self.challenge_seq == snap["seq"]
+            and self.state != "ended"
+            and not self.muted
+            and self.mutes == snap.get("mutes", self.mutes)  # a mute since the yes, even undone
+        )
+
+    async def _settle_batch(
+        self,
+        cards: tuple[dict, ...],
+        queue: list[dict],
+        gen: int,
+        snap: dict,
+        heard_id: str | None = None,
+    ) -> None:
+        """Settle every card of an accepted batch, in order, one at a time, through each card's
+        own route (#2389), and say ONE summary. The yes is held to today's whole fence ONCE, here
+        at acceptance; from then on `_batch_holds` decides before each card. A tap skips only its
+        card; speech, typing, mute, hang-up or a newer challenge or question stops every card not
+        yet admitted. A slow route never holds the batch: past `ROUTE_TIMEOUT_S` its outcome is
+        unknown, and a 202 is handed to the call's one watcher."""
+        if not self._settle_fence_holds(snap):
+            return  # the yes no longer holds (a newer turn, a tap's challenge, the window): nothing
+        started = time.monotonic()
+        counts = {"done": 0, "running": 0, "failed": 0, "unknown": 0, "skipped": 0, "stopped": 0}
+        unsure: list[dict] = []
+        running: list[dict] = []
+        for i, card in enumerate(cards):
+            outcome = await self._admit(card, snap, heard_id)
+            if outcome == "stopped":
+                counts["stopped"] = len(cards) - i
+                break
+            counts[outcome] += 1
+            if outcome in ("failed", "unknown"):
+                unsure.append(card)
+            elif outcome == "running":
+                running.append(card)
+        on_screen = await self._still_pending(unsure)
+        log.info(
+            "voice call %s batch: %d cards in %d ms: %s",
+            self.id, len(cards), int((time.monotonic() - started) * 1000),
+            ", ".join(f"{k}={v}" for k, v in counts.items() if v),
+        )  # fmt: skip
+        if self.state == "ended":
+            return
+        await self.say(
+            batch_summary(total=len(cards), on_screen=on_screen, **counts), kind="outcome"
+        )
+        for card in running:
+            w = self._watched.get(card["id"])
+            if w is not None:
+                w["held"] = False  # still running: the watcher tells its end once it lands
+        if self.challenge is None and gen == self.generation:
+            await self._offer_next(queue, gen)
+
+    async def _admit(self, card: dict, snap: dict, heard_id: str | None) -> str:
+        """One card of a batch through its own route (#2389): ``done``, ``running`` (accepted,
+        handed to the watcher), ``failed``, ``unknown`` (timed out or raised: never retried),
+        ``skipped`` (tapped) or ``stopped`` (the grant no longer holds: this card and every later
+        one are not attempted). Speaks nothing: the batch says one summary."""
+        from . import asgi_call
+
+        if not self._batch_holds(snap):
+            return "stopped"
+        if card["id"] in self.tapped:
+            return "skipped"
+        req = await self._request(card)
+        if req is None:
+            return "failed"
+        if req == "changed" or not await self._still_open(card):
+            await self.client({"t": "settled", "card": card["id"], "ok": False, "status": 409})
+            return "failed"
+        # The LAST boundary before this card's route, after every await above.
+        if not self._batch_holds(snap):
+            return "stopped"
+        if card["id"] in self.tapped:
+            return "skipped"
+        method, path, body = req
+        ref = _card_ref(card)
+        if ref is not None and heard_id is not None:
+            self._link(heard_id, "confirm", card=ref)  # past every fence, before the route
+        started = time.monotonic()
+        route = asyncio.ensure_future(asgi_call.call(self.app, self.operator, method, path, body))
+        try:
+            resp = await asyncio.wait_for(asyncio.shield(route), ROUTE_TIMEOUT_S)
+        except Exception:  # noqa: BLE001 — a timeout or an error: the outcome is unknown
+            # The route is left to finish on its own (cancelling it could stop it half way); what
+            # it did is never guessed and it is never run again.
+            route.add_done_callback(lambda t: t.cancelled() or t.exception())
+            log.warning("voice batch route gave no outcome in time", exc_info=True)
+            await self.client({"t": "settled", "card": card["id"], "ok": False, "status": 0,
+                               "unknown": True})  # fmt: skip
+            return "unknown"
+        ok = settled_ok(card, resp)
+        await self.client({"t": "settled", "card": card["id"], "ok": ok,
+                           "status": resp.status if resp else 0})  # fmt: skip
+        if ok and resp is not None and resp.status == 202 and card["kind"] in _PROPOSAL_KINDS:
+            # Accepted: it runs as a server task holding the conversation's decide lock (a second
+            # decide is refused meanwhile). Its end, within the card's bound, is in the summary;
+            # past it the card goes to the watcher and the batch goes on.
+            final = await self._accepted_end(card, started + ROUTE_TIMEOUT_S)
+            if final is None:
+                self._watch(card)
+                return "running"
+            self._told_end.add(card["id"])  # the summary says it: never a line of its own
+            await self.client({"t": "settled", "card": card["id"], "final": final})
+            if final in ("done", "started", "sent"):
+                return "done"
+            return "unknown" if final in ("unconfirmed", "interrupted") else "failed"
+        return "done" if ok else "failed"
+
+    async def _accepted_end(self, card: dict, deadline: float) -> str | None:
+        """The end state of a batch card its route accepted (202), re-read every
+        `ACCEPTED_POLL_S` until `deadline` (#2389); ``None``: still running then (or the call
+        ended). The conversation's decide lock is held while it runs, so the next card waits for
+        this, within its own bound. An unreadable read is not an end."""
+        from . import ask_proposals
+
+        gap = ACCEPTED_POLL_S
+        while self.state != "ended":
+            self.follow_reads += 1
+            try:
+                status, entries = await asyncio.to_thread(ask_proposals.views, self.cid)
+            except Exception:  # noqa: BLE001
+                status, entries = "unknown", {}
+            state = (entries.get(card["id"]) or {}).get("state") if status == "ok" else None
+            if state not in (None, "pending", "deciding"):
+                return state
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return None
+            await asyncio.sleep(min(gap, left))
+            gap = min(gap * 2, ACCEPTED_POLL_MAX_S)
+        return None
+
+    async def _still_pending(self, cards: list[dict]) -> int:
+        """How many of these failed or unknown cards the store says are STILL pending (#2389),
+        read once, right before the summary: only those are said to be on the screen. Unreadable,
+        or a card the store doesn't hold (a nudge): not claimed."""
+        ids = {c["id"] for c in cards if c["kind"] in _PROPOSAL_KINDS}
+        if not ids:
+            return 0
+        from . import ask_proposals
+
+        try:
+            status, entries = await asyncio.to_thread(ask_proposals.views, self.cid)
+        except Exception:  # noqa: BLE001
+            return 0
+        if status != "ok":
+            return 0
+        return sum(
+            1
+            for pid in ids
+            if (entries.get(pid) or {}).get("state") == ask_proposals.PENDING
+            and not (entries.get(pid) or {}).get("replaced_by")
+        )
+
+    def _watch(self, card: dict) -> None:
+        """Follow an accepted batch card to its end (#2389), on the call's ONE watcher. Bounded:
+        each card once, and at most `FOLLOWED_MAX` cards with every other follower; past that its
+        end shows on the screen only."""
+        pid = card["id"]
+        if self.state == "ended" or pid in self._watched or pid in self._followers:
+            return
+        if len(self._watched) + len(self._followers) >= FOLLOWED_MAX:
+            return
+        # Held while its batch still runs: the batch's ONE summary may still say its end.
+        self._watched[pid] = {"card": card, "since": time.monotonic(), "held": True}
+        if self._watcher is None or self._watcher.done():
+            self._watcher = asyncio.create_task(self._watch_loop())
+
+    async def _watch_loop(self) -> None:
+        """Read every watched card's state with ONE store read per tick (#2389): `OUTCOME_EVERY_S`
+        while any card is younger than `OUTCOME_POLL_S`, `OUTCOME_LATE_EVERY_S` after. An end is
+        told once (`_tell_end`); an unreadable state is read again; a card is dropped after
+        `OUTCOME_LATE_MAX_S`. It stops with the call or when nothing is left to watch."""
+        from . import ask_proposals
+
+        while self._watched and self.state != "ended":
+            now = time.monotonic()
+            young = any(now - w["since"] < OUTCOME_POLL_S for w in self._watched.values())
+            await asyncio.sleep(OUTCOME_EVERY_S if young else OUTCOME_LATE_EVERY_S)
+            self.follow_reads += 1
+            status, entries = await asyncio.to_thread(ask_proposals.views, self.cid)
+            if self.state == "ended":
+                return
+            for pid, w in list(self._watched.items()):
+                if w.get("held"):
+                    continue  # its batch has not said its summary yet
+                state = (entries.get(pid) or {}).get("state") if status == "ok" else None
+                if state not in (None, "pending", "deciding"):
+                    self._watched.pop(pid, None)
+                    await self._tell_end(w["card"], state)
+                elif time.monotonic() - w["since"] > OUTCOME_LATE_MAX_S:
+                    self._watched.pop(pid, None)
 
     async def _tell_end(self, card: dict, final: str) -> None:
         """A card's end, said ONCE (#2372): a repeated observation says nothing, and nothing is
@@ -2561,6 +2900,45 @@ class Call:
             if state not in (None, "pending", "deciding"):
                 return state
         return None
+
+    async def _with_card_offers(self, view: dict) -> dict:
+        """`view` with the cards HQ offered again (`offer_cards`, #2389) after its own: each read
+        from THIS conversation's records with its live state now, and kept only while still
+        pending and not replaced. Unreadable: none is added (the tool already refused it then)."""
+        ids = view.get("card_offers")
+        if not isinstance(ids, list) or not ids:
+            return view
+        own = {p.get("action_id") for p in view.get("proposals") or []}
+        try:
+            records = await asyncio.to_thread(ask_store.read, self.cid)
+            found = [
+                p
+                for t in ask_orchestrator.turn_views(records)
+                for p in t.get("proposals") or []
+                if p.get("action_id") in ids and p.get("action_id") not in own
+            ]
+            if found:
+                live = [{"proposals": found}]
+                found = (await asyncio.to_thread(ask_orchestrator.with_live, live, self.cid))[0][
+                    "proposals"
+                ]
+        except Exception:  # noqa: BLE001 — nothing more offered; the cards stay on the screen
+            log.warning("voice call %s: offered cards could not be read", self.id, exc_info=True)
+            return view
+        order = {pid: i for i, pid in enumerate(ids) if isinstance(pid, str)}
+        open_ = sorted(
+            (
+                p
+                for p in found
+                if p.get("kind") in ask_orchestrator.SIDECAR_KINDS
+                and p.get("state") == "pending"
+                and not p.get("replaced_by")
+            ),
+            key=lambda p: order.get(p.get("action_id"), len(order)),
+        )
+        seen: set = set()
+        unique = [p for p in open_ if not (p["action_id"] in seen or seen.add(p["action_id"]))]
+        return {**view, "proposals": [*(view.get("proposals") or []), *unique]}
 
     async def _offered_needs_you(self, view: dict) -> list[dict]:
         """The Needs-you rows HQ put to the Commander in this answer (`offer_decisions`, #2137), as
@@ -2909,6 +3287,8 @@ class Call:
         # Late followers only read and speak (#2372): they stop with the call.
         for task in list(self._followers.values()):
             task.cancel()
+        if self._watcher is not None:
+            self._watcher.cancel()
         # Side tasks are NOT cancelled: a settlement checks the call before it starts, and one
         # already inside its card's route must finish that route, never stop half way.
         self.ended_reason = reason
@@ -3449,7 +3829,19 @@ def confirmable_cards(
                         "line": _sentence(f"{label}, for {title}: {effect}")})  # fmt: skip
     # A card that replaced an earlier one is read back as the change it is (#2120).
     changed = {p.get("action_id") for p in view.get("proposals") or [] if p.get("replaces")}
-    return [{**c, "line": f"Changed: {c['line']}"} if c["id"] in changed else c for c in out]
+    out = [{**c, "line": f"Changed: {c['line']}"} if c["id"] in changed else c for c in out]
+    # What identifies each card (#2389): its operation, target and change, from its own stored
+    # proposal — the batch read-back counts them by kind, and the judge is shown them as data.
+    by_id = {p.get("action_id"): p for p in view.get("proposals") or []}
+    for c in out:
+        p = by_id.get(c["id"]) or {}
+        c.setdefault("op", p.get("op") or "")
+        c.setdefault("label", (p.get("label") or "").strip())
+        c.setdefault(
+            "target", (p.get("recipient") if p.get("kind") == "message" else p.get("title")) or ""
+        )
+        c.setdefault("change", p.get("text") or "")
+    return out
 
 
 def screen_reasons(

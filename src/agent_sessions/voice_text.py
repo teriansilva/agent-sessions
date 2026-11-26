@@ -438,10 +438,12 @@ def pick_option(said: str, options: list[str]) -> int | None:
 # word: fillers, ONE confirm phrase, and optionally the card's ordinal — nothing else, no question.
 _CONFIRM_PHRASES = (
     ("confirm", "it"), ("confirm",), ("confirmed",), ("send", "it"), ("send",),
-    ("start", "it"), ("start",), ("do", "it"), ("go", "ahead"), ("approve", "it"),
-    ("approve",), ("approved",),
+    ("start", "it"), ("start",), ("do", "it"), ("do", "them"), ("go", "ahead"),
+    ("approve", "it"), ("approve",), ("approved",),
 )  # fmt: skip
 _FILLERS = frozenset({"please", "ok", "okay", "yes", "yeah"})
+#: The fillers that are themselves a yes: only these answer a batch's "Shall I go ahead with all?".
+_YES = frozenset({"yes", "yeah", "ok", "okay"})
 _SKIP = frozenset({"the", "number", "option", "please", "ok", "okay", "yes", "yeah"})
 _CANCEL = re.compile(r"^(no|nope|cancel|cancel it|leave it|not now|never mind)\b")
 #: Dismissing an HQ card by voice (#2120): one of these verbs, optionally its object, and then
@@ -504,7 +506,7 @@ def _which(rest: list[str], cards: int, verdict: str) -> tuple[str, int | None]:
 
 
 def classify_confirmation(
-    said: str, cards: int, *, dismiss: bool = False
+    said: str, cards: int, *, dismiss: bool = False, batch: bool = False
 ) -> tuple[str, int | None]:
     """What a spoken reply to a read-back means, matched on the WHOLE utterance, never by a model:
 
@@ -513,21 +515,36 @@ def classify_confirmation(
     - ``("dismiss", i)`` — only when ``dismiss`` (HQ cards, #2120): a dismiss verb, optionally
       "it"/"that", and the same ordinal rule as a confirm. The card is dismissed on its route;
     - ``("cancel", None)`` — leave it (the card stays on screen, untouched);
-    - ``("all", None)`` — a bulk request, refused;
+    - ``("all", None)`` — a bulk request: refused outside a batch, every card of one (#2389);
+    - ``("dismiss_all", None)`` — "dismiss all": refused, never the batch's ``all``;
     - ``("ambiguous", None)`` — a confirm without the ordinal several cards need;
     - ``("other", None)`` — anything else: a new question, and the challenge is void.
+
+    ``batch`` (#2389): the read-back asked "Shall I go ahead with all N?" (`batch_readback`), so a
+    plain yes — fillers only ("yes", "yes please"), a confirm phrase with no ordinal ("go ahead"),
+    or an "all" ("all of them", "do them all") — answers THAT question: ``("all", None)``. An
+    ordinal still names one card; a dismiss still needs its number.
     """
     raw = said.translate(_APOSTROPHES).lower()
     norm = " ".join(re.sub(r"[^a-z0-9' ]", " ", raw).split())
     words = norm.split()
     if not words:
         return "other", None
+    if batch and cards > 1 and "?" not in raw and len(words) <= CONFIRM_MAX_WORDS:
+        rest = tuple(w for w in words if w not in _FILLERS)
+        if not rest and any(w in _YES for w in words):
+            return "all", None  # "yes", "yes please", "okay yes"
+        if rest in _ALL_TAILS:
+            return "all", None  # "all of them", "yes, all of them", "everything"
     if dismiss and "?" not in raw and len(words) <= CONFIRM_MAX_WORDS:
         rest = _dismiss_rest(words)
         if rest is not None:
             verdict, i = _which(rest, cards, "dismiss")
             if verdict == "ambiguous":
-                return "ambiguous_dismiss", None  # "Which one should I drop, …?"
+                return "ambiguous_dismiss", None  # "Which one should I drop?"
+            if verdict == "all":
+                # "Dismiss all" is refused, and is never the batch's `all` (#2389): that CONFIRMS.
+                return "dismiss_all", None
             if verdict != "other":
                 return verdict, i
     if _CANCEL.match(norm) or (not dismiss and words[0] == "dismiss"):
@@ -537,7 +554,10 @@ def classify_confirmation(
     rest = _confirm_rest(words)
     if rest is None:
         return "other", None
-    return _which(rest, cards, "confirm")
+    verdict, i = _which(rest, cards, "confirm")
+    if batch and verdict == "ambiguous" and not [w for w in rest if w not in _SKIP]:
+        return "all", None  # "go ahead", "do it", "confirm" to "Shall I go ahead with all N?"
+    return verdict, i
 
 
 # --- deciding ONE Needs-you item by voice (#1681 P2) -------------------------------------------
@@ -686,13 +706,94 @@ def grammar_ask(verb: str) -> str:
     return f"{phrase[0].upper()}{phrase[1:]}, or cancel?"
 
 
+_NUMBERS = (
+    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+    "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen",
+    "nineteen", "twenty",
+)  # fmt: skip
+
+
+def number_word(n: int) -> str:
+    """ "twelve": a count said the way a person says it (digits past twenty)."""
+    return _NUMBERS[n] if 0 <= n < len(_NUMBERS) else str(n)
+
+
+#: What a batch read-back calls N cards of one kind (#2389): ``(one, several)``, by the card's
+#: operation id, else its kind. Every kind is named, so a riskier card never hides behind
+#: "renames"; an operation not listed is named by its own catalog label ("tag changes").
+_BATCH_NOUNS = {
+    "nudge": ("message", "messages"),
+    "session": ("new session", "new sessions"),
+    "message": ("message", "messages"),
+    "session.rename": ("rename", "renames"),
+    "session.archive": ("session to archive", "sessions to archive"),
+    "session.unarchive": ("session to unarchive", "sessions to unarchive"),
+    "session.close": ("session to close", "sessions to close"),
+    "session.move": ("session to move", "sessions to move"),
+    "session.tag": ("tag change", "tag changes"),
+    "session.color": ("colour change", "colour changes"),
+    "project.rename": ("project rename", "project renames"),
+    "project.archive": ("project to archive", "projects to archive"),
+    "project.unarchive": ("project to unarchive", "projects to unarchive"),
+    "project.delete": ("project to delete", "projects to delete"),
+    "project.create": ("new project", "new projects"),
+    "project.add_folder": ("folder to add", "folders to add"),
+    "playbook.create": ("new playbook", "new playbooks"),
+    "skill.create": ("new skill", "new skills"),
+    "automation.create": ("new automation", "new automations"),
+}
+
+
+def batch_group(card: dict) -> str:
+    """The kind a batch read-back and summary count a card under: its operation, else its kind."""
+    return str(card.get("op") or card.get("kind") or "")
+
+
+def _batch_noun(card: dict, n: int) -> str:
+    one, several = _BATCH_NOUNS.get(batch_group(card), ("", ""))
+    if not one:
+        label = " ".join(str(card.get("label") or "").split())[:40].lower()
+        one, several = (f"{label} change", f"{label} changes") if label else ("change", "changes")
+    return one if n == 1 else several
+
+
+def batch_kinds(cards: list[dict]) -> str:
+    """ "Twelve renames", "Three renames and two sessions to archive": every kind of a batch, in
+    the order the cards came, each with its count (#2389)."""
+    groups: dict[str, list[dict]] = {}
+    for c in cards:
+        groups.setdefault(batch_group(c), []).append(c)
+    parts = [f"{number_word(len(g))} {_batch_noun(g[0], len(g))}" for g in groups.values()]
+    text = parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + f" and {parts[-1]}"
+    return text[0].upper() + text[1:]
+
+
+def batch_question(n: int) -> str:
+    """The question a batch read-back ends on (#2389): "Shall I go ahead with all twelve?". It
+    shares no three-word run with the replies it invites ("do them all", "yes, all of them"), so
+    the echo cut (`strip_echo`) never takes a quick answer for HQ's own words."""
+    if n == 2:
+        return "Shall I go ahead with both?"
+    return f"Shall I go ahead with all {number_word(n)}?"
+
+
+def batch_readback(cards: list[dict]) -> str:
+    """The read-back of two or more JUDGED cards (#2389): their count and what they do, in ONE
+    sentence, never each card word for word (the operator, #2070 141364). The cards' own texts are
+    on the screen, and the judge is shown each card's descriptors as data (`voice_judge`)."""
+    return f"{batch_kinds(cards)}, the details are on your screen. {batch_question(len(cards))}"
+
+
 def readback(cards: list[dict], *, judged: bool = True) -> str:
     """The fixed read-back that arms a challenge: what each card does, then ONE plain question
     (#2342): "Want me to send it?", never "Say confirm to …". ``judged``: whether the reply goes to
     the judge (#1715, every card of `voice_calls.JUDGED_KINDS`); otherwise the question names a
-    phrase the grammar accepts, so the answer it invites is one the call can take."""
+    phrase the grammar accepts, so the answer it invites is one the call can take. Two or more
+    judged cards are read back SHORT (`batch_readback`, #2389)."""
     if not cards:
         return ""
+    if judged and len(cards) > 1 and not any(c.get("ask") for c in cards):
+        return batch_readback(cards)
     if len(cards) == 1:
         c = cards[0]
         if c.get("ask"):  # a Needs-you item decided by its own words (#1681 P2)
@@ -716,3 +817,48 @@ def readback_screen_only(cards: list[dict]) -> str:
         return ""
     parts = [c["line"] for c in cards]
     return " ".join(parts) + " You'll need to tap that one."
+
+
+def batch_summary(
+    *,
+    total: int,
+    done: int = 0,
+    running: int = 0,
+    failed: int = 0,
+    unknown: int = 0,
+    skipped: int = 0,
+    stopped: int = 0,
+    on_screen: int = 0,
+) -> str:
+    """The ONE line a batch ends on (#2389), from its counted results: what was done, what is
+    still running, what failed, what can't be told, what the Commander tapped themselves and what
+    was not attempted once they spoke. ``on_screen``: of the failed and unknown cards, those the
+    store says are STILL pending, re-read just before this line; only they are said to be on the
+    screen. A FIXED sentence: counts only, never a card's text."""
+    if total > 1 and done == total:
+        return f"Done, all {number_word(total)}."
+    if total == 1 and done == 1:
+        return "Done."
+    clauses = [
+        f"{number_word(n)} {what}"
+        for n, what in (
+            (done, "done"),
+            (running, "still running"),
+            (failed, "didn't go through"),
+            (unknown, "I can't tell yet"),
+            (skipped, "you'd tapped already"),
+            (stopped, "not started"),
+        )
+        if n
+    ]
+    if not clauses:
+        return "Nothing was done."
+    text = clauses[0] if len(clauses) == 1 else ", ".join(clauses[:-1]) + f" and {clauses[-1]}"
+    out = [text[0].upper() + text[1:] + "."]
+    if stopped:
+        out.append("I stopped there.")
+    if on_screen == 1:
+        out.append("That one is still on your screen.")
+    elif on_screen > 1:
+        out.append(f"Those {number_word(on_screen)} are still on your screen.")
+    return " ".join(out)

@@ -149,3 +149,139 @@ test("a refused nudge decision says why on its card (#1640)", async () => {
   await userEvent.click(await screen.findByTestId("ask-nudge-send"));
   expect(await screen.findByTestId("ask-nudge-error")).toBeInTheDocument();
 });
+
+// --- #2389: one yes for a batch, and "+ N more" -------------------------------------------------
+
+const many = (n: number) => ({
+  turns: [{ turn_id: "t1", status: "done", proposals: Array.from({ length: n }, (_, i) => nudge(`b${i + 1}`)) }],
+});
+
+test("a batch shows ONE voice band and no per-card ordinal (#2389)", async () => {
+  vi.mocked(api.askConversation).mockResolvedValue(many(3) as never);
+  const ids = ["b1", "b2", "b3"];
+  const snap = {
+    ...IDLE,
+    phase: "connected" as const,
+    challenge: { cards: ids, expiresAt: Date.now() + 20_000, batch: true },
+  };
+  render(
+    <CallContext.Provider value={{ ...defaultCall, snap } as never}>
+      <CallCards cid={CID} seq={1} />
+    </CallContext.Provider>,
+  );
+  await waitFor(() => expect(shown()).toEqual(ids));
+  expect(screen.getByTestId("call-batch-say")).toHaveTextContent(/^Say “yes” or “do them all” · (20|19) s$/);
+  expect(screen.getByTestId("call-batch-voice")).toHaveTextContent("Tapping a card does only that card.");
+  expect(screen.queryAllByTestId("call-card-say")).toHaveLength(0);
+});
+
+test("past four cards the rest fold behind + N more, and every card is one tap away (#2389)", async () => {
+  vi.mocked(api.askConversation).mockResolvedValue(many(12) as never);
+  render(<CallCards cid={CID} seq={1} />);
+  await waitFor(() => expect(shown()).toEqual(["b1", "b2", "b3"]));
+  const more = screen.getByTestId("call-cards-more");
+  expect(more).toHaveTextContent("+ 9 more");
+  expect(more).toHaveAttribute("aria-expanded", "false");
+  await userEvent.click(more);
+  expect(shown()).toHaveLength(12);
+  expect(screen.getByTestId("call-cards-more")).toHaveAttribute("aria-expanded", "true");
+});
+
+test("a card whose voice settlement failed always shows, folded or not (#2389)", async () => {
+  vi.mocked(api.askConversation).mockResolvedValue(many(8) as never);
+  const snap = { ...IDLE, phase: "connected" as const, settled: { b7: { ok: false, status: 409 } } };
+  render(
+    <CallContext.Provider value={{ ...defaultCall, snap } as never}>
+      <CallCards cid={CID} seq={1} />
+    </CallContext.Provider>,
+  );
+  await waitFor(() => expect(shown()).toEqual(["b1", "b2", "b3", "b7"]));
+  expect(screen.getByTestId("call-cards-more")).toHaveTextContent("+ 4 more");
+});
+
+test("a card accepted (202) that ended failed stays in view when folded (Hermes 8973)", async () => {
+  vi.mocked(api.askConversation).mockResolvedValue(many(8) as never);
+  const snap = {
+    ...IDLE,
+    phase: "connected" as const,
+    settled: {
+      b6: { ok: true, status: 202, final: "done" },
+      b7: { ok: true, status: 202, final: "failed" },
+    },
+  };
+  render(
+    <CallContext.Provider value={{ ...defaultCall, snap } as never}>
+      <CallCards cid={CID} seq={1} />
+    </CallContext.Provider>,
+  );
+  await waitFor(() => expect(shown()).toEqual(["b1", "b2", "b3", "b7"]));
+});
+
+test("a re-offered older card stays on screen after its window is consumed and its route failed (Hermes 8973)", async () => {
+  vi.mocked(api.askConversation).mockResolvedValue({
+    turns: [
+      { turn_id: "t1", status: "done", proposals: [nudge("old1"), nudge("old2")] },
+      { turn_id: "t2", status: "done", proposals: [nudge("newer")] },
+      { turn_id: "t3", status: "done", proposals: [] }, // HQ offered old1 again (offer_cards)
+    ],
+  } as never);
+  const at = (challenge: unknown, settled = {}) => ({ ...IDLE, phase: "connected" as const, challenge, settled });
+  const view = (snap: unknown) => (
+    <CallContext.Provider value={{ ...defaultCall, snap } as never}>
+      <CallCards cid={CID} seq={1} />
+    </CallContext.Provider>
+  );
+  const { rerender } = render(view(at(null)));
+  await waitFor(() => expect(shown()).toEqual(["newer"]));
+  rerender(view(at({ cards: ["old1"], expiresAt: Date.now() + 20_000, turn: "t3" })));
+  expect(shown()).toEqual(["old1", "newer"]);
+  // The yes consumed the window, then the route refused: the card and its stamp stay.
+  rerender(view(at(null, { old1: { ok: false, status: 409 } })));
+  expect(shown()).toEqual(["old1", "newer"]);
+  expect(screen.getByTestId("call-card-voice")).toHaveTextContent("Changed — not sent");
+  // A selection that came later takes over.
+  vi.mocked(api.askConversation).mockResolvedValue({
+    turns: [
+      { turn_id: "t1", status: "done", proposals: [nudge("old1"), nudge("old2")] },
+      { turn_id: "t2", status: "done", proposals: [nudge("newer")] },
+      { turn_id: "t3", status: "done", proposals: [] },
+      { turn_id: "t4", status: "done", proposals: [nudge("latest")] },
+    ],
+  } as never);
+  rerender(
+    <CallContext.Provider value={{ ...defaultCall, snap: at(null, { old1: { ok: false, status: 409 } }) } as never}>
+      <CallCards cid={CID} seq={2} />
+    </CallContext.Provider>,
+  );
+  await waitFor(() => expect(shown()).toEqual(["latest"]));
+});
+
+test("a re-offered card survives history that arrives after its window armed (Hermes 8975)", async () => {
+  const answers: ((v: unknown) => void)[] = [];
+  vi.mocked(api.askConversation).mockImplementation(
+    () => new Promise((resolve) => answers.push(resolve as (v: unknown) => void)) as never,
+  );
+  const at = (challenge: unknown, settled = {}) => ({ ...IDLE, phase: "connected" as const, challenge, settled });
+  const view = (snap: unknown, seq: number) => (
+    <CallContext.Provider value={{ ...defaultCall, snap } as never}>
+      <CallCards cid={CID} seq={seq} />
+    </CallContext.Provider>
+  );
+  const { rerender } = render(view(at(null), 1));
+  await act(async () => answers[0]({ turns: [{ turn_id: "t1", status: "done", proposals: [nudge("old1")] }] }));
+  expect(shown()).toEqual(["old1"]);
+  // HQ's t3 offers old1 again; the screen's re-read is still on its way when the window arms.
+  rerender(view(at(null), 2));
+  rerender(view(at({ cards: ["old1"], expiresAt: Date.now() + 20_000, turn: "t3" }), 2));
+  await act(async () =>
+    answers[1]({
+      turns: [
+        { turn_id: "t1", status: "done", proposals: [nudge("old1")] },
+        { turn_id: "t2", status: "done", proposals: [nudge("newer")] }, // existed before the re-offer
+        { turn_id: "t3", status: "done", proposals: [] }, // the re-offer itself
+      ],
+    }),
+  );
+  rerender(view(at(null, { old1: { ok: false, status: 409 } }), 2));
+  expect(shown()).toEqual(["old1", "newer"]); // t2 came BEFORE t3: it supersedes nothing
+});

@@ -99,6 +99,7 @@ export const TOOL_LABELS: Record<string, { label: string; noun?: [string, string
   end_call: { label: "Ending the call" },
   // #2137: on a call, the decisions read back for the Commander to answer aloud.
   offer_decisions: { label: "Putting decisions to you" },
+  offer_cards: { label: "Putting cards to you again" }, // #2389
 };
 
 /** A step's words in the list: the tool's label, or a lookup for a tool this build does not know

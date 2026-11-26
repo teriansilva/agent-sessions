@@ -70,9 +70,13 @@ def test_an_hq_card_ends_on_one_plain_question(card, question):
     assert readback([c]) == f"{c['line']} {question}"
 
 
-def test_several_cards_are_asked_which_one_not_told_to_say_a_number():
+def test_several_cards_are_one_short_question_not_a_menu():
+    """#2389: a batch of HQ cards is one sentence and one plain question, never an ordinal menu."""
     said = readback(_hq_cards()[:3])
-    assert said.endswith("Which one should I do, the first, the second or the third?")
+    assert said == (
+        "One message, one new session and one change, the details are on your screen. "
+        "Shall I go ahead with all three?"
+    )
     # the existing grammar and the judge still take "confirm the second"
     assert classify_confirmation("confirm the second", 3) == ("confirm", 1)
 
@@ -224,6 +228,6 @@ def test_judged_cards_alone_keep_the_plain_question(monkeypatch):
 
     async def go():
         await r.ask("do both")
-        assert r.said_text()[-1].endswith("Which one should I do, the first or the second?")
+        assert r.said_text()[-1].endswith("Shall I go ahead with both?")  # #2389
 
     run(go())

@@ -3,6 +3,10 @@ import type { CardSettlement } from "../../types/voice";
 
 const ORDINAL = ["first", "second", "third", "fourth"];
 
+/** What a batch's ONE voice band says (#2389): one yes settles every card, so no ordinals. */
+export const BATCH_PHRASE = "Say “yes” or “do them all”";
+export const BATCH_NOTE = "Or name one. Tapping a card does only that card.";
+
 /** What to say to confirm the card at `index` of `count` cards in the spoken window. */
 export function confirmPhrase(index: number, count: number): string {
   return count > 1 ? `confirm the ${ORDINAL[index] ?? String(index + 1)}` : "confirm";
@@ -41,6 +45,7 @@ export function settledWord(
     const text = FINAL_WORD[st.final] ?? st.final;
     return { text, tone: st.final === "started" || st.final === "done" ? "ok" : "alert" };
   }
+  if (st.unknown) return { text: "Can't tell — not retried", tone: "warn" }; // #2389
   if (!st.ok) {
     if (st.status === 409) return { text: "Changed — not sent", tone: "alert" };
     return { text: st.status ? `Didn't go through · ${st.status}` : "Didn't go through", tone: "alert" };

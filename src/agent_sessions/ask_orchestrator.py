@@ -656,6 +656,10 @@ class _Turn:
     #: order. Memory only: the settled view carries them to the call, which reads each back from
     #: the LIVE list and arms the spoken confirmation; the Commander decides, never HQ.
     offers: list = field(default_factory=list)
+    #: Open cards of this conversation HQ put to the Commander AGAIN on this CALL turn
+    #: (`offer_cards`, #2389), in order. Memory only: the settled view carries them to the call,
+    #: which re-reads each from the store and arms ONE challenge naming exactly these ids.
+    card_offers: list = field(default_factory=list)
     #: The call dropped words for their language since the previous question (#2137): THIS
     #: question carries the note, so "did you hear that?" is answered knowing it.
     dropped_foreign: bool = False
@@ -2004,6 +2008,66 @@ async def _offer_decisions(turn: _Turn, args: dict) -> tuple[dict, dict]:
         "Say briefly what they are; do not read them out yourself."
     )
     return {"offered": len(turn.offers), "note": note}, {}
+
+
+async def _offer_cards(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    """Put open cards of THIS conversation to the Commander again by voice (#2389): when they
+    refer back to one ("do those renames", "the third one"). Only on a call; ids are deduplicated;
+    each must be a card proposed in this conversation that the store says is still pending and
+    not replaced — any other id (settled, withdrawn, replaced, another conversation's, unknown)
+    refuses the whole call, and an unreadable store refuses it too. Nothing is decided here:
+    after HQ's answer the call re-reads each card and arms ONE challenge naming exactly these
+    ids, so referring to one card never authorises another; the store and the card's own route
+    check it again at settlement."""
+    from . import ask_proposals, voice_calls
+
+    if turn.via != "call":
+        raise _ToolRefused("refused: not on a call", "not_a_call")
+    raw = args.get("cards")
+    if not isinstance(raw, list) or not raw or not all(isinstance(i, str) for i in raw):
+        raise _ToolRefused("cards must be a list of card ids", "bad_arguments")
+    ids = list(dict.fromkeys(raw))  # each card once, in the order named
+    if len(ids) > voice_calls.BATCH_MAX:
+        raise _ToolRefused(
+            f"refused: at most {voice_calls.BATCH_MAX} cards at once", "bad_arguments"
+        )
+    try:
+        records = await asyncio.to_thread(ask_store.read, turn.cid)
+        status, live = await asyncio.to_thread(ask_proposals.views, turn.cid)
+    except Exception:  # noqa: BLE001 — fail closed: nothing is offered
+        status, records, live = "unknown", [], {}
+    if status != "ok":
+        raise _ToolRefused(
+            "refused: the cards could not be read just now; nothing was offered", "unreadable"
+        )
+    mine = {
+        r.get("action_id")
+        for r in records
+        if r.get("type") == "proposal" and r.get("kind") in SIDECAR_KINDS
+    }
+    refused: list[str] = []
+    for pid in ids:
+        entry = live.get(pid) if pid in mine else None
+        if entry is None:
+            refused.append(f"{pid[:40]}: not a card of this conversation")
+        elif entry.get("replaced_by"):
+            refused.append(f"{pid}: replaced by {entry['replaced_by']}")
+        elif entry.get("state") != ask_proposals.PENDING:
+            refused.append(f"{pid}: already {str(entry.get('state')).replace('_', ' ')}")
+    if refused:
+        raise _ToolRefused(
+            "refused: only open cards of this conversation can be offered again (list_cards); "
+            + "; ".join(refused[:5]),
+            "not_open",
+        )
+    for pid in ids:
+        if pid not in turn.card_offers and len(turn.card_offers) < voice_calls.BATCH_MAX:
+            turn.card_offers.append(pid)
+    note = (
+        "After your answer the call reads them back in one short question and the Commander "
+        "answers aloud. Say nothing about the cards yourself."
+    )
+    return {"offered": len(turn.card_offers), "note": note}, {"count": len(ids)}
 
 
 async def _ask_operator(turn: _Turn, args: dict) -> tuple[dict, dict]:
@@ -4459,6 +4523,22 @@ TOOLS: dict[str, Tool] = {
             _offer_decisions,
         ),
         Tool(
+            "offer_cards",
+            "call",
+            _spec(
+                "offer_cards",
+                "On a call, put cards you proposed earlier in this conversation that are still "
+                "open to the Commander again, so they can answer by voice: the ids are `card` "
+                "values from list_cards or the card facts. Use it when they refer back to a card "
+                "('do those renames', 'the third one') instead of telling them to tap it. To "
+                "change one first, propose the corrected card with replaces; it is offered with "
+                "your answer. Only open cards of this conversation; you decide nothing.",
+                {"cards": {"type": "array", "items": {"type": "string"}, "maxItems": 20}},
+                ["cards"],
+            ),
+            _offer_cards,
+        ),
+        Tool(
             "show",
             "screen",
             _spec(
@@ -5467,7 +5547,7 @@ ABANDONED_ON_STOP = frozenset({"read"})
 _WROTE: contextvars.ContextVar[list | None] = contextvars.ContextVar("ask_wrote", default=None)
 
 #: Tools a turn is offered only when the question was spoken on a call (#1668).
-CALL_ONLY_TOOLS = frozenset({"end_call", "offer_decisions"})
+CALL_ONLY_TOOLS = frozenset({"end_call", "offer_decisions", "offer_cards"})
 #: Tool kinds a continuation turn (`via: "card"`, #1950) may not run: the ones with an effect
 #: that no card confirms. It reads, asks and stages cards; every write stays a tap.
 #: `screen` (#2102) too: nobody asked the server's own continuation to move their screen.
@@ -8091,6 +8171,8 @@ async def _settle_turn(turn: _Turn, lock_fd: int) -> dict:
             view = {**view, "end_call": True}  # to the call alone (#1668), never stored
         if turn.offers and view:
             view = {**view, "offers": list(turn.offers)}  # to the call alone (#2137), never stored
+        if turn.card_offers and view:
+            view = {**view, "card_offers": list(turn.card_offers)}  # to the call alone (#2389)
         settled = True
         return view
     finally:

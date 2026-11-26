@@ -101,13 +101,10 @@ def test_several_cards_need_the_number_and_all_is_refused(monkeypatch):
         await r.ask("both please")
         await r.readback_played()
         await r.ask("dismiss")
-        assert r.said_text()[-1] == "Which one should I drop, the first or the second?"
+        assert r.said_text()[-1] == "Which one should I drop?"  # no ordinal menu (#2389)
         await r.readback_played()
-        await r.ask("dismiss all")
-        assert (
-            r.said_text()[-1]
-            == "I can only do one at a time. Which one do you mean, the first or the second?"
-        )
+        await r.ask("dismiss all")  # refused, and never a batch's yes (#2389)
+        assert r.said_text()[-1] == "I can only drop one at a time. Which one should I drop?"
         await r.readback_played()
         await r.ask("dismiss the second one")
 

@@ -353,6 +353,14 @@ describe("spoken confirmation (#1397 P2)", () => {
     expect(c.snapshot.challenge).toBeNull();
   });
 
+  test("a batch challenge says so, and an unknown outcome is kept apart (#2389)", async () => {
+    const c = await connected();
+    sock.msg({ t: "challenge", cards: ["p1", "p2"], expires_s: 20, batch: true, turn: "t9" });
+    expect(c.snapshot.challenge).toEqual({ cards: ["p1", "p2"], expiresAt: 21_000, batch: true, turn: "t9" });
+    sock.msg({ t: "settled", card: "p2", ok: false, status: 0, unknown: true });
+    expect(c.snapshot.settled.p2).toEqual({ ok: false, status: 0, unknown: true });
+  });
+
   test("settled records the route's answer, then the end state after a 202, and re-reads the cards", async () => {
     const c = await connected();
     sock.msg({ t: "settled", card: "p1", ok: true, status: 202 });

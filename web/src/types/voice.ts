@@ -206,10 +206,20 @@ export type CallServerMessage =
   | { t: "ended"; reason: string; detail?: string; endpoint?: string }
   /** #1397 P2: this say's audio has been SENT (it is queued behind it); ack `played` once it plays. */
   | { t: "said"; id: string }
-  /** The cards a spoken "confirm" may settle now, in their spoken order; `[]` clears it. */
-  | { t: "challenge"; cards: string[]; expires_s?: number }
-  /** A voice confirmation ran the card's route: its status, then (202 only) the end state. */
-  | { t: "settled"; card: string; ok: boolean; status: number; dismissed?: boolean }
+  /** The cards a spoken "confirm" may settle now, in their spoken order; `[]` clears it. `batch`
+   *  (#2389): two or more HQ cards one spoken yes settles together — ONE voice band, no ordinals.
+   *  `turn`: the HQ turn that offered them (#2389): its cards stay until a later turn's selection. */
+  | { t: "challenge"; cards: string[]; expires_s?: number; batch?: boolean; turn?: string | null }
+  /** A voice confirmation ran the card's route: its status, then (202 only) the end state.
+   *  `unknown` (#2389): a batch card whose route gave no outcome in time — never retried. */
+  | {
+      t: "settled";
+      card: string;
+      ok: boolean;
+      status: number;
+      dismissed?: boolean;
+      unknown?: boolean;
+    }
   | { t: "settled"; card: string; final: string | null };
 
 /** What a spoken confirmation did to one card (#1397 P2). `final` arrives only after a 202. */
@@ -219,4 +229,6 @@ export interface CardSettlement {
   final?: string | null;
   /** A spoken dismiss (#2120): the card's own dismiss route, not its confirm. */
   dismissed?: boolean;
+  /** A batch card whose route gave no outcome in time (#2389): what it did is not known. */
+  unknown?: boolean;
 }

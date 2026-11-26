@@ -645,7 +645,9 @@ def test_the_browsers_played_ack_arms_the_challenge_through_the_socket(ready, wo
         ws.send_text(json.dumps({"t": "end"}))
     assert readback is not None
     offered = [e for e in events if e.get("t") == "challenge"]
-    assert offered == [{"t": "challenge", "cards": ["a1"], "expires_s": voice_calls.CHALLENGE_S}]
+    assert [{k: v for k, v in e.items() if k != "turn"} for e in offered] == [
+        {"t": "challenge", "cards": ["a1"], "expires_s": voice_calls.CHALLENGE_S, "batch": False}
+    ]
 
 
 def test_the_needs_you_chip_reaches_the_call_through_the_socket(ready, worker):

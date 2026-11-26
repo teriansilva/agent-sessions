@@ -16,7 +16,7 @@ import { api, ApiError } from "../../lib/api";
 import type { AskConversationTurn, AskProposalCard, NeedsYouRow } from "../../types/api";
 import { MessageCard, NudgeCard, OperationCard, SessionCard } from "../ask/AskCards";
 import b from "../ui/actionButton.module.css";
-import { confirmPhrase, listeningFor, settledWord } from "./cardVoice";
+import { BATCH_NOTE, BATCH_PHRASE, confirmPhrase, listeningFor, settledWord } from "./cardVoice";
 import { useCall } from "./callContext";
 import s from "./call.module.css";
 
@@ -69,6 +69,7 @@ function VoiceLine({
     );
   }
   if (ch && index >= 0 && left > 0 && snap.phase === "connected") {
+    if (ch.batch) return null; // one band above the cards says it for all of them (#2389)
     return (
       <div className={s.voice} data-testid="call-card-voice" data-voice="armed">
         <span className="nj-stamp is-hud" data-testid="call-card-say">
@@ -150,10 +151,27 @@ function NeedsYouCallCard({
  *  dismissed: they stay on the HQ page); a turn that presents nothing new (talk, a prose reply)
  *  leaves the current one where it is. A card a spoken window still names stays in view, whatever
  *  its turn: "confirm" never answers a card the screen no longer shows. */
-function callCards(turns: AskConversationTurn[], armed: readonly string[]): AskProposalCard[] {
+function callCards(
+  turns: AskConversationTurn[],
+  armed: readonly string[],
+  pin: Pin | null = null,
+): AskProposalCard[] {
   const newest = [...turns]
     .reverse()
     .find((t) => (t.proposals ?? []).length > 0 || t.ask != null);
+  // Cards a spoken window named stay after it is consumed (#2389, Hermes 8973): a re-offered card
+  // and its result, until a selection that came later (and holds none of them) takes over.
+  if (pin) {
+    // "Later" is by the SERVER's turn order (Hermes 8975), never by what this screen had loaded
+    // when the window armed: until the offering turn is in the history, nothing is later.
+    const at = pin.turn ? turns.findIndex((t) => t.turn_id === pin.turn) : -1;
+    const later = (at < 0 ? [] : turns.slice(at + 1)).some(
+      (t) =>
+        ((t.proposals ?? []).length > 0 || t.ask != null) &&
+        !(t.proposals ?? []).some((p) => pin.ids.includes(p.action_id)),
+    );
+    if (!later) armed = [...armed, ...pin.ids.filter((id) => !armed.includes(id))];
+  }
   const shown = newest?.proposals ?? [];
   const seen = new Set(shown.map((p) => p.action_id));
   const named: AskProposalCard[] = [];
@@ -164,6 +182,33 @@ function callCards(turns: AskConversationTurn[], armed: readonly string[]): AskP
     }
   }
   return [...named, ...shown];
+}
+
+/** The ONE voice band of a batch (#2389): one yes settles every card it names. */
+function BatchBand({ now }: { now: number }) {
+  const { snap } = useCall();
+  const ch = snap.challenge;
+  const left = ch ? Math.ceil((ch.expiresAt - now) / 1000) : 0;
+  if (!ch?.batch || left <= 0 || snap.phase !== "connected") return null;
+  return (
+    <div className={`${s.voice} ${s.batchBand}`} data-testid="call-batch-voice" data-voice="armed">
+      <span className="nj-stamp is-hud" data-testid="call-batch-say">
+        {BATCH_PHRASE} · {left} s
+      </span>
+      <span className={s.voiceNote}>{BATCH_NOTE}</span>
+    </div>
+  );
+}
+
+/** Cards shown before "+ N more" (#2389): a batch of twelve would push everything else away. A
+ *  card whose voice settlement did not go through always shows, so "it's still on your screen"
+ *  is never a card hidden behind the fold. */
+export const CARDS_SHOWN = 3;
+
+/** The cards the newest spoken window named, and the HQ turn that offered them. */
+interface Pin {
+  ids: string[];
+  turn: string | null;
 }
 
 export function CallCards({ cid, seq }: { cid: string | null; seq: number }) {
@@ -196,7 +241,17 @@ export function CallCards({ cid, seq }: { cid: string | null; seq: number }) {
 
   // A spoken window naming cards that are not this conversation's: Needs-you actions HQ read out.
   const challenged = snap.challenge?.cards ?? [];
-  const proposals = callCards(turns, challenged);
+  const [pin, setPin] = useState<Pin | null>(null);
+  const named = challenged.join(",");
+  const [pinFor, setPinFor] = useState({ cid, named: "" });
+  if (pinFor.cid !== cid || pinFor.named !== named) {
+    // A newly named window pins its cards; another conversation drops the pin (set during
+    // render, React's pattern for state derived from a changed prop).
+    setPinFor({ cid, named });
+    if (named) setPin({ ids: named.split(","), turn: snap.challenge?.turn ?? null });
+    else if (pinFor.cid !== cid) setPin(null);
+  }
+  const proposals = callCards(turns, challenged, pin);
   const unknown = challenged.filter(
     (id) => !proposals.some((p) => p.action_id === id) && !needsYou.some((r) => r.action?.id === id),
   );
@@ -242,9 +297,20 @@ export function CallCards({ cid, seq }: { cid: string | null; seq: number }) {
   const dropNeedsYou = (id: string) => () => setNeedsYou((rows) => rows.filter((r) => r.action?.id !== id));
 
   const now = useNow(!!snap.challenge);
+  const [expanded, setExpanded] = useState(false);
+  const moreId = `call-cards-${cid ?? "none"}`;
   if (!proposals.length && !needsYou.length) return null;
+  const folded = !expanded && proposals.length > CARDS_SHOWN + 1;
+  // The stamp's own semantics (Hermes 8973): a 202 that ended `failed` is a failure too.
+  const attention = (p: AskProposalCard) => {
+    const st = snap.settled[p.action_id];
+    return !!st && (!!st.unknown || settledWord(st, p.kind).tone === "alert");
+  };
+  const shown = folded ? proposals.filter((p, i) => i < CARDS_SHOWN || attention(p)) : proposals;
+  const hidden = proposals.length - shown.length;
   return (
-    <div className={s.cards} data-testid="call-cards">
+    <div className={s.cards} data-testid="call-cards" id={moreId}>
+      <BatchBand now={now} />
       {needsYou.map((r) => {
         const id = r.action!.id;
         return (
@@ -264,7 +330,7 @@ export function CallCards({ cid, seq }: { cid: string | null; seq: number }) {
           </div>
         );
       })}
-      {proposals.map((p) => (
+      {shown.map((p) => (
         <div key={p.action_id} className={s.callCard} data-testid="call-card" data-card={p.action_id}>
           <VoiceLine
             id={p.action_id}
@@ -314,6 +380,18 @@ export function CallCards({ cid, seq }: { cid: string | null; seq: number }) {
           )}
         </div>
       ))}
+      {proposals.length > CARDS_SHOWN + 1 && (hidden > 0 || expanded) ? (
+        <button
+          type="button"
+          className={`${b.ghost} ${s.more}`}
+          data-testid="call-cards-more"
+          aria-expanded={expanded}
+          aria-controls={moreId}
+          onClick={() => setExpanded((on) => !on)}
+        >
+          {expanded ? "Show fewer" : `+ ${hidden} more`}
+        </button>
+      ) : null}
     </div>
   );
 }

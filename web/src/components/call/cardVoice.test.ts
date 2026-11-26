@@ -32,3 +32,10 @@ test("only HQ's own cards are listened to for a dismiss (#2120)", () => {
   expect(listeningFor("nudge")).toBe("“confirm” or “cancel”");
   expect(listeningFor("needs_you")).toBe("“confirm” or “cancel”");
 });
+
+test("a batch card whose route gave no outcome in time is unknown, never failed (#2389)", () => {
+  expect(settledWord({ ok: false, status: 0, unknown: true }, "operation")).toEqual({
+    text: "Can't tell — not retried",
+    tone: "warn",
+  });
+});

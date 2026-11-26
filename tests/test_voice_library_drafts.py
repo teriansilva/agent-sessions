@@ -101,7 +101,10 @@ def _view(op_id: str, pid: str = "op-1") -> dict:
 def test_a_new_draft_is_offered_only_with_its_summary():
     said = "Save a new playbook, “Research brief”. It has 1 step: Plan."
     cards = voice_calls.confirmable_cards(_view("playbook.create"), summaries={"op-1": said})
-    assert cards == [{"id": "op-1", "kind": "operation", "verb": "save it", "line": said}]
+    assert [{k: c[k] for k in ("id", "kind", "verb", "line")} for c in cards] == [
+        {"id": "op-1", "kind": "operation", "verb": "save it", "line": said}
+    ]
+    assert cards[0]["op"] == "playbook.create"  # what a batch read-back counts it as (#2389)
     assert voice_calls.confirmable_cards(_view("playbook.create")) == []
     assert voice_calls.confirmable_cards(_view("skill.create"), summaries={"op-2": said}) == []
 

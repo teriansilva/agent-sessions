@@ -73,9 +73,11 @@ class Rig:
         # `self.verdict` (or a callable) to judge otherwise; `self.judged` records what it saw.
         self.verdict: object = ("other", None)
         self.judged: list[tuple[str, int, str]] = []
+        self.listed: list = []  # the cards' descriptors each judgement was shown (#2389)
 
-        async def fake_judge(readback, cards, reply):
+        async def fake_judge(readback, cards, reply, listed=None):
             self.judged.append((readback, cards, reply))
+            self.listed.append(listed)
             v = self.verdict
             return await v() if callable(v) else v
 
@@ -254,21 +256,16 @@ def test_a_new_question_voids_the_challenge(monkeypatch):
     assert not any(p.endswith("/approve") for _, p, _ in r.routes)
 
 
-def test_everything_is_refused_and_ordinals_pick_one(monkeypatch):
+def test_ordinals_pick_one_card_of_a_batch(monkeypatch):
+    """#2389: one yes covers a judged batch (`test_voice_batch.py`); an ordinal still names one."""
     r = Rig(monkeypatch, TWO)
 
     async def go():
         await r.ask("do both")
         await r.readback_played()
-        await r.ask("approve everything")
-        assert (
-            r.said_text()[-1]
-            == "I can only do one at a time. Which one do you mean, the first or the second?"
-        )
+        await r.ask("confirm the fourth")  # names no card that was read out
+        assert r.said_text()[-1] == "Which one do you mean?"
         await r.readback_played()  # the clarification must PLAY before the challenge re-arms
-        await r.ask("confirm")
-        assert r.said_text()[-1] == "Which one do you mean, the first or the second?"
-        await r.readback_played()
         await r.ask("confirm the second")
 
     run(go())
@@ -276,6 +273,31 @@ def test_everything_is_refused_and_ordinals_pick_one(monkeypatch):
         ("POST", "/api/ask/proposals/prop-2/decide", {"decision": "start", "bypass": False})
     ]
     assert r.said_text()[-1] in ("Done.", "Accepted. It's starting now.")
+
+
+def test_everything_is_refused_where_the_grammar_decides(monkeypatch):
+    """A batch holding a card the judge does not hear (a connector message) keeps the grammar:
+    one card at a time, by its ordinal (#2389 leaves it as it was)."""
+    view = {"proposals": [
+        {"kind": "message", "action_id": "msg-1", "recipient": "#ops", "connector": "Matrix",
+         "text": "Deploy is done."},
+        TWO["proposals"][0],
+    ]}  # fmt: skip
+    r = Rig(monkeypatch, view)
+
+    async def go():
+        await r.ask("do both")
+        await r.readback_played()
+        await r.ask("approve everything")
+        assert (
+            r.said_text()[-1]
+            == "I can only do one at a time. Confirm the first or the second, or cancel?"
+        )
+        await r.readback_played()
+        await r.ask("confirm the second")
+
+    run(go())
+    assert r.routes == [("POST", "/api/pulse/actions/act-1/approve", None)]
 
 
 def test_cancel_leaves_the_card(monkeypatch):
@@ -569,7 +591,7 @@ def test_hqs_own_clarification_cannot_confirm_before_it_has_played(monkeypatch):
     async def go():
         await r.ask("both")
         await r.readback_played()
-        await r.ask("confirm")  # ambiguous: HQ asks "Which one?"
+        await r.ask("confirm the fourth")  # ambiguous: HQ asks "Which one?"
         await r.ask("confirm the second")  # its echo, before that question was played
 
     run(go())
@@ -634,17 +656,21 @@ def test_a_hang_up_right_after_confirm_settles_nothing(monkeypatch):
     assert not any(m == "POST" for m, _, _ in r.routes)
 
 
-def test_a_fifth_card_is_still_mentioned(monkeypatch):
+def test_a_card_past_the_cap_is_still_mentioned(monkeypatch):
+    """Judged cards are offered up to `BATCH_MAX` (#2389); one more is named for the screen."""
+    n = voice_calls.BATCH_MAX
     view = {"proposals": [{"kind": "nudge", "action_id": f"act-{i}", "title": f"s{i}",
-                           "text": "Rerun the tests."} for i in range(5)]}  # fmt: skip
+                           "text": "Rerun the tests."} for i in range(n + 1)]}  # fmt: skip
     r = Rig(monkeypatch, view)
 
     async def go():
         await r.ask("all of them")
 
     run(go())
-    assert len(r.call.challenge["cards"]) == 4
-    assert "I've written a message for s4. That one you'll want to check yourself." in r.said_text()
+    assert len(r.call.challenge["cards"]) == n
+    assert f"I've written a message for s{n}. That one you'll want to check yourself." in (
+        r.said_text()
+    )
 
 
 def test_a_played_ack_racing_the_said_marker_still_arms(monkeypatch):
@@ -1303,7 +1329,7 @@ def test_a_judged_ambiguous_reply_asks_which_and_rearms(monkeypatch):
         await _armed(r)
         await _reply(r, "ja, mach")
         await r.side()
-        assert r.said_text()[-1] == "Which one do you mean, the first or the second?"
+        assert r.said_text()[-1] == "Which one do you mean?"  # no ordinal menu (#2389)
         ch = r.call.challenge
         assert ch is not None and ch["armed_at"] is None  # re-arms once that line has played
         await r.readback_played()

@@ -60,7 +60,7 @@ export interface CallSnapshot {
    *  between turns. `stopping`: Stop was tapped and the turn has not settled yet. */
   work: { step: string; steps: number; since: number; stopping: boolean } | null;
   /** The cards a spoken "confirm" may settle, in their spoken order, and until when (ms). */
-  challenge: { cards: string[]; expiresAt: number } | null;
+  challenge: { cards: string[]; expiresAt: number; batch?: boolean; turn?: string } | null;
   /** Cards settled by voice on this call. */
   settled: Record<string, CardSettlement>;
   /** Bumped by every `settled`: the cards on screen are re-read. */
@@ -327,7 +327,18 @@ export class CallClient {
       case "challenge": {
         const cards = Array.isArray(msg.cards) ? msg.cards.filter((c) => typeof c === "string") : [];
         const secs = typeof msg.expires_s === "number" && msg.expires_s > 0 ? msg.expires_s : 20;
-        this.set({ challenge: cards.length ? { cards, expiresAt: this.now() + secs * 1000 } : null });
+        const batch = msg.batch === true; // #2389: one yes settles them all
+        const turn = typeof msg.turn === "string" && msg.turn ? msg.turn : undefined;
+        this.set({
+          challenge: cards.length
+            ? {
+                cards,
+                expiresAt: this.now() + secs * 1000,
+                ...(batch ? { batch } : {}),
+                ...(turn ? { turn } : {}),
+              }
+            : null,
+        });
         return;
       }
       case "settled": {
@@ -340,6 +351,7 @@ export class CallClient {
                 ok: !!msg.ok,
                 status: typeof msg.status === "number" ? msg.status : 0,
                 ...(msg.dismissed === true ? { dismissed: true } : {}),
+                ...(msg.unknown === true ? { unknown: true } : {}),
               };
         this.set({
           settled: { ...this.snap.settled, [msg.card]: next },

@@ -706,9 +706,12 @@ which words to say. For a new session, ask only for what is missing (the project
 one short casual question, and propose it as soon as you know both. The Commander confirms, \
 dismisses and changes cards by voice: to change one, propose the corrected card at once with \
 replaces set to its card id, never just say \
-you did; to drop one, use withdraw_card. A project whose folder doesn't exist yet, and a draft \
-mission, are confirmed on screen. Answer in the language the Commander speaks. Ending the call is \
-your job: when the Commander's own words mean the call is over — any goodbye, casual or temporary \
+you did; to drop one, use withdraw_card. When they refer back to a card still open, put it to \
+them again with offer_cards (its card id from list_cards), changed first with replaces if they \
+ask; never tell them to tap it or that it lapsed. A project whose folder doesn't exist yet, and a \
+draft mission, are confirmed on screen. Answer in the language the Commander speaks. Ending the \
+call is your job: when the Commander's own words mean the call is over — any goodbye, casual \
+or temporary \
 ones included ("bye", "bye for now", "talk later", "tschüss", "adiós", "ciao"), or "that's all", \
 "I'm done", in any wording or language — you MUST call the end_call tool in that same turn, then \
 answer with a short goodbye. A goodbye without end_call leaves the line open and the Commander \
@@ -743,9 +746,12 @@ Commander which words to say. For a new session, ask only for what is missing (t
 agent) in one short casual question, and propose it as soon as you know both. The Commander \
 confirms, dismisses and changes cards by voice: to change one, propose the corrected card at \
 once with replaces set to its card id, \
-never just say you did; to drop one, use withdraw_card. A project whose folder doesn't exist yet, \
-and a draft mission, are confirmed on screen. Answer in the language the Commander speaks. Ending \
-the call is your job: when the Commander's own words mean the call is over — any goodbye, casual \
+never just say you did; to drop one, use withdraw_card. When they refer back to a card still \
+open, put it to them again with offer_cards (its card id from list_cards), changed first with \
+replaces if they ask; never tell them to tap it or that it lapsed. A project whose folder doesn't \
+exist yet, and a draft mission, are confirmed on screen. Answer in the language the Commander \
+speaks. Ending the call is your job: when the Commander's own words mean the call is over — \
+any goodbye, casual \
 or temporary ones included ("bye", "bye for now", "talk later", "tschüss", "adiós", "ciao"), or \
 "that's all", "I'm done", in any wording or language — you MUST call the end_call tool in that \
 same turn, then answer with a short goodbye. A goodbye without end_call leaves the line open and \
@@ -773,17 +779,23 @@ question or request, and whenever HQ's answer asks them something or holds them 
 with exactly one word: yes or no."""
 
 _VOICE_CONFIRM_JUDGE = """The Commander is on a voice call with HQ. HQ just read them one card, or \
-several numbered cards, and asked them to confirm. Below, as quoted data, are what HQ read back \
-and the Commander's spoken reply, in any language. Decide what the reply means. confirm: a clear \
-yes to the one card ("yes", "do it", "go ahead", "ja, mach das", "passt, los"). confirm N: a clear \
-yes that names card N, counted from 1 as HQ read them ("the second one", "die zweite bitte"). \
-dismiss: they clearly want the card thrown away, not just left ("dismiss it", "drop that", "weg \
-damit", "verwirf die Karte"). dismiss N: the same, naming card N. cancel: a clear no or not now \
-("no", "leave it", "nee, lass mal", "nicht jetzt"). all: they want every card at once. other: \
-anything else: a question, a new request, a hesitation, a negated, conditional or postponed yes or \
-dismissal ("don't", "nicht bestätigen", "bestätige nicht", "yes... no, wait", "only tomorrow", \
-"don't drop it"), or anything you are not sure about. Only a reply that is clearly and only a yes \
-is ever a confirm; only one clearly and only about throwing the card away is ever a dismiss."""
+several cards, and asked them to confirm. Below, as quoted data, are the cards (each with its \
+number, kind, target and change), what HQ read back and the Commander's spoken reply, in any \
+language. Decide what the reply means. confirm: a clear yes to the one card ("yes", "do it", "go \
+ahead", "ja, mach das", "passt, los"). confirm N: a clear yes to exactly one card N, named by its \
+place as HQ read them or by what identifies it in the list ("the second one", "die zweite \
+bitte", "just the federation one"); if the words fit more than one card, answer confirm with no \
+number, and never name a card that is not in the list. dismiss: they clearly want the card thrown \
+away, not just left ("dismiss it", "drop that", "weg damit", "verwirf die Karte"). dismiss N: the \
+same, naming card N; several or all cards thrown away at once is dismiss with no number. cancel: \
+a clear no or not now ("no", "leave it", "nee, lass mal", "nicht jetzt"). all: a clear yes to \
+every card at once, or to HQ asking whether to go ahead with all of them ("do them all", "yes, \
+all of them", "ja, alle"); never a wish to throw them away. other: anything else: a \
+question, a new request, a hesitation, a negated, conditional or postponed yes or dismissal \
+("don't", "nicht \
+bestätigen", "bestätige nicht", "yes... no, wait", "only tomorrow", "don't drop it"), or anything \
+you are not sure about. Only a reply that is clearly and only a yes is ever a confirm or all; only \
+one clearly and only about throwing a card away is ever a dismiss."""
 
 _HQ_CALL_INTERJECT = """The Commander is on a voice call with HQ, and HQ is in the middle of \
 working on their earlier request. Below, as quoted data, are that request, what HQ is doing right \
@@ -807,8 +819,8 @@ HQ_CALL_INTERJECT_FORMAT = (
 #: Not editable (#1715): the caller parses this reply strictly, so an operator's wording of the
 #: judge cannot drop the format it must answer in.
 VOICE_CONFIRM_JUDGE_FORMAT = (
-    "Reply with exactly one of: confirm, confirm N, dismiss, dismiss N, cancel, all, other. "
-    "Nothing else: no "
+    "Reply with exactly one of: confirm, confirm N, dismiss, dismiss N, cancel, all, other, "
+    "where N is a card's number from 1 to 20. Nothing else: no "
     "punctuation, no explanation."
 )
 
@@ -1259,7 +1271,8 @@ REGISTRY: tuple[Prompt, ...] = (
         "the fixed English phrases don't cover: does the reply clearly confirm a card, cancel, "
         "or neither? Only a clear yes settles the card; anything else, or no answer, leaves it "
         "on the screen.",
-        contract="one token: confirm, confirm N, cancel, all or other",
+        contract="one token: confirm, confirm N, dismiss, dismiss N (N 1 to 20), cancel, all or "
+        "other",
         default=_VOICE_CONFIRM_JUDGE,
         max_chars=2000,
         block=BLOCK,

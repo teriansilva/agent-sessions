@@ -38,13 +38,20 @@ JUDGE_MAX_TOKENS = 1024
 #: left most asides with no verdict, and they were queued and answered a whole turn later.
 INTERJECT_TIMEOUT_S = 8.0
 
-_CARD_VERDICT = re.compile(r"(confirm|dismiss|cancel|all|other)(?: ([1-9]))?")
+#: The most cards one challenge may hold, and so the highest card number a verdict may name
+#: (#2389: `voice_calls.BATCH_MAX`; kept here so the parser needs no app import).
+CARDS_MAX = 20
+_CARD_VERDICT = re.compile(r"(confirm|dismiss|cancel|all|other)(?: ([1-9][0-9]?))?")
+#: Each identifying descriptor the judge is shown, cut to this many characters (#2389).
+DESCRIPTOR_MAX = 80
 
 
 def parse_card_verdict(content: object, cards: int) -> tuple[str, int | None] | None:
     """The judge's answer as the call's outcome: `("confirm", i)` (0-based, a card that was read
-    out), `("ambiguous", None)` (a confirm with no number for several cards, or a number that was
-    not read out), `("cancel" | "all" | "other", None)` — or `None`: no verdict."""
+    out), `("ambiguous", None)` (a confirm with no number for several cards, or a number within
+    the contract that names no card of this challenge), `("cancel" | "all" | "other", None)` —
+    or `None`: no verdict. A number outside 1..`CARDS_MAX` (0, 21, a leading zero) is outside the
+    locked contract, so no verdict (#2389)."""
     if not isinstance(content, str):
         return None
     m = _CARD_VERDICT.fullmatch(content.strip())
@@ -59,22 +66,56 @@ def parse_card_verdict(content: object, cards: int) -> tuple[str, int | None] | 
     unclear = "ambiguous" if word == "confirm" else "ambiguous_dismiss"
     if n is None:
         return (word, 0) if cards == 1 else (unclear, None)
+    if not 1 <= int(n) <= CARDS_MAX:
+        return None
     i = int(n) - 1
     return (word, i) if i < cards else (unclear, None)
 
 
-def _user_message(readback: str, cards: int, reply: str) -> str:
+def _cut(value: object) -> str:
+    text = " ".join(str(value or "").split())
+    return text if len(text) <= DESCRIPTOR_MAX else text[: DESCRIPTOR_MAX - 1] + "…"
+
+
+def descriptors(cards: list[dict]) -> list[dict]:
+    """What identifies each card of a challenge, server-built from the card dicts the call offered
+    (#2389): its number as read back, its kind, its target and what it changes, each cut to
+    `DESCRIPTOR_MAX`, at most `CARDS_MAX` of them. The short spoken line no longer names the
+    cards, so this is how "just the federation one" resolves to its card; nothing outside the
+    challenge is listed, so nothing outside it can be named."""
+    out: list[dict] = []
+    for i, c in enumerate(cards[:CARDS_MAX]):
+        out.append(
+            {
+                "n": i + 1,
+                "kind": _cut(c.get("op") or c.get("kind")),
+                "target": _cut(c.get("target")),
+                "change": _cut(c.get("change")),
+            }
+        )
+    return out
+
+
+def _user_message(readback: str, cards: int, reply: str, listed: list[dict] | None = None) -> str:
     # JSON-quoted: the texts are data, never instructions (the guard clause says so as well).
-    return (
-        f"Cards read back: {cards}\n"
-        f"HQ read back (quoted): {json.dumps(readback, ensure_ascii=False)}\n"
-        f"The Commander replied (quoted): {json.dumps(reply, ensure_ascii=False)}"
-    )
+    lines = [f"Cards read back: {cards}"]
+    if listed:
+        # Each card as quoted data (#2389): the spoken line of a batch is short, but a reply may
+        # name one card by what it is.
+        lines.append(f"The cards (quoted): {json.dumps(listed, ensure_ascii=False)}")
+    lines += [
+        f"HQ read back (quoted): {json.dumps(readback, ensure_ascii=False)}",
+        f"The Commander replied (quoted): {json.dumps(reply, ensure_ascii=False)}",
+    ]
+    return "\n".join(lines)
 
 
-async def judge_cards(readback: str, cards: int, reply: str) -> tuple[str, int | None] | None:
+async def judge_cards(
+    readback: str, cards: int, reply: str, listed: list[dict] | None = None
+) -> tuple[str, int | None] | None:
     """Ask the HQ model what `reply` means for the `cards` card(s) HQ read back as `readback`.
-    `None` when no verdict could be had — the caller decides nothing then."""
+    `listed`: the challenge's cards as bounded descriptors (`descriptors`, #2389). `None` when no
+    verdict could be had — the caller decides nothing then."""
     from . import ai_providers, hq_calls_settings, hq_usage, prompts, review
 
     try:
@@ -83,7 +124,7 @@ async def judge_cards(readback: str, cards: int, reply: str) -> tuple[str, int |
             "model": cfg["model"],
             "messages": [
                 {"role": "system", "content": prompts.effective("voice_confirm_judge")},
-                {"role": "user", "content": _user_message(readback, cards, reply)},
+                {"role": "user", "content": _user_message(readback, cards, reply, listed)},
             ],
             "temperature": 0,
             "stream": False,
