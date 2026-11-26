@@ -1186,6 +1186,8 @@ def view(row: dict) -> dict:
     }
     if state == PENDING and hidden:
         out["reason"] = TEAM_HIDDEN  # why Confirm is gone, before anyone taps
+    if row.get("decided_by") == "hq" and state != PENDING:
+        out["decided_by"] = "hq"  # HQ ran it on the Commander's Authority setting (#2390)
     if state == PENDING and row.get("op") in _PICK_FROM_PROJECT:
         out["choices"] = {"folder": _folder_choices(row)}
     op = CATALOG.get(row.get("op") or "")
@@ -1442,7 +1444,7 @@ async def stage(
         raise Refused(
             "refused: the proposal could not be recorded; nothing will run", "not_recorded"
         ) from None
-    return {"summary": summary, "target": shown}
+    return {"summary": summary, "target": shown, "id": pid}
 
 
 # ---- the card's content (#1611) -----------------------------------------------------------------
@@ -1545,6 +1547,63 @@ def gate_inputs(op: Operation, raw: object) -> dict:
     return out
 
 
+async def _prepare(cid: str, row: dict, inputs: object = None):
+    """What a confirm checks and gathers before ``deciding``, shared by the tap and HQ's act
+    (#2390): the entry must match its card and a recomputed binding (a Library draft re-read and
+    re-hashed, #1611), the operator's inputs pass their gates, and the runner's extras are built.
+    Returns ``(op, extras, tapped)``, or the entry settled ``stale`` (a dict) when it no longer
+    matches. Raises ``ProposalError`` for a bad input (the entry stays pending)."""
+    from . import ask_proposals
+
+    pid = row["id"]
+    op = CATALOG.get(row.get("op") or "")
+    card = await asyncio.to_thread(_card_binding, cid, pid)
+    content, sha = None, ""
+    if op is not None and op.draft:
+        # The draft this card shows, re-read and re-hashed: changed on disk → the binding
+        # below cannot match, and nothing runs (#1611).
+        with contextlib.suppress(OSError, ValueError):
+            content, sha = await asyncio.to_thread(ask_store.read_draft, cid, pid)
+    expected = (
+        await asyncio.to_thread(binding, op.id, row["target"], row["fields"], row["facts"], sha)
+        if op and (content is not None or not op.draft)
+        else None
+    )
+    if op is None or card is None or not (card == row.get("binding") == expected):
+        row = await asyncio.to_thread(
+            ask_proposals._update,
+            cid,
+            pid,
+            state=STALE,
+            reason="this card no longer matches what was proposed; nothing ran",
+            settled_at=time.time(),
+        )
+        return row or {}
+    extras = gate_inputs(op, inputs)  # before `deciding`: a bad input leaves it pending
+    if _resumable(row):
+        # An unfinished move confirmed again (#1786): its runner resumes where it stopped,
+        # from what it committed, and facts that its own first steps changed (the chat copy
+        # released) are expected.
+        extras["_resumed"] = True
+        if isinstance(row.get("committed"), dict):
+            extras["_committed"] = dict(row["committed"])
+    if op.follow_up:
+        # Where the card's turn stood when THIS tap was decided (#2050): read now, never when
+        # the card settles, so a Stop during the run does not turn an earlier confirm into
+        # "after the Stop", nor let it restart a turn the Commander stopped.
+        from . import ask_orchestrator
+
+        tapped = ask_orchestrator.tap_state(cid, row.get("turn_id"))
+    else:
+        tapped = None
+    if op.run is not None:
+        # A runner notes its progress on its own entry as it goes (#1786: what it committed).
+        extras["_pid"] = row["id"]
+    if content is not None:
+        extras["_content"] = content
+    return op, extras, tapped
+
+
 async def decide_locked(
     cid: str,
     row: dict,
@@ -1571,51 +1630,10 @@ async def decide_locked(
             return 200, view(row or {})
         if decision != "confirm":
             raise ask_proposals.ProposalError(422, "an operation is confirmed or dismissed")
-        op = CATALOG.get(row.get("op") or "")
-        card = await asyncio.to_thread(_card_binding, cid, pid)
-        content, sha = None, ""
-        if op is not None and op.draft:
-            # The draft this card shows, re-read and re-hashed: changed on disk → the binding
-            # below cannot match, and nothing runs (#1611).
-            with contextlib.suppress(OSError, ValueError):
-                content, sha = await asyncio.to_thread(ask_store.read_draft, cid, pid)
-        expected = (
-            await asyncio.to_thread(binding, op.id, row["target"], row["fields"], row["facts"], sha)
-            if op and (content is not None or not op.draft)
-            else None
-        )
-        if op is None or card is None or not (card == row.get("binding") == expected):
-            row = await asyncio.to_thread(
-                ask_proposals._update,
-                cid,
-                pid,
-                state=STALE,
-                reason="this card no longer matches what was proposed; nothing ran",
-                settled_at=time.time(),
-            )
-            return 200, view(row or {})
-        extras = gate_inputs(op, inputs)  # before `deciding`: a bad input leaves it pending
-        if _resumable(row):
-            # An unfinished move confirmed again (#1786): its runner resumes where it stopped,
-            # from what it committed, and facts that its own first steps changed (the chat copy
-            # released) are expected.
-            extras["_resumed"] = True
-            if isinstance(row.get("committed"), dict):
-                extras["_committed"] = dict(row["committed"])
-        if op.follow_up:
-            # Where the card's turn stood when THIS tap was decided (#2050): read now, never when
-            # the card settles, so a Stop during the run does not turn an earlier confirm into
-            # "after the Stop", nor let it restart a turn the Commander stopped.
-            from . import ask_orchestrator
-
-            tapped = ask_orchestrator.tap_state(cid, row.get("turn_id"))
-        else:
-            tapped = None
-        if op.run is not None:
-            # A runner notes its progress on its own entry as it goes (#1786: what it committed).
-            extras["_pid"] = row["id"]
-        if content is not None:
-            extras["_content"] = content
+        prepared = await _prepare(cid, row, inputs)
+        if isinstance(prepared, dict):  # settled stale: nothing runs
+            return 200, view(prepared)
+        op, extras, tapped = prepared
         row = await asyncio.to_thread(
             ask_proposals._update, cid, pid, state=DECIDING, decided_at=time.time()
         )
@@ -1631,14 +1649,124 @@ async def decide_locked(
             os.close(fd)
 
 
-async def _route_once(op: Operation, row: dict, fields: dict, now, app, operator) -> dict:
-    """The catalog's one route call for ``op``, and the outcome it settles to."""
+#: An act refused before it claimed anything says why; the card stays pending for the tap.
+ACT_BUSY = "another card of this conversation is being decided right now"
+
+
+async def act(cid: str, pid: str, *, operator, app, grant, record: dict) -> tuple[str, dict]:
+    """HQ runs one staged operation itself, on the Commander's Authority setting (#2390): the
+    tap's own claim and runner, minus the wait. ``grant`` is the turn's
+    ``hq_authority.ActGrant``; ``record`` the acts-log fields of this turn.
+
+    The claim is the tap's: the conversation's decide lock, the entry still ``pending``, the
+    card's binding and draft checked by the same preparation (`_prepare`), and ``grant.admits``
+    asked right before the durable ``pending → deciding`` write, which also records
+    ``decided_by: "hq"`` and the authority revision. The run is `_run`, which asks ``admits``
+    once more right before the route. A restart mid-act leaves ``deciding``, which
+    ``ask_proposals.recover`` settles ``interrupted``: never replayed.
+
+    Returns ``("ran", entry)`` once it settled (the card's outcome is the route's own), or
+    ``("waits", {"reason"})`` / ``("decided", entry)`` / ``("stale", entry)`` when it did not run
+    and the card stays as it is."""
+    import os
+
+    from . import ask_proposals, hq_acts
+
+    op = None
+    klass = record.get("class") or ""
+
+    def admit() -> str:
+        return grant.admits(klass)
+
+    fd = await asyncio.to_thread(ask_store.try_decide_lock, cid)
+    if fd is None:
+        return "waits", {"reason": ACT_BUSY}
+    handed = False
+    try:
+        row = await asyncio.to_thread(ask_proposals._row, cid, pid)
+        if row is None:
+            return "waits", {"reason": "the card is no longer tracked"}
+        if row.get("state") != PENDING:
+            return "decided", row  # the Commander (or another act) decided it first
+        why = admit()
+        if why:
+            return "waits", {"reason": why}
+        prepared = await _prepare(cid, row)
+        if isinstance(prepared, dict):
+            return "stale", prepared
+        op, extras, tapped = prepared
+        if op.run is not None or op.inputs or op.follow_up:
+            return "waits", {"reason": "this one is always confirmed on its card"}
+        why = admit()  # again after the awaits: the last check before the claim
+        if why:
+            return "waits", {"reason": why}
+        rev = grant.snapshot.revision
+        row = await asyncio.to_thread(
+            ask_proposals._update,
+            cid,
+            pid,
+            state=DECIDING,
+            decided_at=time.time(),
+            decided_by="hq",
+            authority_rev=rev,
+        )
+        if row is None:
+            return "waits", {"reason": "the card is no longer tracked"}
+        logged = {**record, "authority_rev": rev, "preset": grant.snapshot.preset}
+        # The claim's own log line, before the route runs: a crash from here on is resolved
+        # against the sidecar when the log is read (`hq_acts`), never replayed.
+        written = await asyncio.to_thread(
+            hq_acts.append,
+            {**logged, "pid": pid, "cid": cid, "op": op.id, "label": op.label,
+             "title": row.get("title"), "state": DECIDING},
+        )  # fmt: skip
+        if not written:
+            # Fail closed: an act the log cannot record does not run. The card waits.
+            await asyncio.to_thread(
+                ask_proposals._update,
+                cid,
+                pid,
+                state=PENDING,
+                decided_at=None,
+                decided_by=None,
+                authority_rev=None,
+            )
+            return "waits", {"reason": "the acts log could not be written, so HQ did not run it"}
+        task = asyncio.create_task(
+            _run(cid, dict(row), op, fd, operator, app, extras, tapped=tapped, admit=admit,
+                 record=logged)
+        )  # fmt: skip
+        _TASKS[pid] = task
+        handed = True
+    finally:
+        if not handed:
+            os.close(fd)
+    # The tool waits for the outcome; a cancelled turn (shutdown) leaves the task to `drain`.
+    await asyncio.shield(task)
+    row = await asyncio.to_thread(ask_proposals._row, cid, pid)
+    if row is None:
+        return "waits", {"reason": "the card is no longer tracked"}
+    if row.get("state") == PENDING:
+        return "waits", {"reason": row.get("reason") or "it was not admitted"}
+    return "ran", row
+
+
+async def _route_once(
+    op: Operation, row: dict, fields: dict, now, app, operator, admit: Callable | None = None
+) -> dict:
+    """The catalog's one route call for ``op``, and the outcome it settles to. ``admit`` (an act
+    of HQ's, #2390) is asked once more right before the call, with no await in between: "" lets
+    it run; a reason returns the card to ``pending`` with nothing run."""
     try:
         # Off the loop: a folder change reads the project store (its flock, #974).
         basis = row["facts"] if op.staged_facts else now
         method, path, body = await asyncio.to_thread(op.route, row["target"], fields, basis or {})
     except _Moved as e:
         return {"state": STALE, "reason": f"{e} since this was proposed; nothing ran"}
+    if admit is not None:
+        why = admit()
+        if why:
+            return {"state": PENDING, "reason": why}
     resp = await asgi_call.call(app, operator, method, path, body)
     if resp.truncated and 200 <= resp.status < 300:
         state, said = UNCONFIRMED, UNCONFIRMED_SAID
@@ -1661,8 +1789,12 @@ async def _run(
     extras: dict | None = None,
     *,
     tapped: str | None = None,
+    admit: Callable | None = None,
+    record: dict | None = None,
 ) -> None:
-    """Run the operation and write its outcome — whatever happened. Owns ``fd``."""
+    """Run the operation and write its outcome — whatever happened. Owns ``fd``. ``admit`` and
+    ``record``: an act of HQ's (#2390), re-admitted right before the route and logged when it
+    settles."""
     import os
 
     from . import ask_proposals
@@ -1694,7 +1826,7 @@ async def _run(
                     outcome = await op.run(cid, row["target"], fields, now or {}, app, operator)
                     outcome["outcome"] = str(outcome.get("outcome") or "")[:SUMMARY_MAX]
                 else:
-                    outcome = await _route_once(op, row, fields, now, app, operator)
+                    outcome = await _route_once(op, row, fields, now, app, operator, admit)
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001 — a decision must always settle
@@ -1712,10 +1844,33 @@ async def _run(
             await ask_orchestrator.continue_after_card(
                 cid, {**row, **outcome}, op, operator=operator, app=app, tapped=tapped
             )
-        with contextlib.suppress(Exception):
+        if outcome.get("state") == PENDING:
+            # Refused at the effect (#2390): nothing ran, and the card waits for the tap again.
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(
+                    ask_proposals._update,
+                    cid,
+                    pid,
+                    state=PENDING,
+                    decided_at=None,
+                    decided_by=None,
+                    authority_rev=None,
+                    reason=str(outcome.get("reason") or "")[:SUMMARY_MAX],
+                )
+        else:
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(
+                    ask_proposals._update, cid, pid, settled_at=time.time(), **outcome
+                )
+        if record is not None:
+            from . import hq_acts
+
             await asyncio.to_thread(
-                ask_proposals._update, cid, pid, settled_at=time.time(), **outcome
-            )
+                hq_acts.append,
+                {**record, "pid": pid, "cid": cid, "op": op.id, "label": op.label,
+                 "title": row.get("title"), "state": outcome.get("state"),
+                 "outcome": outcome.get("outcome") or outcome.get("reason") or ""},
+            )  # fmt: skip
     except asyncio.CancelledError:
         # Shutdown: the entry stays `deciding` and reads `interrupted` once this lock is gone.
         raise

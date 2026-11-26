@@ -34,6 +34,7 @@ import { FolderPickerModal } from "../FolderPickerModal";
 import { LibraryContent, OpenInLibrary } from "./LibraryContent";
 import { FoldRow } from "./SpecialistContent";
 import { Link } from "react-router-dom";
+import { settingsPath } from "../../routes/settingsTabs";
 import { MISSION_ID_RE, missionLink } from "../../lib/missionLink";
 import { Led, type LedTone, Stamp } from "../hud/Meters";
 import c from "./AskCards.module.css";
@@ -786,6 +787,8 @@ export function OperationCard({
     (!needsFile || chosen !== null) &&
     (!p.content || shown);
   const off = deciding || !p.can_confirm;
+  // HQ ran it itself under the Commander's Authority setting (#2390): no tap was asked for.
+  const byHq = p.decided_by === "hq";
   const edge = out?.tone === "warn" ? c.edgeWarn : out?.tone === "bad" ? c.edgeBad : "";
   return (
     <div
@@ -806,7 +809,9 @@ export function OperationCard({
         />
       ) : (
         <div className={c.head}>
-          <span className={c.k}>Proposal</span>
+          <span className={c.k} data-testid="ask-operation-kicker">
+            {byHq ? "Done by HQ" : "Proposal"}
+          </span>
           {OPERATION_GROUP[p.op.split(".")[0]] ?? "Session"}
           <span className={c.st}>
             {out ? out.word : <Stamp tone={stamp.tone}>{stamp.label}</Stamp>}
@@ -839,6 +844,13 @@ export function OperationCard({
         <p className={c.lead} data-testid="ask-operation-text">
           {p.text}
         </p>
+        {byHq ? (
+          <p className={c.quiet} data-testid="ask-operation-by-hq">
+            HQ did this itself, as your{" "}
+            <Link to={settingsPath("ai-hq", "hq-authority-h")}>Authority setting</Link> allows.
+            Ask HQ to undo it if it&rsquo;s not what you wanted.
+          </p>
+        ) : null}
         {p.team ? (
           <TeamRows rows={p.team} stale={p.state === "stale"} revision={p.team_revision ?? null} />
         ) : null}

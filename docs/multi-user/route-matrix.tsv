@@ -178,6 +178,9 @@ GET	/api/git/status	files	files	read	login	read	warm	unscoped	git read
 POST	/api/git/switch	files	files	write	login	mutate	cold	unscoped	git working-tree change
 POST	/api/handoff	handoff	session	create	login	mutate	cold	unscoped	handoff seeds a new session
 POST	/api/handoff/prepare	handoff	session	create	login	mutate	cold	unscoped	handoff seeds a new session
+GET	/api/hq/acts	hq_authority	instance	system.read	login	read	warm	unscoped	HQ's acts log (#2390); per-user with HQ in P1
+GET	/api/hq/authority	hq_authority	instance	system.read	login	read	warm	unscoped	HQ's Authority setting (#2390)
+PUT	/api/hq/authority	hq_authority	instance	system.configure	login	mutate	warm	unscoped	HQ's Authority setting (#2390); refuses in-process calls
 GET	/api/hq/dispatches	hq_dispatches	self	read	login	read	warm	unscoped	HQ tasks and dispatches; per-user in P1
 POST	/api/hq/dispatches/seen	hq_dispatches	self	write	login	mutate	warm	unscoped	HQ tasks and dispatches; per-user in P1
 GET	/api/hq/dispatches/{bid}	hq_dispatches	self	read	login	read	warm	unscoped	HQ tasks and dispatches; per-user in P1

@@ -23,6 +23,10 @@ from dataclasses import dataclass
 
 log = logging.getLogger(__name__)
 
+#: The scope key every in-process request carries (#2390). An HTTP client cannot set it (the
+#: server builds the scope), so a route can tell a call HQ made from the operator's own request:
+#: the Authority route refuses these, so HQ can never change its own authority.
+IN_PROCESS = "battlelab_in_process"
 #: The headers a confirmed operation forwards, lowercase as ASGI carries them.
 FORWARDED = (b"cookie", b"x-csrf-token", b"origin")
 #: The largest response body kept. Every catalog route answers a small JSON object.
@@ -54,6 +58,11 @@ class Operator:
             client=scope.get("client"),
             root_path=str(scope.get("root_path") or ""),
         )
+
+
+def in_process(scope: dict) -> bool:
+    """Whether a request was made in this process through :func:`call` (by HQ), not by a browser."""
+    return scope.get(IN_PROCESS) is True
 
 
 @dataclass(frozen=True)
@@ -132,6 +141,7 @@ async def call(
         "server": operator.server,
         "client": operator.client,
         "state": {},
+        IN_PROCESS: True,
     }
     sent = {"done": False}
 

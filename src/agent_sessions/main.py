@@ -109,6 +109,7 @@ from .routes import files as files_routes
 from .routes import handoff as handoff_routes
 from .routes import history as history_routes
 from .routes import hooks as hooks_routes
+from .routes import hq_authority as hq_authority_routes
 from .routes import hq_dispatches as hq_dispatches_routes
 from .routes import link as link_routes
 from .routes import maintenance as maintenance_routes
@@ -897,6 +898,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     ask_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard, registry=registry)
     # HQ's Dispatches (#1837): the lines HQ wrote about notifications, read only.
     hq_dispatches_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
+    hq_authority_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
     clusters_routes.register(app, logged_in=_logged_in, csrf_guard=_csrf_guard)
     # Calling HQ (#1397): speech endpoints, the call admission and the call socket. A call is an
     # HQ conversation spoken aloud, so it gets the same registry snapshot HQ turns get.

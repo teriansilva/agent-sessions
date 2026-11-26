@@ -586,6 +586,11 @@ def _admit(rec: dict, secrets: list[str]) -> dict:
             out["code"] = code
         if "ctx" in rec:
             out["ctx"] = _admit_ctx(rec["ctx"])
+        if "tainted" in rec:
+            # The turn read agent- or outside-authored text (#2390): a boolean on a turn that ran.
+            if status not in ("done", "failed", "stopped") or not isinstance(rec["tainted"], bool):
+                raise ValueError("malformed tainted")
+            out["tainted"] = rec["tainted"]
         # Step-list states this turn caused ITSELF (#2251: its own withdrawal or skip), taken up
         # by it: no continuation asks the Commander about what HQ just did and said.
         seen = rec.get("steps_seen")
@@ -1647,6 +1652,14 @@ def _admit_operation(e: dict, pid: str, tid: str, secrets: list[str], *, fresh: 
         v = e.get(k)
         if isinstance(v, int | float) and not isinstance(v, bool):
             out[k] = float(v)
+    # HQ ran it on the Commander's Authority setting (#2390): who decided, and the authority
+    # revision the act was admitted under. Absent on a card the Commander decided; anything but
+    # these exact shapes is dropped (a card returned to pending writes them as None).
+    if e.get("decided_by") == "hq":
+        out["decided_by"] = "hq"
+        rev = e.get("authority_rev")
+        if type(rev) is int and 0 <= rev < 10**12:
+            out["authority_rev"] = rev
     # What a move committed (#1786): the Library record it created and that record's file
     # revision — the only proof a resumed move accepts, never a name or matching bytes.
     committed = e.get("committed")

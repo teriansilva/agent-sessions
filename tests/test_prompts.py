@@ -188,7 +188,8 @@ EXPECTED_DEFAULT_SHA = {
     # #2251: a request needing more than one card is sorted into steps first (propose_steps).
     # The capable-assistant rewrite: facts from tools, inference (links, defaults) its own,
     # memory consulted unprompted, ask_operator only when the choice matters; shorter.
-    "ask_orchestrator": "4fe41d07157ab324",
+    # #2390: a change HQ ran itself under the Commander's Authority setting is reported as ran.
+    "ask_orchestrator": "33c3492e4287db70",
     # #2028: HQ's question router; #2249 adds the `manual` route.
     "ask_route": "323bd1e25e69c20c",
     "ask_manual": "ecdacbff7fc45ebe",  # #2249: a no-tool answer from the installed manual

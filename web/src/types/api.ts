@@ -1268,6 +1268,9 @@ export interface AskOperationCard {
   /** The mission this card names (#1950): a team card's mission, or the draft a mission card
    *  created. The server's own id; the card's Open mission link is built from it (`missionLink`). */
   mission?: { id: string };
+  /** HQ ran it itself under the Commander's Authority setting (#2390), instead of waiting for a
+   *  tap. Absent on a card the Commander decided. */
+  decided_by?: "hq";
 }
 
 /** What a Library card shows of its draft (#1611): the files, the diff against what HQ read, or an
@@ -1425,6 +1428,7 @@ export type AskOperationDecision = Pick<
   | "library"
   | "team"
   | "team_revision"
+  | "decided_by"
 >;
 
 /** A message HQ proposes through a messenger connector (#1833): the exact text a tap sends.

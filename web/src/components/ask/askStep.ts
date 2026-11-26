@@ -82,6 +82,7 @@ export const TOOL_LABELS: Record<string, { label: string; noun?: [string, string
   revise_steps: { label: "Changing the steps" },
   note: { label: "Keeping a note", noun: ["note", "notes"] },
   list_cards: { label: "Looking at the cards", noun: ["card", "cards"] },
+  list_acts: { label: "Reading what HQ did", noun: ["act", "acts"] },
   // #2137: what waits on the Commander, and the bell.
   needs_you: { label: "Checking what needs you", noun: ["item", "items"] },
   notifications: { label: "Reading your notifications", noun: ["notification", "notifications"] },

@@ -1,6 +1,7 @@
 import type { MissionApproval } from "../types/missionApproval";
 import type { MissionBudget, MissionSteps, StepRun } from "../types/missionSteps";
 import type { MissionTeam, TeamChoices, TeamOp } from "../types/missionTeam";
+import type { HqAct, HqAuthority, HqAuthorityPatch } from "../types/hq";
 import { appUrl } from "./appBase";
 import { getRelaySnapshot, relayEnd, relaySignOut } from "../homefree/relayStatus";
 import type {
@@ -1058,6 +1059,12 @@ export const api = {
   },
   // Calling HQ (#1397 P1). Speech endpoints are configured like the AI endpoint: tokens never
   // come back (`api_key_set`), a blank keeps the stored one and `null` removes it.
+  /** Settings → AI → HQ → Authority (#2390): compare-and-set on `revision` (409 when stale). */
+  hqAuthority: () => getJson<HqAuthority>("/api/hq/authority"),
+  setHqAuthority: (patch: HqAuthorityPatch) =>
+    mutateJson<HqAuthority>("PUT", "/api/hq/authority", patch),
+  /** The acts HQ made on its own, newest first (#2390). */
+  hqActs: () => getJson<{ acts: HqAct[] }>("/api/hq/acts"),
   voiceSettings: () => getJson<VoiceSettings>("/api/voice/settings"),
   saveVoiceSettings: (patch: VoiceSettingsPatch) =>
     mutateJson<VoiceSettings>("POST", "/api/voice/settings", patch),

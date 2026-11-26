@@ -140,6 +140,8 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Motion, link-open mode | localStorage | device |
 | HQ contact | POST /api/prefs `hq_contact` | P2 W |
 | Sessions can report to HQ (#1882) | POST /api/prefs `hq_reports` | P2 W off only (turning it on gives new launches a capability: never) |
+| HQ's Authority (#2390): presets, Ask / Act per class | GET/PUT /api/hq/authority | **never** (locked: HQ never changes its own authority, in either direction) |
+| What HQ did on its own (#2390) | GET /api/hq/acts | have (`list_acts`) |
 | Question routing (#2028): on/off, model, thinking | POST /api/prefs `hq_route` | P2 W (the model from the endpoint's own list, as `ai_review.model`) |
 | Typed HQ turns and mission conversations (#2040): model, thinking | POST /api/prefs `hq_models` | P2 W (the model from the endpoint's own list, as `ai_review.model`; no new authority) |
 | AI endpoint provider, URL and key; the egress acknowledgement; remove key; test | POST /api/prefs `ai_review`, POST /api/ai-review/endpoint/test | **never** (decides where HQ's own requests go, and who receives session content; `ai-key-origin.md`, `ai-providers.md`) |
@@ -292,6 +294,18 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | /p/*, /api/public/* | n/a (the public share visitor's surface) |
 | /artifacts/* | n/a (hosted artifact bytes; HQ hands out the link, never the bytes) |
 
+## Authority classes (#2390, epic #2070 A1)
+
+Every `W` operation above has one **authority class**, the class of its effective action:
+`reversible`, `starts`, `destructive`, `external` or `widens`. The classes are not repeated per row
+here: they live in `hq_authority.CLASS_OF`, which a test pins to exactly the ids of
+`ask_operations.CATALOG` (so a new operation cannot ship unclassed). Settings → AI → HQ → Authority
+decides, per class, whether HQ stages a card (`ask`, the default after an upgrade) or runs it at
+once (`act`). In A1 only `reversible` can act; an operation with an operator input (a folder, a
+secret's value or file), a `follow_up` continuation, or a card inside an open step list stays a
+card under every setting. `screen` rows always act. The locked rows (the Authority setting, HQ's
+guarded prompt, the login identity) and the operator-only rows below are never reachable.
+
 ## Never through HQ (recorded decision, §3b)
 
 Each row is a credential, a grant of more permission or autonomy, or a tap that would approve another tap. A prompt-injected screen could turn any of them against the operator. **Turning a permission or an autonomy down is always allowed; turning it up is never.** Each row can be moved by a later operator-approved issue with its own security review.
@@ -360,6 +374,9 @@ POST   /api/ask/conversations/{cid}/turns/{turn_id}/withdraw                    
 GET    /api/ask/proposals/{pid}/content                                           n/a  # HQ itself (a library card's draft, #1611)
 POST   /api/ask/proposals/{pid}/decide                                            n/a  # HQ itself
 GET    /api/ask/unread                                                            n/a  # HQ itself
+GET    /api/hq/acts                                                               have  # list_acts: what HQ ran itself (#2390)
+GET    /api/hq/authority                                                          n/a  # HQ itself: its Authority setting, read server-side at the write boundary (#2390)
+PUT    /api/hq/authority                                                          never  # locked: HQ never changes its own authority; the route refuses in-process calls (#2390)
 GET    /api/hq/dispatches                                                         n/a  # HQ itself (its Dispatches, #1837)
 GET    /api/hq/dispatches/{bid}                                                   n/a  # HQ itself (one dispatch, #1837)
 POST   /api/hq/dispatches/seen                                                    n/a  # HQ itself (the unread cursor, #1837)

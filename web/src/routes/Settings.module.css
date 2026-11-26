@@ -1844,3 +1844,167 @@
   flex: 1 1 220px;
   min-width: 0;
 }
+
+/* Settings › AI › HQ › Authority (#2390). Presets are chamfer-free flat plates in a row (a column
+ * on a phone); each class is one row with its Ask / Act control; RISKY rows carry a down-tone
+ * rule; the locked panel is dashed like a locked prompt. */
+.authorityPresets {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--sp-2);
+}
+.authorityPreset {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-height: 44px;
+  padding: var(--sp-3);
+  text-align: left;
+  background: var(--bg-1);
+  border: 1px solid var(--line-strong);
+  color: var(--text-2);
+  cursor: pointer;
+}
+.authorityPreset[aria-checked="true"] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+.authorityPreset:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
+.authorityPreset:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.authorityPresetName {
+  font: 700 var(--fs-label) / 1.2 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+.authorityPreset[aria-checked="true"] .authorityPresetName {
+  color: var(--accent-text);
+}
+.authorityPresetDetail {
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+}
+.authorityRows {
+  list-style: none;
+  margin: var(--sp-3) 0 var(--sp-2);
+  padding: 0;
+  border-top: 1px solid var(--line);
+}
+.authorityRow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-2);
+  border-bottom: 1px solid var(--line);
+  border-left: 2px solid transparent;
+}
+.authorityRisky {
+  border-left-color: var(--status-down);
+}
+.authorityMain {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+.authorityName {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  color: var(--text-1);
+  font-size: var(--fs-row);
+  font-weight: 600;
+}
+.authorityExamples {
+  color: var(--text-2);
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+}
+.authorityLater {
+  font: var(--fs-label) / 1.4 var(--font-mono);
+  color: var(--text-3);
+}
+.authorityFixed {
+  flex: none;
+  font: 500 var(--fs-label) / 1 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  padding: 0 var(--sp-4);
+}
+.authorityLocked {
+  margin: var(--sp-4) 0 var(--sp-2);
+  padding: var(--sp-3);
+  background: var(--bg-0);
+  border: 1px dashed var(--line-strong);
+  color: var(--text-2);
+  font-size: var(--fs-meta);
+}
+.authorityLocked p {
+  margin: 0 0 4px;
+}
+.authorityLocked ul {
+  margin: 0 0 var(--sp-2);
+  padding-left: 1.2em;
+}
+.authorityLockLabel {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 6px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.authorityLockLabel::before {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  background: var(--hud);
+}
+@media (max-width: 800px) {
+  .authorityPresets {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .authorityRow {
+    flex-wrap: wrap;
+  }
+  .authorityRow .aiSeg {
+    width: 100%;
+  }
+  .authorityRow .aiSeg > button {
+    flex: 1;
+  }
+}
+.authorityAct {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 2px;
+  border-bottom: 1px solid var(--line);
+}
+.authorityAct:last-child {
+  border-bottom: 0;
+}
+.authorityActName {
+  color: var(--text-1);
+  font-size: var(--fs-row);
+  overflow-wrap: anywhere;
+}
+.authorityActMeta {
+  font: var(--fs-label) / 1.4 var(--font-mono);
+  color: var(--text-3);
+}

@@ -5,6 +5,7 @@ import { Link, useLocation } from "react-router-dom";
 import { HqContactGallery } from "../components/hq/HqContactGallery";
 import { ConnectorsSettings } from "./ConnectorsSettings";
 import { ForgeSettings } from "./ForgeSettings";
+import { HqAuthoritySettings } from "./HqAuthoritySettings";
 import { HqCallsSettings } from "./HqCallsSettings";
 import { HqReportsSettings } from "./HqReportsSettings";
 import { HqRouteSettings } from "./HqRouteSettings";
@@ -16,7 +17,7 @@ import { settingsPath } from "./settingsTabs";
 import styles from "./Settings.module.css";
 
 const GROUPS = [
-  ["hq-contact", "Contact"], ["hq-models-h", "HQ models"], ["hq-route-h", "Question routing"],
+  ["hq-authority-h", "Authority"], ["hq-contact", "Contact"], ["hq-models-h", "HQ models"], ["hq-route-h", "Question routing"],
   ["memory-search-h", "Memory search"], ["orch-h", "Autonomy"],
   ["hq-reports-h", "Reports"], ["pulse-h", "Recent window"], ["hq-forge", "Mission checks"],
   ["hq-calls", "Calls"], ["hq-connectors", "Connectors"],
@@ -38,6 +39,7 @@ export function HqSettings() {
           <Link className={styles.secBtnGhost} to={settingsPath("ai-hq", id)} key={id}>{label}</Link>
         ))}
       </nav>
+      <HqAuthoritySettings />
       <section className={styles.section} aria-labelledby="hq-contact-h">
         <HqContactGallery subheadClass={styles.subhead} hintClass={styles.hint} />
       </section>

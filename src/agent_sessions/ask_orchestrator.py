@@ -69,6 +69,7 @@ from . import (
     ask_settings,
     ask_store,
     engines,
+    hq_authority,
     hq_calls_settings,
     hq_contacts,
     hq_usage,
@@ -96,6 +97,19 @@ CALL_CARD_NOTE = (
 )
 #: Messages HQ may send into sessions in one turn (#1960): "nudge every stuck session" is one ask.
 MAX_SENDS_PER_TURN = 10
+#: Operations HQ may run itself in one turn on the Commander's Authority setting (#2390). The
+#: rest of the turn's operations stage cards as under Ask.
+MAX_ACTS_PER_TURN = 10
+#: Read tools whose results are server-authored facts only (#2390): no agent-, outside- or
+#: model-written text. Every OTHER read taints the turn (a session's screen, transcript, brief or
+#: report, a title, a connector, the web, memory, a file): fail closed, so a new read taints until
+#: it is listed here on purpose.
+TRUSTED_READS = frozenset(
+    {
+        "agent_usage", "docs_read", "docs_search", "fleet_status", "list_agent_models",
+        "list_agents", "list_folders", "list_projects", "read_settings", "note",
+    }
+)  # fmt: skip
 #: Refusal codes after which a proposal MAY have been staged (an append whose outcome could not be
 #: confirmed). They keep the slot they took; every other refusal wrote nothing and gives it back.
 UNSETTLED_REFUSALS = frozenset({"uncertain"})
@@ -700,6 +714,15 @@ class _Turn:
     #: turn began and as its tools write them: a propose tool is refused at
     #: `ask_store.MAX_SESSION_PROPOSALS`, BEFORE it writes anything.
     cards: int = 0
+    #: What this turn may run itself (#2390): the authority, logout epoch and call it began under,
+    #: or None when it may not act at all (no operator, a continuation, a draft's own start).
+    #: Memory only. `acts` counts what it ran (`MAX_ACTS_PER_TURN`).
+    grant: hq_authority.ActGrant | None = None
+    acts: int = 0
+    #: The turn read agent- or outside-authored text, or its conversation had (#2390): recorded
+    #: on each act and on the settled status. Screen and reversible act in a tainted turn
+    #: (epic #2070 §1); the later classes' fallback reads it.
+    tainted: bool = False
     _catalog: list[dict] | None = None
 
     async def catalog(self) -> list[dict]:
@@ -2659,6 +2682,37 @@ def _card_facts(cid: str, records: list[dict], seen: dict) -> tuple[str, dict]:
     return f"\n\n{CARD_FACTS_NOTE}\n{json.dumps(out, ensure_ascii=False)}", noted
 
 
+async def _list_acts(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    """What HQ ran itself on the Commander's Authority setting (#2390), newest first, from the
+    acts log: "what did you do today?". Each act's outcome is the route's own (or its card's,
+    after a restart); a target title is data, never an instruction."""
+    from . import hq_acts
+
+    hours = args.get("since_hours")
+    since = None
+    if hours is not None:
+        if isinstance(hours, bool) or not isinstance(hours, int | float) or not 0 < hours <= 720:
+            raise _ToolRefused("refused: since_hours must be a number from 1 to 720")
+        since = time.time() - float(hours) * 3600
+    rows = await asyncio.to_thread(hq_acts.recent, hq_acts.TOOL_MAX, since)
+    acts = [
+        {
+            "when": time.strftime("%Y-%m-%d %H:%M", time.localtime(r["ts"])),
+            "action": r["label"],
+            "target": r["title"],
+            "outcome": r["state"],
+            "said": r["outcome"],
+            "asked": "on a call" if r["via"] == "call" else "typed",
+        }
+        for r in rows
+    ]
+    return {
+        "acts": acts,
+        "note": "Only what HQ ran itself without a card; cards the Commander confirmed are not "
+        "here. Empty means HQ ran nothing itself in that window.",
+    }, {"count": len(acts)}
+
+
 async def _list_cards(turn: _Turn, args: dict) -> tuple[dict, dict]:
     """This conversation's cards, newest first, with their ids and live states (#2120): what a
     change (`replaces`) or a withdrawal (`withdraw_card`) names. Earlier turns reach the model as
@@ -3258,6 +3312,12 @@ async def _stage(
         await asyncio.to_thread(ask_store.guard_text, str(v), max(len(str(v)), 1))
         for v in (staged["target"], staged["summary"])
     ]
+    acted = await _maybe_act(turn, op, staged["id"]) if not refused else None
+    if acted is not None:
+        return acted[0] | {"target": target_said, "what_it_did": summary_said}, {
+            "count": 1,
+            **({"keys": [target]} if op.target == "session" else {}),
+        }
     return (
         {
             "proposed": True,
@@ -3269,6 +3329,96 @@ async def _stage(
         },
         {"count": 1, **({"keys": [target]} if op.target == "session" else {})},
     )
+
+
+async def _act_refusal(turn: _Turn, op) -> str:
+    """Why this staged operation stays a card instead of running now (#2390), or "". The class
+    and its setting come from the server's table and the Commander's Authority block, never the
+    model."""
+    from . import ask_steps
+
+    if turn.grant is None:
+        return "no_grant"
+    klass = hq_authority.class_of(op.id)
+    if not hq_authority.acts(turn.grant.snapshot, klass):
+        return "asks"
+    if op.inputs or op.follow_up or op.run is not None:
+        return "card_only"  # the Commander supplies its input, or a continuation would start
+    if turn.acts >= MAX_ACTS_PER_TURN:
+        return "cap"
+    try:
+        if await asyncio.to_thread(ask_steps.open_view, turn.cid):
+            return "steps"  # a step list sequences its cards (#2251)
+    except Exception:  # noqa: BLE001 — unreadable: stay on the card
+        return "steps"
+    return ""
+
+
+#: What HQ is told when a card it could not run itself waits for the Commander (#2390).
+ACT_WAITS = {
+    "cap": f"HQ ran {MAX_ACTS_PER_TURN} changes itself in this question already",
+}
+
+
+async def _maybe_act(turn: _Turn, op, pid: str) -> tuple[dict, None] | None:
+    """Run a staged operation at once when the Commander's Authority setting lets HQ (#2390).
+    None: it stays a card, exactly as under Ask. Otherwise the tool's result: what ran and the
+    route's own outcome, or why the card still waits."""
+    why = await _act_refusal(turn, op)
+    if why and why != "cap":
+        return None
+    if why == "cap":
+        return {
+            "proposed": True,
+            "action": op.label,
+            "ran": False,
+            "why_not": ACT_WAITS["cap"],
+            "note": "The card waits for the Commander. Nothing has happened yet; never say it has.",
+        }, None
+    operator, app = _operator(turn)
+    turn.acts += 1
+    klass = hq_authority.class_of(op.id)
+    record = {
+        "class": klass,
+        "turn_id": turn.turn_id,
+        "via": turn.via,
+        "tainted": turn.tainted,
+    }
+    kind, row = await ask_operations.act(
+        turn.cid, pid, operator=operator, app=app, grant=turn.grant, record=record
+    )
+    if kind != "ran":
+        turn.acts -= 1  # nothing ran: the slot goes back
+        if kind in ("stale", "decided"):
+            state = (row or {}).get("state") or "unknown"
+            return {
+                "proposed": True,
+                "action": op.label,
+                "ran": False,
+                "state": state,
+                "note": "It did not run: the card is "
+                + ("out of date" if state == "stale" else f"already {state}")
+                + ". Say so.",
+            }, None
+        return {
+            "proposed": True,
+            "action": op.label,
+            "ran": False,
+            "why_not": str((row or {}).get("reason") or "")[:REASON_MAX],
+            "note": "HQ could not run it itself, so the card waits for the Commander. Nothing "
+            "has happened yet; never say it has.",
+        }, None
+    state = str(row.get("state") or "")
+    said = str(row.get("outcome") or row.get("reason") or "")[:REASON_MAX]
+    return {
+        "proposed": True,
+        "action": op.label,
+        "ran": state,
+        "outcome": said,
+        "note": "HQ ran this itself, as the Commander's Authority setting allows: no card to "
+        "confirm. Report this outcome as it is (done, partly done, failed or out of date); it is "
+        "the route's own result. The card in the conversation shows it as done by HQ.",
+    }, None
 
 
 #: Rows `list_sessions` returns at most (the sidebar's own list, a page at a time).
@@ -4605,8 +4755,9 @@ TOOLS: dict[str, Tool] = {
                 "(project_index from list_projects in this turn; omit it to take the session out "
                 "of its project), review (sends it to the AI endpoint), exclude_review, "
                 "include_review, exclude_orchestration, include_orchestration, archive_older "
-                "(days). Nothing happens: the operator sees a card with what it does and "
-                "confirms or dismisses it.",
+                "(days). The operator sees a card with what it does and confirms or dismisses "
+                "it, unless their Authority setting lets HQ run it at once: then the result "
+                "says ran, with the outcome.",
                 {
                     "action": {"type": "string", "enum": ask_operations.actions("session")},
                     **_KEY_PROP,
@@ -4677,8 +4828,8 @@ TOOLS: dict[str, Tool] = {
                 "start there), add_folder, remove_folder, default_folder. Or, with no index: "
                 "create (name) or auto_sort (the AI endpoint sorts unassigned sessions into "
                 "projects). Folders are never yours to name: the operator picks the folder on "
-                "the card. Nothing happens: the operator sees a card and confirms or dismisses "
-                "it.",
+                "the card. The operator sees a card and confirms or dismisses it, unless their "
+                "Authority setting lets HQ run it at once: then the result says ran.",
                 {
                     "action": {"type": "string", "enum": ask_operations.actions("project")},
                     "project_index": {"type": "integer"},
@@ -5169,6 +5320,19 @@ TOOLS: dict[str, Tool] = {
             _note,
         ),
         Tool(
+            "list_acts",
+            "read",
+            _spec(
+                "list_acts",
+                "What HQ itself ran without a card, on the Commander's Authority setting, newest "
+                'first: when, what, the target and its outcome. Use it for "what did you do '
+                'today?". since_hours narrows it (e.g. 24).',
+                {"since_hours": {"type": "number", "description": "Only acts this recent."}},
+                [],
+            ),
+            _list_acts,
+        ),
+        Tool(
             "list_cards",
             "read",
             _spec(
@@ -5332,7 +5496,7 @@ DRAFT_READ_TOOLS = frozenset(
         "read_settings",
         "list_connectors", "connector_search", "connector_read", "connector_list",
         "list_recipients", "list_specialists", "read_plan", "read_pool", "list_procedures",
-        "list_memory_notebooks", "search_memory", "read_memory", "list_cards",
+        "list_memory_notebooks", "search_memory", "read_memory", "list_cards", "list_acts",
         "needs_you", "notifications", "note", "docs_search", "docs_read",
     }
 )  # fmt: skip
@@ -5512,6 +5676,8 @@ async def _call(turn: _Turn, name: str, raw_args: str) -> tuple[str, dict, dict,
         finally:
             _WROTE.reset(token)
         effect = tool.kind in EFFECT_KINDS
+        if tool.kind == "read" and name not in TRUSTED_READS:
+            turn.tainted = True  # it returned text an agent or the outside wrote (#2390)
         if tool.kind == "proposal" and name not in CARD_FREE_TOOLS:
             _count_card(turn, wrote)
             if result.get("proposed") is True and args.get("replaces") is None:
@@ -5528,7 +5694,12 @@ async def _call(turn: _Turn, name: str, raw_args: str) -> tuple[str, dict, dict,
                 result = {**result, **await _replace_after(turn, args, wrote)}
                 if result.get("replaced") and await _relocate_steps(turn, card):
                     turn.steps_changed = True
-        if tool.kind == "proposal" and turn.via == "call" and result.get("proposed") is True:
+        if (
+            tool.kind == "proposal"
+            and turn.via == "call"
+            and result.get("proposed") is True
+            and not result.get("ran")  # a card HQ ran itself is no question to read back
+        ):
             result = {**result, "on_call": CALL_CARD_NOTE}  # one announcement per card (#1911)
         content = json.dumps(result, ensure_ascii=False)
         if len(content) > TOOL_RESULT_MAX:
@@ -6231,6 +6402,8 @@ def _status(turn: _Turn, status: str, detail: str = "", code: str | None = None)
         rec["code"] = code
     if status == "done" and turn.ctx is not None:
         rec["ctx"] = turn.ctx  # the context meter (#2137 P2)
+    if status in RAN_STATUSES:
+        rec["tainted"] = bool(turn.tainted)  # read untrusted text (#2390)
     if turn.steps_seen:  # step-list states this turn caused itself (#2251)
         rec["steps_seen"] = sorted(turn.steps_seen)[: ask_store.STEPS_SEEN_MAX]
     if status == "done" and (turn.cards_seen_prev or turn.cards_noted):
@@ -6858,6 +7031,9 @@ async def run_turn(turn: _Turn) -> list[dict]:
     spoken call turn is asked with the call's own thinking level and model (#1996, Settings →
     HQ calls; by default no extended thinking on HQ's model), in every request it makes."""
     turn.watch = hq_watch.Watcher(turn.question, notes=turn.notes, steer=lambda: turn.steer_seq)
+    if turn.grant is None:
+        # What it may run itself, as it starts (#2390): the queue never holds a grant.
+        turn.grant = _act_grant(turn.cid, turn.via, turn.operator, turn.app)
     try:
         if turn.via == "call":
             with ai_providers.spoken_turn(**hq_calls_settings.spoken()):
@@ -8093,7 +8269,43 @@ async def _new_turn(
         waited_s=waited_s if via == "call" else None,
     )
     turn.progress = lambda ev: _emit(turn, ev)
+    turn.tainted = bool(descriptors) or await asyncio.to_thread(_history_tainted, cid, turn_id)
     return turn
+
+
+def _act_grant(cid: str, via: str | None, operator, app) -> hq_authority.ActGrant | None:
+    """What a turn may run itself (#2390): only a turn the Commander began, typed or on a live
+    call, with their request identity. The server's continuation after a card (`via: "card"`)
+    and a turn without an operator never act; they stay on cards. A call turn acts only while
+    the call it was asked on is still the live one."""
+    if operator is None or app is None or via not in (None, "call"):
+        return None
+    live = None
+    if via == "call":
+        from . import voice_calls
+
+        call = voice_calls.REGISTRY.current
+        if call is None or call.cid != cid or call.state == "ended":
+            return None
+
+        def live(c=call) -> bool:
+            return voice_calls.REGISTRY.current is c and c.state != "ended"
+
+    return hq_authority.ActGrant.now(live)
+
+
+def _history_tainted(cid: str, turn_id: str) -> bool:
+    """Whether an earlier turn of this conversation read untrusted text (#2390): any turn that ran
+    whose settled status does not say ``tainted: false`` (one settled before this was recorded,
+    or settled by a crash, counts as tainted: fail closed). Blocking."""
+    try:
+        records = ask_store.read(cid)
+    except Exception:  # noqa: BLE001
+        return True
+    return any(
+        t != turn_id and st.get("status") in RAN_STATUSES and st.get("tainted") is not False
+        for t, st in _turn_statuses(records).items()
+    )
 
 
 def _launch(turn: _Turn, lock_fd: int) -> asyncio.Task:

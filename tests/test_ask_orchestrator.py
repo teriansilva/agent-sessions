@@ -349,6 +349,7 @@ def test_the_tool_list_and_each_tools_kind_are_pinned():
         "propose_message": "proposal",
         "withdraw_card": "proposal",  # #2120: dismisses a card HQ proposed in this conversation
         "list_cards": "read",  # #2120: this conversation's cards and their ids
+        "list_acts": "read",  # #2390: what HQ ran itself, from the acts log
         "note": "read",  # #2136: HQ's own working note for the turn (never progress)
     }
     # A call turn is offered every tool; a typed turn all but the call-only ones (#1668).
