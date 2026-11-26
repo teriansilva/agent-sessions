@@ -26,6 +26,7 @@ Archive is not an agy concept, so it rides the engine-agnostic sidecar (like cod
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 from pathlib import Path
@@ -196,6 +197,38 @@ class AntigravityProvider:
         """Kind-level presence is the STORE only. Whether the binary is there is the owning
         provider's question, answered through provenance — never a PATH lookup (#853 §2b)."""
         return self.store_present()
+
+    def session_pids(self, native_ids: list[str]) -> dict[str, list[int]] | None:
+        """Live pids of these conversations, for lineage attribution (#2325): the processes
+        holding ``conversations/<uuid>.db`` open, read from ``/proc/<pid>/fd``. A running ``agy``
+        keeps its own conversation's db open for its whole life (verified against agy 1.0.x, both
+        ``-p`` and interactive), and inherits the spawning session's ``BATTLELAB_SESSION``.
+        ``None`` when ``/proc`` cannot be listed (attribution retries)."""
+        want = set(native_ids)
+        prefix = str(base._antigravity_dir() / "conversations") + os.sep
+        out: dict[str, list[int]] = {}
+        try:
+            pids = [int(n) for n in os.listdir("/proc") if n.isdigit()]
+        except OSError:
+            return None
+        for pid in pids:
+            fd_dir = f"/proc/{pid}/fd"
+            try:
+                fds = os.listdir(fd_dir)
+            except OSError:
+                continue  # gone, or not ours to read
+            for fd in fds:
+                try:
+                    target = os.readlink(f"{fd_dir}/{fd}")
+                except OSError:
+                    continue
+                if not target.startswith(prefix) or not target.endswith(".db"):
+                    continue
+                native = target[len(prefix) : -len(".db")]
+                if native in want:
+                    out.setdefault(native, []).append(pid)
+                    break
+        return out
 
     def _row(
         self,

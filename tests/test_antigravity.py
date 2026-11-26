@@ -292,3 +292,24 @@ def test_scan_first_user_raw_and_title_normalized_at_display(agy):
     title = metadata.display_title(metadata.SessionMeta(), s.first_user_message)
     assert title == long_first[:120]
     assert "\n" not in title
+
+
+def test_session_pids_finds_the_process_holding_its_conversation_db(agy):
+    """Lineage attribution (#2325): a running agy holds ``conversations/<uuid>.db`` open, so the
+    pid behind a conversation is read from ``/proc/<pid>/fd``. This test process opens one db and
+    must be named for it, and only for it (``-wal`` / other dbs / unasked ids name nobody)."""
+    import os
+
+    _make_db(agy / "conversations" / f"{_UUID}.db", "/home/u/proj")
+    _make_db(agy / "conversations" / f"{_UUID2}.db", "/home/u/proj")
+    (agy / "conversations" / f"{_UUID2}.db-wal").write_bytes(b"")
+    prov = engines.AntigravityProvider()
+    with (
+        open(agy / "conversations" / f"{_UUID}.db", "rb"),
+        open(agy / "conversations" / f"{_UUID2}.db-wal", "rb"),
+    ):
+        got = prov.session_pids([_UUID, _UUID2])
+    assert got is not None
+    assert os.getpid() in got.get(_UUID, [])
+    assert os.getpid() not in got.get(_UUID2, [])
+    assert prov.session_pids([]) == {}

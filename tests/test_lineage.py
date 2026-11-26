@@ -368,6 +368,24 @@ def test_sweep_without_the_hook_is_unavailable(monkeypatch):
     assert lineage.read_checked()["attribution"]["other:x1"]["state"] == "unavailable"
 
 
+def test_unavailable_is_retried_once_the_engine_gains_the_hook(monkeypatch, procs):
+    """An engine without ``session_pids`` records ``unavailable`` (final). When a later release
+    gives it the hook (antigravity), its sessions are tried again rather than staying main
+    sessions forever; an engine still without the hook is not re-tried."""
+    parent = _S("claude", A.split(":")[1], time.time())
+    child = _S("other", "x1", time.time())
+    _walk(monkeypatch, [parent, child], {"claude": _Prov({}), "other": object()})
+    lineage_attribution.sweep()
+    assert lineage.read_checked()["attribution"]["other:x1"]["state"] == "unavailable"
+    lineage_attribution.sweep()
+    assert lineage.read_checked()["attribution"]["other:x1"]["tries"] == 1  # final, not churned
+
+    procs[42] = ("user.slice", A)
+    _walk(monkeypatch, [parent, child], {"claude": _Prov({}), "other": _Prov({"x1": [42]})})
+    lineage_attribution.sweep()
+    assert lineage.links_snapshot()["other:x1"]["parent"] == A
+
+
 def test_sweep_uses_the_native_hook_first(monkeypatch):
     class Native(_Prov):
         def lineage(self, native):

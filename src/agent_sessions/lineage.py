@@ -256,8 +256,17 @@ def scope_key(unit: str, doc: Mapping | None = None) -> str | None:
 # --- attribution bookkeeping -------------------------------------------------------------------
 
 
-def attribution_due(keys: Iterable[str], *, now: float | None = None) -> list[str]:
-    """The keys of ``keys`` that have no link, no final attribution, and whose retry is due."""
+def attribution_due(
+    keys: Iterable[str],
+    *,
+    now: float | None = None,
+    reopen: Callable[[str], bool] | None = None,
+) -> list[str]:
+    """The keys of ``keys`` that have no link, no final attribution, and whose retry is due.
+
+    ``unavailable`` means "its engine had no pid hook when this was tried", a fact about the
+    engine, not the session. ``reopen(key)`` true makes such a record due again, so an engine
+    that gains the hook gets its sessions tried once more instead of staying flat forever."""
     ts = time.time() if now is None else now
     try:
         doc = read_checked()
@@ -269,6 +278,8 @@ def attribution_due(keys: Iterable[str], *, now: float | None = None) -> list[st
             continue
         a = doc["attribution"].get(k)
         if a is None or (a["state"] not in FINAL_STATES and a["next_at"] <= ts):
+            out.append(k)
+        elif a["state"] == "unavailable" and reopen is not None and reopen(k):
             out.append(k)
     return out
 

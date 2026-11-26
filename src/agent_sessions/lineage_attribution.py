@@ -166,7 +166,14 @@ def sweep(*, now: float | None = None) -> int:
 
     walk = engines.scan_all_cached()
     by_key = {engines.session_key(s): s for s in walk}
-    due = lineage.attribution_due(by_key, now=ts)[:BATCH]
+    hooked = {
+        e
+        for e in {s.engine for s in walk}
+        if callable(getattr(engines.get_any(e), "session_pids", None))
+    }
+    due = lineage.attribution_due(by_key, now=ts, reopen=lambda k: by_key[k].engine in hooked)[
+        :BATCH
+    ]
     if not due:
         return 0
     try:
