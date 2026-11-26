@@ -8,6 +8,7 @@
  */
 import { expect, test, type Page, type Route } from "@playwright/test";
 import { NEW_SESSION_PATH } from "../src/lib/routes";
+import { settingsPath } from "../src/routes/settingsTabs";
 import { mockNightjarShell } from "./nightjarShell";
 import { TOUCH_FLOOR } from "./touchTarget";
 
@@ -94,7 +95,12 @@ function paged<T>(items: T[], url: URL, cap = 200) {
   };
 }
 
-async function setup(page: Page, project: string, nodes: Node[]): Promise<State> {
+async function setup(
+  page: Page,
+  project: string,
+  nodes: Node[],
+  opts: { mode?: "hidden" } = {},
+): Promise<State> {
   // A copy: tests mutate their nodes (archive), and the fixtures are shared module constants.
   const s: State = {
     nodes: nodes.map((n) => ({ ...n })),
@@ -103,6 +109,10 @@ async function setup(page: Page, project: string, nodes: Node[]): Promise<State>
     archiveCalls: [],
   };
   await mockNightjarShell(page);
+  if (opts.mode) {
+    // The display mode is a Settings choice (not a sidebar control): store it before the app boots.
+    await page.addInitScript((m) => localStorage.setItem("tr-sidebar-subagents", m), opts.mode);
+  }
   await page.route(/\/api\/sessions(\?.*)?$/, (r) => {
     const url = new URL(r.request().url());
     const q = (url.searchParams.get("q") ?? "").toLowerCase();
@@ -171,10 +181,14 @@ async function setup(page: Page, project: string, nodes: Node[]): Promise<State>
     return r.fulfill({ json: { id, results } });
   });
 
+  await openSidebar(page, project);
+  return s;
+}
+
+async function openSidebar(page: Page, project: string) {
   await page.goto(NEW_SESSION_PATH);
   if (project === "mobile") await page.locator("header .navToggle").click();
   await expect(page.locator("aside.sidebar")).toBeVisible();
-  return s;
 }
 
 const sidebar = (page: Page) => page.locator("aside.sidebar");
@@ -230,18 +244,38 @@ const NEEDY: Node[] = [
   { n: "k2", title: "codex security review", parent: "m1" },
 ];
 
-test("a needs-you grandchild opens its main session in nested mode and stays visible in hidden mode", async ({
-  page,
-}, info) => {
+test("a needs-you grandchild opens its main session in nested mode", async ({ page }, info) => {
   await setup(page, info.project.name, NEEDY);
   const grand = mainLink(page, "g1");
   await expect(grand).toBeVisible();
   await expect(sidebar(page).getByTestId("row-crumb").first()).toHaveText("↳ explore web src");
   await expect(sidebar(page).getByRole("img", { name: "a subagent needs you" }).first()).toBeVisible();
+  await noOverflow(page);
+});
+
+test("the subagent display is chosen in Settings, not in the sidebar; hidden keeps the needs-you row", async ({
+  page,
+}, info) => {
+  await setup(page, info.project.name, NEEDY);
+  await expect(mainLink(page, "g1")).toBeVisible();
+  // The sidebar carries no mode control: it is a rarely-changed, device-local Settings choice.
+  await expect(sidebar(page).getByTestId("subagent-mode")).toHaveCount(0);
+  await expect(sidebar(page).getByRole("radio", { name: /hidden/i })).toHaveCount(0);
+
+  await page.goto(settingsPath("appearance"));
+  const group = page.getByRole("radiogroup", { name: "Subagent sessions" });
+  await expect(group.getByRole("radio", { name: /Nested/ })).toHaveAttribute("aria-checked", "true");
+  const hidden = group.getByRole("radio", { name: /Hidden/ });
+  expect((await hidden.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+  await hidden.click();
+  await expect(hidden).toHaveAttribute("aria-checked", "true");
+  expect(await page.evaluate(() => localStorage.getItem("tr-sidebar-subagents"))).toBe("hidden");
+
   // Hidden: no other subagent rows, the attention one still shows.
-  await sidebar(page).getByRole("radio", { name: "hidden" }).click();
+  await openSidebar(page, info.project.name);
+  await expect(mainLink(page, "m1")).toBeVisible();
+  await expect(mainLink(page, "g1")).toBeVisible();
   await expect(mainLink(page, "k2")).toHaveCount(0);
-  await expect(grand).toBeVisible();
   await expect(sidebar(page).getByTestId("subagent-count")).toHaveText("2");
   await noOverflow(page);
 });
@@ -274,9 +308,10 @@ test("twelve needs-you subagents page through '+N more need you'", async ({ page
     parent: "m1",
     needs: true,
   }));
-  await setup(page, info.project.name, [{ n: "m1", title: "Ship the federation fix" }, ...kids]);
   // Hidden mode lists only the attention rows, so the page boundary is visible.
-  await sidebar(page).getByRole("radio", { name: "hidden" }).click();
+  await setup(page, info.project.name, [{ n: "m1", title: "Ship the federation fix" }, ...kids], {
+    mode: "hidden",
+  });
   await expect(sidebar(page).getByText("needs you 9")).toBeVisible();
   await expect(sidebar(page).getByTestId("subagent-row")).toHaveCount(10);
   const more = sidebar(page).getByRole("button", { name: "+2 more need you" });

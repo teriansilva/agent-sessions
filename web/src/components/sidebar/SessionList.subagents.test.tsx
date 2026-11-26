@@ -1,7 +1,7 @@
 /** Subagent sessions in the sidebar (#2325): the collapsed tree, the attention guarantee, the
  *  display mode and the archive prompt — against a mocked API. Layout, hit areas and real event
  *  dispatch are pinned by the Playwright spec (e2e/subagent-tree.spec.ts). */
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, test, vi } from "vitest";
@@ -9,7 +9,7 @@ import { api } from "../../lib/api";
 import { mainRowStatus } from "../../lib/sessionStatus";
 import type { Session, SessionLineagePage, SessionsPage } from "../../types/api";
 import { SessionList } from "./SessionList";
-import { readSubagentMode, SUBAGENT_MODE_KEY } from "./subagentMode";
+import { readSubagentMode, SUBAGENT_MODE_KEY, writeSubagentMode } from "./subagentMode";
 
 vi.mock("../../lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/api")>();
@@ -234,13 +234,23 @@ test("an orphan says where it came from", async () => {
   );
 });
 
-test("the mode toggle persists on this device", async () => {
-  const user = userEvent.setup();
+test("the sidebar has no display-mode control: it is chosen in Settings", async () => {
   sessions.mockResolvedValue(page([MAIN]));
   renderList();
   await screen.findByText("Ship the fix");
-  await user.click(screen.getByRole("radio", { name: "hidden" }));
+  expect(screen.queryByTestId("subagent-mode")).toBeNull();
+  expect(screen.queryByRole("radio", { name: /hidden|nested/i })).toBeNull();
+});
+
+test("a mode chosen elsewhere (Settings, another tab) reaches the open list", async () => {
+  sessions.mockResolvedValue(page([MAIN]));
+  renderList();
+  await screen.findByText("Ship the fix");
+  expect(readSubagentMode()).toBe("nested");
+  act(() => writeSubagentMode("hidden"));
   expect(readSubagentMode()).toBe("hidden");
+  expect(await screen.findByTestId("subagent-count")).toHaveTextContent("2");
+  expect(screen.queryByTestId("subagent-toggle")).toBeNull();
 });
 
 test("archive offers 'only this' by default and sends exactly the frozen subagent keys", async () => {

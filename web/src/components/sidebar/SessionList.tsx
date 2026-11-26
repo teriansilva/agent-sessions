@@ -41,7 +41,6 @@ import { ClusterHead } from "./ClusterHead";
 import {
   AttentionOutside,
   SubagentChip,
-  SubagentModeToggle,
   SubagentRows,
   type RenderRow,
 } from "./Subagents";
@@ -653,9 +652,10 @@ export function SessionList({
     search,
     counts,
   } = useSessionsList();
-  // Subagents (#2325): the device-local display mode, and which groups the operator opened or
-  // closed. A group with a subagent that needs the operator opens by itself until closed.
-  const [subagentMode, setSubagentMode] = useSubagentMode();
+  // Subagents (#2325): the device-local display mode (chosen in Settings → Appearance), and which
+  // groups the operator opened or closed. A group with a subagent that needs the operator opens by
+  // itself until closed.
+  const [subagentMode] = useSubagentMode();
   const [subagentToggled, setSubagentToggled] = useState<Record<string, boolean>>({});
   // Sessions peers share with this instance (#2055): their own read, and since #2198 their own
   // scope. They are never `sessions`: no filter, page, selection or row action here sees one.
@@ -1008,14 +1008,11 @@ export function SessionList({
         />
       ) : null}
       {!shared ? (
-        <>
-          <SubagentModeToggle mode={subagentMode} onChange={setSubagentMode} />
-          <AttentionOutside
-            data={attentionOutside}
-            archived={!!filters.archived}
-            renderRow={renderRow}
-          />
-        </>
+        <AttentionOutside
+          data={attentionOutside}
+          archived={!!filters.archived}
+          renderRow={renderRow}
+        />
       ) : null}
       {!shared && filters.q ? <SearchNote search={search} /> : null}
       {shared ? (

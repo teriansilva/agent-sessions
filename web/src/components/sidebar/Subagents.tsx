@@ -9,7 +9,6 @@
 import { Fragment, useState, type ReactNode } from "react";
 import type { Session, SessionRollup, SessionsPage } from "../../types/api";
 import { Led } from "../hud/Meters";
-import { Seg } from "../hud/Controls";
 import type { SubagentMode } from "./subagentMode";
 import styles from "./Subagents.module.css";
 import { useLineagePages } from "./useLineagePages";
@@ -269,31 +268,4 @@ function OutsideMain({
 
 function crumbParts(s: Session, mainId: string): string[] {
   return (s.path ?? []).filter((p) => p.id !== mainId).map((p) => p.title || "(untitled)");
-}
-
-/** The nested / hidden display toggle. */
-export function SubagentModeToggle({
-  mode,
-  onChange,
-}: {
-  mode: SubagentMode;
-  onChange: (m: SubagentMode) => void;
-}) {
-  return (
-    <div className={styles.modeRow}>
-      <span className={styles.modeLabel} id="subagent-mode-label">
-        Subagents
-      </span>
-      <Seg
-        options={[
-          { value: "nested", label: "nested" },
-          { value: "hidden", label: "hidden" },
-        ]}
-        value={mode}
-        onChange={onChange}
-        label="Show subagent sessions"
-        testId="subagent-mode"
-      />
-    </div>
-  );
 }

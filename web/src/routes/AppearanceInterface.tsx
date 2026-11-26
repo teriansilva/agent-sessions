@@ -1,6 +1,7 @@
 import { useState, type CSSProperties } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { OpeningLinksSetting } from "../components/links/OpeningLinksSetting";
+import { SubagentModeSetting } from "../components/sidebar/SubagentModeSetting";
 import { onRadioGroupKeyDown, rovingTabIndex } from "../lib/radioArrows";
 import {
   accentPresetFor,
@@ -288,6 +289,8 @@ export function AppearanceInterface() {
 
 
       <OpeningLinksSetting />
+
+      <SubagentModeSetting />
 
       <p className={a.moved}>
         The terminal&rsquo;s colours, font and size are under{" "}

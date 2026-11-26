@@ -124,16 +124,3 @@ span.chip {
   font-weight: 600;
   letter-spacing: 0.1em;
 }
-
-.modeRow {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 var(--sp-2) var(--sp-2);
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-size: var(--fs-meta);
-}
-.modeLabel {
-  flex: none;
-}
