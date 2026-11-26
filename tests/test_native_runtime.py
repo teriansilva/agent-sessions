@@ -1099,6 +1099,10 @@ def test_the_child_environment_names_the_battlelab_session_and_nothing_else(host
         base |= {"OPENCODE_SERVER_PASSWORD", "OPENCODE_CONFIG_CONTENT"}
     if source == "copilot":
         base |= {"COPILOT_AUTO_UPDATE"}  # belt beside the argv's --no-auto-update (#1565)
+    if source == "claude":
+        # Every MCP server starts before `initialize` answers, so all are in the floor's baseline.
+        base |= {"MCP_SERVER_CONNECTION_BATCH_SIZE"}
+        assert env["MCP_SERVER_CONNECTION_BATCH_SIZE"] == "256"
     assert set(env) == base
     assert env["BATTLELAB_SESSION"] == key
     # A later generation of the same session (another worker, a resumed native id) is told the

@@ -135,6 +135,12 @@ _TURN_KINDS = frozenset({"turn_started", "turn_completed", "text", "tool", "appr
 OPENCODE = "opencode-acp"
 OPENCODE2 = "opencode2-acp"
 COPILOT = "copilot-acp"
+#: Claude Code starts its MCP servers in batches of 3 (`MCP_SERVER_CONNECTION_BATCH_SIZE`) and
+#: answers `initialize` after the first batch only (measured on 2.1.330). Servers 4 and later
+#: then start after the process floor's readiness baseline, read as agent work forever, and the
+#: worker never idles out (#2405 P2). One batch starts them all before the answer, inside the
+#: baseline.
+CLAUDE_MCP_ALL_AT_ONCE = {"MCP_SERVER_CONNECTION_BATCH_SIZE": "256"}
 PROBE_TIMEOUT = 30.0
 PROBE_LIMIT = 4 * 1024 * 1024
 #: How long the worker waits, once the agent's output ends, for the agent to exit by itself before
@@ -630,6 +636,8 @@ def child_environment(
     `OPENCODE_CONFIG_CONTENT` is not passed on (the environment is sanitized).
     A copilot child gets `COPILOT_AUTO_UPDATE=false` beside its argv's `--no-auto-update` (#1565):
     the CLI otherwise self-downloads and re-execs outside the provenance-bound entrypoint.
+    A claude child gets `CLAUDE_MCP_ALL_AT_ONCE`, so every MCP server it starts is in the
+    readiness baseline of the process floor.
     Every adapter's child also gets `BATTLELAB_SESSION` (`battlelab_session`), and the shared
     project memory paths when its generation was given them (`memory_environment`).
     """
@@ -665,6 +673,8 @@ def child_environment(
             env.pop(key, None)
     if config["adapter"] == COPILOT:
         env["COPILOT_AUTO_UPDATE"] = "false"
+    if config["adapter"] == native_protocol.ClaudeCodec.ADAPTER:
+        env.update(CLAUDE_MCP_ALL_AT_ONCE)
     # The account's home (#2169), with the credentials that would outrank its login dropped.
     env = account_environment(config, env)
     # LAST, over everything above (`docs/invariants/opencode2-isolation.md`): an isolated

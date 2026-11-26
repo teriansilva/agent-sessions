@@ -638,7 +638,8 @@ async def _start_session(run: dict, config: dict, pins: dict, *, registry) -> tu
         try:
             if structured:
                 # AN API CLIENT STARTS STRUCTURED (#1901): one create and one guarded first turn,
-                # ids derived from this run, never bypassed (`client_settings_state` refuses it).
+                # ids derived from this run. Bypassed only when the stored, consented action
+                # asks for it (#2405) and the client can skip prompts (`client_settings_state`).
                 out = await _structured().automation_start(
                     binding=binding(run),
                     run_id=rid,
