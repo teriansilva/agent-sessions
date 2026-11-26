@@ -147,17 +147,22 @@ def test_the_specialist_is_one_id_at_one_version(spec, why):
         model.validate_action(act)
 
 
-def test_a_specialist_session_never_skips_permission_prompts():
+def test_a_specialist_session_may_skip_permission_prompts_and_close_when_done():
+    # #2405: both are the operator's consented choices, stored as given.
     act = {
         "kind": "start_session",
         "engine": "e",
         "folder": "/w",
         "message": {"text": "hi"},
         "bypass": True,
+        "close_when_done": True,
         "specialist": {"specialist_id": "x", "version": 1},
     }
-    with pytest.raises(model.AutomationError, match="never skips permission prompts"):
-        model.validate_action(act)
+    out = model.validate_action(act)
+    assert out["bypass"] is True and out["close_when_done"] is True
+    assert "close_when_done" not in model.validate_action({**act, "close_when_done": False})
+    with pytest.raises(model.AutomationError, match="close_when_done"):
+        model.validate_action({**act, "close_when_done": "yes"})
 
 
 @pytest.mark.parametrize(

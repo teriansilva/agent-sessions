@@ -554,6 +554,8 @@ export interface EditorForm {
   engine: string;
   folder: string;
   bypass: boolean;
+  /** Close and archive the session once its first message is done (#2405). */
+  closeWhenDone: boolean;
   sessionKey: string;
   messageMode: MessageMode;
   text: string;
@@ -692,6 +694,7 @@ export function blankForm(tz: string): EditorForm {
     engine: "",
     folder: "",
     bypass: false,
+    closeWhenDone: false,
     sessionKey: "",
     messageMode: "text",
     text: "",
@@ -889,6 +892,7 @@ export function formFromAutomation(a: Automation, tz: string): EditorForm {
       f.engine = act.engine;
       f.folder = act.folder;
       f.bypass = act.bypass;
+      f.closeWhenDone = act.close_when_done === true;
       f.specialistId = act.specialist?.specialist_id ?? "";
       f.specialistVersion = act.specialist?.version ?? null;
     } else if (act.kind === "send_to_session") {
@@ -1094,6 +1098,8 @@ export function formAction(f: EditorForm): AutomationAction {
       folder: f.folder,
       bypass: f.bypass,
       message,
+      // Sent only when chosen, so an action without it keeps its exact shape (#2405).
+      ...(f.closeWhenDone ? { close_when_done: true } : {}),
       // Omitted when none is chosen, so an action without one keeps its exact shape (#2222).
       ...(f.specialistId && f.specialistVersion
         ? { specialist: { specialist_id: f.specialistId, version: f.specialistVersion } }
@@ -1223,8 +1229,6 @@ function whatProblems(f: EditorForm): string[] {
     out.push("Choose an agent");
   if (f.actionKind === "start_session" && !f.folder)
     out.push("Choose a folder");
-  if (f.actionKind === "start_session" && f.specialistId && f.bypass)
-    out.push("A specialist’s session never skips permission prompts");
   if (f.actionKind === "send_to_session" && !f.sessionKey)
     out.push("Choose a session");
   if (f.actionKind === "send_message") {

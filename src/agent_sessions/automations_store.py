@@ -1077,6 +1077,47 @@ def pending_missions() -> list[dict]:
         ]
 
 
+#: The run steps that settle "close the session when it's done" (#2405): once one is recorded the
+#: run's session is never looked at again.
+CLOSE_SETTLED_STEPS = ("session_closed", "session_left_open")
+#: How long after its run a session is still closed when done. Older ones are left alone.
+CLOSE_WINDOW_S = 7 * 24 * 3600.0
+
+
+def runs_to_close(*, now: float | None = None) -> list[dict]:
+    """Runs whose consented scope says "close the session when it's done" (#2405), that started
+    their session (`ok`) within `CLOSE_WINDOW_S`, and whose closing is not settled yet. The scope
+    is the one the run was admitted under, so a later edit never closes an older run's session."""
+    ts = time.time() if now is None else now
+    with _read() as con:
+        rows = con.execute(
+            "SELECT * FROM automation_runs r WHERE r.outcome='ok' AND r.session_key IS NOT NULL "
+            "AND r.created_at >= ? AND NOT EXISTS (SELECT 1 FROM automation_run_steps s "
+            "WHERE s.run_id=r.id AND s.step IN (?,?))",
+            (ts - CLOSE_WINDOW_S, *CLOSE_SETTLED_STEPS),
+        ).fetchall()
+    return [run for run in map(_run, rows) if close_chosen(run)]
+
+
+def close_chosen(run: dict) -> bool:
+    """Whether ``run`` was admitted under a consent that says "close the session when it's
+    done": the CONSENTED scope stored with the run (`begin_run`'s ``consented_scope``), never
+    its config."""
+    consented = (run.get("scope") or {}).get("consented_scope")
+    return isinstance(consented, dict) and consented.get("close_when_done") is True
+
+
+def has_step(run_id: str, step: str) -> bool:
+    with _read() as con:
+        return (
+            con.execute(
+                "SELECT 1 FROM automation_run_steps WHERE run_id=? AND step=? LIMIT 1",
+                (run_id, step),
+            ).fetchone()
+            is not None
+        )
+
+
 def recover_interrupted(*, now: float | None = None) -> list[str]:
     """Every run left ``dispatching`` by an owner that is GONE becomes ``interrupted`` — never
     resumed, never replayed. A run whose owner process is alive is never touched."""

@@ -115,10 +115,11 @@ test("once per PR revision, as a pinned specialist: the fields, their checks, an
   await page.getByRole("button", { name: "Choose…" }).click();
   await page.getByRole("dialog").getByRole("button", { name: /^Select/ }).click();
   await page.getByTestId("message-text").fill("Review the pull request");
-  // The bypass box is disabled while a specialist is chosen.
+  // A specialist's session may skip permission prompts and close when done (#2405).
   const more = page.locator("details").filter({ has: page.getByTestId("session-bypass") });
   if (!(await more.getAttribute("open"))) await more.locator("summary").click();
-  await expect(page.getByTestId("session-bypass")).toBeDisabled();
+  await expect(page.getByTestId("session-bypass")).toBeEnabled();
+  await expect(page.getByTestId("session-close-when-done")).toBeEnabled();
 
   await toReview(page);
   await page.getByTestId("automation-name").fill("Review every PR on chrononote");

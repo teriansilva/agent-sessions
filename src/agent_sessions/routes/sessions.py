@@ -340,7 +340,7 @@ def _reserve_or_refuse(session_key: str) -> str:
         raise HTTPException(status_code=e.status, detail=str(e)) from None
 
 
-async def _archive_reserved(prov, native, key) -> JSONResponse:
+async def _archive_reserved(prov, native, key, precondition=None) -> JSONResponse:
     # Reclaim the session's live runtime footprint BEFORE recording the archive (#523):
     # kill the dtach master + agent group, clear scrollback/VT + owner lease, unlink the
     # stale socket, release the single-writer lock. Terminate-first so a still-running
@@ -356,7 +356,7 @@ async def _archive_reserved(prov, native, key) -> JSONResponse:
     # terminal, cancelled-and-settled turns for a chat agent) and CONFIRMS it, or refuses
     # before anything is recorded: a session reported archived has no runtime.
     try:
-        async with runtime_freeze.frozen(prov, native):
+        async with runtime_freeze.frozen(prov, native, precondition=precondition):
             # Background-agent guard (#631): with our own master now gone, a live process
             # STILL holding this transcript is a Claude background agent (a ``claude daemon``
             # fork) we don't manage. ``prov.archive`` would ``shutil.move`` its open JSONL out
@@ -390,7 +390,7 @@ async def _archive_reserved(prov, native, key) -> JSONResponse:
     return JSONResponse({"id": key, "archived": True})
 
 
-async def archive_key(key: str) -> tuple[bool, str | None]:
+async def archive_key(key: str, *, precondition=None) -> tuple[bool, str | None]:
     """Archive session ``key`` exactly as its archive route does, for a server-side caller
     (#2141: a handoff into an API session archives its source once the brief is accepted).
     Never raises for a refusal: ``(False, why)`` leaves the session active, as the route's
@@ -406,7 +406,7 @@ async def archive_key(key: str) -> tuple[bool, str | None]:
         return False, str(e.detail)
     try:
         async with missions.holding(key, reservation):
-            await _archive_reserved(prov, native, key)
+            await _archive_reserved(prov, native, key, precondition)
         return True, None
     except HTTPException as e:
         return False, str(e.detail)

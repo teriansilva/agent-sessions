@@ -25,8 +25,10 @@ itself.
 * HQ's session cards (#2014) use it too: `hq_start` (a create and one ATTENDED guarded first turn,
   ids from the proposal, `hq_ids`, binding `ask:<proposal id>`).
 
-No permission bypass, ever, on this path (#1613 D8): creates pass `bypass=False`, and #1897 also
-refuses guarded work in a session that skips permissions.
+No permission bypass on this path (#1613 D8): creates pass `bypass=False`, and #1897 also refuses
+guarded work in a session that skips permissions. The one exception is an automation the operator
+approved WITH "skip permission prompts" (#2405): `automation_start` switches its session through
+the operator's own `enable_bypass` path before the brief, under a guard marked `consented_bypass`.
 """
 
 from __future__ import annotations
@@ -245,9 +247,16 @@ async def _create_and_brief(
     shelf_mission: str | None = None,
     effort: str | None = None,
     specialist: tuple[str, int] | None = None,
+    bypass_op: str | None = None,
+    bypass_actor: str | None = None,
 ) -> headless_dispatch.Dispatch:
     """The structured create and its ONE guarded first turn, shared by a mission's dispatch and an
-    automation's start (#1901). Fills in ``out``'s facts; never raises for a refused effect."""
+    automation's start (#1901). Fills in ``out``'s facts; never raises for a refused effect.
+
+    ``bypass_op`` (#2405, an automation the operator approved to skip permission prompts only):
+    the session is created guarded as every other, then switched to skip prompts through the
+    operator's own path (`runtime.enable_bypass`, which contains the first worker) BEFORE the
+    brief, and the brief's turn may relaunch it. A switch that fails sends no brief."""
     key = out.key
     try:
         await runtime.create_session(
@@ -278,6 +287,21 @@ async def _create_and_brief(
         out.seed_outcome = "not_attempted"
         return out
     out.launched = out.started = True
+    if bypass_op is not None:
+        try:
+            # The automation's authority, checked in its fence right before the switch: a
+            # revoked or edited automation never leaves a session switched to skip prompts.
+            await asyncio.to_thread(admission.admit)
+        except Exception as exc:  # noqa: BLE001 — a refusal before the switch and the brief
+            out.seed_outcome = "not_attempted"
+            out.reason = f"skip permission prompts was not turned on: {exc}"
+            return out
+        try:
+            await runtime.enable_bypass(key, operation_id=bypass_op, user=bypass_actor or "")
+        except runtime.StructuredError as exc:
+            out.seed_outcome = "not_attempted"
+            out.reason = f"skip permission prompts could not be turned on: {exc.detail}"
+            return out
     try:
         sent = await runtime.submit_turn(
             key,
@@ -285,8 +309,9 @@ async def _create_and_brief(
             text=text,
             context=context,
             execution_admission=admission,
-            # An automatic first brief never relaunches either (#1983).
-            no_relaunch=True,
+            # An automatic first brief never relaunches either (#1983) — except into the
+            # generation a consented bypass switch just contained (#2405): that IS its start.
+            no_relaunch=bypass_op is None,
         )
     except runtime.StructuredError as exc:
         # A 409/422 is a refusal before any claim (busy, withdrawn, an old worker, invalid text):
@@ -339,15 +364,32 @@ def _fenced(check: Callable[[], tuple[bool, str]]) -> Callable[[], tuple[bool, s
     return run
 
 
+def automation_bypass_op(run_id: str) -> str:
+    """The permission-change operation id of one automation run's consented bypass (#2405):
+    derived from the run, so a replay of the same run is the same change."""
+    if not isinstance(run_id, str) or not run_id:
+        raise ValueError("a structured automation effect needs its run id")
+    return str(uuid.uuid5(MISSION_NAMESPACE, f"automation-run:{run_id}:bypass"))
+
+
 def automation_guard(
-    binding: str, key: str, check: Callable[[], tuple[bool, str]]
+    binding: str,
+    key: str,
+    check: Callable[[], tuple[bool, str]],
+    *,
+    consented_bypass: bool = False,
 ) -> ExecutionGuard:
     """The #1897 guard for an automation's effect in ``key``. ``check`` runs INSIDE the write
     fence and must not take `session_input._lock` itself. Raises ``ValueError`` on a malformed
-    binding, before anything is sent."""
+    binding, before anything is sent. ``consented_bypass``: the operator approved THIS automation
+    to skip permission prompts (its receipt records it, #2405); the caller reads it from the
+    stored, consented action and never from a delivery."""
     fenced = _fenced(check)
     return ExecutionGuard(
-        binding, _in_process_only, admit=lambda: session_input.admit_native(key, fenced)
+        binding,
+        _in_process_only,
+        admit=lambda: session_input.admit_native(key, fenced),
+        consented_bypass=consented_bypass is True,
     )
 
 
@@ -363,6 +405,7 @@ async def automation_start(
     model: str | None = None,
     effort: str | None = None,
     specialist: tuple[str, int] | None = None,
+    bypass: bool = False,
 ) -> headless_dispatch.Dispatch:
     """An automation's new API session: one structured create and one guarded first turn, the
     same facts `headless_dispatch.dispatch` returns.
@@ -371,8 +414,9 @@ async def automation_start(
     ``model`` and ``effort``: the create reserves the specialist's capacity and bundles its skills
     exactly as a mission step's does (`specialist_launch.check_api`).
 
-    Raises `DispatchError` only when nothing was attempted. Never permission-bypassed (#1897
-    refuses guarded work in such a session anyway).
+    Raises `DispatchError` only when nothing was attempted. Permission-bypassed ONLY when the
+    operator approved this automation with "skip permission prompts" (``bypass``, #2405): the
+    guard then carries ``consented_bypass`` and the session is switched before its brief.
 
     A worker left without its first turn — a create that never became ready, or a first turn
     refused before any claim — is CONTAINED and ``out.teardown`` says how that went: nothing is
@@ -391,7 +435,8 @@ async def automation_start(
     try:
         session_id, brief_id, _send_id = automation_ids(run_id)
         key = f"{engine}:{session_id}"
-        admission = automation_guard(binding, key, check)
+        admission = automation_guard(binding, key, check, consented_bypass=bypass is True)
+        bypass_op = automation_bypass_op(run_id) if bypass is True else None
     except ValueError as exc:
         raise headless_dispatch.DispatchError(f"nothing was started: {exc}") from None
     out = headless_dispatch.Dispatch(key=key, engine=engine, native=session_id, cwd=cwd)
@@ -405,6 +450,8 @@ async def automation_start(
         model=model,
         effort=effort,
         specialist=specialist,
+        bypass_op=bypass_op,
+        bypass_actor=binding,
     )
     if out.launched and not out.briefed and out.seed_outcome in ("not_attempted", "zero_write"):
         from . import runtime_cleanup  # at call time, like `mission_fence`

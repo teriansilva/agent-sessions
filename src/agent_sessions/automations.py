@@ -353,6 +353,7 @@ def validate_action(raw: object) -> dict:
             "message",
             "session_key",
             "specialist",
+            "close_when_done",
         },
         {"kind"},
     )
@@ -388,7 +389,16 @@ def validate_action(raw: object) -> dict:
         _obj(
             a,
             "a start_session action",
-            {"kind", "engine", "model", "folder", "bypass", "message", "specialist"},
+            {
+                "kind",
+                "engine",
+                "model",
+                "folder",
+                "bypass",
+                "message",
+                "specialist",
+                "close_when_done",
+            },
             {"engine", "folder", "message"},
         )
         engine = a["engine"]
@@ -418,9 +428,15 @@ def validate_action(raw: object) -> dict:
         # skills, model and effort. Only when one was chosen, so a stored action without it keeps
         # its exact shape (and its consent receipt).
         if a.get("specialist") is not None:
-            if bypass:
-                raise AutomationError("a specialist's session never skips permission prompts")
+            # A specialist's session may skip permission prompts when the operator approves the
+            # automation so (#2405): the bypass is its own consented scope field either way.
             out["specialist"] = _specialist_ref(a["specialist"], "specialist")
+        close = a.get("close_when_done", False)
+        if not isinstance(close, bool):
+            raise AutomationError("close_when_done must be true or false")
+        if close:
+            # Stored only when chosen, so an action without it keeps its exact shape (#2405).
+            out["close_when_done"] = True
         return out
     if kind == "send_to_session":
         _obj(a, "a send_to_session action", {"kind", "session_key", "message"}, {"session_key"})
@@ -1005,6 +1021,12 @@ def scope_of(config: dict, pins: dict) -> dict:
         # An automated mission NEVER launches with bypass (Phase 1): the dispatch is called with
         # `bypass_ceiling=False`, so the receipt's `False` is enforced, not merely recorded.
         "bypass": bool(action.get("bypass", False)) if action["kind"] == "start_session" else False,
+        # #2405: present only when chosen, so every receipt written before it still matches.
+        **(
+            {"close_when_done": True}
+            if action["kind"] == "start_session" and action.get("close_when_done") is True
+            else {}
+        ),
         "autonomy": action.get("autonomy"),
         "trigger": trigger["kind"],
         "cadence": trigger.get("cadence") or trigger.get("at"),
@@ -1083,6 +1105,7 @@ _CHANGED = {
     "checklist": "the checklist changed",
     "checklist_name": "the checklist changed",
     "checklist_default": "the checklist changed",
+    "close_when_done": "whether the session is closed when it’s done changed",
 }
 
 #: A name field and the content revision it names: a rename with the same revision is worded so.
@@ -1386,6 +1409,12 @@ def describe(scope: dict, preview: str | None = None) -> list[str]:
         lines.append("Starts no session and types into none")
     else:
         lines.append("Permission bypass: unchanged — whatever that session already runs with")
+    if scope.get("close_when_done"):
+        # Its own line, after the bypass chain (#2405): never in place of one of its lines.
+        lines.append(
+            "When its first message is done, nobody else wrote in it and its agent has gone idle, "
+            "the session is closed and archived (its transcript is kept)"
+        )
     # A STORED checklist (approved before checklists were removed, #1653) is still disclosed, since
     # every digest field changes the consent lines, but as what it is now: removed and not used.
     # Nothing the run does comes from it, so these lines must never read as a promise.

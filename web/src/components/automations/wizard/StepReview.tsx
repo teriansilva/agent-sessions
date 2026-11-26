@@ -121,7 +121,8 @@ export function StepReview({
             <span>
               Above is what is saved. Your draft: {actionLabel(form.actionKind).toLowerCase()},{" "}
               {trigger.label.toLowerCase()} ({trigger.detail})
-              {form.actionKind === "start_session" && form.bypass ? ", with permission bypass" : ""}.
+              {form.actionKind === "start_session" && form.bypass ? ", with permission bypass" : ""}
+              {form.actionKind === "start_session" && form.closeWhenDone ? ", closed when done" : ""}.
               {saved.enabled ? " If saving widens what it may do, you are asked to consent first." : ""}
             </span>
           </div>

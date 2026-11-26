@@ -67,6 +67,7 @@ from . import (
     template_vars,
 )
 from . import templates as tstore
+from .plugins import kinds
 
 log = logging.getLogger(__name__)
 
@@ -185,22 +186,19 @@ def client_settings_state(action: dict) -> tuple[bool, str]:
 
     A switch is a fresh consent, never the terminal grant carried over, so what it saves must be
     something that client can honour: its model is the client's default (an automation's consent
-    covers no model yet, #1189) and never "skip permission prompts" (#1901): an automation's API
-    session is created and briefed under a guard (#1897), and guarded work never runs in a session
-    that skips permission prompts — so it always asks before each request. Asked of the manifest;
-    a console target answers ``(True, "")`` here and keeps its existing checks (and its consented
-    bypass)."""
+    covers no model yet, #1189). "Skip permission prompts" is accepted when the client can skip
+    them at all (`kinds.API_BYPASS_KINDS`): it is the operator's consented choice (#2405), and the
+    session is switched through the operator's own path before its guarded brief. Asked of the
+    manifest; a console target answers ``(True, "")`` here and keeps its existing checks (and its
+    consented bypass)."""
     m = engines.manifest_of(action["engine"])
     if m is None or m.runtime != "api":
         return True, ""
     label = m.identity.label
     if action.get("model") is not None:
         return False, f"{label} runs its own default model in an automation; choose no model"
-    if action.get("bypass"):
-        return False, (
-            f"{label} can't skip permission prompts in an automation; "
-            "save it asking before each request"
-        )
+    if action.get("bypass") and (m.api is None or m.api.kind not in kinds.API_BYPASS_KINDS):
+        return False, f"{label} can't skip permission prompts; save it asking before each request"
     return True, ""
 
 
@@ -649,6 +647,8 @@ async def _start_session(run: dict, config: dict, pins: dict, *, registry) -> tu
                     brief=text,
                     on_key=on_key,
                     check=fenced,
+                    # The STORED, consented action's choice (#2405), never a delivery's.
+                    bypass=action.get("bypass") is True,
                     **(_specialist_launch(spec) if spec is not None else {}),
                 )
             else:
@@ -1335,3 +1335,97 @@ def retract(key: str) -> None:
     if key:
         with contextlib.suppress(Exception):
             notifications.dismiss_for_action(key)
+
+
+# ---- close the session when it's done (#2405) -------------------------------------------------
+
+#: A finished brief: the session reads as one of these and asks nothing.
+_DONE_SESSION = frozenset({"idle", "failed", "interrupted"})
+_DONE_TURN = frozenset({"completed", "failed", "interrupted"})
+
+
+async def close_if_done(run: dict) -> str:
+    """Archive the session ``run`` started once its brief is finished (#2405). Only for a run whose
+    CONSENTED scope says so (`automations_store.runs_to_close` selects them), only an API
+    session, and only when the brief is the session's ONE operator turn: a session someone wrote
+    into is left open (and recorded so), and only once its worker has idled out. Archiving is the
+    archive route's own server-side entry (`routes.sessions.archive_key`), conditional on the
+    observation still holding under its exclusive freeze, so a message that arrives meanwhile is
+    never stopped. It keeps the transcript. Returns ``closed``, ``left_open``, ``waiting`` or
+    ``refused``; a refusal is recorded once and tried again on the next tick."""
+    key = str(run.get("session_key") or "")
+    rid = run["id"]
+    manifest = engines.manifest_of(key.split(":", 1)[0]) if ":" in key else None
+    if manifest is None or manifest.runtime != "api":
+        await asyncio.to_thread(
+            store.add_step, rid, "session_left_open", "only an API session is closed when done"
+        )
+        return "left_open"
+    from . import structured_runtime  # at call time, as `_structured` explains
+
+    try:
+        snap = await structured_runtime.snapshot(key)
+    except structured_runtime.StructuredError as exc:
+        if exc.status == 404:
+            await asyncio.to_thread(
+                store.add_step, rid, "session_closed", "the session was already archived or gone"
+            )
+            return "closed"
+        return "waiting"
+    operator_turns = [t for t in snap.get("turns") or [] if t.get("kind") != "agent"]
+    if len(operator_turns) > 1 or snap.get("omitted_turns"):
+        await asyncio.to_thread(
+            store.add_step, rid, "session_left_open", "someone else wrote in the session"
+        )
+        return "left_open"
+    if (
+        snap.get("state") not in _DONE_SESSION
+        or snap.get("active_turn")
+        # The agent's own background work (a task or turn it started) is not the operator's
+        # conversation, so `state` ignores it; archiving would stop it (`fence_idle._idle`).
+        or (snap.get("native") or {}).get("background_active")
+        or snap.get("pending_requests")
+        or len(operator_turns) != 1
+        or operator_turns[0].get("state") not in _DONE_TURN
+    ):
+        return "waiting"
+    # Only once its worker has idled out by itself (#2405, Hermes on #2407): a later message then
+    # needs a RELAUNCH, and a relaunch takes the freeze fence the archive holds exclusively, so it
+    # waits and then finds the session archived. An idle worker exits after
+    # `native_runtime.WORKER_IDLE_TIMEOUT`, which also frees the specialist's slot.
+    from . import native_runtime  # at call time, as `_structured` explains
+
+    native = key.split(":", 1)[1]
+    if await asyncio.to_thread(native_runtime._live_worker, native) is not None:
+        return "waiting"
+    observed = snap.get("revision")
+    changed: list[bool] = []
+
+    async def unchanged() -> bool:
+        # Run under the archive's EXCLUSIVE freeze, before anything is stopped: still no live
+        # worker, and the conversation is exactly the one observed above.
+        live = await asyncio.to_thread(native_runtime._live_worker, native)
+        try:
+            now = await structured_runtime.snapshot(key)
+        except structured_runtime.StructuredError:
+            now = {}
+        ok = live is None and observed is not None and now.get("revision") == observed
+        if not ok:
+            changed.append(True)
+        return ok
+
+    from .routes import sessions as session_routes  # at call time: routes import this module
+
+    ok, why = await session_routes.archive_key(key, precondition=unchanged)
+    if ok:
+        await asyncio.to_thread(
+            store.add_step, rid, "session_closed", "archived after its first message was done"
+        )
+        return "closed"
+    if changed:
+        return "waiting"  # it moved between the look and the fence: looked at again next tick
+    if not await asyncio.to_thread(store.has_step, rid, "session_close_refused"):
+        await asyncio.to_thread(
+            store.add_step, rid, "session_close_refused", f"{why or 'refused'}; trying again"
+        )
+    return "refused"

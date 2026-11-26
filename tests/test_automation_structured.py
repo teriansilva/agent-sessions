@@ -204,7 +204,10 @@ def test_save_refuses_a_non_admitted_api_client_for_both_session_actions(project
     assert routes._create(_start_config(project))["action"]["engine"] == CLAUDE
 
 
-def test_an_api_target_never_skips_permission_prompts(project):
+def test_an_api_target_may_skip_permission_prompts_when_its_client_can(project, monkeypatch):
+    # #2405: the operator's consented choice. A client whose adapter can't skip prompts refuses.
+    assert routes._create(_start_config(project, bypass=True))["action"]["bypass"] is True
+    monkeypatch.setattr(kinds, "API_BYPASS_KINDS", frozenset())
     with pytest.raises(model.AutomationError, match="can't skip permission prompts"):
         routes._create(_start_config(project, bypass=True))
 
@@ -513,3 +516,38 @@ async def test_a_worker_that_could_not_be_stopped_is_a_failure_on_record(project
 # `start_mission` automation only creates drafts now (HQ plans missions, and its dispatch modes are
 # refused at save and at run, `test_automations.py`); the legacy plan's structured dispatch is the
 # manual route's, pinned by `test_mission_api_e2e.py`.
+
+
+# ---- a consented bypass (#2405) ----------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_a_consented_bypass_start_switches_the_session_before_its_one_brief(project):
+    """Created guarded, switched through the operator's own path, THEN briefed once."""
+    aid = _made(_start_config(project, bypass=True))
+    run = _claim(aid)
+    res = await automation_runner.execute(run, registry=None)
+    assert res["run"]["outcome"] == "ok", res["run"]["reason"]
+    session_id, brief_id, _send = mission_structured.automation_ids(run["id"])
+    key = f"{CLAUDE}:{session_id}"
+    snap = await runtime.snapshot(key)
+    assert snap["bypass"] is True
+    assert snap["permission_change"]["state"] == "enabled"
+    first = next(t for t in snap["turns"] if t["turn_id"] == brief_id)
+    assert first["context"] == {"reservation_id": run["id"]}
+    assert _users(project).count("triage the inbox") == 1
+    await runtime.stop(key)
+
+
+@pytest.mark.anyio
+async def test_an_unconsented_automation_is_still_refused_in_a_session_that_skips_prompts(project):
+    """Only the consented automation's own guard is admitted: a plain automation guard (and so a
+    mission's or the supervisor's) is refused in a bypass session, as before (#1897)."""
+    key = await _api_session(project)
+    await runtime.enable_bypass(key, operation_id=str(uuid.uuid4()), user="op")
+    guard = mission_structured.automation_guard("automation:a:r", key, lambda: (True, ""))
+    with pytest.raises(runtime.StructuredError, match="skips permission prompts"):
+        await runtime.submit_turn(
+            key, operation_id=str(uuid.uuid4()), text="hi", execution_admission=guard
+        )
+    await runtime.stop(key)

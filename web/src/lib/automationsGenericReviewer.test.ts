@@ -96,9 +96,14 @@ describe("the checks mirror the server's", () => {
     expect(stepProblems(sessionForm({ oncePer: ["labels[].name"] })).events).toHaveLength(1);
   });
 
-  test("a specialist's session never skips permission prompts", () => {
-    const f = sessionForm({ specialistId: "org-reviewer", specialistVersion: 3, bypass: true });
-    expect(stepProblems(f).what).toContain("A specialist’s session never skips permission prompts");
+  test("a specialist's session may skip permission prompts and close when done (#2405)", () => {
+    const f = sessionForm({
+      specialistId: "org-reviewer",
+      specialistVersion: 3,
+      bypass: true,
+      closeWhenDone: true,
+    });
+    expect(stepProblems(f).what).toEqual([]);
   });
 });
 

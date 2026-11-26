@@ -120,7 +120,8 @@ export function StepWhat({
   problems: string[];
   warnings: string[];
 }) {
-  // The model (fixed for now) and permission bypass are folded away; bypass on keeps them open.
+  // The model (fixed for now), permission bypass and closing are folded away; either on keeps
+  // them open.
   const [moreOpen, setMoreOpen] = useState<boolean | null>(null);
   const engines = list.engines ?? [];
   const hook = form.triggerKind === "webhook";
@@ -326,8 +327,8 @@ export function StepWhat({
           </div>
           <div className={styles.full}>
             <Fold
-              summary="Model and permissions"
-              open={moreOpen ?? form.bypass}
+              summary="Model, permissions and closing"
+              open={moreOpen ?? (form.bypass || form.closeWhenDone)}
               onToggle={setMoreOpen}
               testId="session-more"
             >
@@ -349,7 +350,6 @@ export function StepWhat({
                       <input
                         type="checkbox"
                         checked={form.bypass}
-                        disabled={!!form.specialistId}
                         onChange={(e) => set("bypass", e.target.checked)}
                         data-testid="session-bypass"
                       />
@@ -364,6 +364,22 @@ export function StepWhat({
                         </span>
                       </p>
                     )}
+                  </div>
+                  <div className={`${styles.field} ${styles.full}`}>
+                    <label className={styles.check}>
+                      <input
+                        type="checkbox"
+                        checked={form.closeWhenDone}
+                        onChange={(e) => set("closeWhenDone", e.target.checked)}
+                        aria-describedby={f("close-hint")}
+                        data-testid="session-close-when-done"
+                      />
+                      Close the session when it’s done
+                    </label>
+                    <p id={f("close-hint")} className={styles.hint}>
+                      Once its first message is finished, nobody else wrote in it and its agent has gone idle (up
+                      to 30 minutes), the session is closed and archived. Its transcript is kept.
+                    </p>
                   </div>
               </div>
             </Fold>
@@ -852,8 +868,6 @@ function SpecialistField({
             ...x,
             specialistId: o ? o.id : "",
             specialistVersion: o ? o.version : null,
-            // A specialist's session never skips permission prompts.
-            bypass: o ? false : x.bypass,
           }));
         }}
         aria-describedby={noteId}

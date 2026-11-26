@@ -180,10 +180,19 @@ async def _settle_chat(prov, native: str):
         await asyncio.sleep(0.1)
 
 
+class PreconditionFailed(FreezeFailed):
+    """The caller's ``precondition`` no longer held under the fence: nothing was stopped."""
+
+
 @contextlib.asynccontextmanager
-async def frozen(prov, native: str, *, require_archived: bool = False):
+async def frozen(prov, native: str, *, require_archived: bool = False, precondition=None):
     """Hold the session frozen for the block (see the module docstring). Raises `FreezeFailed`
-    (or `NotArchived` with ``require_archived``) before yielding; nothing is held after it."""
+    (or `NotArchived` with ``require_archived``) before yielding; nothing is held after it.
+
+    ``precondition`` (#2405, a conditional archive): an async callable run once the fence is held
+    EXCLUSIVELY and before anything is stopped. False raises `PreconditionFailed` and stops
+    nothing. Under the exclusive fence no launch or relaunch can interleave, so a condition about
+    a session with no live worker (`automation_runner.close_if_done`) holds through the stop."""
     engine = prov.engine_id
     try:
         runtime_key = await runtime_cleanup.resolve_runtime_key(engine, native)
@@ -204,6 +213,8 @@ async def frozen(prov, native: str, *, require_archived: bool = False):
             state = await asyncio.to_thread(archive_gate.effective_state, prov, native)
             if state != archive_gate.ARCHIVED:
                 raise NotArchived(f"{engine}:{native}")
+        if precondition is not None and not await precondition():
+            raise PreconditionFailed("the session changed; nothing was stopped")
         token = await asyncio.to_thread(freeze_lock.write_marker, runtime_key)
         kind = runtime_kind(prov)
         if kind == "native":

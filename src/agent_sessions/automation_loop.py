@@ -149,6 +149,7 @@ class Scheduler:
             log.warning("automations: %d interrupted run(s) recorded, none replayed", len(ids))
         await runner.retry_unsettled()
         await self._sync_missions()
+        await self._close_finished(now)
         fired: list[dict] = []
         for row in await asyncio.to_thread(store.list_all):
             try:
@@ -287,6 +288,21 @@ class Scheduler:
             res = await asyncio.to_thread(store.conclude, run["id"], outcome, reason)
             if res:
                 await asyncio.to_thread(runner.notify, res)
+
+    async def _close_finished(self, now: float) -> None:
+        """Close and archive the sessions of runs approved with "close the session when it's done"
+        (#2405) once their brief is finished. Owner-only, like every effect of this loop; the
+        state is the run's own step log, so a restart picks up where it left off."""
+        try:
+            runs = await asyncio.to_thread(store.runs_to_close, now=now)
+        except Exception:  # noqa: BLE001 — try again next tick
+            log.debug("automations: runs to close unreadable", exc_info=True)
+            return
+        for run in runs:
+            try:
+                await runner.close_if_done(run)
+            except Exception:  # noqa: BLE001 — one session's failure must not stop the rest
+                log.warning("automations: closing %s failed", run.get("session_key"), exc_info=True)
 
     # ---- lifecycle ------------------------------------------------------------------------------
 

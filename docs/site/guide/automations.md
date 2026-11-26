@@ -53,7 +53,8 @@ Choose what it does from a short, searchable list: the same actions **Library â†
 trigger from step 1 can start:
 
 - **Start a session**: an agent, a folder and a first message. The model is the agent's default.
-  **Permission bypass** is under *Model and permissions*; turning it on asks for your consent again.
+  **Permission bypass** and **Close the session when it's done** are under *Model, permissions and
+  closing*. Turning either on asks for your consent again.
 - **Message a session**: types into a session that is already running. If it isn't running then,
   the run is refused and recorded.
 - **Start a mission**: only on a schedule or Run now. HQ drafts the mission in the project you

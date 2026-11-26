@@ -89,4 +89,9 @@ once.
 - **Skipped deliveries can run later.** If the automation was busy (one at a time) or at its daily
   cap, that delivery claimed nothing, so a later delivery for the same revision still runs.
 - **A delivery missing one of the "once per" values is refused** and shows in the run history.
-- Sessions an automation starts never skip permission prompts.
+- **Unattended reviews:** under *Model, permissions and closing*, tick:
+  - **Permission bypass**, so the reviewer doesn't stop at its first tool call;
+  - **Close the session when it's done**, so each finished review is archived. This frees the
+    specialist for the next review and keeps your session list clean.
+
+  Both are part of what you approve.

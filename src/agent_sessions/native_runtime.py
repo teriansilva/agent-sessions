@@ -4267,13 +4267,16 @@ async def submit(
     if (
         execution_admission is not None
         and getattr(execution_admission, "attended", False) is not True
+        and getattr(execution_admission, "consented_bypass", False) is not True
         and _effective_bypass(record)
     ):
         # UNATTENDED guarded work never runs without permission prompts (#1897, #1613 D8). A
         # change that races this check moves `permission_operation`, which `_effect` refuses.
         # A turn the operator is behind (`ExecutionGuard.attended`, #2008: their tap, or HQ's
         # send in a turn they started) is admitted, as their own typed message is; its
-        # authority is still checked in the fence and again at the worker's claim.
+        # authority is still checked in the fence and again at the worker's claim. An automation
+        # the operator approved WITH "skip permission prompts" (`consented_bypass`, #2405) is
+        # admitted the same way; every other unattended caller is refused here.
         raise NativeError(409, "guarded work can't run in a session that skips permission prompts")
     params = {"text": text, "context": context or {}}
     if attachments:
@@ -4893,6 +4896,14 @@ def _enable_bypass_sync(engine_id: str, session_id: str, operation_id: str, acto
             )
         if change.get("state") == "enabled":
             return  # Exact replay observes; it must never stop a later generation.
+        if record.get("native_id") is None and record.get("generations"):
+            # A worker commits its native session before this record learns it (as the relaunch
+            # path reads it, above): an automation enabling bypass right after its create (#2405)
+            # finds it in the ownership intent.
+            intent = native_ownership.lookup(record["session_key"])
+            if intent is not None and intent.native_id is not None:
+                record["native_id"] = intent.native_id
+                native_state.write_session(session_id, record)
         if (
             _start_state(record) not in (None, STARTED)
             or not record.get("generations")

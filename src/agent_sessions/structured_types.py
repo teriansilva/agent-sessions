@@ -40,10 +40,18 @@ class ExecutionGuard:
     #: typed message may. Unattended work — a mission, an automation, the supervisor — never
     #: carries it, and is refused there as before (#1897, #1613 D8).
     attended: bool = False
+    #: The operator APPROVED this unattended automation to skip permission prompts: the
+    #: automation's consent receipt records ``bypass`` (#2405). Set only by
+    #: `mission_structured.automation_guard`, from the stored, consented action, never from a
+    #: request. It changes the same one thing ``attended`` does, for this automation's turns only;
+    #: a mission or the supervisor never carries it.
+    consented_bypass: bool = False
 
     def __post_init__(self) -> None:
         if self.attended is not True and self.attended is not False:
             raise ValueError("execution authority's attended flag must be a bool")
+        if self.consented_bypass is not True and self.consented_bypass is not False:
+            raise ValueError("execution authority's consented_bypass flag must be a bool")
         if not isinstance(self.binding, str) or not _IDENTIFIER.fullmatch(self.binding):
             raise ValueError("execution authority needs a bounded opaque binding")
         if not callable(self.acquire):

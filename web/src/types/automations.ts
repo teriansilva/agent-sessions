@@ -101,6 +101,8 @@ export type AutomationAction =
       message: AutomationMessage;
       /** Run AS a specialist, pinned to one version (#2222). Omitted when none is chosen. */
       specialist?: { specialist_id: string; version: number };
+      /** Close and archive the session once its first message is done (#2405). */
+      close_when_done?: boolean;
     }
   | {
       kind: "send_to_session";

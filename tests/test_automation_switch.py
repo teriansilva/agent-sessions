@@ -166,16 +166,18 @@ def test_a_stale_digest_is_not_a_confirmation(folder, admitted):
     assert store.get(aid)["config"]["action"]["engine"] == console
 
 
-def test_switch_validates_the_api_clients_model_and_permission_settings(folder, admitted):
+def test_switch_validates_the_api_clients_model_and_permission_settings(
+    folder, admitted, monkeypatch
+):
     console, api = _pair()
     aid = routes._create(_config(folder, console))["id"]
     row = store.get(aid)
     # A model: an automation's consent covers none yet (#1189) — refused, nothing written.
     with pytest.raises(model.AutomationError, match="model"):
         routes._patch(aid, _switch_body(row, api, model="some-model"))
-    # Skip permission prompts on ANY API client (#1901): its guarded first turn never runs in a
-    # session that skips them, even where the adapter maps the setting (`API_BYPASS_KINDS`).
-    assert engines.manifest_of(api).api.kind in kinds.API_BYPASS_KINDS
+    # Skip permission prompts on an API client whose adapter can't map it is refused (#2405: a
+    # client that CAN skip them takes the operator's consented choice).
+    monkeypatch.setattr(kinds, "API_BYPASS_KINDS", frozenset())
     with pytest.raises(model.AutomationError, match="can't skip permission prompts"):
         routes._patch(aid, _switch_body(row, api, bypass=True))
     assert store.get(aid)["config"]["action"]["engine"] == console
@@ -185,9 +187,10 @@ def test_switch_validates_the_api_clients_model_and_permission_settings(folder, 
     assert out["action"]["engine"] == api and out["enabled"] is False
 
 
-def test_client_settings_are_checked_at_enable_too(folder, admitted):
-    """A row stored with bypass on an API client (a build before #1901 admitted it for some kinds)
-    is refused at enable, by the same check."""
+def test_client_settings_are_checked_at_enable_too(folder, admitted, monkeypatch):
+    """A row stored with bypass on an API client whose adapter can't skip prompts is refused at
+    enable, by the same check (#2405: one that can takes the operator's consented choice)."""
+    monkeypatch.setattr(kinds, "API_BYPASS_KINDS", frozenset())
     console, api = _pair()
     aid = routes._create(_config(folder, api))["id"]
     stored = store.get(aid)["config"]
