@@ -150,7 +150,7 @@ EXPECTED_DEFAULT_SHA = {
     "mission_question": "047f41d72b0e206b",
     "tail_review": "96d2b5fe33d5acee",
     "session_recap": "7438fbcf5328734f",
-    "handoff_brief": "6229dae66d00c62f",
+    "handoff_brief": "30a4a73264b89c04",  # #2418: later turns supersede an inherited brief
     "handoff_remote_brief": "b2128068c2cc395f",  # #2059: a shared record is data
     "auto_sort": "e7dcb9cc74f397aa",
     "session_clusters": "bd2b2428631c010a",  # #1997: group a project's sessions by topic

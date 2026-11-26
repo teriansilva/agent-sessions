@@ -131,14 +131,20 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         # REAL id (#611) — resolve through the alias map like every transcript consumer.
         logical = engines.logical_key(source_key)
         _eng, _, logical_native = logical.partition(":")
+        # The brief's `task:` (#2418): the session's own name, else its first message — unless
+        # that message is an earlier hop's brief, whose stale text must not become the task. The
+        # builder decides (`handoff.task_title`): only it has the transcript the brief is in.
+        title = metadata.display_title(src_meta, "", use_ai_title=prefs.renames_sessions())
 
         def _quick() -> tuple[str, dict]:
             return handoff.build_quick_seed(
                 prov.engine_id,
                 logical_native,
-                title=match.first_user_message,
+                title=title,
                 cwd=cwd,
                 include_source_ref=include_source_ref,
+                commits_cwd=match.cwd,
+                first_message=match.first_user_message,
             )
 
         try:
@@ -152,9 +158,11 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
                     seed, meta = await handoff.build_ai_seed(
                         prov.engine_id,
                         logical_native,
-                        title=match.first_user_message,
+                        title=title,
                         cwd=cwd,
                         include_source_ref=include_source_ref,
+                        commits_cwd=match.cwd,
+                        first_message=match.first_user_message,
                     )
                 except (review.ReviewError, handoff.HandoffError) as e:
                     if isinstance(e, handoff.HandoffError) and e.status == 409:

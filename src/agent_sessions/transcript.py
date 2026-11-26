@@ -1639,7 +1639,16 @@ def _native_turns(root: Path, native_id: str) -> list[Turn]:
     Fold it instead: each submitted message, the tool calls the agent made for it (a one-liner each
     and the bounded output of each finished one, #1900, as a console transcript shows them), then
     its settled reply text. Approval payloads and turn state (completed, idle) are never
-    transcript. Capped like every other reader, and says when it was cut."""
+    transcript. Capped like every other reader, and says when it was cut.
+
+    **The turns the agent ran for itself are part of it (#2418).** A ScheduleWakeup firing or a
+    background task finishing starts a turn no operator sent (#1438); its output is recorded under
+    ``agent_turn``, not ``operation_id``. A fold of operations alone dropped every one of them, so
+    an autonomous session read as it stood at the operator's last message — a handoff brief said
+    "not yet done" about work the session had finished and pushed hours before. An own turn is
+    folded like an operation, with no user turn, and both kinds share the pane's timeline: a
+    message at its claim, an own turn at its start, by journal position. Units are keyed by FIELD,
+    so an operation id equal to an agent turn's never moves output between them."""
     from . import native_journal, native_segments
 
     try:
@@ -1650,29 +1659,47 @@ def _native_turns(root: Path, native_id: str) -> list[Turn]:
         if _full_read_refuses(lambda: native_segments.total_size(root, native_id)):
             raise
         return []
-    # Per operation, its reply's messages in order (`_fold_text`, `_reply_text`): a message's
+    # Per unit, its reply's messages in order (`_fold_text`, `_reply_text`): a message's
     # SETTLED text when the client sent one, else its streamed pieces joined. Some clients
     # (opencode's API client) only ever stream, so a fold of settled text alone read their closing
     # message as nothing: HQ said "the tail is all tool calls" of a session whose pane showed a
     # full proposal. Pieces with no message id (Claude, ACP without `messageId`) are one message
     # until a settled text or a tool call ends it, never one paragraph per piece.
-    blocks: dict[str, list[dict]] = {}
-    keyed: dict[str, dict[str, dict]] = {}
-    streaming: dict[str, dict | None] = {}  # per operation, the message streaming now
-    final: dict[str, str] = {}
-    tools: dict[str, dict[str, dict]] = {}
+    Unit = tuple[str, str]  # ("op", operation_id) | ("agent", agent_turn)
+    blocks: dict[Unit, list[dict]] = {}
+    keyed: dict[Unit, dict[str, dict]] = {}
+    streaming: dict[Unit, dict | None] = {}  # per unit, the message streaming now
+    final: dict[Unit, str] = {}
+    tools: dict[Unit, dict[str, dict]] = {}
+    said_at: dict[Unit, float] = {}  # when the unit's newest reply text was recorded
+    agent_at: dict[str, int] = {}  # an own turn's place: its start, else its first event
     for item in journal.events:
         kind, data = item["event"]["kind"], item["event"]["data"]
         op = data.get("operation_id")
-        if not isinstance(op, str):
+        if isinstance(op, str):
+            unit: Unit = ("op", op)
+        elif isinstance(data.get("agent_turn"), str) and data["agent_turn"]:
+            unit = ("agent", data["agent_turn"])
+            agent_at.setdefault(data["agent_turn"], item["cursor"])
+        else:
+            target = data.get("background_turn") if kind == "background" else None
+            if isinstance(target, str) and target:
+                agent_at.setdefault(target, item["cursor"])
             continue
+        ts = item.get("ts") if isinstance(item.get("ts"), int | float) else None
         if kind == "text" and isinstance(data.get("text"), str):
-            _fold_text(blocks.setdefault(op, []), keyed.setdefault(op, {}), streaming, op, data)
+            _fold_text(
+                blocks.setdefault(unit, []), keyed.setdefault(unit, {}), streaming, unit, data
+            )
+            if ts is not None and data["text"].strip():
+                said_at[unit] = ts
         elif kind == "turn_completed" and isinstance(data.get("text"), str):
-            final[op] = data["text"]
+            final[unit] = data["text"]
+            if ts is not None and unit not in said_at:
+                said_at[unit] = ts
         elif kind == "tool" and isinstance(data.get("item_id"), str):
-            streaming[op] = None  # text after a tool call is a new message
-            call = tools.setdefault(op, {}).setdefault(data["item_id"], {})
+            streaming[unit] = None  # text after a tool call is a new message
+            call = tools.setdefault(unit, {}).setdefault(data["item_id"], {})
             if isinstance(data.get("tool"), str) and data["tool"] and "name" not in call:
                 call["name"] = data["tool"]
             if isinstance(data.get("summary"), str) and data["summary"] and "summary" not in call:
@@ -1681,15 +1708,23 @@ def _native_turns(root: Path, native_id: str) -> list[Turn]:
             if data.get("state") in ("completed", "failed") and isinstance(output, str):
                 if output.strip():
                     call["output"] = output
-    out: list[Turn] = []
     removed = native_journal.withdrawn(journal)  # never sent: not part of the conversation
-    for op in journal.operations.values():
-        if op.request.get("action") != "submit" or op.operation_id in removed:
-            continue
-        text = op.request["params"].get("text")
-        if isinstance(text, str):
-            out.append(Turn("user", text))
-        for call in tools.get(op.operation_id, {}).values():
+    # The pane's timeline (`native_runtime`): messages by claim, own turns by start, one order.
+    timeline: list[tuple[int, int, Unit, object]] = []
+    for i, op in enumerate(journal.operations.values()):
+        if op.request.get("action") == "submit" and op.operation_id not in removed:
+            timeline.append((op.claimed_revision, i, ("op", op.operation_id), op))
+    for agent_turn, cursor in agent_at.items():
+        unit = ("agent", agent_turn)
+        if unit in blocks or unit in tools or unit in final:  # an own turn that recorded nothing
+            timeline.append((cursor, len(timeline), unit, None))
+    out: list[Turn] = []
+    for _pos, _i, unit, op in sorted(timeline, key=lambda e: (e[0], e[1])):
+        if op is not None:
+            text = op.request["params"].get("text")
+            if isinstance(text, str):
+                out.append(Turn("user", text, ts=op.ts or None))
+        for call in tools.get(unit, {}).values():
             if "name" in call:
                 arg = _short(_tool_arg(call.get("summary")))
                 out.append(Turn("assistant", f"{call['name']}({arg})", "tool"))
@@ -1699,9 +1734,9 @@ def _native_turns(root: Path, native_id: str) -> list[Turn]:
                 # that is itself block-shaped JSON can't be told from an older wrapper.
                 text = _result_text(call["output"])
                 out.append(Turn("tool", _short(text, _RESULT_MAX), "result"))
-        reply = _reply_text(blocks.get(op.operation_id, [])) or final.get(op.operation_id)
+        reply = _reply_text(blocks.get(unit, [])) or final.get(unit)
         if reply:
-            out.append(Turn("assistant", reply))
+            out.append(Turn("assistant", reply, ts=said_at.get(unit)))
     return tagged_turns(out[-_max_messages() :], len(out) > _max_messages())
 
 

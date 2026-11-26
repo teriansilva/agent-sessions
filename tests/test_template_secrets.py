@@ -674,8 +674,11 @@ def test_the_quick_handoff_seed_is_redacted(tmp_home, monkeypatch):
     _secret()
     monkeypatch.setattr(
         handoff,
-        "_source_texts",
-        lambda *_a: [("user", f"connect with {SECRET} please"), ("agent", f"ok, {SECRET} works")],
+        "_source_read",
+        lambda *_a: (
+            [("user", f"connect with {SECRET} please"), ("agent", f"ok, {SECRET} works")],
+            None,
+        ),
     )
     seed, _meta = handoff.build_quick_seed("claude", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
     assert SECRET not in seed

@@ -370,7 +370,7 @@ def test_quick_handoff_that_cannot_redact_is_an_explained_503(tmp_home, monkeypa
         raise template_secrets.RedactionUnavailable("the secret store could not be read")
 
     monkeypatch.setattr(handoff.template_secrets, "redaction_values", refuse)
-    monkeypatch.setattr(handoff, "_source_texts", lambda *_a: [("user", "hi there")])
+    monkeypatch.setattr(handoff, "_source_read", lambda *_a: ([("user", "hi there")], None))
     with pytest.raises(handoff.HandoffError) as exc:
         handoff.build_quick_seed("claude", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
     assert exc.value.status == 503 and "could not be redacted" in exc.value.detail

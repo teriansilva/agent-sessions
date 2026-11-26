@@ -153,7 +153,11 @@ _HANDOFF = (
     'sentences>", "open_items": ["<unresolved item>", ...], "next_steps": ["<concrete '
     'next action>", ...]}\nBe concrete and factual: name files, commands, errors, and '
     "decisions from the transcript. Never invent work that is not in the transcript. Use "
-    "at most 8 items per list; use an empty list when there are none."
+    "at most 8 items per list; use an empty list when there are none.\nThe transcript runs "
+    "oldest to newest: report where the work stands at its END, and let a later turn supersede "
+    "an earlier one. A turn labelled [user: earlier handoff brief, …] is a previous session's "
+    "summary, older than every turn after it: use it as background only, and never report "
+    "something it calls pending as pending when later turns show it done."
 )
 
 _HANDOFF_REMOTE = (
@@ -954,6 +958,10 @@ REGISTRY: tuple[Prompt, ...] = (
         max_chars=4000,
         block=BLOCK,
         field="handoff_brief",
+        # The default before #2418 taught it that later turns supersede an inherited brief.
+        retired_defaults=frozenset(
+            {"6229dae66d00c62f02e8e71ddb2d51c7da767e67128a0ef7040080f5cdb802c3"}
+        ),
     ),
     Prompt(
         id="handoff_remote_brief",

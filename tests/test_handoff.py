@@ -1225,7 +1225,8 @@ def test_ai_seed_shape_guard_caps_and_strips(fake_jsonl, monkeypatch):
     assert "\x1b" not in seed  # paste-breakout guard holds on model output too
     body = seed.split("## State")[1]
     assert len(body) < handoff.AI_STATE_MAX + 400  # state capped
-    assert seed.count("\n- ") <= handoff.AI_ITEMS_MAX  # item count capped
+    # Item count capped — counted in its own section: the header has `- ` lines of its own (#2418).
+    assert seed.split("## Open items")[1].count("\n- ") <= handoff.AI_ITEMS_MAX
     assert "- 42" not in seed  # non-string items dropped
     assert "## Next steps" not in seed  # a non-list becomes no section
 

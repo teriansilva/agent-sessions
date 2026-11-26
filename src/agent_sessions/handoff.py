@@ -175,10 +175,11 @@ def _clean(text: str) -> str:
     return _CTRL_RE.sub("", text)
 
 
-def _source_texts(engine: str, native: str) -> list[tuple[str, str]]:
-    """The source session's user/assistant text turns as engine-neutral ``(role, text)``
-    pairs, control-bytes stripped. Empty when the transcript can't be read/parsed — the
-    callers turn that into the 409 "nothing to hand off"."""
+def _source_read(engine: str, native: str) -> tuple[list[tuple[str, str]], float | None]:
+    """The source session's user/assistant text turns as engine-neutral ``(role, text)`` pairs,
+    control-bytes stripped, and when its newest timestamped turn was recorded (#2418: the brief
+    says how old it is). Empty when the transcript can't be read/parsed — the callers turn that
+    into the 409 "nothing to hand off"."""
     adapter = transcript.adapter_for(engine)
     turns: list[transcript.Turn] = []
     if adapter is not None:
@@ -186,11 +187,99 @@ def _source_texts(engine: str, native: str) -> list[tuple[str, str]]:
             turns = adapter(native, Path.home())
         except Exception:
             turns = []
-    return [
+    texts = [
         (("user" if t.role == "user" else "agent"), _clean(t.text).strip())
         for t in turns
         if t.kind == "text" and t.role in ("user", "assistant") and t.text.strip()
     ]
+    stamps = [t.ts for t in turns if isinstance(t.ts, int | float)]
+    return texts, (max(stamps) if stamps else None)
+
+
+def _source_texts(engine: str, native: str) -> list[tuple[str, str]]:
+    """The text turns of :func:`_source_read`, without the timestamp."""
+    return _source_read(engine, native)[0]
+
+
+# --- a brief inside a brief (#2418) -----------------------------------------------------------
+#
+# In a handoff chain the target's FIRST user message is the previous hop's brief. Two things went
+# wrong with that: it became the next brief's `task:` (stale state, cut mid-sentence), and nothing
+# told the summarizer it was older than every turn after it. It is recognised by the header the
+# builders here write, and labelled wherever a transcript is rendered.
+_BRIEF_PREFIXES = ("# Handoff — continued from a ", "# Record from a session on another BattleLab")
+#: The role label an inherited brief carries in the Quick seed and the AI input.
+INHERITED_LABEL = "user: earlier handoff brief, older than every turn after it"
+_TASK_LINE = re.compile(r"^- task: (.+)$", re.M)
+_SESSION_LINE = re.compile(r"^- session: (\S+)$", re.M)
+_INHERITED_SUFFIX = re.compile(r"\(inherited from [^()]*\)$")
+
+
+def is_handoff_brief(text: str) -> bool:
+    """Is ``text`` a handoff document one of the builders here wrote?"""
+    return (text or "").lstrip().startswith(_BRIEF_PREFIXES)
+
+
+def _label(role: str, text: str) -> str:
+    return INHERITED_LABEL if role == "user" and is_handoff_brief(text) else role
+
+
+def task_title(
+    title: str, first_user_message: str, texts: list[tuple[str, str]] | tuple = ()
+) -> str:
+    """The header's ``task:`` (#2418). ``title`` — the session's own name (a manual rename, else
+    its review title) — wins. Without one, the first user message stands in, EXCEPT when it is an
+    inherited brief: then the task is that brief's own ``task:``, marked as inherited from the
+    session it names, never the brief's text. A task already marked keeps its first origin.
+
+    The session scan keeps only a first LINE of the first message, which for a brief is its
+    title line and holds neither ``task:`` nor ``session:``, so the brief is read from the
+    transcript (``texts``) when it is there; when it is not, the task says so rather than guess."""
+    if title.strip():
+        return title
+    first = first_user_message or ""
+    if not is_handoff_brief(first):
+        return first
+    brief = next((t for r, t in texts if r == "user" and is_handoff_brief(t)), first)
+    task = _TASK_LINE.search(brief)
+    origin = _SESSION_LINE.search(brief)
+    label = " ".join(task.group(1).split()) if task else ""
+    if label and _INHERITED_SUFFIX.search(label):
+        return label
+    where = origin.group(1) if origin else "an earlier session"
+    return f"{label} (inherited from {where})" if label else f"(inherited from {where})"
+
+
+def _maybe_clipped(title: str, first_message: str) -> bool:
+    """Is ``title`` the scan's first line of the first message, at its cap — so possibly cut?"""
+    return (
+        bool(first_message)
+        and title == first_message
+        and (len(title) >= metadata.TITLE_FALLBACK_MAX)
+    )
+
+
+def _redacted_title(
+    title: str, first_message: str, texts: list[tuple[str, str]], secrets: list[str]
+) -> str:
+    """``title`` with every secret redacted (#2418). Text cut BEFORE it gets here — the scan keeps
+    a 120-character first line — can end inside a secret in any of the encodings the shared
+    redactor knows (raw, URL-encoded, JSON-escaped), which no whole-value match catches (Hermes on
+    PR #2419). So a possibly-cut title is rebuilt from the FULL first message in ``texts``
+    (unredacted), redacted whole and only then cut; if that message is not in the transcript, the
+    title is dropped rather than shipped unchecked."""
+    if not secrets:
+        return title
+    if not _maybe_clipped(title, first_message):
+        return template_secrets.redact_text(title, secrets)
+    full = next((t for r, t in texts if r == "user" and metadata.title_candidate(t) == title), None)
+    if full is None:
+        return ""
+    return metadata.title_candidate(template_secrets.redact_text(full, secrets))
+
+
+def _iso(ts: float) -> str:
+    return datetime.fromtimestamp(ts, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 # The header's task line is a one-line label, not content: `first_user_message` can be
@@ -263,7 +352,14 @@ def resolve_source_location(engine: str, native: str, *, include: bool) -> str |
 
 
 def _head_lines(
-    engine: str, native: str, title: str, cwd: str, *, transcript_loc: str | None = None
+    engine: str,
+    native: str,
+    title: str,
+    cwd: str,
+    *,
+    transcript_loc: str | None = None,
+    as_of: float | None = None,
+    last_message: float | None = None,
 ) -> list[str]:
     """The shared handoff-document header — identical for Quick and AI, so a target agent
     reads the same provenance framing either way. The title is bounded; `_cap` is the
@@ -284,6 +380,10 @@ def _head_lines(
     ``include_source_ref`` in exactly the long-path case #718 exists to repair. Either line is
     dropped outright when its value cannot be rendered usefully, along with the guidance that
     depends on it: an empty label is worse than an absent one.
+
+    ``- state as of:`` (when the brief was built) and ``- last message:`` (the source's newest
+    timestamped turn) let the receiving agent see how old the brief is (#2418): a brief that is
+    hours behind the work it describes reads as such, so the agent checks before redoing it.
     """
     head = [
         f"# Handoff — continued from a {engine} session",
@@ -298,6 +398,12 @@ def _head_lines(
     if title:
         one_line = " ".join(_clean(title).split())[:HEAD_TITLE_MAX]
         head.append(f"- task: {one_line}")
+    if as_of is not None:
+        head.append(f"- state as of: {_iso(as_of)}")
+    if last_message is not None:
+        head.append(f"- last message: {_iso(last_message)}")
+    elif as_of is not None:
+        head.append("- last message: unknown (the transcript records no times)")
     budget = _head_provenance_budget()
     # Half is ring-fenced for the locator whenever there is one, so `workdir` cannot starve it.
     loc_share = budget // 2 if transcript_loc else 0
@@ -318,6 +424,64 @@ def _head_lines(
     return head
 
 
+#: Commits a brief lists (#2418): facts the receiving agent needs no summary to trust.
+SEED_COMMITS = 5
+COMMIT_SUBJECT_MAX = 100
+#: What a subject `git_log` had to cut says instead, when secrets are configured.
+SUBJECT_OMITTED = "(subject omitted: too long to check for secrets)"
+
+
+def recent_commits(cwd: str) -> list[str]:
+    """The SOURCE session's workdir's newest first-parent commits as brief lines, or ``[]``
+    (#2418). ``cwd`` is where the source ran, not where the target launches (an adopted session
+    launches in its project's default folder); the section says it is workdir-wide history, not
+    a claim that this session wrote or pushed those commits.
+
+    Read through ``gitpanel.git_log`` and nothing else: it is the hardened, contained read the git
+    panel uses (sanitized gitdir, no diff, so no repo-configured program runs), and this adds no
+    subprocess of its own. Not a repo, outside the roots, any git failure → ``[]`` and the section
+    is left out; it is a hint, never a reason to refuse a handoff. Subjects are redacted like the
+    turns (a secret template value can be in a commit message) and the section fails CLOSED: if
+    the secrets cannot be read, no commit is listed."""
+    if not cwd:
+        return []
+    from . import gitpanel
+
+    try:
+        log = gitpanel.git_log(cwd, SEED_COMMITS)
+        secrets = template_secrets.redaction_values()
+    except Exception:  # noqa: BLE001 — facts are optional; any failure omits them
+        return []
+    lines: list[str] = []
+    for c in log.get("commits") or []:
+        raw = str(c.get("subject", ""))
+        if secrets and len(raw) >= gitpanel.LOG_TEXT_MAX:
+            # `git_log` already cut it, possibly inside a secret in an encoding no whole-value
+            # match catches (Hermes on PR #2419): left out, never shipped unchecked.
+            subject = SUBJECT_OMITTED
+        else:
+            # Redacted BEFORE this cut, so the cut can never split a secret.
+            subject = template_secrets.redact_text(raw, secrets) if secrets else raw
+            subject = " ".join(_clean(subject).split())[:COMMIT_SUBJECT_MAX]
+        when = c.get("time")
+        stamp = f" {_iso(when)}" if isinstance(when, int) else ""
+        pushed = " (not pushed)" if c.get("pushed") is False else ""
+        lines.append(f"- {_clean(str(c.get('short', '')))}{stamp} {subject}{pushed}")
+    return lines
+
+
+def _with_commits(doc: str, commits: list[str]) -> str:
+    """``doc`` plus a ``## Recent commits`` section, only when the whole still fits the cap: the
+    facts are added AFTER the brief is capped, so they can never evict a turn or the state."""
+    if not commits:
+        return doc
+    section = (
+        "\n".join(["", "## Recent commits (source workdir, newest first)", "", *commits]) + "\n"
+    )
+    out = doc + section
+    return out if len(out.encode("utf-8")) <= SEED_CAP_BYTES else doc
+
+
 def build_quick_seed(
     engine: str,
     native: str,
@@ -325,6 +489,8 @@ def build_quick_seed(
     title: str = "",
     cwd: str = "",
     include_source_ref: bool = False,
+    commits_cwd: str = "",
+    first_message: str = "",
 ) -> tuple[str, dict]:
     """The Quick (last-N-turns) handoff document + its meta, from the source session's
     parsed transcript. Engine-neutral ``[user]``/``[agent]`` labels; hard byte cap.
@@ -332,9 +498,11 @@ def build_quick_seed(
     Raises ``HandoffError(409)`` when the transcript yields no usable turns (a brand-new
     or unreadable session has nothing to hand off).
     """
-    texts = _source_texts(engine, native)
+    texts, last_message = _source_read(engine, native)
     if not texts:
         raise HandoffError(409, "source transcript is empty — nothing to hand off")
+    as_of = time.time()
+    title = task_title(title, first_message, texts)
     # A secret template value (#1090) sent into the source is in these turns. The Quick seed
     # goes to the browser as the preview and then into ANOTHER agent — possibly another vendor's
     # — without passing `review._post_chat`, so it is redacted here, once, before anything is
@@ -347,6 +515,9 @@ def build_quick_seed(
         raise HandoffError(
             503, f"{e} — secrets could not be redacted, so nothing was prepared"
         ) from None
+    # The title too: it can be the first user message, or a task inherited from a brief. From
+    # the RAW texts, before they are redacted below: a cut title is rebuilt from its full message.
+    title = _redacted_title(title, first_message, texts, secrets)
     if secrets:
         texts = [(role, template_secrets.redact_text(text, secrets)) for role, text in texts]
     tail = texts[-SEED_MAX_TURNS:]
@@ -354,12 +525,16 @@ def build_quick_seed(
     loc = resolve_source_location(engine, native, include=include_source_ref)
 
     def _parts(rows: list[tuple[str, str]]) -> tuple[str, list[str]]:
-        head = _head_lines(engine, native, title, cwd, transcript_loc=loc) + [
-            "",
-            "## Recent turns",
-            "",
-        ]
-        return "\n".join(head), [f"[{role}] {text}" for role, text in rows]
+        head = _head_lines(
+            engine,
+            native,
+            title,
+            cwd,
+            transcript_loc=loc,
+            as_of=as_of,
+            last_message=last_message,
+        ) + ["", "## Recent turns", ""]
+        return "\n".join(head), [f"[{_label(role, text)}] {text}" for role, text in rows]
 
     def _doc(rows: list[tuple[str, str]]) -> str:
         head_text, body = _parts(rows)
@@ -376,13 +551,15 @@ def build_quick_seed(
     # (PR #703 review round 2). Every generated document now exits through `_cap`, so the
     # advertised cap is the real one whatever the input shape.
     capped = _cap(doc)
+    turns = _rendered_turns(*_parts(tail), len(capped.encode("utf-8")))
+    capped = _with_commits(capped, recent_commits(commits_cwd))
     meta = {
         "mode": "quick",
         # What was RENDERED, not what was selected (#718). The trim loop above stops at one
         # turn, so a final `_cap` can still cut into (or, at a pathological cap, past) the body
         # — and `meta.turns` claiming turns the document does not contain is the reader's only
         # signal that the seed is short, so it has to be measured rather than assumed.
-        "turns": _rendered_turns(*_parts(tail), len(capped.encode("utf-8"))),
+        "turns": turns,
         "bytes": len(capped.encode("utf-8")),
         "cap": SEED_CAP_BYTES,
     }
@@ -419,7 +596,7 @@ def _ai_input(texts: list[tuple[str, str]]) -> str:
     rows: list[str] = []
     total = 0
     for role, text in reversed(texts):
-        line = f"[{role}] {text}"
+        line = f"[{_label(role, text)}] {text}"
         if total + len(line) > AI_INPUT_CHARS:
             if rows:
                 break
@@ -461,6 +638,8 @@ async def build_ai_seed(
     title: str = "",
     cwd: str = "",
     include_source_ref: bool = False,
+    commits_cwd: str = "",
+    first_message: str = "",
 ) -> tuple[str, dict]:
     """The AI-summarized handoff document + its meta (#597 Phase 2), via the
     already-configured AI-review endpoint (no new endpoint — the issue's constraint).
@@ -472,9 +651,11 @@ async def build_ai_seed(
     """
     from . import prompts, review  # late import: review pulls httpx; keep handoff import-light
 
-    texts = await asyncio.to_thread(_source_texts, engine, native)
+    texts, last_message = await asyncio.to_thread(_source_read, engine, native)
     if not texts:
         raise HandoffError(409, "source transcript is empty — nothing to hand off")
+    as_of = time.time()
+    title = task_title(title, first_message, texts)
     obj = await review.complete_json(
         [
             {"role": "system", "content": prompts.effective("handoff_brief")},
@@ -482,6 +663,14 @@ async def build_ai_seed(
         ]
     )
     state, open_items, next_steps = _ai_shape_guard(obj)
+    # The title reaches the target without `_post_chat`: redacted like the Quick seed's (#2418).
+    try:
+        secrets = await asyncio.to_thread(template_secrets.redaction_values)
+    except template_secrets.RedactionUnavailable as e:
+        raise HandoffError(
+            503, f"{e} — secrets could not be redacted, so nothing was prepared"
+        ) from None
+    title = _redacted_title(title, first_message, texts, secrets)
     # AFTER the endpoint call, deliberately (#716): the transcript location must never appear in
     # the payload sent to the review endpoint — only the target engine is meant to receive it.
     #
@@ -493,7 +682,15 @@ async def build_ai_seed(
     loc = await asyncio.to_thread(
         resolve_source_location, engine, native, include=include_source_ref
     )
-    lines = _head_lines(engine, native, title, cwd, transcript_loc=loc) + [
+    lines = _head_lines(
+        engine,
+        native,
+        title,
+        cwd,
+        transcript_loc=loc,
+        as_of=as_of,
+        last_message=last_message,
+    ) + [
         "",
         "## State",
         "",
@@ -505,6 +702,8 @@ async def build_ai_seed(
         lines += ["", "## Next steps", ""] + [f"- {i}" for i in next_steps]
     doc = "\n".join(lines) + "\n"
     doc = _cap(doc)
+    # Like the locator: AFTER the endpoint call, so the commits are never sent to it.
+    doc = _with_commits(doc, await asyncio.to_thread(recent_commits, commits_cwd))
     return doc, {
         "mode": "ai",
         # Unlike Quick, AI renders no turns — it renders ONE summary derived from all of them,
