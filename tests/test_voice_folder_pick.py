@@ -37,15 +37,14 @@ def _view(op: str = "project.default_folder", needs=("folder",), **extra) -> dic
     return {"proposals": [card, *extra.get("more", [])]}
 
 
-PICK_LINE = (
-    "Default launch folder, for web: New sessions start in the folder you pick. The first is"
-    " /home/op/code/web and the second is /home/op/code/web-docs."
-)
+PICK_LINE = "Default launch folder, for web: New sessions start in the folder you pick."
+#: The options, offered the way a person offers them (#2342 H1).
+PICK_ASK = "Which folder: /home/op/code/web or /home/op/code/web-docs?"
 
 
 def test_a_pick_is_offered_with_the_cards_own_choices():
     (card,) = voice_calls.confirmable_cards(_view(), picks={"op-1": FOLDERS})
-    assert card["kind"] == "pick" and card["line"] == PICK_LINE
+    assert card["kind"] == "pick" and card["line"] == PICK_LINE and card["ask"] == PICK_ASK
     assert [o["label"] for o in card["options"]] == FOLDERS
 
 
@@ -85,7 +84,7 @@ def test_a_folder_is_picked_by_number_and_settled_through_decide(monkeypatch):
 
     async def go():
         await r.ask("Make web-docs the default folder for web")
-        assert r.said_text()[-1] == f"{PICK_LINE} Which folder?"
+        assert r.said_text()[-1] == f"{PICK_LINE} {PICK_ASK}"
         await r.readback_played()
         await r.ask("The second one.")
 
@@ -96,6 +95,7 @@ def test_a_folder_is_picked_by_number_and_settled_through_decide(monkeypatch):
 
 @pytest.mark.parametrize("said", ["Confirm.", "The third one.", "web docs", "Yes."])
 def test_anything_but_one_of_its_numbers_decides_nothing(said, monkeypatch):
+    """Not one of its numbers: the pick judge hears it (#2342 H1); with no verdict, nothing."""
     r = _rig(monkeypatch, _view())
 
     async def go():
@@ -147,11 +147,11 @@ def test_a_cancel_with_cards_still_queued_says_they_all_stay(monkeypatch):
     assert r.call.challenge is None
 
 
-def test_on_a_call_in_another_language_the_hq_card_is_judged_and_the_pick_stays_on_screen(
+def test_on_a_call_in_another_language_the_hq_card_is_judged_and_the_pick_follows_it(
     monkeypatch,
 ):
-    """#1715 (Hermes 7282): a German call's judged card arms on its own; the pick, which keeps the
-    English grammar, follows it for the screen — mixed in one offer it would arm nothing."""
+    """#1715 (Hermes 7282): a German call's judged card arms on its own; the pick follows it alone
+    — mixed in one offer it would arm nothing — and is judged too (#2342 H1)."""
     r = _rig(monkeypatch, _view(more=[NUDGE]))
     r.call.language = "de"
     r.verdict = ("confirm", 0)
@@ -169,12 +169,11 @@ def test_on_a_call_in_another_language_the_hq_card_is_judged_and_the_pick_stays_
     run(go())
     assert any(p.endswith("/approve") for _, p, _ in r.routes)  # the nudge, judged
     said = r.said_text()[-1]
-    # read for the screen, closing in the call's language (#2342 phase 2)
-    assert said.startswith(PICK_LINE) and said.endswith("Das musst du selbst antippen.")
-    assert r.call.challenge is None  # the pick armed nothing
+    assert said.endswith("Welcher Ordner: /home/op/code/web oder /home/op/code/web-docs?")
+    assert [c["kind"] for c in r.call.challenge["cards"]] == ["pick"]  # armed, judged (H1)
 
 
-def test_only_picks_on_a_call_in_another_language_are_read_for_the_screen(monkeypatch):
+def test_a_pick_alone_on_a_call_in_another_language_is_offered_in_that_language(monkeypatch):
     r = _rig(monkeypatch, _view())
     r.call.language = "de"
 
@@ -182,9 +181,11 @@ def test_only_picks_on_a_call_in_another_language_are_read_for_the_screen(monkey
         await r.ask("Setz den Standardordner")
 
     run(go())
-    assert r.said_text()[-1].startswith(PICK_LINE)
-    assert r.said_text()[-1].endswith("Das musst du selbst antippen.")  # #2342 phase 2
-    assert r.call.challenge is None
+    assert r.said_text()[-1] == (
+        "Default launch folder, für web: New sessions start in the folder you pick. "
+        "Welcher Ordner: /home/op/code/web oder /home/op/code/web-docs?"
+    )
+    assert [c["kind"] for c in r.call.challenge["cards"]] == ["pick"]
 
 
 def test_a_pick_without_a_choice_never_settles(monkeypatch):
@@ -247,9 +248,8 @@ def test_the_real_cards_effect_is_read_before_the_pick(live, ai, action, effect)
     turn = live.get(cid)["turns"][-1]
     (card,) = voice_calls.confirmable_cards(turn, picks=asyncio.run(voice_calls.folder_picks(turn)))
     label = turn["proposals"][0]["label"]
-    assert card["line"] == (
-        f"{label}, for web: {effect} The first is /srv/web and the second is" " /srv/web-docs."
-    )
+    assert card["line"] == f"{label}, for web: {effect}"
+    assert card["ask"] == "Which folder: /srv/web or /srv/web-docs?"
 
 
 # --- a browsed-for folder, suggested from the project's name (#1681, the operator's decision) ---

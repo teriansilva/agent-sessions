@@ -26,6 +26,14 @@ Cost posture (the issue's "runaway cost / hammering the endpoint" risk):
 * **Failure backoff**: consecutive all-failure sweeps double the sleep (capped) so a down
   endpoint is probed ever more gently; any success resets the cadence.
 
+Title once (#2332): with ``session_review.rename_sessions`` off and ``title_once`` on, a NEW
+session gets ONE title from a review of its first messages, stored as ``initial_title``. "New" means
+absent from the baseline — every session key that existed when this version first armed — and
+created after it. A configured endpoint is enough: with periodic reviews off the sweep runs a
+once-pass over those sessions only, one title-only call each (``review.review_title``). An input
+already reviewed is adopted with no call; an input that produced no title is not asked again until
+it changes (a screen-only session: not again this server run); an endpoint failure is retried.
+
 Staleness semantics ride on Phase 1 unchanged: a failed review raises inside
 ``run_review`` and persists NOTHING — ``reviewed_at``/``review_fingerprint`` only move on
 success, so the failed session stays "changed" and is retried next sweep while the UI
@@ -39,7 +47,7 @@ import logging
 import os
 import time
 
-from . import aitasks, lineage, metadata, prefs, review
+from . import aitasks, atomicjson, lineage, metadata, prefs, review
 
 log = logging.getLogger("agent_sessions.ai_review_loop")
 
@@ -101,12 +109,26 @@ async def sweep(registry) -> tuple[list[str], int]:
     ``SWEEP_CAP`` attempts max). Safe to call directly from tests.
     """
     cfg = prefs.get_ai_review()
-    if not cfg["enabled"] or not _configured(cfg):
+    if not _configured(cfg):
         return [], 0
+    title_once = prefs.titles_new_sessions_once()
+    if not cfg["enabled"] and not title_once:
+        return [], 0
+    # The ranking runs off the loop (#1802): it scans API stores and reads the metadata sidecar,
+    # aliases included — the map every gather in the pass reuses.
+    keys = [row.get("id") for row in registry.snapshot()]
+    ranked, live, aliases = await asyncio.to_thread(_rank, keys)
+    _forget_gone(live)
+    pending: set[str] = set()
+    if title_once:
+        pending = await asyncio.to_thread(_title_pending, ranked, aliases)
+    only_pending = not cfg["enabled"]
+    if only_pending and not pending:
+        return [], 0  # periodic reviews off and no session owed a title: nothing to track
     # Track the real work in the shared AI-activity registry (#441) — only PAST the gate, so a
     # disabled/unconfigured sweep stays a silent no-op, not a phantom "review ran" entry.
     async with aitasks.track("ai-review", "sweep"):
-        return await _sweep(registry, cfg)
+        return await _sweep(cfg, ranked, aliases, pending, only_pending=only_pending)
 
 
 # Wall-clock of the last review ATTEMPT per key, successful or not. In-memory and best-effort:
@@ -116,6 +138,14 @@ async def sweep(registry) -> tuple[list[str], int]:
 # contract, or an `{"insufficient": true}` refusal) from monopolising the cap — `reviewed_at` alone
 # never advances for it, so it would stay the stalest and be retried ahead of everyone for ever.
 _LAST_ATTEMPT: dict[str, float] = {}
+
+# The input fingerprint of each session's last title-once attempt (#2332), or ``ANY_INPUT`` for a
+# session whose engine keeps no transcript (its screen changes all the time, so one attempt per
+# server run). In-memory: an input the model found nothing in, or titled "", is not sent again
+# while periodic reviews are off; an endpoint failure drops the entry so an outage is retried; a
+# restart costs at most one more attempt per session.
+_TITLE_ATTEMPTED: dict[str, str] = {}
+ANY_INPUT = "*"
 
 
 def _sort_key(key: str, meta) -> tuple[float, float]:
@@ -271,23 +301,126 @@ def _forget_gone(live: set[str]) -> None:
     """Drop attempt times for sessions no longer seen: on the loop, like every other write."""
     for gone in _LAST_ATTEMPT.keys() - live:
         _LAST_ATTEMPT.pop(gone, None)
+    for gone in _TITLE_ATTEMPTED.keys() - live:
+        _TITLE_ATTEMPTED.pop(gone, None)
 
 
-async def _sweep(registry, cfg: dict) -> tuple[list[str], int]:
-    """The actual review pass — called by :func:`sweep` only past its enable/configured gate."""
+def _adopt_title(key: str, title: str) -> None:
+    """Store an already-reviewed title as the session's once-title (#2332). Blocking: the resolve
+    reads the sidecar and the write takes its lock, so it runs in a thread like `run_review`'s."""
+    metadata.patch(metadata.resolve_key(key), initial_title=title)
+
+
+def _created_index() -> dict[str, float]:
+    """``session key → created_at`` (#506) from the cached scan. Blocking (the walk)."""
+    from . import engines
+
+    return {engines.session_key(s): float(s.created_at or 0) for s in engines.scan_all_cached()}
+
+
+def _read_baseline(path) -> tuple[float, frozenset[str]] | None:
+    try:
+        doc = atomicjson.read_json_doc(path)
+    except Exception:
+        return None
+    since, keys = doc.get("since"), doc.get("keys")
+    if (
+        isinstance(since, int | float)
+        and not isinstance(since, bool)
+        and since > 0
+        and isinstance(keys, list)
+        and all(isinstance(k, str) for k in keys)
+    ):
+        return float(since), frozenset(keys)
+    return None
+
+
+def title_once_baseline() -> tuple[float, frozenset[str]]:
+    """The title-once baseline (#2332): when this version first armed, and every session key that
+    existed then. Created on first use; **blocking** (a scan and a file write), so callers run it
+    in a thread. Raises when the sessions can't be listed — no baseline, so no once-pass, rather
+    than a baseline that would let an existing session pass as new.
+
+    The key set, not ``created_at`` alone, is what keeps existing sessions out: for some engines
+    ``created_at`` falls back to a file time that moves with every write, so an old session would
+    look new after its next turn.
+
+    Created with it, once: where the renaming default is what turns renaming off (nothing stored),
+    every reviewed session keeps its AI title as its once-title (``metadata.adopt_initial_titles``,
+    no endpoint call), so upgrading does not strip the names sessions already had."""
+    path = prefs.title_once_path()
+    got = _read_baseline(path)
+    if got is not None:
+        return got
+    keys = _existing_keys()
+    with atomicjson.json_write_lock(path):
+        got = _read_baseline(path)
+        if got is not None:
+            return got
+        if not prefs.rename_sessions_saved():
+            metadata.adopt_initial_titles()
+        since = time.time()
+        atomicjson.atomic_write_json(path, {"since": since, "keys": keys})
+    return since, frozenset(keys)
+
+
+def _existing_keys() -> list[str]:
+    """Every session key that exists NOW, archived included, from a FRESH scan that proves it is
+    complete (Hermes on PR #2334): never the sidebar's cached snapshot, which may predate a session
+    already on disk, and never a fail-soft listing that dropped an unreadable store. A store that
+    could not be read raises, so no baseline is written and the next pass asks again."""
+    from . import engines
+
+    rows, problems = engines.scan_all_checked()
+    if problems:
+        raise RuntimeError(f"title-once baseline: {len(problems)} session store problem(s)")
+    return sorted({engines.session_key(s) for s in rows})
+
+
+def _title_pending(ranked: list[tuple[str, object]], aliases: dict[str, str]) -> set[str]:
+    """The ranked sessions still owed their one title (#2332): no manual title, no once-title, not
+    in the baseline, and created after it. A session the scan can't place, or whose creation time
+    is unknown, is never pending. **Blocking**: runs in a thread."""
+    owed = [(k, m) for k, m in ranked if not m.title and not m.initial_title]
+    if not owed:
+        return set()
+    try:
+        since, existing = title_once_baseline()
+        created = _created_index()
+    except Exception:
+        log.debug("ai-review: no title-once baseline this sweep", exc_info=True)
+        return set()
+    out: set[str] = set()
+    for key, _meta in owed:
+        real = key if key in created else aliases.get(key, "")
+        at = created.get(real, 0.0)
+        if real and real not in existing and at and at >= since:
+            out.add(key)
+    return out
+
+
+async def _sweep(
+    cfg: dict,
+    ranked: list[tuple[str, object]],
+    aliases: dict[str, str],
+    pending: set[str],
+    *,
+    only_pending: bool,
+) -> tuple[list[str], int]:
+    """The actual review pass — called by :func:`sweep` only past its enable/configured gate.
+
+    ``pending``: sessions still owed their one title (#2332). ``only_pending``: periodic reviews
+    are off, so only those are reviewed, and only for a title."""
     max_chars = int(cfg["max_input_chars"])
     recap_chars = review.recap_input_chars(cfg)
     reviewed: list[str] = []
     failures = 0
     attempts = 0
-    # The ranking runs off the loop (#1802): it scans API stores and reads the metadata sidecar,
-    # aliases included — the map every gather below reuses.
-    keys = [row.get("id") for row in registry.snapshot()]
-    ranked, live, aliases = await asyncio.to_thread(_rank, keys)
-    _forget_gone(live)
     for key, meta in ranked:
         if attempts >= SWEEP_CAP:
             break
+        if only_pending and key not in pending:
+            continue
         # Change detection BEFORE any network I/O: gather_review_input is exactly what
         # run_review hashes+persists, so fingerprint equality ⇔ the endpoint would see
         # the same input it already reviewed. Nothing to review / a gather error just
@@ -303,24 +436,17 @@ async def _sweep(registry, cfg: dict) -> tuple[list[str], int]:
             # review of it is a brief about missing input that outlives the first real turn.
             log.debug("ai-review: no reviewable input for %s — skipping", key, exc_info=True)
             continue
-        # The recap (#481) carries an INDEPENDENT fingerprint over the WHOLE-session transcript,
-        # so the summary fingerprint alone is not enough to decide freshness: a session whose
-        # tail summary is already current can still NEED a (re)view — the recap call failed last
-        # pass (its fingerprint never advanced), or a legacy session has a summary but no recap
-        # yet. Re-review when EITHER input no longer matches what was persisted, so a failed /
-        # absent recap is retried instead of being stranded until the tail changes. A recap-gather
-        # error (nothing to recap) never forces a review on the recap's account. The retry re-runs
-        # run_review wholesale (summary + recap); that's bounded by SWEEP_CAP and only happens
-        # while the recap is genuinely behind.
-        recap_stale = False
-        try:
-            _, recap_fp = await asyncio.to_thread(
-                review.gather_recap_input, key, recap_chars, aliases
-            )
-            recap_stale = recap_fp != meta.recap_fingerprint
-        except Exception:
-            log.debug("ai-review: no recap input for %s", key, exc_info=True)
-        if fingerprint == meta.review_fingerprint and not recap_stale:
+        owed = key in pending
+        if owed and meta.ai_title and fingerprint == meta.review_fingerprint:
+            # This very input was already reviewed ("Review now", or periodic reviews before they
+            # were switched off): its title IS the once-title, no call needed.
+            await asyncio.to_thread(_adopt_title, key, meta.ai_title)
+            continue
+        if only_pending:
+            if _TITLE_ATTEMPTED.get(key) in (fingerprint, ANY_INPUT):
+                continue  # this input (or, screen-only, this server run) already had its attempt
+            _TITLE_ATTEMPTED[key] = fingerprint if review.keeps_transcript(key) else ANY_INPUT
+        elif not await _needs_review(key, meta, fingerprint, recap_chars, aliases):
             continue
         if attempts:
             await asyncio.sleep(CALL_SPACING_S)
@@ -329,10 +455,15 @@ async def _sweep(registry, cfg: dict) -> tuple[list[str], int]:
         # the case `reviewed_at` cannot record and the case that would otherwise starve the queue.
         _LAST_ATTEMPT[key] = time.time()
         try:
-            await review.run_review(key, aliases)
+            if only_pending:
+                await review.review_title(key, aliases)  # one call; the title is all it keeps
+            else:
+                await review.run_review(key, aliases, set_initial_title=owed)
             reviewed.append(key)
         except review.NotConfiguredError:
-            # Config cleared mid-sweep — nothing further can succeed this pass.
+            # Config cleared mid-sweep — nothing further can succeed this pass. Not an answer
+            # about this input, so its title attempt is retried once the endpoint is back.
+            _TITLE_ATTEMPTED.pop(key, None)
             break
         except review.InsufficientInputError:
             # The model found no work to describe (prompts.INSUFFICIENT_CLAUSE). Nothing was
@@ -341,13 +472,36 @@ async def _sweep(registry, cfg: dict) -> tuple[list[str], int]:
             log.debug("ai-review: %s shows no work to describe yet", key)
         except review.ReviewError as e:
             # Fail-soft (#356): run_review persisted nothing, the session stays
-            # "changed" and is retried next sweep. Message is operator-safe (no key).
+            # "changed" and is retried next sweep. Message is operator-safe (no key). A title
+            # attempt that failed (endpoint down, 429, refused) is retried too.
+            _TITLE_ATTEMPTED.pop(key, None)
             failures += 1
             log.warning("ai-review failed for %s: %s", key, e)
         except Exception:
+            _TITLE_ATTEMPTED.pop(key, None)
             failures += 1
             log.exception("ai-review crashed for %s", key)
     return reviewed, failures
+
+
+async def _needs_review(key: str, meta, fingerprint: str, recap_chars: int, aliases) -> bool:
+    """The periodic sweep's freshness test: the tail input or the recap input changed.
+
+    The recap (#481) carries an INDEPENDENT fingerprint over the WHOLE-session transcript, so the
+    summary fingerprint alone is not enough to decide freshness: a session whose tail summary is
+    already current can still NEED a (re)view — the recap call failed last pass (its fingerprint
+    never advanced), or a legacy session has a summary but no recap yet. Re-review when EITHER
+    input no longer matches what was persisted, so a failed / absent recap is retried instead of
+    being stranded until the tail changes. A recap-gather error (nothing to recap) never forces a
+    review on the recap's account. The retry re-runs run_review wholesale (summary + recap);
+    that's bounded by SWEEP_CAP and only happens while the recap is genuinely behind."""
+    recap_stale = False
+    try:
+        _, recap_fp = await asyncio.to_thread(review.gather_recap_input, key, recap_chars, aliases)
+        recap_stale = recap_fp != meta.recap_fingerprint
+    except Exception:
+        log.debug("ai-review: no recap input for %s", key, exc_info=True)
+    return fingerprint != meta.review_fingerprint or recap_stale
 
 
 async def run(registry) -> None:
@@ -359,6 +513,12 @@ async def run(registry) -> None:
         log.info("ai-review loop disabled (AGENT_SESSIONS_AI_REVIEW_LOOP=0)")
         return
     _wake = asyncio.Event()
+    # The title-once baseline (#2332) is taken when this version first arms, so every session that
+    # already exists is in it and is never reviewed for a once-title.
+    try:
+        await asyncio.to_thread(title_once_baseline)
+    except Exception:
+        log.debug("ai-review: title-once baseline failed — the first pass retries", exc_info=True)
     log.info("ai-review loop armed (gated on the ai_review prefs per sweep)")
     consecutive_failures = 0
     while True:

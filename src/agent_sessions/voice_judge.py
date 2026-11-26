@@ -151,6 +151,85 @@ async def judge_cards(
     return parse_card_verdict(content, cards)
 
 
+# ---- a pick by name, judged (#2342 H1) ----------------------------------------------------------
+
+#: The most options a judged pick may hold (`voice_calls.PICK_OPTIONS_TOLD`), and so the highest
+#: option number a verdict may name; kept here so the parser needs no app import.
+PICK_OPTIONS_MAX = 5
+_PICK_VERDICT = re.compile(r"(pick|none|cancel)(?: ([1-9]))?")
+
+
+def parse_pick_verdict(content: object, options: int) -> tuple[str, int | None] | None:
+    """The pick judge's answer (#2342 H1): `("pick", i)` (0-based, an option as it was read),
+    `("none", None)` or `("cancel", None)`, or `None`: no verdict. The parse is strict, like the
+    card judge's: the whole answer, trimmed of whitespace only, is one token of the closed set.
+    `pick` with no number, a number on `none` / `cancel`, and a number past the options read are
+    all outside the contract, so no verdict: nothing is picked."""
+    if not isinstance(content, str):
+        return None
+    m = _PICK_VERDICT.fullmatch(content.strip())
+    if m is None:
+        return None
+    word, n = m.group(1), m.group(2)
+    if word != "pick":
+        return (word, None) if n is None else None
+    if n is None or not 1 <= int(n) <= min(options, PICK_OPTIONS_MAX):
+        return None
+    return "pick", int(n) - 1
+
+
+def _pick_message(readback: str, options: list[str], reply: str) -> str:
+    # JSON-quoted: the texts are data, never instructions (the guard clause says so as well).
+    listed = [{"n": i + 1, "option": o} for i, o in enumerate(options[:PICK_OPTIONS_MAX])]
+    return "\n".join(
+        [
+            f"The options as HQ read them (quoted): {json.dumps(listed, ensure_ascii=False)}",
+            f"HQ asked (quoted): {json.dumps(readback, ensure_ascii=False)}",
+            f"The Commander replied (quoted): {json.dumps(reply, ensure_ascii=False)}",
+        ]
+    )
+
+
+async def judge_pick(
+    readback: str, options: list[str], reply: str
+) -> tuple[str, int | None] | None:
+    """Ask the HQ model which of `options` — the card's frozen snapshot, exactly as read — the
+    reply picks (#2342 H1, the operator's comment 141852 on #2342). The registered, guarded
+    `voice_pick_judge` prompt with its locked format, `temperature: 0`, the single transport and
+    `JUDGE_TIMEOUT_S`, as `judge_cards`. `None`: no verdict, and the caller picks nothing."""
+    from . import ai_providers, hq_calls_settings, hq_usage, prompts, review
+
+    if not 1 <= len(options) <= PICK_OPTIONS_MAX:
+        return None
+    try:
+        cfg = review._require_config()
+        body = {
+            "model": cfg["model"],
+            "messages": [
+                {"role": "system", "content": prompts.effective("voice_pick_judge")},
+                {"role": "user", "content": _pick_message(readback, options, reply)},
+            ],
+            "temperature": 0,
+            "stream": False,
+            "max_tokens": JUDGE_MAX_TOKENS,
+        }
+        with hq_usage.hq_call(), ai_providers.spoken_turn(**hq_calls_settings.spoken()):
+            r = await asyncio.wait_for(review.post_chat_response(cfg, body), JUDGE_TIMEOUT_S)
+        if r.status_code != 200:
+            return None
+        choice = r.json()["choices"][0]
+        message = choice["message"]
+        if choice.get("finish_reason") != "stop" or message.get("refusal"):
+            return None
+        content = message.get("content")
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 — no verdict: nothing is picked
+        log.info("voice pick judge gave no verdict", exc_info=True)
+        return None
+    return parse_pick_verdict(content, len(options))
+
+
 # ---- a likely goodbye while HQ is idle (2026-11-25) ----------------------------------------------
 
 #: The call-end judgement's budget for a likely goodbye: past it, HQ answers the words as usual.

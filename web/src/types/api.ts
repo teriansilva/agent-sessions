@@ -2007,8 +2007,12 @@ export interface SessionReviewConfig {
    *  Optional so a server predating the field still parses; absent means on. */
   notify?: boolean;
   /** Show the review's AI title as the session's name (#1510). Off keeps each session's own
-   *  title; the review still writes it. Optional like `notify`; absent means on. */
+   *  title; the review still writes it. Optional like `notify`; absent means OFF since the
+   *  title-once change (a server that predates it sends the field explicitly). */
   rename_sessions?: boolean;
+  /** With renaming off, give a NEW session one title from a review of its first messages and
+   *  keep it. Optional like `notify`; absent means on. */
+  title_once?: boolean;
 }
 
 export interface AppConfig {

@@ -27,7 +27,8 @@ const DEPTH_FALLBACK: SessionReviewConfig = {
   recognise_prompts: true,
   decision_context: "standard",
   notify: true,
-  rename_sessions: true,
+  rename_sessions: false,
+  title_once: true,
 };
 
 /** How deeply a session is read before a decision (#1086 Phase 2): the `session_review` block.
@@ -38,6 +39,7 @@ const DEPTH_FALLBACK: SessionReviewConfig = {
  *  context after a save, so a remount never shows the pre-save value (#667). */
 export function SessionReviewDepth() {
   const cfgBlock = useConfig()?.session_review;
+  const endpointReady = useConfig()?.ai_review?.configured === true;
   const refreshConfig = useConfigRefresh();
   const [block, setBlock] = useState<SessionReviewConfig>(cfgBlock ?? DEPTH_FALLBACK);
   const [synced, setSynced] = useState(cfgBlock);
@@ -98,7 +100,7 @@ export function SessionReviewDepth() {
       <label className={styles.aiToggle}>
         <input
           type="checkbox"
-          checked={block.rename_sessions !== false}
+          checked={block.rename_sessions === true}
           disabled={saving}
           onChange={(e) => void save({ rename_sessions: e.currentTarget.checked })}
           data-testid="session-review-rename"
@@ -106,9 +108,31 @@ export function SessionReviewDepth() {
         <span>Rename sessions with the reviewed title</span>
       </label>
       <p className={styles.hint}>
-        Off: every session keeps its own title, if it has one — the review still writes its
-        summary, recap and intervention flag, and project sorting still reads them. A manual
-        rename always wins. Turning it back on restores the reviewed titles at once.
+        On: the title follows every review. Off: every session keeps its own title, if it has
+        one — the review still writes its summary, recap and intervention flag, and project
+        sorting still reads them. A manual rename always wins. Turning it back on restores the
+        reviewed titles at once.
+      </p>
+      <label className={styles.aiToggle}>
+        <input
+          type="checkbox"
+          checked={block.title_once !== false}
+          disabled={saving || block.rename_sessions === true || !endpointReady}
+          onChange={(e) => void save({ title_once: e.currentTarget.checked })}
+          data-testid="session-review-title-once"
+        />
+        <span>Title new sessions once</span>
+      </label>
+      <p className={styles.hint}>
+        While renaming is off, each new session’s first messages are sent once to the AI
+        endpoint — even with periodic reviews off — and the title it returns is kept; later
+        reviews never change it. Without an endpoint nothing is sent. Sessions from before this
+        option are left as they are.
+        {block.rename_sessions === true
+          ? " Not used while renaming is on: the title already follows every review."
+          : !endpointReady
+            ? " Needs the AI endpoint from Endpoint & model."
+            : ""}
       </p>
       <span className={styles.aiFieldLabel} id="decision-context-label">
         Decision context

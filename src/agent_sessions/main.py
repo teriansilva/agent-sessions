@@ -152,6 +152,16 @@ log = logging.getLogger("agent_sessions.main")
 _HERE = Path(__file__).parent
 _TEMPLATES = Jinja2Templates(directory=str(_HERE / "templates"))
 _STATIC = _HERE / "static"
+#: Requests the roster middleware does not pin (#2413): the two static mounts and the liveness
+#: probes, none of which reads engine state. Exact paths and mount prefixes only.
+_ROSTER_FREE_PREFIXES = ("/static/", "/assets/")
+_ROSTER_FREE_PATHS = frozenset({"/healthz", "/api/auth-check"})
+
+
+def _roster_free(path: str) -> bool:
+    return path in _ROSTER_FREE_PATHS or path.startswith(_ROSTER_FREE_PREFIXES)
+
+
 # Built React SPA (Vite → web/dist), the only UI. Repo layout: <repo>/web/dist; a
 # packaged install overrides via AGENT_SESSIONS_WEB_DIST.
 _WEB_DIST = Path(
@@ -700,6 +710,9 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     async def capture_engine_roster(request: Request, call_next):
         # Context propagates into the route's worker threads. A WebSocket is deliberately not
         # pinned for its lifetime: ATTACH retains its provider, while new work rechecks admission.
+        # Static files and the two liveness probes read no engine state (#2413): no roster pin.
+        if _roster_free(request.url.path):
+            return await call_next(request)
         with engines.registry.snapshot_scope(fresh=True):
             return await call_next(request)
 

@@ -97,6 +97,17 @@ class Rig:
             return await v() if callable(v) else v
 
         monkeypatch.setattr(voice_judge, "judge_interjection", fake_interject)
+        # The pick judge (#2342 H1): by default NO verdict, so nothing is picked. A test sets
+        # `self.pick_verdict` (or a callable); `self.picked` records what it saw.
+        self.pick_verdict: object = None
+        self.picked: list[tuple[str, list, str]] = []
+
+        async def fake_pick(readback, options, reply):
+            self.picked.append((readback, list(options), reply))
+            v = self.pick_verdict
+            return await v() if callable(v) else v
+
+        monkeypatch.setattr(voice_judge, "judge_pick", fake_pick)
         self.call = voice_calls.Call(
             id="c", cid="conv", contact="asia-woman", voice="aria", operator=object(),
             app=object(), registry=None, state="listening",

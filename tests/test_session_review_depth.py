@@ -22,7 +22,8 @@ def test_defaults_are_recognise_on_and_standard_context(tmp_path):
         "recognise_prompts": True,
         "decision_context": "standard",
         "notify": True,
-        "rename_sessions": True,
+        "rename_sessions": False,
+        "title_once": True,
     }
 
 
@@ -41,15 +42,15 @@ def test_writes_are_strict_and_unknown_keys_refused():
 
 
 def test_rename_sessions_reads_leniently_and_survives_other_writes(tmp_path):
-    """#1510: absent or malformed means ON (today's behaviour); a write of another field never
-    turns it back on."""
+    """#1510, default flipped by #2332: absent or malformed means OFF; a stored choice is kept, and
+    a write of another field never changes it."""
     path = tmp_path / "prefs.json"
-    assert prefs.renames_sessions(path) is True
-    path.write_text(json.dumps({"session_review": {"rename_sessions": "no"}}))
-    assert prefs.renames_sessions(path) is True
-    prefs.set_session_review({"rename_sessions": False}, path)
-    prefs.set_session_review({"decision_context": "deep"}, path)
     assert prefs.renames_sessions(path) is False
+    path.write_text(json.dumps({"session_review": {"rename_sessions": "yes"}}))
+    assert prefs.renames_sessions(path) is False
+    prefs.set_session_review({"rename_sessions": True}, path)
+    prefs.set_session_review({"decision_context": "deep"}, path)
+    assert prefs.renames_sessions(path) is True
     assert prefs.get_session_review(path)["decision_context"] == "deep"
 
 
@@ -64,7 +65,8 @@ def test_reads_are_lenient_and_a_partial_write_keeps_the_other_field(tmp_path):
         "recognise_prompts": True,
         "decision_context": "standard",
         "notify": True,
-        "rename_sessions": True,
+        "rename_sessions": False,
+        "title_once": True,
     }
     prefs.set_session_review({"decision_context": "deep"}, path)
     prefs.set_session_review({"recognise_prompts": False}, path)
@@ -72,7 +74,8 @@ def test_reads_are_lenient_and_a_partial_write_keeps_the_other_field(tmp_path):
         "recognise_prompts": False,
         "decision_context": "deep",
         "notify": True,
-        "rename_sessions": True,
+        "rename_sessions": False,
+        "title_once": True,
     }
 
 

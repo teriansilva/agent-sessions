@@ -11,7 +11,9 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import logging
+import os
 import secrets
+import stat
 import threading
 import time
 from collections import OrderedDict
@@ -40,6 +42,12 @@ _REQUEST_ROSTER = contextvars.ContextVar("engine_roster_generation", default=Non
 _GENERATION = 0
 _RELOAD_SIGNAL = None
 _COMMIT_SEEN = None
+#: The boundary check's unchanged-file shortcut (#2413). Each holds ``(fingerprint, state)`` of
+#: the last pass that VERIFIED and fully read its files: the fingerprint is taken BEFORE that
+#: read, so a write racing it always differs next time, and the state (``_RELOAD_SIGNAL`` /
+#: ``_COMMIT_SEEN``) must still be the one that pass left. Anything else takes the full pass.
+_RELOAD_CHECKED = None
+_COMMIT_CHECKED = None
 _VIEW_FACTORIES: dict[str, Callable] = {}
 _VIEW_RESTORERS: dict[str, Callable] = {}
 
@@ -78,24 +86,103 @@ def capture() -> Roster:
         )
 
 
-def sync_requested() -> None:
-    """Observe an explicit reload on another worker before starting new work/read scope."""
+_UNKNOWN = object()
+
+
+def _fingerprint(path: Path):
+    """What an unchanged file looks like to ``lstat``: an atomic replacement is a new inode, an
+    in-place write moves size/mtime/ctime, and chmod/chown/ACL edits move ctime. ``None`` is a
+    missing file (a state of its own); any other failure is `_UNKNOWN`, which never matches."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return _UNKNOWN
+    return (
+        st.st_dev,
+        st.st_ino,
+        st.st_size,
+        st.st_mtime_ns,
+        st.st_ctime_ns,
+        st.st_mode,
+        st.st_uid,
+        st.st_gid,
+        st.st_nlink,
+    )
+
+
+def _chain_fingerprint(directory: Path):
+    """Every input `provenance.open_verified` checks on the directories it walks, from ``/`` to
+    ``directory``: identity, type, mode, owner, group and access ACL — not mtime, since sibling
+    state files are replaced in the state directory all the time. A swapped component (a symlink,
+    a new directory), a chmod, chown or ACL edit anywhere on the chain re-verifies (#2413).
+
+    Group MEMBERSHIP is the one input no stat shows (`provenance._group_is_private` reads the
+    group database). So wherever the walk's verdict could depend on it — a directory that is
+    group-writable or carries an ACL, other than a root-owned sticky ancestor the walk exempts —
+    the chain is `_UNKNOWN`: no shortcut, every scope re-verifies (Hermes on #2413)."""
+    from ..plugins import provenance
+
+    chain = []
+    walked = [Path("/")]
+    for part in directory.parts[1:]:
+        walked.append(walked[-1] / part)
+    for index, current in enumerate(walked):
+        try:
+            st = os.lstat(current)
+        except OSError:
+            return _UNKNOWN
+        acl = provenance._acl_of(str(current))
+        exempt = st.st_uid == 0 and st.st_mode & stat.S_ISVTX and index < len(walked) - 1
+        if not exempt and (acl is not None or st.st_mode & 0o020):
+            return _UNKNOWN
+        chain.append((st.st_dev, st.st_ino, st.st_mode, st.st_uid, st.st_gid, acl))
+    return tuple(chain)
+
+
+def _unchanged(fingerprint: tuple, checked, state) -> bool:
+    return _UNKNOWN not in fingerprint and checked == (fingerprint, state)
+
+
+def _settled(before: tuple, measure: Callable[[], tuple], state):
+    """The record of a completed full pass, or None. It binds the fingerprint taken BEFORE the
+    pass, and only when the files still match it AFTER: anything that moved during the pass —
+    a replacement between the fingerprint and the read, a racing writer — is read again next
+    time instead of being cached against bytes it did not describe."""
+    return (before, state) if _UNKNOWN not in before and measure() == before else None
+
+
+def sync_requested(*, full: bool = True) -> None:
+    """Observe an explicit reload on another worker before starting new work/read scope.
+
+    ``full=False`` (a read scope, never admission) skips the verified read while ``reload.json``
+    and every directory above it are exactly as the last completed full pass found them (#2413).
+    """
     from ..plugins import manager, storage
 
-    global _RELOAD_SIGNAL
+    global _RELOAD_SIGNAL, _RELOAD_CHECKED
+    root = storage.root()
+    path = root / "reload.json"
+
+    def measure() -> tuple:
+        return (str(path), _chain_fingerprint(root), _fingerprint(path))
+
+    before = measure()
+    if not full and _unchanged(before, _RELOAD_CHECKED, _RELOAD_SIGNAL):
+        return
     with _ROSTER_LOCK:
-        path = storage.root() / "reload.json"
         signal = storage.read(path)
-        if signal is None:
-            return
-        if set(signal) != {"id"}:
-            raise manager.ManagerError("the roster reload request is unreadable")
-        marker = (str(path), manager._operation_id(signal["id"]))
-        if marker != _RELOAD_SIGNAL:
-            # A failed build preserves the old captured readers and remains pending. A new
-            # launch cannot use that old generation: its admission retries this same boundary.
-            reload()
-            _RELOAD_SIGNAL = marker
+        if signal is not None:
+            if set(signal) != {"id"}:
+                raise manager.ManagerError("the roster reload request is unreadable")
+            marker = (str(path), manager._operation_id(signal["id"]))
+            if marker != _RELOAD_SIGNAL:
+                # A failed build preserves the old captured readers and remains pending. A new
+                # launch cannot use that old generation: its admission retries this boundary.
+                reload()
+                _RELOAD_SIGNAL = marker
+        _RELOAD_CHECKED = _settled(before, measure, _RELOAD_SIGNAL)
 
 
 def request_reload() -> None:
@@ -122,14 +209,14 @@ def snapshot_scope(*, fresh: bool = False, require_current: bool = False):
     reload_problem = None
     if fresh or _REQUEST_ROSTER.get() is None:
         try:
-            sync_requested()
+            sync_requested(full=require_current)
         except (OSError, ValueError, provenance.ProvenanceError):
             if require_current:
                 raise
             # A damaged reload hint must not take login/health or existing attachments down.
             # Keep the last complete read view; live_provider never permits this fallback.
             reload_problem = "roster reload is unavailable; new work is refused"
-        sync_committed()
+        sync_committed(full=require_current)
     view = capture() if fresh else current()
     if reload_problem:
         view = replace(view, problems=MappingProxyType({**view.problems, "reload": reload_problem}))
@@ -177,13 +264,30 @@ def admission_snapshot() -> Roster:
     )
 
 
-def sync_committed() -> None:
-    """Reconcile the revision committed with enable/disable before admitting any new work."""
+def sync_committed(*, full: bool = True) -> None:
+    """Reconcile the revision committed with enable/disable before admitting any new work.
+
+    ``full=False`` (a read scope, never admission) skips the verified read of the manager state
+    while it, its revision marker and their directory are exactly as the last completed full pass
+    found them (#2413). An unreadable state is never cached: it re-reads every time, as before."""
     from ..plugins import manager, provenance, storage
 
-    global _COMMIT_SEEN
+    global _COMMIT_SEEN, _COMMIT_CHECKED
+    state = storage.root()
+
+    def measure() -> tuple:
+        return (
+            str(state.absolute()),
+            _chain_fingerprint(state),
+            _fingerprint(state / manager.DOCUMENT),
+            _fingerprint(state / manager.REVISION_MARKER),
+        )
+
+    before = measure()
+    if not full and _unchanged(before, _COMMIT_CHECKED, _COMMIT_SEEN):
+        return
     with _ROSTER_LOCK:
-        root = str(storage.root().absolute())
+        root = str(state.absolute())
         unavailable = (root, "unavailable")
         try:
             doc = manager.snapshot()
@@ -200,11 +304,13 @@ def sync_committed() -> None:
             if _COMMIT_SEEN == unavailable:
                 reload()  # restoration of legacy/empty state must recover too
                 _COMMIT_SEEN = (root, None)
+            _COMMIT_CHECKED = _settled(before, measure, _COMMIT_SEEN)
             return  # legacy/no manager changes; preserve the explicit fixture reload seam
         stamp = (root, revision)
         if stamp != _COMMIT_SEEN:
             reload()
             _COMMIT_SEEN = stamp  # a failed build is retried, never admitted on the old roster
+        _COMMIT_CHECKED = _settled(before, measure, _COMMIT_SEEN)
 
 
 def register_view(name: str, factory: Callable, restore: Callable) -> None:

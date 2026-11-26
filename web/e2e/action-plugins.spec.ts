@@ -189,6 +189,10 @@ test("an action whose requirement is not met can't be picked, says why and links
 
 for (const theme of ["dark", "light"] as const) {
   test(`captures the plugin actions — ${theme} (#2248 P2)`, async ({ page }, info) => {
+    // Three page loads and six full-page shots (1900 px tall on mobile) in one test. Measured
+    // 13–17 s on mobile locally; on the shared CI runner the one-worker recheck alone ran 34 s
+    // into the 30 s default (task 51282, #2324). Budget sized from that, local to this test.
+    test.setTimeout(90_000);
     await page.addInitScript((t) => localStorage.setItem("tr-theme", t), theme);
     const mobile = info.project.name === "mobile";
     await page.setViewportSize(mobile ? { width: 390, height: 1900 } : { width: 1440, height: 1300 });

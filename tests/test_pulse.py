@@ -71,6 +71,9 @@ def test_card_title_follows_the_keep_session_titles_choice(monkeypatch, tmp_path
     s = FakeSession("claude", "u-t", "/a", now - 3600, first_user_message="fix the parser")
     _setup(monkeypatch, [s], {"claude:u-t": metadata.SessionMeta(ai_title="Refactor parser")})
     monkeypatch.setenv("AGENT_SESSIONS_PREFS", str(tmp_path / "prefs.json"))
+    # Renaming is off by default since #2332.
+    assert pulse.build_cards(window_days=3, now=now)[0]["title"] == "fix the parser"
+    prefs.set_session_review({"rename_sessions": True})
     assert pulse.build_cards(window_days=3, now=now)[0]["title"] == "Refactor parser"
     prefs.set_session_review({"rename_sessions": False})
     assert pulse.build_cards(window_days=3, now=now)[0]["title"] == "fix the parser"

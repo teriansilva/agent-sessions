@@ -1,0 +1,372 @@
+{
+ "about": "#2342 H1: spoken folder picks, what the pick judge must answer. expect: an option index (0-based), \"none\" (ask which), or \"cancel\". Run against the live HQ model with scripts/voice-pick-corpus; CI checks the fast path and the duplicate guard against it.",
+ "cases": [
+  {
+   "lang": "en",
+   "kind": "name",
+   "options": [
+    "/home/op/code/web",
+    "/home/op/code/web-docs"
+   ],
+   "reply": "the web-docs one",
+   "expect": 1
+  },
+  {
+   "lang": "en",
+   "kind": "name",
+   "options": [
+    "/home/op/code/web",
+    "/home/op/code/web-docs"
+   ],
+   "reply": "web docs please",
+   "expect": 1
+  },
+  {
+   "lang": "en",
+   "kind": "name",
+   "options": [
+    "/home/op/code/api",
+    "/home/op/code/docs",
+    "/srv/www/landing"
+   ],
+   "reply": "api",
+   "expect": 0
+  },
+  {
+   "lang": "en",
+   "kind": "name",
+   "options": [
+    "/home/op/code/api",
+    "/home/op/code/docs",
+    "/srv/www/landing"
+   ],
+   "reply": "landing",
+   "expect": 2
+  },
+  {
+   "lang": "en",
+   "kind": "name",
+   "options": [
+    "/home/op/code/api",
+    "/home/op/code/docs",
+    "/srv/www/landing"
+   ],
+   "reply": "the docs folder",
+   "expect": 1
+  },
+  {
+   "lang": "en",
+   "kind": "description",
+   "options": [
+    "/home/op/code/api",
+    "/home/op/code/docs",
+    "/srv/www/landing"
+   ],
+   "reply": "the one under srv",
+   "expect": 2
+  },
+  {
+   "lang": "en",
+   "kind": "description",
+   "options": [
+    "/home/op/code/web",
+    "/home/op/code/web-docs"
+   ],
+   "reply": "the plain web one, not the docs",
+   "expect": 0
+  },
+  {
+   "lang": "en",
+   "kind": "ordinal",
+   "options": [
+    "/home/op/code/api",
+    "/home/op/code/docs",
+    "/srv/www/landing"
+   ],
+   "reply": "the last one",
+   "expect": 2
+  },
+  {
+   "lang": "en",
+   "kind": "ordinal",
+   "options": [
+    "/home/op/code/web",
+    "/home/op/code/web-docs"
+   ],
+   "reply": "the second",
+   "expect": 1
+  },
+  {
+   "lang": "en",
+   "kind": "ordinal",
+   "options": [
+    "/home/op/code/api",
+    "/home/op/code/docs",
+    "/srv/www/landing"
+   ],
+   "reply": "the middle one",
+   "expect": 1
+  },
+  {
+   "lang": "en",
+   "kind": "negation",
+   "options": [
+    "/home/op/code/web",
+    "/home/op/code/web-docs"
+   ],
+   "reply": "not the docs one",
+   "expect": 0
+  },
+  {
+   "lang": "en",
+   "kind": "negation",
+   "options": [
+    "/home/op/code/api",
+    "/home/op/code/docs",
+    "/srv/www/landing"
+   ],
+   "reply": "not the api one",
+   "expect": "none"
+  },
+  {
+   "lang": "en",
+   "kind": "negation",
+   "options": [
+    "/home/op/code/web",
+    "/home/op/code/web-docs"
+   ],
+   "reply": "definitely not web",
+   "expect": 1
+  },
+  {
+   "lang": "en",
+   "kind": "duplicate",
+   "options": [
+    "/home/op/work/docs",
+    "/home/op/private/docs"
+   ],
+   "reply": "the docs one",
+   "expect": "none"
+  },
+  {
+   "lang": "en",
+   "kind": "duplicate",
+   "options": [
+    "/home/op/work/docs",
+    "/home/op/private/docs"
+   ],
+   "reply": "docs",
+   "expect": "none"
+  },
+  {
+   "lang": "en",
+   "kind": "cancel",
+   "options": [
+    "/home/op/code/web",
+    "/home/op/code/web-docs"
+   ],
+   "reply": "no, leave it",
+   "expect": "cancel"
+  },
+  {
+   "lang": "en",
+   "kind": "cancel",
+   "options": [
+    "/home/op/code/api",
+    "/home/op/code/docs",
+    "/srv/www/landing"
+   ],
+   "reply": "never mind, not now",
+   "expect": "cancel"
+  },
+  {
+   "lang": "en",
+   "kind": "unclear",
+   "options": [
+    "/home/op/code/web",
+    "/home/op/code/web-docs"
+   ],
+   "reply": "hmm, which one was the newer one?",
+   "expect": "none"
+  },
+  {
+   "lang": "en",
+   "kind": "unclear",
+   "options": [
+    "/home/op/code/api",
+    "/home/op/code/docs",
+    "/srv/www/landing"
+   ],
+   "reply": "what's in the api folder",
+   "expect": "none"
+  },
+  {
+   "lang": "en",
+   "kind": "unclear",
+   "options": [
+    "/home/op/code/web",
+    "/home/op/code/web-docs"
+   ],
+   "reply": "uh, wait",
+   "expect": "none"
+  },
+  {
+   "lang": "de",
+   "kind": "name",
+   "options": [
+    "/home/op/code/web",
+    "/home/op/code/web-docs"
+   ],
+   "reply": "den web-docs Ordner",
+   "expect": 1
+  },
+  {
+   "lang": "de",
+   "kind": "name",
+   "options": [
+    "/home/op/code/api",
+    "/home/op/code/docs",
+    "/srv/www/landing"
+   ],
+   "reply": "api bitte",
+   "expect": 0
+  },
+  {
+   "lang": "de",
+   "kind": "name",
+   "options": [
+    "/home/op/code/api",
+    "/home/op/code/docs",
+    "/srv/www/landing"
+   ],
+   "reply": "nimm landing",
+   "expect": 2
+  },
+  {
+   "lang": "de",
+   "kind": "description",
+   "options": [
+    "/home/op/code/api",
+    "/home/op/code/docs",
+    "/srv/www/landing"
+   ],
+   "reply": "den unter srv",
+   "expect": 2
+  },
+  {
+   "lang": "de",
+   "kind": "description",
+   "options": [
+    "/home/op/code/web",
+    "/home/op/code/web-docs"
+   ],
+   "reply": "den ohne docs",
+   "expect": 0
+  },
+  {
+   "lang": "de",
+   "kind": "ordinal",
+   "options": [
+    "/home/op/code/api",
+    "/home/op/code/docs",
+    "/srv/www/landing"
+   ],
+   "reply": "den letzten",
+   "expect": 2
+  },
+  {
+   "lang": "de",
+   "kind": "ordinal",
+   "options": [
+    "/home/op/code/web",
+    "/home/op/code/web-docs"
+   ],
+   "reply": "die zweite",
+   "expect": 1
+  },
+  {
+   "lang": "de",
+   "kind": "ordinal",
+   "options": [
+    "/home/op/code/api",
+    "/home/op/code/docs",
+    "/srv/www/landing"
+   ],
+   "reply": "den ersten bitte",
+   "expect": 0
+  },
+  {
+   "lang": "de",
+   "kind": "negation",
+   "options": [
+    "/home/op/code/web",
+    "/home/op/code/web-docs"
+   ],
+   "reply": "nicht den docs",
+   "expect": 0
+  },
+  {
+   "lang": "de",
+   "kind": "negation",
+   "options": [
+    "/home/op/code/api",
+    "/home/op/code/docs",
+    "/srv/www/landing"
+   ],
+   "reply": "nicht den ersten",
+   "expect": "none"
+  },
+  {
+   "lang": "de",
+   "kind": "duplicate",
+   "options": [
+    "/home/op/work/docs",
+    "/home/op/private/docs"
+   ],
+   "reply": "den docs Ordner",
+   "expect": "none"
+  },
+  {
+   "lang": "de",
+   "kind": "cancel",
+   "options": [
+    "/home/op/code/web",
+    "/home/op/code/web-docs"
+   ],
+   "reply": "nee, lass mal",
+   "expect": "cancel"
+  },
+  {
+   "lang": "de",
+   "kind": "cancel",
+   "options": [
+    "/home/op/code/api",
+    "/home/op/code/docs",
+    "/srv/www/landing"
+   ],
+   "reply": "jetzt nicht",
+   "expect": "cancel"
+  },
+  {
+   "lang": "de",
+   "kind": "unclear",
+   "options": [
+    "/home/op/code/web",
+    "/home/op/code/web-docs"
+   ],
+   "reply": "äh, welcher war das nochmal?",
+   "expect": "none"
+  },
+  {
+   "lang": "en",
+   "kind": "unclear",
+   "options": [
+    "/home/op/code/api",
+    "/home/op/code/docs",
+    "/srv/www/landing"
+   ],
+   "reply": "the mobile app one",
+   "expect": "none"
+  }
+ ]
+}

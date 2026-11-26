@@ -11,8 +11,16 @@ vi.mock("../lib/api", async () => {
   return { ...actual, api: { setPrefs: vi.fn() } };
 });
 
-function renderDepth(block?: SessionReviewConfig, refresh: () => void = () => {}) {
-  const config = { csrf: "t", session_review: block } as unknown as AppConfig;
+function renderDepth(
+  block?: SessionReviewConfig,
+  refresh: () => void = () => {},
+  endpoint = true,
+) {
+  const config = {
+    csrf: "t",
+    session_review: block,
+    ai_review: { configured: endpoint },
+  } as unknown as AppConfig;
   return render(
     <ConfigRefreshCtx.Provider value={refresh}>
       <ConfigCtx.Provider value={config}>
@@ -125,12 +133,37 @@ test("the notify switch saves session_review.notify and defaults to on (#1086 P4
   await waitFor(() => expect(box).not.toBeChecked());
 });
 
-test("the rename switch saves session_review.rename_sessions and defaults to on (#1510)", async () => {
-  // A server predating the field sends no `rename_sessions`: that reads as ON (today's titles).
+test("the rename switch saves session_review.rename_sessions and defaults to off (#1510, #2332)", async () => {
+  // Absent reads as OFF since #2332 (every server since #1510 sends the field explicitly).
   renderDepth({ recognise_prompts: true, decision_context: "standard" });
   const box = screen.getByLabelText(/rename sessions with the reviewed title/i);
-  expect(box).toBeChecked();
+  expect(box).not.toBeChecked();
   await userEvent.click(box);
-  expect(api.setPrefs).toHaveBeenLastCalledWith({ session_review: { rename_sessions: false } });
+  expect(api.setPrefs).toHaveBeenLastCalledWith({ session_review: { rename_sessions: true } });
+  await waitFor(() => expect(box).toBeChecked());
+});
+
+test("the title-once switch saves session_review.title_once and defaults to on (#2332)", async () => {
+  renderDepth({ recognise_prompts: true, decision_context: "standard" });
+  const box = screen.getByLabelText(/title new sessions once/i);
+  expect(box).toBeChecked();
+  // The hint names the egress: first messages go to the endpoint even with periodic reviews off.
+  expect(screen.getByText(/first messages are sent once to the AI endpoint/i)).toBeInTheDocument();
+  await userEvent.click(box);
+  expect(api.setPrefs).toHaveBeenLastCalledWith({ session_review: { title_once: false } });
   await waitFor(() => expect(box).not.toBeChecked());
+});
+
+test("the title-once switch is disabled, and says why, while renaming is on or no endpoint is set", () => {
+  const { unmount } = renderDepth({
+    recognise_prompts: true,
+    decision_context: "standard",
+    rename_sessions: true,
+  });
+  expect(screen.getByLabelText(/title new sessions once/i)).toBeDisabled();
+  expect(screen.getByText(/not used while renaming is on/i)).toBeInTheDocument();
+  unmount();
+  renderDepth({ recognise_prompts: true, decision_context: "standard" }, () => {}, false);
+  expect(screen.getByLabelText(/title new sessions once/i)).toBeDisabled();
+  expect(screen.getByText(/needs the ai endpoint/i)).toBeInTheDocument();
 });

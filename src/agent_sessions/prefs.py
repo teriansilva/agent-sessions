@@ -2029,14 +2029,39 @@ _SESSION_REVIEW_DEFAULTS: dict[str, object] = {
     # Show the review's AI title as the session's name (#1510). Off: every display path skips
     # `ai_title` — the review still writes it, with the summary, recap and flag, and auto-sort still
     # reads it — so a session keeps its own name, and turning this back on restores the AI titles.
-    "rename_sessions": True,
+    # OFF by default since #2332: "default" means unset, so a stored choice is kept.
+    "rename_sessions": False,
+    # While renaming is off, give a NEW session one title from a review of its first messages and
+    # keep it (#2332): `metadata.SessionMeta.initial_title`, written once by the review loop. Only
+    # with a configured AI endpoint; sessions that existed when this arrived are never reviewed.
+    "title_once": True,
 }
 
 
 def renames_sessions(path: Path | None = None) -> bool:
     """Whether the review's AI title is shown as the session's name (#1510). One read per request:
     every display path asks this and passes it to `metadata.display_title`."""
-    return get_session_review(path)["rename_sessions"] is not False
+    return get_session_review(path)["rename_sessions"] is True
+
+
+def titles_new_sessions_once(path: Path | None = None) -> bool:
+    """Whether new sessions get their one title (#2332): the option is on and renaming is off."""
+    block = get_session_review(path)
+    return block["title_once"] is True and block["rename_sessions"] is not True
+
+
+def rename_sessions_saved(path: Path | None = None) -> bool:
+    """Whether `rename_sessions` is STORED (#2332), i.e. not following the default. A value an older
+    release wrote while saving another field counts as saved: it can't be told apart from a choice,
+    and keeping it is the conservative reading."""
+    raw = _load(path or _default_path()).get("session_review")
+    return isinstance(raw, dict) and isinstance(raw.get("rename_sessions"), bool)
+
+
+def title_once_path(path: Path | None = None) -> Path:
+    """Where the title-once baseline lives (#2332): beside prefs.json, so whatever isolates prefs
+    (a test's tmp file, another install's config dir) isolates it too."""
+    return (path or _default_path()).with_name("title-once.json")
 
 
 def get_session_review(path: Path | None = None) -> dict:
@@ -2055,6 +2080,8 @@ def _merge_session_review(base: dict, raw: object) -> dict:
             base["notify"] = raw["notify"]
         if isinstance(raw.get("rename_sessions"), bool):
             base["rename_sessions"] = raw["rename_sessions"]
+        if isinstance(raw.get("title_once"), bool):
+            base["title_once"] = raw["title_once"]
     return base
 
 
@@ -2073,17 +2100,27 @@ def validate_session_review_patch(patch: object) -> str | None:
         return "session_review.notify must be a boolean"
     if "rename_sessions" in patch and not isinstance(patch["rename_sessions"], bool):
         return "session_review.rename_sessions must be a boolean"
+    if "title_once" in patch and not isinstance(patch["title_once"], bool):
+        return "session_review.title_once must be a boolean"
     return None
 
 
 def set_session_review(patch: dict, path: Path | None = None) -> dict:
-    """Merge a VALIDATED partial block under the prefs lock (`_mutate`) and return the result."""
+    """Merge a VALIDATED partial block under the prefs lock (`_mutate`) and return the result.
+
+    Merges into the RAW stored block, never the defaults-applied one (#2332): only fields the
+    operator has actually saved are stored, so a field left unset keeps following the default when
+    a later release changes it."""
 
     def merge(stored: object) -> dict:
-        current = _merge_session_review(dict(_SESSION_REVIEW_DEFAULTS), stored)
-        return _merge_session_review(current, patch)
+        block = dict(stored) if isinstance(stored, dict) else {}
+        for k in _SESSION_REVIEW_DEFAULTS:
+            if k in patch:
+                block[k] = patch[k]
+        return block
 
-    return _mutate("session_review", merge, path)
+    _mutate("session_review", merge, path)
+    return get_session_review(path)
 
 
 # --- Session clusters (#1997) --------------------------------------------------------------------

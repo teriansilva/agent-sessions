@@ -123,9 +123,21 @@ Periodic review on or off, how often it runs, and the list of sessions excluded 
 exclude one from its row actions in the sidebar). **Review now** on a session works whenever the
 endpoint is configured, even with periodic review off. See [AI review](/guide/ai-review).
 
-**Titles** — *Rename sessions with the reviewed title* (on). Off, every session keeps its own title
-(a manual rename still wins); the review still writes its summary, recap and intervention flag, and
-auto-sort still reads them. Turning it back on restores the reviewed titles at once.
+**Titles** — *Rename sessions with the reviewed title* (off). On, the title follows every review.
+Off, every session keeps its own title (a manual rename still wins); the review still writes its
+summary, recap and intervention flag, and auto-sort still reads them. Turning it back on restores
+the reviewed titles at once. The default was *on* before this release. A value you saved is kept,
+and a value saved by an older version counts as your choice: older versions stored the whole block
+whenever you changed any of these settings. Where the new default is what turns renaming off,
+sessions that already had a reviewed title keep it as their name. That is copied locally on the
+first start, with no request to the endpoint.
+
+*Title new sessions once* (on). While renaming is off, each new session's first messages are sent
+once to the AI endpoint, in one request, even with periodic review off. The title that comes back
+is kept: later reviews never change it. Only the title is stored; that request writes no summary,
+recap or intervention flag. Without a configured endpoint nothing is sent, and the switch is
+unavailable while renaming is on or no endpoint is set. Sessions that existed when this version
+first started are left as they are.
 
 **Reading sessions** sets how deeply a session is read before a decision, and whether you are told:
 *Recognise questions and choices* (on), *Decision context* Standard | Deep (Standard), and *Notify

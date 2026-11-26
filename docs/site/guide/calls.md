@@ -193,6 +193,10 @@ and tells you whether it arrived.
 - When a card can't be confirmed by voice, HQ says why (for example, a new project whose folder
   doesn't exist yet). Confirm those on screen.
 - Tapping the card works too, and always wins.
+- A change that needs a folder from the project's list asks which ("Which folder: web or
+  web-docs?"). Name it, describe it ("the one under srv") or say its place, in any language.
+  HQ then reads the card back with that folder and asks once more before anything changes; a
+  number ("the second one") picks and confirms at once. If two folders fit, HQ asks which one.
 - Some operations need input on screen. Those are never offered by voice.
 
 Spoken confirmation is **English-only**. On a call in another language, HQ reads the card and asks

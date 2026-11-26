@@ -267,7 +267,7 @@ class CallError(Exception):
 #: The card kinds a spoken reply may be JUDGED for (#1715 P1): a yes/no on one card or a numbered
 #: choice among cards. Needs-you decisions (permission, menu, pick, needs_you) keep the English
 #: grammar until P2 has its own approval.
-JUDGED_KINDS = frozenset({"nudge", "session", "operation", "suggest"})
+JUDGED_KINDS = frozenset({"nudge", "session", "operation", "suggest", "picked"})
 
 
 def listen_languages(settings: dict) -> frozenset | None:
@@ -289,6 +289,31 @@ def _judged(cards: list[dict]) -> bool:
     return bool(cards) and all(c.get("kind") in JUDGED_KINDS for c in cards)
 
 
+def _pick_alone(cards: list[dict]) -> bool:
+    """One folder pick on an HQ card (#2342 H1): its reply is judged by `voice_judge.judge_pick`
+    when the English numbers don't cover it — in any language — and a judged pick only FILLS the
+    card (`picked`, a judged kind), whose own yes is asked next."""
+    return len(cards) == 1 and cards[0].get("kind") == "pick"
+
+
+def _option_key(label: object) -> str:
+    return str(label or "").rstrip("/").rsplit("/", 1)[-1].casefold()
+
+
+def _ambiguous_option(options: list[dict], i: int) -> bool:
+    """Another option shares option ``i``'s name (its last path part, any case): a judged pick
+    of it may have meant the other, so it picks nothing and HQ asks which (#2342 H1)."""
+    key = _option_key(options[i].get("label"))
+    return sum(1 for o in options if _option_key(o.get("label")) == key) > 1
+
+
+def _snapshot_id(card_id: str, folders: list[str]) -> str:
+    """The frozen option list a pick was read with, as one id (#2342 H1)."""
+    import hashlib
+
+    return hashlib.sha256("\0".join([card_id, *folders]).encode()).hexdigest()[:16]
+
+
 def _batch(cards: list[dict]) -> bool:
     """Two or more cards, all judged (#2389): read back short, and one yes settles them all."""
     return len(cards) > 1 and _judged(cards)
@@ -303,7 +328,7 @@ def _voice_cap(cards: list[dict]) -> list[dict]:
 #: HQ cards a spoken reply may DISMISS through their own decide route (#2120): the proposal
 #: sidecar's cards. A nudge (a ledger action) and every Needs-you row keep their own grammar and
 #: routes; "dismiss" there is a cancel, never a refusal.
-DISMISSABLE_KINDS = frozenset({"session", "operation", "message", "suggest"})
+DISMISSABLE_KINDS = frozenset({"session", "operation", "message", "suggest", "picked"})
 
 
 def _dismissable(cards: list[dict]) -> bool:
@@ -807,7 +832,7 @@ class Call:
         """The language the FIXED lines about ``cards`` are said in (#2342): the call's own for
         cards the judge hears (#1715), English for a Needs-you item or a connector message, whose
         English grammar decides them and whose questions name its English phrases."""
-        return self.language if _judged(cards) else None
+        return self.language if _judged(cards) or _pick_alone(cards) else None
 
     def _not_the_operator(self, ev: dict) -> str | None:
         """Why an utterance is not the operator speaking to HQ, or ``None`` (#1667, #1807). Every
@@ -2132,16 +2157,14 @@ class Call:
                 # HQ's own cards first, as always; the Needs-you rows follow one at a time.
                 await self.offer(others or picks[:1], turn_id=view.get("turn_id"), gen=gen,
                                  queue=[*(picks if others else picks[1:]), *offered])  # fmt: skip
-            elif picks and (others or self.language in (None, "en")):
-                # A pick is answered by ITS OWN numbers, so it is offered alone, after the turn's
-                # other cards — those together, as always (#1681). On a call in another language
-                # the other cards are judged (#1715) while the pick stays for the screen: mixed in
-                # one offer, the pick would keep the judged cards from arming (Hermes 7282).
+            elif picks:
+                # A pick is answered on its own (its options, `judge_pick`), so it is offered
+                # alone, after the turn's other cards — those together, as always (#1681): mixed
+                # in one offer, the pick would keep the judged cards from arming (Hermes 7282).
                 first = others or picks[:1]
                 rest = picks if others else picks[1:]
                 await self.offer(first, turn_id=view.get("turn_id"), gen=gen, queue=rest)
             elif cards:
-                # Only picks on a call in another language: read for the screen (`offer`).
                 await self.offer(cards, turn_id=view.get("turn_id"), gen=gen)
         elif view.get("status") == "stopped":
             pass  # the Commander stopped it (#2076): `stop_turn` said so; nothing failed
@@ -2173,13 +2196,21 @@ class Call:
         On a call in another language, HQ cards (`JUDGED_KINDS`) still arm: a reply the English
         phrases don't cover is judged (#1715 P1). Anything else — a Needs-you decision, a pick —
         keeps the English grammar and is read back for the SCREEN with no challenge armed, so a
-        translated or misdetected command can never settle it."""
+        translated or misdetected command can never settle it.
+
+        An offer for a generation never displaces a challenge whose reply is still being judged
+        (`judging`, a folder pick): the reply came after whatever started that offer, so the
+        older offer is dropped, as a superseded one always is."""
+        cur = self.challenge
+        if gen is not None and cur is not None and cur.get("judging"):
+            return
         await self.void_challenge()
         cards = _voice_cap(cards)
         if gen is not None and gen != self.generation:
             return
-        if self.language not in (None, "en") and not _judged(cards):
-            # Needs-you decisions keep the English grammar (#1715 P2 is held): screen only.
+        if self.language not in (None, "en") and not _judged(cards) and not _pick_alone(cards):
+            # Needs-you decisions keep the English grammar (#1715 P2 is held): screen only. A
+            # lone folder pick is judged in any language (#2342 H1).
             await self.say(readback_screen_only(cards, self.language), kind="readback",
                            turn_id=turn_id)  # fmt: skip
             return
@@ -2242,12 +2273,29 @@ class Call:
                 "mutes": self.mutes}  # fmt: skip
         english = self._confirmation_language_ok()
         judged = _judged(ch["cards"])
+        first = ch["cards"][0]
+        if _pick_alone(ch["cards"]):
+            # A folder pick (#2342 H1): the English numbers, "skip" and "cancel" decide at once;
+            # anything else — a name, a description, any language — goes to ONE pick judgement.
+            verdict, choice = classify_decision(text, first) if english else ("other", None)
+            if verdict == "other":
+                await self.client(
+                    {"t": "caption", "who": "you", "id": uuid.uuid4().hex[:12], "text": text}
+                )
+                ch["judging"] = ch.get("judging", 0) + 1
+                self._side(self._judge_pick_reply(ch, text, snap, heard_id=heard_id))
+                return True
+            if choice is not None:
+                first = {**first, "choice": choice}
+            idx = 0 if verdict == "choose" else None
+            return await self._apply_verdict(
+                ch, first, text, verdict, idx, snap=snap, heard_id=heard_id
+            )
         if not english and not judged:
             # Fail closed: a Needs-you decision is matched by the English grammar only, so a turn
             # not known to be English never decides one. The caller voids it.
             return False
-        first = ch["cards"][0]
-        if len(ch["cards"]) == 1 and first["kind"] in ("permission", "menu", "pick"):
+        if len(ch["cards"]) == 1 and first["kind"] in ("permission", "menu"):
             # A Needs-you decision (#1681 P2): the reply names WHICH answer, of this row only.
             verdict, choice = classify_decision(text, first)
             idx = 0 if verdict == "choose" else None
@@ -2353,6 +2401,63 @@ class Call:
         if cleared and self.challenge is None:
             await self.client({"t": "challenge", "cards": []})
 
+    async def _judge_pick_reply(
+        self, ch: dict, text: str, snap: dict, *, heard_id: str | None = None
+    ) -> None:
+        """Ask the pick judge which option `text` names (#2342 H1). Every outcome acts only if the
+        challenge is still exactly as it was when the reply was heard (`_judge_still_holds`);
+        otherwise something newer took the call and the words step aside. ``pick``: the card is
+        FILLED with that option of its frozen snapshot and offered again as a `picked` card, whose
+        own yes is asked ("… In ~/code/docs. Shall I go ahead?"): a judged pick never runs the card
+        by itself. An option that shares its name with another, and ``none``: "Which one do you
+        mean?". No verdict: "Sorry, which one?" once, then the card stays, nothing picked."""
+        from . import voice_judge
+
+        first = ch["cards"][0]
+        options = first.get("options") or []
+        try:
+            got = await voice_judge.judge_pick(
+                ch.get("readback") or "", [str(o.get("label") or "") for o in options], text
+            )
+        finally:
+            ch["judging"] = ch.get("judging", 1) - 1
+        if not self._judge_still_holds(ch, snap):
+            return
+        if got is None:
+            if ch.get("pick_missed"):
+                await self.void_challenge()
+                await self.say(call_line("reply.not_caught", self._line_lang(ch["cards"])),
+                               kind="outcome")  # fmt: skip
+                return
+            ch["pick_missed"] = True
+            await self._apply_verdict(
+                ch, first, text, "pick_again", None, captioned=True, snap=snap
+            )
+            return
+        verdict, i = got
+        if verdict == "pick" and i is not None and _ambiguous_option(options, i):
+            verdict = "none"
+        if verdict != "pick" or i is None:
+            await self._apply_verdict(
+                ch, first, text, "cancel" if verdict == "cancel" else "pick_none", None,
+                captioned=True, snap=snap,
+            )  # fmt: skip
+            return
+        self.taken_turn = max(self.taken_turn, snap["turn"])
+        self.challenge = None  # single use: consumed BEFORE anything is awaited
+        await self.client({"t": "challenge", "cards": []})
+        option = options[i]
+        lang = self._line_lang(ch["cards"])
+        folder = verbatim(str(option.get("label") or "")) or ""
+        filled = {k: v for k, v in first.items() if k != "ask"}
+        filled.update(
+            kind="picked",
+            verb="do it",
+            choice=option,
+            line=f"{first['line']} {call_line('lead.picked', lang, folder=folder)}",
+        )
+        await self.offer([filled], turn_id=ch.get("turn_id"), gen=ch["gen"], queue=ch["queue"])
+
     def _judge_still_holds(self, ch: dict, snap: dict) -> bool:
         """The freshness fence after the judge's await (#1715): the SAME challenge, still armed in
         the same arming and generation, the call live and unmuted, no turn begun and nothing typed
@@ -2439,7 +2544,8 @@ class Call:
             await caption()
             await self.client({"t": "challenge", "cards": []})
             if not await self._offer_next(ch["queue"], ch["gen"]):
-                await self.say("Okay. That was the last one.", kind="outcome")
+                await self.say(call_line("reply.last_one", self._line_lang(ch["cards"])),
+                               kind="outcome")  # fmt: skip
             return True
         await caption()
         if verdict == "cancel":
@@ -2457,8 +2563,9 @@ class Call:
         # for a confirmation.
         lang = self._line_lang(ch["cards"])
         which = which_of(len(ch["cards"]), lang)  # a person's question, never a command (#2342)
-        if _judged(ch["cards"]):
-            # No ordinal menu for HQ's own cards (#2389): the judge takes a card by what it is.
+        if _judged(ch["cards"]) or _pick_alone(ch["cards"]):
+            # No ordinal menu for HQ's own cards (#2389): the judge takes a card by what it is,
+            # and a folder by its name (#2342 H1).
             pick = call_line("reply.which_mean", lang)
             drop = call_line("reply.which_drop", lang)
         else:  # the grammar decides (Hermes 8839): the question names the phrase it takes
@@ -2470,6 +2577,7 @@ class Call:
             " tap it.",
             "no_allow": "I can't allow this one by voice. Refuse it, or skip it?",
             "ambiguous_dismiss": drop,
+            "pick_again": call_line("reply.which_again", lang),
         }.get(verdict, pick)
         sid = uuid.uuid4().hex[:12]
         # Disarmed BEFORE the line is sent; it re-arms only once THIS line has played.
@@ -2572,12 +2680,22 @@ class Call:
             # `existing`: the store re-checks it is still that real directory as it saves.
             body = {"decision": "confirm", "inputs": {"folder": s["folder"], "existing": True}}
             return "POST", f"/api/ask/proposals/{card['id']}/decide", body
-        if kind == "pick" and not isinstance(card.get("choice"), dict):
+        if kind in ("pick", "picked") and not isinstance(card.get("choice"), dict):
             return None  # never settled without the folder the Commander picked
-        if kind == "pick":
-            # The card's own decide route, with the folder the Commander picked by number from
-            # the card's OWN choices (`ask_operations.folder_choices`) as its input — the payload
-            # a tap on the picker sends. The model never saw or chose it.
+        if kind in ("pick", "picked"):
+            # The frozen snapshot (#2342 H1): the card's OWN choices, re-read now, must still be
+            # the list the pick was made from, in the same order — or nothing runs.
+            from . import ask_operations
+
+            try:
+                now = await asyncio.to_thread(ask_operations.folder_choices, card["id"])
+            except Exception:  # noqa: BLE001
+                now = None
+            if _snapshot_id(card["id"], list(now or [])) != card.get("snapshot"):
+                return "changed"
+            # The card's own decide route, with the folder the Commander picked from the card's
+            # OWN choices (`ask_operations.folder_choices`) as its input — the payload a tap on
+            # the picker sends. The model never chose it: the judge only names an option.
             body = {"decision": "confirm", "inputs": {"folder": card["choice"]["label"]}}
             return "POST", f"/api/ask/proposals/{card['id']}/decide", body
         if kind in ("permission", "menu"):
@@ -3729,8 +3847,9 @@ def _picks_from_card(op_id: object) -> bool:
     return op_id in ask_operations._PICK_FROM_PROJECT and _voice_operation(op_id)
 
 
-def _pick_card(p: dict, folders: list[str]) -> dict | None:
-    """A folder pick by voice: the card's own choices, each read verbatim, picked by number."""
+def _pick_card(p: dict, folders: list[str], lang: object = None) -> dict | None:
+    """A folder pick by voice: the card's own choices, each read verbatim and offered as "X or
+    Y?" (#2342), picked by number or, judged, by name (H1). ``snapshot``: the list as read."""
     if not (1 <= len(folders) <= PICK_OPTIONS_TOLD):
         return None
     # A folder whose name carries a list's own punctuation could read as more options than there
@@ -3743,8 +3862,9 @@ def _pick_card(p: dict, folders: list[str]) -> dict | None:
     effect = verbatim(str(p.get("text") or ""))
     if title is None or label is None or effect is None or any(f is None for f in said):
         return None
-    line = f"{label}, for {title}: {_sentence(effect)} {ordinal_list(said)}"
-    if len(line) > PERMISSION_TOLD_MAX:
+    line = call_line("lead.operation", lang, label=label, title=title, effect=_sentence(effect))
+    ask = call_line("ask.folder", lang, options=or_list([f for f in said if f], lang))
+    if len(f"{line} {ask}") > PERMISSION_TOLD_MAX:
         return None
     return {
         "id": p["action_id"],
@@ -3752,7 +3872,8 @@ def _pick_card(p: dict, folders: list[str]) -> dict | None:
         "verb": "decide",
         "line": line,
         "options": [{"option": i + 1, "label": f, "as": "pick"} for i, f in enumerate(folders)],
-        "ask": "Which folder?",
+        "ask": ask,
+        "snapshot": _snapshot_id(p["action_id"], list(folders)),
     }
 
 
@@ -3850,7 +3971,7 @@ def confirmable_cards(
         elif kind == "operation" and p.get("needs") == ["folder"] and _picks_from_card(p.get("op")):
             # A folder the card's own picker offers, chosen by number (#1681); anything else
             # that needs input stays on screen.
-            card = _pick_card(p, (picks or {}).get(pid) or [])
+            card = _pick_card(p, (picks or {}).get(pid) or [], lang)
             if card is not None:
                 out.append(card)
         elif kind == "operation" and not p.get("needs") and _voice_operation(p.get("op")):
@@ -4132,7 +4253,7 @@ def needs_you_cards(rows: list[dict]) -> list[dict]:
 
 
 #: Voice cards that settle through a proposal's decide route (`{"proposal": view}` back).
-_PROPOSAL_KINDS = ("session", "operation", "pick", "suggest", "message")
+_PROPOSAL_KINDS = ("session", "operation", "pick", "picked", "suggest", "message")
 
 
 def _result_state(card: dict, body: dict):

@@ -45,6 +45,8 @@ def fleet(tmp_home):
             json.dumps({"type": "user", "cwd": REPO, "message": {"content": f"task {n}"}}) + "\n"
         )
         metadata.patch(_key(n), ai_title=f"Session {n}", ai_summary=f"Works on topic {n}")
+    # The sessions are named by their reviews here (renaming has been off by default since #2332).
+    prefs.set_session_review({"rename_sessions": True})
     engines.invalidate_scan_cache()
     return tmp_home
 

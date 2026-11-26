@@ -73,7 +73,8 @@ def test_registry_covers_every_system_prompt():
     # the session scan.
     # #2059 handoff_remote_brief (Continue here: a record another instance shares is DATA;
     # unguarded, with that rule locked onto it).
-    assert len(prompts.REGISTRY) == 51
+    # #2342 H1 voice_pick_judge (on a call: which option did the reply pick? guarded).
+    assert len(prompts.REGISTRY) == 52
     assert len(prompts.IDS) == len(set(prompts.IDS))
     # PINNED BY NAME, not by count — adding a guarded prompt should have to say so here.
     # `mission_objectives` earns it without emitting a verb: an objective list is what the
@@ -109,6 +110,9 @@ def test_registry_covers_every_system_prompt():
         # `voice_confirm_judge` (#1715) decides whether a spoken reply SETTLES a card, and the
         # read-back it is shown can carry agent-drafted text (a nudge's message, a proposal).
         "voice_confirm_judge",
+        # `voice_pick_judge` (#2342 H1) decides which option a spoken reply FILLS a card with,
+        # and the line it is shown carries the card's own words.
+        "voice_pick_judge",
         # `hq_call_interject` (#2113) decides whether the Commander's words STEER or STOP the
         # running turn, and what HQ is doing (its own aside) can echo what tools returned.
         "hq_call_interject",
@@ -212,6 +216,7 @@ EXPECTED_DEFAULT_SHA = {
     "hq_call_end": "4af567dd1abae1eb",  # #1668: on a call, do the words and HQ's answer end it?
     "hq_turn_notes": "7ac37f5362f515f9",  # #2136: what HQ read becomes its notes
     "hq_turn_watch": "0ab073da385b1843",  # #2136: is this HQ turn getting anywhere?
+    "voice_pick_judge": "d1cdbab2d8ff3017",  # #2342 H1: which option a spoken reply picks
     "voice_confirm_judge": "7d166766d9e1df5c",  # #1715; #2389: the cards as data, all, N to 20
     "hq_call_interject": "7e47474a9554c821",  # #2113: the Commander speaks while HQ works
     "hq_conversation_compact": "c7fe648ee4b538ff",  # #2137 P2: the background summary

@@ -1007,7 +1007,9 @@ def _recap_shape_guard(obj: dict, source: str = "") -> str:
 
 
 @ai_providers.independent_model_work
-async def run_review(key: str, aliases: dict[str, str] | None = None) -> dict:
+async def run_review(
+    key: str, aliases: dict[str, str] | None = None, *, set_initial_title: bool = False
+) -> dict:
     """Review one session now: assemble input, call the endpoint, guard the shape,
     persist via ``metadata.patch``. Returns the persisted fields (plus the fingerprint).
     Raises NotConfiguredError / ReviewError — never partial writes.
@@ -1020,7 +1022,11 @@ async def run_review(key: str, aliases: dict[str, str] | None = None) -> dict:
     summary. A reply without a usable one keeps the previous record, which then reads as stale
     (its source fingerprint is no longer the review's). A review that fails after its input was
     read records ``review_failed_at`` and nothing else, so the last good summary, recap and
-    assessment survive and the API can say they were not refreshed."""
+    assessment survive and the API can say they were not refreshed.
+
+    ``set_initial_title`` (the review loop's title-once pass, #2332) also stores the reply's title
+    as the session's ONE once-title, in the same write as ``ai_title``. The loop passes it only for
+    a session that has none yet, so a later review never changes it."""
     cfg = _require_config()
     info: dict = {}
     read_at = time.time()
@@ -1046,6 +1052,8 @@ async def run_review(key: str, aliases: dict[str, str] | None = None) -> dict:
             assessed_at=time.time(),
             coverage=info.get("coverage"),
         )
+    if set_initial_title and result["title"]:
+        extra["initial_title"] = result["title"]
     # Write against the RESOLVED sidecar key (Hermes on PR #367): for a reconciled
     # opencode session the existing title/sticky/archive sidecar lives under the
     # placeholder physical key — patching the logical key would create a sparse
@@ -1114,6 +1122,26 @@ async def run_review(key: str, aliases: dict[str, str] | None = None) -> dict:
             review_failed_at=meta.review_failed_at,
         ),
     }
+
+
+async def review_title(key: str, aliases: dict[str, str] | None = None) -> str:
+    """The title-once review (#2332): ONE tail-review call over the session's first messages, and
+    only its title is kept, as the session's ``initial_title``. Nothing else is written — no
+    summary, no intervention flag (which nothing would clear while periodic reviews are off), no
+    recap call, no fingerprint, no failure stamp. Returns the title (``""`` if the reply had none).
+    Raises like ``run_review``: NotConfiguredError / InsufficientInputError / ReviewError."""
+    cfg = _require_config()
+    text, _ = await asyncio.to_thread(
+        gather_review_input, key, int(cfg["max_input_chars"]), aliases
+    )
+    title = (await _tail_review_call(cfg, text))["title"]
+    if title:
+        await asyncio.to_thread(_store_initial_title, key, title)
+    return title
+
+
+def _store_initial_title(key: str, title: str) -> None:
+    metadata.patch(metadata.resolve_key(key), initial_title=title)
 
 
 async def _tail_review_call(cfg: dict, text: str) -> dict:

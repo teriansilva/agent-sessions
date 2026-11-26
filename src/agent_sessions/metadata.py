@@ -136,6 +136,10 @@ class SessionMeta:
     # resolved by `display_title` (user title → ai_title → first user message).
     ai_summary: str = ""
     ai_title: str = ""
+    # The ONE title a new session got from a review of its first messages (#2332), shown in place
+    # of `ai_title` while `session_review.rename_sessions` is off. Written once, by the review loop
+    # only, and never changed by a later review; a manual `title` still wins.
+    initial_title: str = ""
     intervention_required: bool = False
     intervention_reason: str = ""
     # Wall-clock of the last SUCCESSFUL review. A failed review never touches these
@@ -265,11 +269,13 @@ def display_title(meta: SessionMeta, first_user_message: str, *, use_ai_title: b
 
     ``use_ai_title=False`` is the operator's "keep session titles" choice
     (``session_review.rename_sessions``, #1510): the AI title is skipped, never erased, so turning
-    the option back on restores it with no re-review."""
+    the option back on restores it with no re-review. In its place stands the session's ONE
+    once-title (``initial_title``, #2332), which no later review changes."""
     if meta.title:
         return meta.title
-    if use_ai_title and meta.ai_title:
-        return meta.ai_title
+    reviewed = meta.ai_title if use_ai_title else meta.initial_title
+    if reviewed:
+        return reviewed
     candidate = title_candidate(first_user_message)
     return candidate if _is_meaningful(candidate) else ""
 
@@ -699,6 +705,7 @@ def _index_from_raw(raw: dict, *, normalized: bool = False) -> dict[str, Session
             archived=(val["archived"] if isinstance(val.get("archived"), bool) else None),
             ai_summary=str(val.get("ai_summary", "") or ""),
             ai_title=str(val.get("ai_title", "") or ""),
+            initial_title=str(val.get("initial_title", "") or ""),
             intervention_required=bool(val.get("intervention_required", False)),
             intervention_reason=str(val.get("intervention_reason", "") or ""),
             reviewed_at=(
@@ -793,6 +800,8 @@ def patch(
         # the rename path, so a review can't clobber a user's title.
         "ai_summary",
         "ai_title",
+        # The once-title (#2332) — written by the review loop only, never by the rename path.
+        "initial_title",
         "intervention_required",
         "intervention_reason",
         "reviewed_at",
@@ -874,6 +883,7 @@ def patch(
             "archived": existing.get("archived"),
             "ai_summary": existing.get("ai_summary", ""),
             "ai_title": existing.get("ai_title", ""),
+            "initial_title": existing.get("initial_title", ""),
             "intervention_required": existing.get("intervention_required", False),
             "intervention_reason": existing.get("intervention_reason", ""),
             "reviewed_at": existing.get("reviewed_at"),
@@ -927,6 +937,34 @@ def patch(
         # disk via the persisted ``data[key]`` above, never in the returned object.
         schema_field_names = {f.name for f in _SESSIONMETA_FIELDS}
         return SessionMeta(**{k: v for k, v in meta_dict.items() if k in schema_field_names})
+
+
+def adopt_initial_titles(path: Path | None = None) -> int:
+    """Keep every reviewed session's name when the renaming default turns off (#2332): copy each
+    row's stored ``ai_title`` into ``initial_title`` where it has neither a manual ``title`` nor a
+    once-title yet. One read-modify-write under the sidecar's flock (a ``patch`` per row would
+    rewrite the whole file once per session), no endpoint call. A sidecar that does not parse is
+    left untouched — never rewritten from an empty base. Returns how many rows were copied."""
+    path = path or _default_path()
+    with _exclusive(path) as fh:
+        text = fh.read()
+        try:
+            data = json.loads(text) if text.strip() else {}
+        except json.JSONDecodeError:
+            return 0
+        if not isinstance(data, dict):
+            return 0
+        copied = 0
+        for key, row in data.items():
+            if key == _ALIAS_KEY or not isinstance(row, dict):
+                continue
+            ai = row.get("ai_title")
+            if isinstance(ai, str) and ai and not row.get("title") and not row.get("initial_title"):
+                row["initial_title"] = ai
+                copied += 1
+        if copied:
+            _rewrite_in_place(fh, data)
+        return copied
 
 
 def get(key: str, path: Path | None = None) -> SessionMeta:

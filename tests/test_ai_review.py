@@ -401,6 +401,7 @@ def test_manual_review_route_and_row_surface(auth_cfg, ai_prefs, fake_jsonl, mon
         "_TRANSPORT",
         _chat_transport(_ok_result(title="Refit repo-a", required=True, reason="blocked")),
     )
+    prefs.set_session_review({"rename_sessions": True})  # off by default since #2332
 
     r = c.post(f"/api/sessions/{SID}/review", headers=headers)
     assert r.status_code == 200

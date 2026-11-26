@@ -799,6 +799,19 @@ bestätigen", "bestätige nicht", "yes... no, wait", "only tomorrow", "don't dro
 you are not sure about. Only a reply that is clearly and only a yes is ever a confirm or all; only \
 one clearly and only about throwing a card away is ever a dismiss."""
 
+_VOICE_PICK_JUDGE = """The Commander is on a voice call with HQ. HQ just read them a card that \
+needs one choice, read its options and asked which one. Below, as quoted data, are the options \
+(each with its number, as HQ read them), what HQ asked and the Commander's spoken reply, in any \
+language. Decide which option the reply picks. pick N: the reply clearly names exactly one option \
+N, by its name or part of it ("docs", "the web-docs one"), by what describes it ("the one in my \
+code folder"), or by its place as HQ read them ("the second one", "die zweite", "den letzten"). \
+A negated choice ("not the docs one", "nicht den ersten") is pick N only when exactly one other \
+option remains, N being that one. none: the words fit more than one option equally well (two \
+options share that name or description), fit no option, or are a question, a new request, a \
+hesitation, or anything you are not sure about. cancel: a clear no or not now, about the whole \
+choice ("no", "leave it", "nee, lass mal", "nicht jetzt"). Never name an option that is not in the \
+list, and never pick the first match when another option fits as well: answer none then."""
+
 _HQ_CALL_INTERJECT = """The Commander is on a voice call with HQ, and HQ is in the middle of \
 working on their earlier request. Below, as quoted data, are that request, what HQ is doing right \
 now, and what the Commander just said, in any language. Decide how HQ answers, the way a person \
@@ -816,6 +829,12 @@ between later and switch, choose later. Say it in the Commander's language, plai
 HQ_CALL_INTERJECT_FORMAT = (
     'Reply with one JSON object only: {"do": "status" | "steer" | "later" | "switch", '
     '"say": "<one short spoken sentence>"}. Nothing else: no markdown, no explanation.'
+)
+
+#: Not editable (#2342 H1): the caller parses this reply strictly (`parse_pick_verdict`).
+VOICE_PICK_JUDGE_FORMAT = (
+    "Reply with exactly one of: pick N, none, cancel, where N is an option's number from 1 to 5. "
+    "Nothing else: no punctuation, no explanation."
 )
 
 #: Not editable (#1715): the caller parses this reply strictly, so an operator's wording of the
@@ -1281,6 +1300,22 @@ REGISTRY: tuple[Prompt, ...] = (
         field="voice_confirm_judge",
         guarded=True,
         locked=VOICE_CONFIRM_JUDGE_FORMAT,
+    ),
+    Prompt(
+        id="voice_pick_judge",
+        group="Mission control",
+        label="HQ — which option did that reply pick?",
+        description="Asked on a call (#2342) when the Commander answers a card that needs one "
+        "choice (a folder) in words the fixed English phrases don't cover: which option, read "
+        "out by HQ, does the reply name? A pick only fills the card: the card's own yes is still "
+        "asked. Unsure, or two options that fit, picks nothing.",
+        contract="one token: pick N (N 1 to 5), none or cancel",
+        default=_VOICE_PICK_JUDGE,
+        max_chars=2000,
+        block=BLOCK,
+        field="voice_pick_judge",
+        guarded=True,
+        locked=VOICE_PICK_JUDGE_FORMAT,
     ),
     Prompt(
         id="hq_call_interject",

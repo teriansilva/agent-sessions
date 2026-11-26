@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+"""Run the spoken folder-pick corpus (#2342 H1) through the REAL pick judge.
+
+Each case of `tests/fixtures/voice_pick_corpus.json` is read back the way a call reads a folder
+pick ("… Which folder: X or Y?"), its reply is judged by `voice_judge.judge_pick` on the HQ model
+this install is configured with, and the verdict is checked against the case's `expect` after
+the call's own duplicate-name guard (`voice_calls._ambiguous_option`), exactly as a call would act
+on it. It prints one line per case and a summary, and exits non-zero on any miss.
+
+It needs the AI endpoint, so it is never run by CI. Point --prefs at a COPY of the install's
+prefs file (the judge's transport may refresh a cached model list there); the script never opens
+any other store, and its usage counter goes to a throwaway file.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+CORPUS = ROOT / "tests" / "fixtures" / "voice_pick_corpus.json"
+LINE = "Default launch folder, for web: New sessions start in the folder you pick."
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--prefs", required=True, type=Path, help="a COPY of the prefs file")
+    ap.add_argument("--runs", type=int, default=1, help="judge every case this many times")
+    args = ap.parse_args()
+    scratch = Path(tempfile.mkdtemp(prefix="voice-pick-corpus-"))
+    os.environ["AGENT_SESSIONS_PREFS"] = str(args.prefs)
+    os.environ["AGENT_SESSIONS_HOME"] = str(scratch)
+    os.environ["AGENT_SESSIONS_HQ_USAGE"] = str(scratch / "hq-usage.json")
+    sys.path.insert(0, str(ROOT / "src"))
+    from agent_sessions import voice_calls, voice_judge, voice_text
+
+    async def judge(case: dict) -> object:
+        ask = voice_text.call_line(
+            "ask.folder", case["lang"], options=voice_text.or_list(case["options"], case["lang"])
+        )
+        got = await voice_judge.judge_pick(f"{LINE} {ask}", case["options"], case["reply"])
+        if got is None:
+            return "no verdict", None
+        verdict, i = got
+        options = [{"label": o} for o in case["options"]]
+        if verdict == "pick" and i is not None and voice_calls._ambiguous_option(options, i):
+            return "none", got  # the call's duplicate guard
+        return (i if verdict == "pick" else verdict), got
+
+    cases = json.loads(CORPUS.read_text())["cases"]
+    misses = 0
+    for case in cases:
+        for _ in range(args.runs):
+            got, raw = asyncio.run(judge(case))
+            ok = got == case["expect"]
+            misses += not ok
+            print(
+                f'{"ok  " if ok else "MISS"} {case["lang"]} {case["kind"]:<11} '
+                f'{case["reply"]!r}: expected {case["expect"]!r}, got {got!r} (judge: {raw!r})'
+            )
+    total = len(cases) * args.runs
+    print(f"{total - misses}/{total} as expected")
+    return 1 if misses else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
