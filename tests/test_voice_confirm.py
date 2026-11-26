@@ -1083,8 +1083,9 @@ def test_a_call_in_another_language_arms_hq_cards_for_the_judge(monkeypatch):
         await r.side()
 
     run(go())
-    assert r.judged == [("A message to api-rebase: Rerun the auth tests. Want me to send it?",
-                         1, "Ja, mach das")]  # fmt: skip
+    # #2342: on a German call the read-back is German, and the judge hears it as said
+    said = "Eine Nachricht an api-rebase: Rerun the auth tests. Soll ich das abschicken?"
+    assert r.judged == [(said, 1, "Ja, mach das")]
     assert ("POST", "/api/pulse/actions/act-1/approve", None) in r.routes
     assert r.asked == ["Starte die Tests neu"]
 
@@ -1102,7 +1103,8 @@ def test_a_needs_you_decision_on_another_language_call_stays_on_screen(monkeypat
 
     run(go())
     assert r.call.challenge is None
-    assert r.said_text()[-1].endswith("You'll need to tap that one.")
+    # #2342: the closing is said in the call's language; the item's own line stays English
+    assert r.said_text()[-1].endswith("Das musst du selbst antippen.")
     assert r.judged == []
 
 

@@ -44,7 +44,8 @@ def test_sessions_paginated_shape(auth_cfg, fake_jsonl):
     r = c.get("/api/sessions?limit=2&offset=0")
     assert r.status_code == 200
     d = r.json()
-    assert set(d) == {"sessions", "next_offset", "total", "facets", "live_total"}
+    # `newest`: the session started last, HQ's "last used" fact (#2342)
+    assert set(d) == {"sessions", "next_offset", "total", "facets", "live_total", "newest"}
     assert len(d["sessions"]) == 2
     # 4 live sessions in the fixture (1 archived excluded) → next_offset advances
     assert d["total"] == 4
@@ -1918,6 +1919,37 @@ def test_favorite_pins_globally_across_page_boundary(auth_cfg, fake_jsonl):
     assert win["total"] > 1  # there ARE more pages → the pin reached across the boundary
     assert win["sessions"][0]["uuid"] == laggard
     assert win["sessions"][0]["sticky"] is True
+
+
+def test_newest_is_the_newest_created_session_whatever_the_page_and_favorites(auth_cfg, fake_jsonl):
+    """#2342 (Hermes 9002): `newest` is computed over the whole scoped set BEFORE favorites-first,
+    the sort and the page, so an older favorite at the top of a one-row page never stands in for
+    the session the Commander started last; a filter doesn't narrow it either."""
+    proj = fake_jsonl / ".claude" / "projects" / "-home-user-claude-repo-a"
+    for uuid, ts in (
+        ("66666666-6666-6666-6666-666666666666", "2020-01-01T00:00:00Z"),
+        ("77777777-7777-7777-7777-777777777777", "2030-01-01T00:00:00Z"),
+    ):
+        (proj / f"{uuid}.jsonl").write_text(
+            json.dumps({"type": "user", "timestamp": ts, "message": {"content": "hi"}}) + "\n"
+        )  # fmt: skip
+    c = _client(auth_cfg)
+    csrf = _login(c, auth_cfg)
+    hdr = {"X-CSRF-Token": csrf, "Origin": auth_cfg.origin}
+    rows = c.get("/api/sessions?limit=100").json()["sessions"]
+    newest = next(r for r in rows if r["uuid"].startswith("7777"))
+    oldest = next(r for r in rows if r["uuid"].startswith("6666"))
+    assert newest["created_at"] == max(r["created_at"] for r in rows)
+    c.post(f"/api/sessions/{oldest['id']}/favorite", headers=hdr)
+    project = {"kind": newest["project"]["kind"], "id": newest["project"]["id"]}
+    want = {"engine": newest["engine"], "project": project}
+    page = c.get("/api/sessions?limit=1").json()
+    assert page["sessions"][0]["id"] == oldest["id"] and page["next_offset"] == 1
+    assert page["newest"] == want
+    assert (
+        c.get(f"/api/sessions?limit=1&offset=1&engine={oldest['engine']}").json()["newest"] == want
+    )
+    assert "newest" not in c.get("/api/sessions?archived=true").json()
 
 
 def test_folders_root_scoped(auth_cfg, fake_jsonl, tmp_home):

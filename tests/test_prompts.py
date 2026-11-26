@@ -207,8 +207,8 @@ EXPECTED_DEFAULT_SHA = {
     "hq_persona_southamerica_woman": "bdf45f54ce29ec33",
     "hq_persona_southamerica_man": "17073866ed4ba72d",
     "hq_persona_romania_woman": "6713e8f713ddc052",
-    "hq_call": "ee444812c7b6ff71",  # #1397; #1668; #1681; #2113; #2120; #2339; #2342; #2389
-    "hq_call_detailed": "701ce9640f3c93c5",  # #1397; #1668; #1681; #2113; #2120; #2339; #2389
+    "hq_call": "4d23339764dde177",  # #1397; #1668; #1681; #2113; #2120; #2339; #2342; #2389
+    "hq_call_detailed": "19ca8cbe99b982bf",  # #1397; #1668; #1681; #2113; #2120; #2339; #2342
     "hq_call_end": "4af567dd1abae1eb",  # #1668: on a call, do the words and HQ's answer end it?
     "hq_turn_notes": "7ac37f5362f515f9",  # #2136: what HQ read becomes its notes
     "hq_turn_watch": "0ab073da385b1843",  # #2136: is this HQ turn getting anywhere?

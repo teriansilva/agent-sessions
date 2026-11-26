@@ -351,8 +351,10 @@ def card_sentences(
     skip: set[str] | frozenset = frozenset(),
     said: str = "",
     reasons: dict[str, str] | None = None,
+    lang: object = None,
 ) -> list[str]:
-    """Fixed, server-rendered sentences for what an HQ turn left on screen (D8). The card text
+    """Fixed, server-rendered sentences for what an HQ turn left on screen (D8), in the call's
+    language (``lang``, `CALL_LINES`). The card text
     itself is not read out: the title and kind are enough to find it; the screen has the rest.
 
     ``said`` is what HQ's own answer already spoke on this turn: a question it contains WORD FOR
@@ -367,35 +369,29 @@ def card_sentences(
         if p.get("action_id") in skip or p.get("replaced_by"):
             continue  # read back as a confirmable card instead, or replaced by a newer one
         kind = p.get("kind")
-        title = (p.get("title") or "").strip()[:80] or "that session"
+        title = (p.get("title") or "").strip()[:80] or call_line("default.title", lang)
         if kind == "nudge":
-            out.append(
-                f"I've written a message for {title}. That one you'll want to check yourself."
-            )
+            out.append(call_line("announce.nudge", lang, title=title))
         elif kind == "session":
-            out.append("I've set up a new session. That one you'll want to check yourself.")
+            out.append(call_line("announce.session", lang))
         elif kind == "operation":
-            label = (p.get("label") or p.get("verb") or "change").strip()[:60]
+            label = p.get("label") or p.get("verb") or call_line("default.change", lang)
+            label = label.strip()[:60]
             why = (reasons or {}).get(p.get("action_id") or "", "")
             why = f" {why}" if why else ""
-            out.append(
-                f"I've got this ready: {label}, for {title}.{why} You'll need to tap that one."
-            )
+            out.append(call_line("announce.operation", lang, label=label, title=title, why=why))
         elif kind == "message":
             # Reached only when the card is not confirmable by voice (#1833, Hermes 7610/7612): it
             # can't be read out word for word (too long, or not plain speech), so it's sent from the
             # screen.
-            to = (p.get("recipient") or "").strip()[:80] or "your recipient"
-            out.append(
-                f"I've written a message to {to}. It's too long to read out word for word, "
-                "so you'll need to tap that one to send it."
-            )
+            to = (p.get("recipient") or "").strip()[:80] or call_line("default.recipient", lang)
+            out.append(call_line("announce.message", lang, to=to))
     ask = view.get("ask")
     if isinstance(ask, dict) and ask.get("question"):
         opts = [o for o in ask.get("options") or [] if isinstance(o, str)]
         question = str(ask["question"]).strip()
         asked = bool(_same_words(question)) and _same_words(question) in _same_words(said)
-        listed = or_list(opts[:4])  # "X, Y or Z?": HQ's own question, answered in any words
+        listed = or_list(opts[:4], lang)  # "X, Y or Z?": HQ's own question, in any words
         line = " ".join(part for part in ("" if asked else question, listed) if part)
         if line:
             out.append(line)
@@ -652,34 +648,244 @@ def classify_decision(said: str, card: dict) -> tuple[str, dict | None]:
 _ORDINAL_WORDS = ("first", "second", "third", "fourth")
 _MENU_ORDINAL_NAMES = ("first", "second", "third", "fourth", "fifth")
 
-
-#: The question a read-back ends on, by the card's verb (#2342): asked the way a person asks, never
-#: an instruction about which words to say. HQ cards are judged (#1715), so any natural yes counts.
-_ASK_BY_VERB = {
-    "send it": "Want me to send it?",
-    "start it": "Shall I start it?",
-    "save it": "Shall I save it?",
-    "do it": "Shall I go ahead?",
-    "use it": "Shall I use it?",
+#: The FIXED sentences a call says around an HQ card, by the call's language (#2342): the
+#: read-back's lead-in and its question, the announcement of a card left for the screen, the
+#: replies to an answer, and the outcome. Every value is app text, never model or agent text; a
+#: card's own words go in only through `verbatim`, as before. A language without a table, or a
+#: key a table lacks, falls back to English. Needs-you decisions are not here: their English
+#: grammar decides them, so on a call in another language they are read for the screen
+#: (`readback_screen_only`) until #1715 P2.
+CALL_LINES: dict[str, dict[str, str]] = {
+    "en": {
+        "ask.send it": "Want me to send it?",
+        "ask.start it": "Shall I start it?",
+        "ask.save it": "Shall I save it?",
+        "ask.do it": "Shall I go ahead?",
+        "ask.use it": "Shall I use it?",
+        "ask.default": "Shall I go ahead?",
+        "ask.several": "Which one should I do, {which}?",
+        "ask.several_grammar": "Confirm {which}, or cancel?",
+        "ordinal.lead": "First|Second|Third|Fourth",
+        "ordinal.which": "the first|the second|the third|the fourth",
+        "join.or": " or ",
+        "tap": "You'll need to tap that one.",
+        "announce.nudge": "I've written a message for {title}. That one you'll want to check "
+        "yourself.",
+        "announce.session": "I've set up a new session. That one you'll want to check yourself.",
+        "announce.operation": "I've got this ready: {label}, for {title}.{why} You'll need to "
+        "tap that one.",
+        "announce.message": "I've written a message to {to}. It's too long to read out word for "
+        "word, so you'll need to tap that one to send it.",
+        "default.title": "that session",
+        "default.recipient": "your recipient",
+        "default.to": "that recipient",
+        "default.connector": "the connector",
+        "default.change": "change",
+        "lead.nudge": "A message to {title}: {text}",
+        "lead.message": "A message to {to} on {via}: {text}",
+        "lead.session": "A new {noun} in {title}: {brief}",
+        "lead.session_long": "{what} in {title}. The brief's too long to read out; it's in the "
+        "chat",
+        "what.agent_session": "A new {agent} session",
+        "what.session": "A new session",
+        "what.kind_agent": "A new {noun} with {agent}",
+        "what.kind": "A new {noun}",
+        "noun.session": "session",
+        "noun.api": "API session",
+        "noun.pty": "terminal session",
+        "lead.operation": "{label}, for {title}: {effect}",
+        "lead.suggest": "I suggest the existing folder {folder}.",
+        "lead.changed": "Changed: {line}",
+        "reply.not_caught": "Sorry, I didn't catch that. It's still waiting for you.",
+        "reply.leave_it": "Okay, I'll leave it.",
+        "reply.leave_them": "Okay, I'll leave them.",
+        "reply.last_one": "Okay. That was the last one.",
+        "reply.one_at_a_time": "I can only do one at a time. {pick}",
+        "reply.which_mean": "Which one do you mean?",
+        "reply.which_drop": "Which one should I drop?",
+        "reply.drop_one_at_a_time": "I can only drop one at a time. {drop}",
+        "reply.changed_left": "That one changed in the meantime, so I left it alone.",
+        "out.not_through": "That didn't go through. It's still waiting.",
+        "out.not_through_status": "That didn't go through ({status}). It's still waiting.",
+        "out.accepted": "Accepted. It's starting now.",
+        "out.sent": "Sent.",
+        "out.not_sent": "It wasn't sent. The card has the reason.",
+        "out.dismissed": "Dismissed.",
+        "out.changed_not_sent": "That one changed in the meantime, so I didn't send it.",
+        "final.started": "The session is up.",
+        "final.done": "Done.",
+        "final.partly_done": "Partly done. The card has the details.",
+        "final.failed": "It failed. The card has the reason.",
+        "final.stale": "That card changed, so nothing ran.",
+        "final.dismissed": "It was dismissed, so nothing ran.",
+        "final.interrupted": "It was interrupted. Check your sessions.",
+        "final.unconfirmed": "It may have started, but I couldn't confirm it. Check your sessions.",
+        "final.running": "Still running. The card will show when it's done.",
+        "final.default": "The card has the result.",
+        "message.sent": "Sent.",
+        "message.failed": "It wasn't sent. The card has the reason.",
+        "message.stale": "That card changed, so nothing was sent.",
+        "message.dismissed": "Dismissed, so nothing was sent.",
+        "message.unconfirmed": "It may have been sent, but I couldn't confirm it. Check the chat; "
+        "I won't send it again.",
+        "message.interrupted": "It may have been sent, but I couldn't confirm it. Check the "
+        "chat; I won't send it again.",
+        "reason.new_folder": "Its folder doesn't exist yet, and I can't pick a new one by voice.",
+        "reason.mission": "A draft mission is confirmed on screen for now.",
+        "reason.team": "A team change is confirmed on screen.",
+        "reason.secret": "Secrets are only ever confirmed on screen.",
+        "reason.mcp": "MCP servers are only ever set up on screen.",
+        "reason.library": "Library changes are confirmed on screen, where their content is.",
+        "reason.too_long": "It's too long to read out in full.",
+        "reason.choice": "It needs a choice on screen.",
+        "batch.readback": "{kinds}, the details are on your screen. {question}",
+        "batch.both": "Shall I go ahead with both?",
+        "batch.all": "Shall I go ahead with all {n}?",
+        "summary.all_done": "Done, all {n}.",
+        "summary.done": "Done.",
+        "summary.nothing": "Nothing was done.",
+        "summary.stopped": "I stopped there.",
+        "summary.on_screen_one": "That one is still on your screen.",
+        "summary.on_screen": "Those {n} are still on your screen.",
+        "join.and": " and ",
+    },
+    "de": {
+        "ask.send it": "Soll ich das abschicken?",
+        "ask.start it": "Soll ich das starten?",
+        "ask.save it": "Soll ich das speichern?",
+        "ask.do it": "Soll ich loslegen?",
+        "ask.use it": "Soll ich den nehmen?",
+        "ask.default": "Soll ich loslegen?",
+        "ask.several": "Welche soll ich machen, {which}?",
+        "ordinal.lead": "Erstens|Zweitens|Drittens|Viertens",
+        "ordinal.which": "die erste|die zweite|die dritte|die vierte",
+        "join.or": " oder ",
+        "tap": "Das musst du selbst antippen.",
+        "announce.nudge": "Ich hab eine Nachricht für {title} geschrieben. Die schaust du dir "
+        "am besten selbst an.",
+        "announce.session": "Ich hab eine neue Session vorbereitet. Die schaust du dir am besten "
+        "selbst an.",
+        "announce.operation": "Das hier ist bereit: {label}, für {title}.{why} Das musst du "
+        "selbst antippen.",
+        "announce.message": "Ich hab eine Nachricht an {to} geschrieben. Sie ist zu lang zum "
+        "Vorlesen, die musst du selbst antippen, um sie zu senden.",
+        "default.title": "diese Session",
+        "default.recipient": "deinen Empfänger",
+        "default.to": "diesen Empfänger",
+        "default.connector": "den Connector",
+        "default.change": "Änderung",
+        "lead.nudge": "Eine Nachricht an {title}: {text}",
+        "lead.message": "Eine Nachricht an {to} über {via}: {text}",
+        "lead.session": "Eine neue {noun} in {title}: {brief}",
+        "lead.session_long": "{what} in {title}. Das Briefing ist zu lang zum Vorlesen; es "
+        "steht im Chat",
+        "what.agent_session": "Eine neue {agent}-Session",
+        "what.session": "Eine neue Session",
+        "what.kind_agent": "Eine neue {noun} mit {agent}",
+        "what.kind": "Eine neue {noun}",
+        "noun.session": "Session",
+        "noun.api": "API-Session",
+        "noun.pty": "Terminal-Session",
+        "lead.operation": "{label}, für {title}: {effect}",
+        "lead.suggest": "Ich schlage den vorhandenen Ordner {folder} vor.",
+        "lead.changed": "Geändert: {line}",
+        "reply.not_caught": "Sorry, das hab ich nicht verstanden. Es wartet noch auf dich.",
+        "reply.leave_it": "Okay, ich lass das so.",
+        "reply.leave_them": "Okay, ich lass die so.",
+        "reply.last_one": "Okay. Das war die letzte.",
+        "reply.one_at_a_time": "Ich kann nur eine nach der anderen. {pick}",
+        "reply.which_mean": "Welche meinst du?",
+        "reply.which_drop": "Welche soll ich verwerfen?",
+        "reply.drop_one_at_a_time": "Ich kann nur eine nach der anderen verwerfen. {drop}",
+        "reply.changed_left": "Das hat sich inzwischen geändert, also hab ich es gelassen.",
+        "out.not_through": "Das hat nicht geklappt. Es wartet noch.",
+        "out.not_through_status": "Das hat nicht geklappt ({status}). Es wartet noch.",
+        "out.accepted": "Angenommen. Es startet jetzt.",
+        "out.sent": "Gesendet.",
+        "out.not_sent": "Es wurde nicht gesendet. Den Grund siehst du auf der Karte.",
+        "out.dismissed": "Verworfen.",
+        "out.changed_not_sent": "Das hat sich inzwischen geändert, also hab ich es nicht "
+        "gesendet.",
+        "final.started": "Die Session läuft.",
+        "final.done": "Erledigt.",
+        "final.partly_done": "Teilweise erledigt. Die Details stehen auf der Karte.",
+        "final.failed": "Das ist fehlgeschlagen. Den Grund siehst du auf der Karte.",
+        "final.stale": "Die Karte hat sich geändert, also lief nichts.",
+        "final.dismissed": "Sie wurde verworfen, also lief nichts.",
+        "final.interrupted": "Das wurde unterbrochen. Schau bei deinen Sessions nach.",
+        "final.unconfirmed": "Es ist vielleicht gestartet, aber ich konnte es nicht bestätigen. "
+        "Schau bei deinen Sessions nach.",
+        "final.running": "Läuft noch. Die Karte zeigt es, wenn es fertig ist.",
+        "final.default": "Das Ergebnis steht auf der Karte.",
+        "message.sent": "Gesendet.",
+        "message.failed": "Es wurde nicht gesendet. Den Grund siehst du auf der Karte.",
+        "message.stale": "Die Karte hat sich geändert, also wurde nichts gesendet.",
+        "message.dismissed": "Verworfen, also wurde nichts gesendet.",
+        "message.unconfirmed": "Sie wurde vielleicht gesendet, aber ich konnte es nicht "
+        "bestätigen. Schau im Chat nach; ich sende sie nicht noch mal.",
+        "message.interrupted": "Sie wurde vielleicht gesendet, aber ich konnte es nicht "
+        "bestätigen. Schau im Chat nach; ich sende sie nicht noch mal.",
+        "reason.new_folder": "Der Ordner existiert noch nicht, und einen neuen kann ich per "
+        "Stimme nicht auswählen.",
+        "reason.mission": "Ein Missions-Entwurf wird vorerst am Bildschirm bestätigt.",
+        "reason.team": "Eine Team-Änderung wird am Bildschirm bestätigt.",
+        "reason.secret": "Secrets werden nur am Bildschirm bestätigt.",
+        "reason.mcp": "MCP-Server werden nur am Bildschirm eingerichtet.",
+        "reason.library": "Library-Änderungen werden am Bildschirm bestätigt, wo ihr Inhalt "
+        "steht.",
+        "reason.too_long": "Das ist zu lang, um es ganz vorzulesen.",
+        "reason.choice": "Dafür braucht es eine Auswahl am Bildschirm.",
+        "batch.readback": "{kinds}, die Details stehen am Bildschirm. {question}",
+        "batch.both": "Soll ich mit beiden loslegen?",
+        "batch.all": "Soll ich mit allen {n} loslegen?",
+        "summary.all_done": "Erledigt, alle {n}.",
+        "summary.done": "Erledigt.",
+        "summary.nothing": "Es wurde nichts gemacht.",
+        "summary.stopped": "Da hab ich aufgehört.",
+        "summary.on_screen_one": "Die ist noch am Bildschirm offen.",
+        "summary.on_screen": "Die {n} sind noch am Bildschirm offen.",
+        "join.and": " und ",
+    },
 }
 
 
-def which_of(n: int) -> str:
-    """ "the first or the second", "the first, the second or the third" (#2342)."""
-    names = [f"the {w}" for w in _ORDINAL_WORDS[: max(0, min(n, len(_ORDINAL_WORDS)))]]
+def line_lang(lang: object) -> str:
+    """The table a call's language reads from: its own when there is one, else English."""
+    code = str(lang or "").split("-")[0].lower()
+    return code if code in CALL_LINES else "en"
+
+
+def call_line(key: str, lang: object = None, **fields: object) -> str:
+    """One FIXED call sentence in the call's language (#2342), with its fields filled in."""
+    table = CALL_LINES[line_lang(lang)]
+    text = table.get(key, CALL_LINES["en"][key])
+    return text.format(**fields) if fields else text
+
+
+#: Verbs whose read-back ends on its own question (`CALL_LINES` ``ask.<verb>``, #2342): asked the
+#: way a person asks, never an instruction about which words to say. HQ cards are judged (#1715),
+#: so any natural yes counts.
+_ASK_BY_VERB = frozenset({"send it", "start it", "save it", "do it", "use it"})
+
+
+def which_of(n: int, lang: object = None) -> str:
+    """ "the first or the second", "the first, the second or the third" (#2342); in German
+    "die erste oder die zweite"."""
+    every = call_line("ordinal.which", lang).split("|")
+    names = every[: max(0, min(n, len(every)))]
     if len(names) < 2:
         return names[0] if names else ""
-    return ", ".join(names[:-1]) + f" or {names[-1]}"
+    return ", ".join(names[:-1]) + call_line("join.or", lang) + names[-1]
 
 
-def or_list(labels: list[str]) -> str:
+def or_list(labels: list[str], lang: object = None) -> str:
     """ "X or Y?", "X, Y or Z?": choices offered the way a person offers them (#2342)."""
     items = [str(x).strip().rstrip(".?!") for x in labels if str(x).strip()]
     if not items:
         return ""
     if len(items) == 1:
         return f"{items[0]}?"
-    return ", ".join(items[:-1]) + f" or {items[-1]}?"
+    return ", ".join(items[:-1]) + call_line("join.or", lang) + f"{items[-1]}?"
 
 
 def ordinal_list(labels: list[str]) -> str:
@@ -713,9 +919,18 @@ _NUMBERS = (
 )  # fmt: skip
 
 
-def number_word(n: int) -> str:
-    """ "twelve": a count said the way a person says it (digits past twenty)."""
-    return _NUMBERS[n] if 0 <= n < len(_NUMBERS) else str(n)
+_NUMBERS_DE = (
+    "null", "eins", "zwei", "drei", "vier", "fünf", "sechs", "sieben", "acht", "neun", "zehn",
+    "elf", "zwölf", "dreizehn", "vierzehn", "fünfzehn", "sechzehn", "siebzehn", "achtzehn",
+    "neunzehn", "zwanzig",
+)  # fmt: skip
+
+
+def number_word(n: int, lang: object = None) -> str:
+    """ "twelve": a count said the way a person says it (digits past twenty), in the call's
+    language (#2342)."""
+    words = _NUMBERS_DE if line_lang(lang) == "de" else _NUMBERS
+    return words[n] if 0 <= n < len(words) else str(n)
 
 
 #: What a batch read-back calls N cards of one kind (#2389): ``(one, several)``, by the card's
@@ -744,56 +959,106 @@ _BATCH_NOUNS = {
 }
 
 
+#: The same nouns in German (#2342), each ``(one, several)``: "one" carries its own article ("eine
+#: Nachricht", "ein neues Projekt"), so a count of one needs no grammatical gender of its own.
+_BATCH_NOUNS_DE = {
+    "nudge": ("eine Nachricht", "Nachrichten"),
+    "session": ("eine neue Session", "neue Sessions"),
+    "message": ("eine Nachricht", "Nachrichten"),
+    "session.rename": ("eine Umbenennung", "Umbenennungen"),
+    "session.archive": ("eine Session zum Archivieren", "Sessions zum Archivieren"),
+    "session.unarchive": ("eine Session zum Wiederherstellen", "Sessions zum Wiederherstellen"),
+    "session.close": ("eine Session zum Schließen", "Sessions zum Schließen"),
+    "session.move": ("eine Session zum Verschieben", "Sessions zum Verschieben"),
+    "session.tag": ("eine Tag-Änderung", "Tag-Änderungen"),
+    "session.color": ("eine Farbänderung", "Farbänderungen"),
+    "project.rename": ("eine Projekt-Umbenennung", "Projekt-Umbenennungen"),
+    "project.archive": ("ein Projekt zum Archivieren", "Projekte zum Archivieren"),
+    "project.unarchive": ("ein Projekt zum Wiederherstellen", "Projekte zum Wiederherstellen"),
+    "project.delete": ("ein Projekt zum Löschen", "Projekte zum Löschen"),
+    "project.create": ("ein neues Projekt", "neue Projekte"),
+    "project.add_folder": ("ein Ordner zum Hinzufügen", "Ordner zum Hinzufügen"),
+    "playbook.create": ("ein neues Playbook", "neue Playbooks"),
+    "skill.create": ("ein neuer Skill", "neue Skills"),
+    "automation.create": ("eine neue Automation", "neue Automationen"),
+}
+
+
 def batch_group(card: dict) -> str:
     """The kind a batch read-back and summary count a card under: its operation, else its kind."""
     return str(card.get("op") or card.get("kind") or "")
 
 
-def _batch_noun(card: dict, n: int) -> str:
+def _batch_part(card: dict, n: int, lang: object = None) -> str:
+    """ "twelve renames", "one new session"; in German "zwölf Umbenennungen", "eine neue
+    Session"."""
+    label = " ".join(str(card.get("label") or "").split())[:40].lower()
+    if line_lang(lang) == "de":
+        one, several = _BATCH_NOUNS_DE.get(batch_group(card), ("", ""))
+        if not one:
+            one, several = (
+                (f"eine Änderung ({label})", f"Änderungen ({label})")
+                if label
+                else ("eine Änderung", "Änderungen")
+            )
+        return one if n == 1 else f"{number_word(n, lang)} {several}"
     one, several = _BATCH_NOUNS.get(batch_group(card), ("", ""))
     if not one:
-        label = " ".join(str(card.get("label") or "").split())[:40].lower()
         one, several = (f"{label} change", f"{label} changes") if label else ("change", "changes")
-    return one if n == 1 else several
+    return f"{number_word(n)} {one if n == 1 else several}"
 
 
-def batch_kinds(cards: list[dict]) -> str:
+def _and_list(parts: list[str], lang: object = None) -> str:
+    return (
+        parts[0]
+        if len(parts) == 1
+        else ", ".join(parts[:-1]) + call_line("join.and", lang) + parts[-1]
+    )
+
+
+def batch_kinds(cards: list[dict], lang: object = None) -> str:
     """ "Twelve renames", "Three renames and two sessions to archive": every kind of a batch, in
-    the order the cards came, each with its count (#2389)."""
+    the order the cards came, each with its count (#2389), in the call's language (#2342)."""
     groups: dict[str, list[dict]] = {}
     for c in cards:
         groups.setdefault(batch_group(c), []).append(c)
-    parts = [f"{number_word(len(g))} {_batch_noun(g[0], len(g))}" for g in groups.values()]
-    text = parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + f" and {parts[-1]}"
+    text = _and_list([_batch_part(g[0], len(g), lang) for g in groups.values()], lang)
     return text[0].upper() + text[1:]
 
 
-def batch_question(n: int) -> str:
+def batch_question(n: int, lang: object = None) -> str:
     """The question a batch read-back ends on (#2389): "Shall I go ahead with all twelve?". It
     shares no three-word run with the replies it invites ("do them all", "yes, all of them"), so
     the echo cut (`strip_echo`) never takes a quick answer for HQ's own words."""
     if n == 2:
-        return "Shall I go ahead with both?"
-    return f"Shall I go ahead with all {number_word(n)}?"
+        return call_line("batch.both", lang)
+    return call_line("batch.all", lang, n=number_word(n, lang))
 
 
-def batch_readback(cards: list[dict]) -> str:
+def batch_readback(cards: list[dict], lang: object = None) -> str:
     """The read-back of two or more JUDGED cards (#2389): their count and what they do, in ONE
     sentence, never each card word for word (the operator, #2070 141364). The cards' own texts are
     on the screen, and the judge is shown each card's descriptors as data (`voice_judge`)."""
-    return f"{batch_kinds(cards)}, the details are on your screen. {batch_question(len(cards))}"
+    return call_line(
+        "batch.readback",
+        lang,
+        kinds=batch_kinds(cards, lang),
+        question=batch_question(len(cards), lang),
+    )
 
 
-def readback(cards: list[dict], *, judged: bool = True) -> str:
+def readback(cards: list[dict], *, judged: bool = True, lang: object = None) -> str:
     """The fixed read-back that arms a challenge: what each card does, then ONE plain question
     (#2342): "Want me to send it?", never "Say confirm to …". ``judged``: whether the reply goes to
     the judge (#1715, every card of `voice_calls.JUDGED_KINDS`); otherwise the question names a
-    phrase the grammar accepts, so the answer it invites is one the call can take. Two or more
-    judged cards are read back SHORT (`batch_readback`, #2389)."""
+    phrase the grammar accepts, so the answer it invites is one the call can take. That grammar is
+    English, so a question that names its phrases stays English whatever ``lang`` is (on a call in
+    another language such cards are read for the screen instead, `readback_screen_only`). Two or
+    more judged cards are read back SHORT (`batch_readback`, #2389)."""
     if not cards:
         return ""
     if judged and len(cards) > 1 and not any(c.get("ask") for c in cards):
-        return batch_readback(cards)
+        return batch_readback(cards, lang)
     if len(cards) == 1:
         c = cards[0]
         if c.get("ask"):  # a Needs-you item decided by its own words (#1681 P2)
@@ -801,14 +1066,17 @@ def readback(cards: list[dict], *, judged: bool = True) -> str:
         verb = c.get("verb") or ""
         if not judged:
             return f"{c['line']} {grammar_ask(verb)}"
-        return f"{c['line']} {_ASK_BY_VERB.get(verb, 'Shall I go ahead?')}"
-    parts = [f"{_ORDINAL_WORDS[i].capitalize()}: {c['line']}" for i, c in enumerate(cards)]
+        key = f"ask.{verb}" if verb in _ASK_BY_VERB else "ask.default"
+        return f"{c['line']} {call_line(key, lang)}"
     if not judged:
+        parts = [f"{_ORDINAL_WORDS[i].capitalize()}: {c['line']}" for i, c in enumerate(cards)]
         return " ".join(parts) + f" Confirm {which_of(len(cards))}, or cancel?"
-    return " ".join(parts) + f" Which one should I do, {which_of(len(cards))}?"
+    leads = call_line("ordinal.lead", lang).split("|")
+    parts = [f"{leads[i]}: {c['line']}" for i, c in enumerate(cards)]
+    return " ".join(parts) + " " + call_line("ask.several", lang, which=which_of(len(cards), lang))
 
 
-def readback_screen_only(cards: list[dict]) -> str:
+def readback_screen_only(cards: list[dict], lang: object = None) -> str:
     """The read-back of cards that are NOT judged (#1715: Needs-you decisions, picks) on a call
     whose language the English matcher does not cover: what each card does, confirmed on the
     screen only. HQ cards are judged in any language and never read this way. (English: HQ
@@ -816,7 +1084,7 @@ def readback_screen_only(cards: list[dict]) -> str:
     if not cards:
         return ""
     parts = [c["line"] for c in cards]
-    return " ".join(parts) + " You'll need to tap that one."
+    return " ".join(parts) + " " + call_line("tap", lang)
 
 
 def batch_summary(
@@ -829,6 +1097,7 @@ def batch_summary(
     skipped: int = 0,
     stopped: int = 0,
     on_screen: int = 0,
+    lang: object = None,
 ) -> str:
     """The ONE line a batch ends on (#2389), from its counted results: what was done, what is
     still running, what failed, what can't be told, what the Commander tapped themselves and what
@@ -836,29 +1105,44 @@ def batch_summary(
     store says are STILL pending, re-read just before this line; only they are said to be on the
     screen. A FIXED sentence: counts only, never a card's text."""
     if total > 1 and done == total:
-        return f"Done, all {number_word(total)}."
+        return call_line("summary.all_done", lang, n=number_word(total, lang))
     if total == 1 and done == 1:
-        return "Done."
+        return call_line("summary.done", lang)
+    table = _SUMMARY_DE if line_lang(lang) == "de" else _SUMMARY_EN
+    counts = (done, running, failed, unknown, skipped, stopped)
     clauses = [
-        f"{number_word(n)} {what}"
-        for n, what in (
-            (done, "done"),
-            (running, "still running"),
-            (failed, "didn't go through"),
-            (unknown, "I can't tell yet"),
-            (skipped, "you'd tapped already"),
-            (stopped, "not started"),
-        )
+        (one if n == 1 else several).format(n=number_word(n, lang))
+        for n, (one, several) in zip(counts, table, strict=True)
         if n
     ]
     if not clauses:
-        return "Nothing was done."
-    text = clauses[0] if len(clauses) == 1 else ", ".join(clauses[:-1]) + f" and {clauses[-1]}"
+        return call_line("summary.nothing", lang)
+    text = _and_list(clauses, lang)
     out = [text[0].upper() + text[1:] + "."]
     if stopped:
-        out.append("I stopped there.")
+        out.append(call_line("summary.stopped", lang))
     if on_screen == 1:
-        out.append("That one is still on your screen.")
+        out.append(call_line("summary.on_screen_one", lang))
     elif on_screen > 1:
-        out.append(f"Those {number_word(on_screen)} are still on your screen.")
+        out.append(call_line("summary.on_screen", lang, n=number_word(on_screen, lang)))
     return " ".join(out)
+
+
+#: A batch summary's clauses (#2389), ``(one, several)`` in the order done, still running, failed,
+#: can't tell, tapped already, not started; German in #2342.
+_SUMMARY_EN = (
+    ("one done", "{n} done"),
+    ("one still running", "{n} still running"),
+    ("one didn't go through", "{n} didn't go through"),
+    ("one I can't tell yet", "{n} I can't tell yet"),
+    ("one you'd tapped already", "{n} you'd tapped already"),
+    ("one not started", "{n} not started"),
+)
+_SUMMARY_DE = (
+    ("eine erledigt", "{n} erledigt"),
+    ("eine läuft noch", "{n} laufen noch"),
+    ("eine hat nicht geklappt", "{n} haben nicht geklappt"),
+    ("bei einer weiß ich es noch nicht", "bei {n} weiß ich es noch nicht"),
+    ("eine hattest du schon angetippt", "{n} hattest du schon angetippt"),
+    ("eine nicht gestartet", "{n} nicht gestartet"),
+)

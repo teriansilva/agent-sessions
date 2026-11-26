@@ -314,6 +314,7 @@ from .voice_text import (  # noqa: E402,F401
     CHUNK_WORDS,
     batch_summary,
     call_language,
+    call_line,
     card_sentences,
     classify_confirmation,
     classify_decision,
@@ -801,6 +802,12 @@ class Call:
         if self.heard_language is None:
             return self.language
         return call_language(self.language, self.heard_language, text, self.listen_languages)
+
+    def _line_lang(self, cards: list[dict]) -> str | None:
+        """The language the FIXED lines about ``cards`` are said in (#2342): the call's own for
+        cards the judge hears (#1715), English for a Needs-you item or a connector message, whose
+        English grammar decides them and whose questions name its English phrases."""
+        return self.language if _judged(cards) else None
 
     def _not_the_operator(self, ev: dict) -> str | None:
         """Why an utterance is not the operator speaking to HQ, or ``None`` (#1667, #1807). Every
@@ -2065,8 +2072,9 @@ class Call:
             words = "" if view.get("quiet") is True else speakable(view.get("answer") or "")
             # Offered by voice: a batch of judged cards whole up to `BATCH_MAX` (#2389), anything
             # else up to `OFFERS_MAX`; any more are screen-only.
+            lang = self.language
             found = confirmable_cards(
-                voiced, summaries=summaries, picks=picks, suggestions=suggestions
+                voiced, summaries=summaries, picks=picks, suggestions=suggestions, lang=lang
             )
             again = set(voiced.get("card_offers") or [])
             found = [{**c, "offered": True} if c["id"] in again else c for c in found]
@@ -2079,7 +2087,10 @@ class Call:
                     voiced,
                     skip={c["id"] for c in cards},
                     said=words,
-                    reasons=screen_reasons(voiced, summaries=summaries, suggestions=suggestions),
+                    reasons=screen_reasons(
+                        voiced, summaries=summaries, suggestions=suggestions, lang=lang
+                    ),
+                    lang=lang,
                 )
             )
             sid = uuid.uuid4().hex[:12]
@@ -2169,13 +2180,14 @@ class Call:
             return
         if self.language not in (None, "en") and not _judged(cards):
             # Needs-you decisions keep the English grammar (#1715 P2 is held): screen only.
-            await self.say(readback_screen_only(cards), kind="readback", turn_id=turn_id)
+            await self.say(readback_screen_only(cards, self.language), kind="readback",
+                           turn_id=turn_id)  # fmt: skip
             return
         # The PENDING challenge exists before its read-back is sent: the worker's `said`, the
         # browser's `played` — and an interruption, mute, tap or new question, which void it —
         # all meet the real challenge, whatever order the awaits resolve in (#1631 reviews).
         sid = uuid.uuid4().hex[:12]
-        line = readback(cards, judged=_judged(cards))
+        line = readback(cards, judged=_judged(cards), lang=self.language)
         ch = {"cards": cards, "say_id": sid, "sent": False, "armed_at": None,
               "expires_at": None, "gen": self.generation,
               # The Needs-you items still to offer, one at a time, after this one (#1681 P2).
@@ -2328,7 +2340,7 @@ class Call:
             # or replaced it, "it's still waiting" would be false.
             if self.challenge is ch:
                 await self.void_challenge()
-                await self.say("Sorry, I didn't catch that. It's still waiting for you.",
+                await self.say(call_line("reply.not_caught", self._line_lang(ch["cards"])),
                                kind="outcome")  # fmt: skip
             return
         # Not an answer: the words go on as a new question, as an unmatched reply always did. The
@@ -2432,25 +2444,28 @@ class Call:
         await caption()
         if verdict == "cancel":
             await self.void_challenge()
+            lang = self._line_lang(ch["cards"])
             line = (
-                "Okay, I'll leave them."
+                call_line("reply.leave_them", lang)
                 if ch["queue"] or len(ch["cards"]) > 1
-                else "Okay, I'll leave it."
+                else call_line("reply.leave_it", lang)
             )
             await self.say(line, kind="outcome")
             return True
         # "all" / "ambiguous" / "broader" / "no_allow": HQ answers, and the challenge waits for
         # THAT line to have played before it arms again — so its own echo can never be taken
         # for a confirmation.
-        which = which_of(len(ch["cards"]))  # a person's question, never a command (#2342)
+        lang = self._line_lang(ch["cards"])
+        which = which_of(len(ch["cards"]), lang)  # a person's question, never a command (#2342)
         if _judged(ch["cards"]):
             # No ordinal menu for HQ's own cards (#2389): the judge takes a card by what it is.
-            pick, drop = "Which one do you mean?", "Which one should I drop?"
+            pick = call_line("reply.which_mean", lang)
+            drop = call_line("reply.which_drop", lang)
         else:  # the grammar decides (Hermes 8839): the question names the phrase it takes
             pick, drop = f"Confirm {which}, or cancel?", f"Drop {which}?"
         line = {
-            "all": f"I can only do one at a time. {pick}",
-            "dismiss_all": f"I can only drop one at a time. {drop}",
+            "all": call_line("reply.one_at_a_time", lang, pick=pick),
+            "dismiss_all": call_line("reply.drop_one_at_a_time", lang, drop=drop),
             "broader": "By voice I can only allow it once. For anything more, you'll need to"
             " tap it.",
             "no_allow": "I can't allow this one by voice. Refuse it, or skip it?",
@@ -2612,7 +2627,7 @@ class Call:
             return
         if req == "changed" or not await self._still_open(card):
             await self.client({"t": "settled", "card": card["id"], "ok": False, "status": 0})
-            await self.say("That one changed in the meantime, so I left it alone.",
+            await self.say(call_line("reply.changed_left", self._line_lang([card])),
                            kind="outcome")  # fmt: skip
             return
         method, path, body = req
@@ -2632,7 +2647,8 @@ class Call:
         await self.client({"t": "settled", "card": card["id"], "ok": ok,
                            "status": resp.status if resp else 0,
                            **({"dismissed": True} if card.get("dismiss") else {})})  # fmt: skip
-        await self.say(outcome_sentence(card, resp), kind="outcome", card=ref)
+        await self.say(outcome_sentence(card, resp, self._line_lang([card])), kind="outcome",
+                       card=ref)  # fmt: skip
         if resp is not None and resp.status == 202 and card["kind"] in _PROPOSAL_KINDS:
             # Accepted is not finished: follow the card to its end state and say THAT.
             final = await self._follow(card["id"])
@@ -2711,7 +2727,10 @@ class Call:
         if self.state == "ended":
             return
         await self.say(
-            batch_summary(total=len(cards), on_screen=on_screen, **counts), kind="outcome"
+            batch_summary(
+                total=len(cards), on_screen=on_screen, lang=self._line_lang(cards), **counts
+            ),
+            kind="outcome",
         )
         for card in running:
             w = self._watched.get(card["id"])
@@ -2870,7 +2889,8 @@ class Call:
         await self.client({"t": "settled", "card": card["id"], "final": final})
         if self.state == "ended":
             return  # hung up during that send: nothing is said (`say` checks again too)
-        await self.say(final_sentence(card, final), kind="outcome", card=_card_ref(card))
+        await self.say(final_sentence(card, final, self._line_lang([card])), kind="outcome",
+                       card=_card_ref(card))  # fmt: skip
 
     async def _follow_late(self, card: dict) -> None:
         """Follow an accepted card past `OUTCOME_POLL_S` at a low rate until it ends, the call
@@ -3671,7 +3691,7 @@ async def folder_suggestions(view: dict) -> dict[str, dict]:
     return out
 
 
-def _suggest_card(p: dict, suggestion: dict) -> dict | None:
+def _suggest_card(p: dict, suggestion: dict, lang: object = None) -> dict | None:
     """A browsed-for folder by voice: the card's effect, then the EXISTING folder suggested from
     the project's name, read verbatim; "confirm" uses it — nothing is ever made on disk."""
     folder = suggestion.get("folder") if isinstance(suggestion, dict) else None
@@ -3684,8 +3704,11 @@ def _suggest_card(p: dict, suggestion: dict) -> dict | None:
     effect = verbatim(str(p.get("text") or ""))
     if said is None or title is None or label is None or effect is None:
         return None
-    head = f"{label}, for {title}" if title else label
-    line = f"{head}: {_sentence(effect)} I suggest the existing folder {said}."
+    if title:
+        line = call_line("lead.operation", lang, label=label, title=title, effect=_sentence(effect))
+    else:
+        line = f"{label}: {_sentence(effect)}"
+    line = f"{line} {call_line('lead.suggest', lang, folder=said)}"
     if len(line) > PERMISSION_TOLD_MAX:
         return None
     return {"id": p["action_id"], "kind": "suggest", "verb": "use it", "line": line,
@@ -3739,10 +3762,13 @@ def confirmable_cards(
     summaries: dict[str, str] | None = None,
     picks: dict[str, list[str]] | None = None,
     suggestions: dict[str, dict] | None = None,
+    lang: object = None,
 ) -> list[dict]:
     """The cards of a settled HQ turn that a voice may confirm: nudges, new sessions, and HQ
     operations that need no on-screen input. What will be SENT is read back in full, word for
-    word (`voice_text.verbatim`); a card whose text can't be is left to the screen (#1631)."""
+    word (`voice_text.verbatim`); a card whose text can't be is left to the screen (#1631). The
+    lead-ins are in the call's language (``lang``, `voice_text.CALL_LINES`, #2342); a pick stays
+    English, since its English grammar decides it."""
     from . import ask_proposals
 
     out: list[dict] = []
@@ -3750,7 +3776,7 @@ def confirmable_cards(
         pid = p.get("action_id")
         if not isinstance(pid, str) or not pid or p.get("replaced_by"):
             continue  # a card HQ replaced is never offered (#2120)
-        title = (p.get("title") or "").strip()[:80] or "that session"
+        title = (p.get("title") or "").strip()[:80] or call_line("default.title", lang)
         kind = p.get("kind")
         if kind == "nudge":
             if p.get("projection") not in (None, "actionable"):
@@ -3759,23 +3785,26 @@ def confirmable_cards(
             if text is None:
                 continue  # it can't be heard in full: confirm it on screen
             out.append({"id": pid, "kind": "nudge", "verb": "send it",
-                        "line": _sentence(f"A message to {title}: {text}")})  # fmt: skip
+                        "line": _sentence(call_line("lead.nudge", lang, title=title,
+                                                    text=text))})  # fmt: skip
         elif kind == "message":
             # A message through a connector (#1833): read out word for word, or tapped on screen.
             text = verbatim(p.get("text") or "")
             if text is None:
                 continue
-            to = (p.get("recipient") or "").strip()[:80] or "that recipient"
-            via = (p.get("connector") or "").strip()[:40] or "the connector"
+            to = (p.get("recipient") or "").strip()[:80] or call_line("default.to", lang)
+            via = (p.get("connector") or "").strip()[:40] or call_line("default.connector", lang)
             out.append({"id": pid, "kind": "message", "verb": "send it",
-                        "line": _sentence(f"A message to {to} on {via}: {text}")})  # fmt: skip
+                        "line": _sentence(call_line("lead.message", lang, to=to, via=via,
+                                                    text=text))})  # fmt: skip
         elif kind == "session":
             brief = verbatim(p.get("text") or "")
             # The kind the tap starts (#2014), from the card's live entry: what is heard is what
             # launches. An entry not read yet says neither.
-            noun = ask_proposals.KIND_WORDS.get(p.get("runtime"), "session")
+            runtime = p.get("runtime") if p.get("runtime") in ask_proposals.KIND_WORDS else None
+            noun = call_line(f"noun.{runtime or 'session'}", lang)
             if brief is not None:
-                line = f"A new {noun} in {title}: {brief}"
+                line = call_line("lead.session", lang, noun=noun, title=title, brief=brief)
             elif not (p.get("text") or "").strip():
                 continue  # nothing would start it
             else:
@@ -3788,11 +3817,17 @@ def confirmable_cards(
                 # this way; a message and an operation's effect are still read in full or stay
                 # on screen (`verbatim` is unchanged).
                 agent = " ".join(str(p.get("agent") or "").split())[:40]
-                if noun == "session":  # no kind known: the words before #2014
-                    what = f"A new {agent} session" if agent else "A new session"
+                if runtime is None:  # no kind known: the words before #2014
+                    what = (
+                        call_line("what.agent_session", lang, agent=agent)
+                        if agent
+                        else call_line("what.session", lang)
+                    )
+                elif agent:
+                    what = call_line("what.kind_agent", lang, noun=noun, agent=agent)
                 else:
-                    what = f"A new {noun}" + (f" with {agent}" if agent else "")
-                line = f"{what} in {title}. The brief's too long to read out; it's in the chat"
+                    what = call_line("what.kind", lang, noun=noun)
+                line = call_line("lead.session_long", lang, what=what, title=title)
             out.append({"id": pid, "kind": "session", "verb": "start it",
                         "line": _sentence(line), "announced": brief is None})  # fmt: skip
         elif kind == "operation" and p.get("op") in VOICE_DRAFTS and not p.get("needs"):
@@ -3809,7 +3844,7 @@ def confirmable_cards(
         ):
             # A browsed-for folder, suggested from the project's name (#1681, the operator's
             # decision); without a suggestion the card stays on screen.
-            card = _suggest_card(p, (suggestions or {}).get(pid) or {})
+            card = _suggest_card(p, (suggestions or {}).get(pid) or {}, lang)
             if card is not None:
                 out.append(card)
         elif kind == "operation" and p.get("needs") == ["folder"] and _picks_from_card(p.get("op")):
@@ -3826,10 +3861,14 @@ def confirmable_cards(
                 continue
             label = (p.get("label") or p.get("verb") or "A change").strip()[:60]
             out.append({"id": pid, "kind": "operation", "verb": "do it",
-                        "line": _sentence(f"{label}, for {title}: {effect}")})  # fmt: skip
+                        "line": _sentence(call_line("lead.operation", lang, label=label,
+                                                    title=title, effect=effect))})  # fmt: skip
     # A card that replaced an earlier one is read back as the change it is (#2120).
     changed = {p.get("action_id") for p in view.get("proposals") or [] if p.get("replaces")}
-    out = [{**c, "line": f"Changed: {c['line']}"} if c["id"] in changed else c for c in out]
+    out = [
+        {**c, "line": call_line("lead.changed", lang, line=c["line"])} if c["id"] in changed else c
+        for c in out
+    ]
     # What identifies each card (#2389): its operation, target and change, from its own stored
     # proposal — the batch read-back counts them by kind, and the judge is shown them as data.
     by_id = {p.get("action_id"): p for p in view.get("proposals") or []}
@@ -3849,11 +3888,13 @@ def screen_reasons(
     *,
     summaries: dict[str, str] | None = None,
     suggestions: dict[str, dict] | None = None,
+    lang: object = None,
 ) -> dict[str, str]:
-    """Why each HQ operation card of a turn stays on screen (#2120): a FIXED sentence per card
-    id, from the card's kind and the call's own checks — never model text — so the Commander
-    hears the reason, and HQ is never taken to be unable to confirm anything by voice. Only for
-    operations: a session, nudge or message card says its own reason already."""
+    """Why each HQ operation card of a turn stays on screen (#2120), in the call's language
+    (``lang``): a FIXED sentence per card id, from the card's kind and the call's own checks —
+    never model text — so the Commander hears the reason, and HQ is never taken to be unable to
+    confirm anything by voice. Only for operations: a session, nudge or message card says its own
+    reason already."""
     from . import ask_library, ask_operations
 
     out: dict[str, str] = {}
@@ -3866,23 +3907,23 @@ def screen_reasons(
         needs = p.get("needs") or []
         if op_id in ask_operations._SUGGEST_FROM_NAME and needs == ["folder"]:
             if not (suggestions or {}).get(pid):
-                out[pid] = "Its folder doesn't exist yet, and I can't pick a new one by voice."
+                out[pid] = call_line("reason.new_folder", lang)
         elif group == "mission":
-            out[pid] = "A draft mission is confirmed on screen for now."
+            out[pid] = call_line("reason.mission", lang)
         elif group == "team":
-            out[pid] = "A team change is confirmed on screen."
+            out[pid] = call_line("reason.team", lang)
         elif group == "secret":
-            out[pid] = "Secrets are only ever confirmed on screen."
+            out[pid] = call_line("reason.secret", lang)
         elif group == "mcp":
-            out[pid] = "MCP servers are only ever set up on screen."
+            out[pid] = call_line("reason.mcp", lang)
         elif group in ask_library.GROUPS and op_id not in VOICE_DRAFTS:
-            out[pid] = "Library changes are confirmed on screen, where their content is."
+            out[pid] = call_line("reason.library", lang)
         elif op_id in VOICE_DRAFTS and not (summaries or {}).get(pid):
-            out[pid] = "It's too long to read out in full."
+            out[pid] = call_line("reason.too_long", lang)
         elif needs:
-            out[pid] = "It needs a choice on screen."
+            out[pid] = call_line("reason.choice", lang)
         elif verbatim(p.get("text") or "") is None:
-            out[pid] = "It's too long to read out in full."
+            out[pid] = call_line("reason.too_long", lang)
     return out
 
 
@@ -4122,18 +4163,20 @@ def settled_ok(card: dict, resp) -> bool:
     return _result_state(card, body) in ("done", "started", "sent")
 
 
-def outcome_sentence(card: dict, resp) -> str:
-    """What happened, from the route's own status AND result — never model prose."""
+def outcome_sentence(card: dict, resp, lang: object = None) -> str:
+    """What happened, from the route's own status AND result — never model prose. In the call's
+    language (``lang``) for an HQ card; a Needs-you decision's lines stay English, as its grammar
+    is (#2342)."""
     if resp is None:
-        return "That didn't go through. It's still waiting."
+        return call_line("out.not_through", lang)
     if resp.status == 202:
-        return "Accepted. It's starting now."  # not finished: `final_sentence` says the end
+        return call_line("out.accepted", lang)  # not finished: `final_sentence` says the end
     if 200 <= resp.status < 300:
         body = resp.body if isinstance(resp.body, dict) else {}
         if card["kind"] in ("nudge", "needs_you"):
             if _result_state(card, body) == "delivered":
-                return "Sent."
-            return "It wasn't sent. The card has the reason."
+                return call_line("out.sent", lang)
+            return call_line("out.not_sent", lang)
         if card["kind"] in ("permission", "menu"):
             if _result_state(card, body) != "delivered":
                 return "It wasn't sent. Check the session."
@@ -4145,8 +4188,8 @@ def outcome_sentence(card: dict, resp) -> str:
             return _sentence(f"Chosen: {choice.get('label')}")
         state = _result_state(card, body) or "unknown"
         if card.get("dismiss") and state == "dismissed":
-            return "Dismissed."
-        return final_sentence(card, state)
+            return call_line("out.dismissed", lang)
+        return final_sentence(card, state, lang)
     if card["kind"] in ("permission", "menu"):
         # FIXED sentences, never the route's `detail` (#1683 review): a refusal can quote the
         # live screen's label, which is the agent's text.
@@ -4158,33 +4201,20 @@ def outcome_sentence(card: dict, resp) -> str:
         if resp.status in (404, 409):
             return "Nothing was sent. The session changed, or it was already decided."
     if resp.status == 409:
-        return "That one changed in the meantime, so I didn't send it."
-    return f"That didn't go through ({resp.status}). It's still waiting."
+        return call_line("out.changed_not_sent", lang)
+    return call_line("out.not_through_status", lang, status=resp.status)
 
 
-_FINAL = {
-    "started": "The session is up.",
-    "done": "Done.",
-    "partly_done": "Partly done. The card has the details.",
-    "failed": "It failed. The card has the reason.",
-    "stale": "That card changed, so nothing ran.",
-    "dismissed": "It was dismissed, so nothing ran.",
-    "interrupted": "It was interrupted. Check your sessions.",
-    "unconfirmed": "It may have started, but I couldn't confirm it. Check your sessions.",
-}
+#: An accepted card's end, by its stored state: `voice_text.CALL_LINES` keys ``final.<state>``.
+_FINAL = frozenset(
+    {"started", "done", "partly_done", "failed", "stale", "dismissed", "interrupted",
+     "unconfirmed"}
+)  # fmt: skip
 
 
-#: A message's end (#1833), in words that never claim more than the provider said.
-_FINAL_MESSAGE = {
-    "sent": "Sent.",
-    "failed": "It wasn't sent. The card has the reason.",
-    "stale": "That card changed, so nothing was sent.",
-    "dismissed": "Dismissed, so nothing was sent.",
-    "unconfirmed": "It may have been sent, but I couldn't confirm it. Check the chat; "
-    "I won't send it again.",
-    "interrupted": "It may have been sent, but I couldn't confirm it. Check the chat; "
-    "I won't send it again.",
-}
+#: A message's end (#1833), in words that never claim more than the provider said: keys
+#: ``message.<state>``.
+_FINAL_MESSAGE = frozenset({"sent", "failed", "stale", "dismissed", "unconfirmed", "interrupted"})
 
 
 def _card_ref(card: dict) -> str | None:
@@ -4196,13 +4226,13 @@ def _card_ref(card: dict) -> str | None:
     return None
 
 
-def final_sentence(card: dict, state: str | None) -> str:
+def final_sentence(card: dict, state: str | None, lang: object = None) -> str:
     """The END of an accepted card, from its stored state — never model prose."""
     if state is None:
-        return "Still running. The card will show when it's done."
+        return call_line("final.running", lang)
     if card.get("kind") == "message":
-        return _FINAL_MESSAGE.get(state, "The card has the result.")
-    return _FINAL.get(state, "The card has the result.")
+        return call_line(f"message.{state}" if state in _FINAL_MESSAGE else "final.default", lang)
+    return call_line(f"final.{state}" if state in _FINAL else "final.default", lang)
 
 
 async def end_if_never_joined(call: Call) -> None:

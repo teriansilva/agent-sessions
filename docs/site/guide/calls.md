@@ -167,6 +167,13 @@ the second is release. Which one?"). So does a message HQ would send through a m
 connector, alone or with other cards: "Send it, or cancel?" there wants "send it", not a bare
 "yes".
 
+On a call in German, HQ reads its cards, asks its questions and says what happened in German
+too ("Soll ich das abschicken?"). A question from one of your sessions, and a messenger message,
+still use the English words above.
+
+Ask for a new session without naming an agent or a project and HQ takes the ones you used for
+your most recent session, and tells you which it took.
+
 A message you tell HQ to send into one of your sessions is not read back: HQ sends it right away
 and tells you whether it arrived.
 

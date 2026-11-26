@@ -591,6 +591,8 @@ class _Turn:
     #: `propose_session` means. None until the tool ran in this turn.
     projects: list[dict] | None = None
     agents: list[dict] | None = None
+    #: The Commander's last used agent and project (#2342), read once per turn: `_last_used`.
+    last_used: dict | None = None
     #: The specialists THIS turn's `list_specialists` returned (#1910): what a `specialist_index`
     #: in `propose_session` means. None until the tool ran in this turn.
     specialists: list[dict] | None = None
@@ -1295,19 +1297,56 @@ def _project_rows() -> list[dict]:
     return rows
 
 
+#: The one read `_last_used` makes (#2342): the sidebar's own list, whose `newest` is computed over
+#: the whole scoped set before favorites, sort and paging, so one row of page is enough.
+LAST_USED_QUERY = "limit=1"
+
+
+async def _last_used(turn: _Turn) -> dict:
+    """The agent (engine id) and project id of the session the Commander STARTED most recently
+    (#2342): the list route's ``newest``, the newest ``created_at`` over every unarchived main
+    session in scope, read through ``GET /api/sessions`` as this turn's operator, once per turn.
+    A server fact, so HQ never guesses "the usual" — and ``{}`` when it can't be read (no
+    operator, no sessions, a refusal): then nothing is marked and HQ asks."""
+    if turn.last_used is not None:
+        return turn.last_used
+    from . import asgi_call
+
+    found: dict = {}
+    with contextlib.suppress(Exception):
+        operator, app = _operator(turn)
+        r = await asgi_call.call(app, operator, "GET", "/api/sessions", None, query=LAST_USED_QUERY)
+        newest = r.body.get("newest") if r.status == 200 and isinstance(r.body, dict) else None
+        if isinstance(newest, dict) and isinstance(newest.get("engine"), str):
+            project = newest.get("project") if isinstance(newest.get("project"), dict) else {}
+            found = {
+                "engine": newest["engine"],
+                "project_id": str(project.get("id") or "")
+                if project.get("kind") == "project"
+                else "",
+            }
+    turn.last_used = found
+    return found
+
+
 async def _list_projects(turn: _Turn, args: dict) -> tuple[dict, dict]:
     options = await asyncio.to_thread(_project_rows)
     turn.projects = options
+    last = (await _last_used(turn)).get("project_id") or None
     rows = [
         {
             "index": i,
             "name": p["name"],
             "archived": p["archived"],
             "can_start_session": p["startable"],
+            **({"last_used": True} if last and p["id"] == last else {}),
         }
         for i, p in enumerate(options)
     ]
-    return {"projects": rows}, {"count": len(rows)}
+    out: dict = {"projects": rows}
+    if any(r.get("last_used") for r in rows):
+        out["note"] = "last_used marks the project of the session the Commander started last."
+    return out, {"count": len(rows)}
 
 
 #: Why an agent can't be started, as HQ may say it (#1554): a CLOSED table of vetted, authored
@@ -1404,6 +1443,7 @@ async def _list_agents(turn: _Turn, args: dict) -> tuple[dict, dict]:
     # An index keeps its agent for the whole turn (#1938): a second read never renumbers.
     turn.agents = ask_specialists.stable(turn.agents, await asyncio.to_thread(_agent_rows))
     rows = [r for r in turn.agents if not r["gone"]]
+    last = (await _last_used(turn)).get("engine") or None
     shown = [
         {
             "index": r["index"],
@@ -1414,6 +1454,7 @@ async def _list_agents(turn: _Turn, args: dict) -> tuple[dict, dict]:
             **({"retiring": True} if r.get("retiring") else {}),
             **({"preferred": True} if r.get("preferred") else {}),
             **({"default": True} if r.get("default") else {}),
+            **({"last_used": True} if last and r.get("id") == last else {}),
         }
         for r in rows
     ]
@@ -1421,7 +1462,8 @@ async def _list_agents(turn: _Turn, args: dict) -> tuple[dict, dict]:
         "agents": shown,
         "note": "kind says whether a session starts as an API session or in a terminal. "
         "preferred marks each agent's client for new sessions (its API client when that is "
-        "ready); default marks the operator's default agent.",
+        "ready); default marks the operator's default agent; last_used marks the agent of the "
+        "session the Commander started last.",
     }, {"count": len(rows)}
 
 

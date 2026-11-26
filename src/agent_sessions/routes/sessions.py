@@ -1350,6 +1350,17 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 # Every session was tried, but some conversations are not in the index whole
                 # (unreadable, or past the full-read bound): a hit is real, an absence is not.
                 search["incomplete"] = found.progress.incomplete
+        # The main session the Commander STARTED most recently (#2342): its agent and project,
+        # over the whole scoped set BEFORE the filters, the favorites-first sort and the page —
+        # HQ's "last used" fact (`ask_orchestrator._last_used`). Unarchived view only.
+        dated = [
+            r
+            for r in scoped
+            if isinstance(r.get("created_at"), int | float)
+            and not isinstance(r.get("created_at"), bool)
+            and r["created_at"] > 0
+        ]
+        newest = max(dated, key=lambda r: r["created_at"]) if dated and not archived else None
         return {
             "sessions": window,
             "next_offset": next_offset,
@@ -1357,6 +1368,19 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             # Of those, how many have an agent running (#1085).
             "live_total": sum(1 for r in rows if r["running"]),
             "facets": facets,
+            **(
+                {
+                    "newest": {
+                        "engine": newest["engine"],
+                        "project": {
+                            "kind": newest["project"]["kind"],
+                            "id": newest["project"]["id"],
+                        },
+                    }
+                }
+                if newest is not None
+                else {}
+            ),
             **({"attention_outside": outside} if outside is not None else {}),
             **({"search": search} if search is not None else {}),
             **pinned,

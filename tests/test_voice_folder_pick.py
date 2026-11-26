@@ -169,7 +169,8 @@ def test_on_a_call_in_another_language_the_hq_card_is_judged_and_the_pick_stays_
     run(go())
     assert any(p.endswith("/approve") for _, p, _ in r.routes)  # the nudge, judged
     said = r.said_text()[-1]
-    assert said.startswith(PICK_LINE) and said.endswith("You'll need to tap that one.")
+    # read for the screen, closing in the call's language (#2342 phase 2)
+    assert said.startswith(PICK_LINE) and said.endswith("Das musst du selbst antippen.")
     assert r.call.challenge is None  # the pick armed nothing
 
 
@@ -182,7 +183,7 @@ def test_only_picks_on_a_call_in_another_language_are_read_for_the_screen(monkey
 
     run(go())
     assert r.said_text()[-1].startswith(PICK_LINE)
-    assert r.said_text()[-1].endswith("You'll need to tap that one.")
+    assert r.said_text()[-1].endswith("Das musst du selbst antippen.")  # #2342 phase 2
     assert r.call.challenge is None
 
 

@@ -944,6 +944,12 @@ def test_list_sessions_filters_by_agent_and_mission_through_the_route(
     from agent_sessions.engines import registry
 
     first = next(p for p in registry.present_providers() if registry.is_agent(p))
+    # list_agents' own read of the sidebar for its last_used mark (#2342) is not a list_sessions.
+    from agent_sessions import ask_orchestrator
+
+    last_used = ask_orchestrator.LAST_USED_QUERY
+    assert queries.count(last_used) == 1
+    queries = [q for q in queries if q != last_used]
     assert agents[0]["index"] == 0 and len(queries) == 1
     assert f"engine={first.engine_id}" in queries[0] and "mission=none" in queries[0]
     # The request after round 2 carries round 1's result too: the three list_sessions are last.
