@@ -117,6 +117,8 @@ export function useSessionsList() {
   const [attentionOutside, setAttentionOutside] = useState<
     SessionsPage["attention_outside"] | null
   >(null);
+  /** How the active text search was answered (#2373), from the first page. */
+  const [search, setSearch] = useState<SessionsPage["search"] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Monotonic request id: a slower earlier fetch (e.g. an older search query) must
@@ -226,6 +228,7 @@ export function useSessionsList() {
         setMissionFilterUnavailable(Boolean(page.mission_filter_unavailable));
         setClusterFilterUnavailable(Boolean(page.cluster_filter_unavailable));
         if (offset === 0) setAttentionOutside(page.attention_outside ?? null);
+        if (offset === 0) setSearch(page.search ?? null);
       } catch (e) {
         if (gen !== reqId.current) return;
         // Background failure → keep existing rows, no flicker. `keepOnError` is a VISIBLE read
@@ -573,6 +576,7 @@ export function useSessionsList() {
     missionFilterUnavailable,
     clusterFilterUnavailable,
     attentionOutside,
+    search,
     facets,
     filters,
     loading,

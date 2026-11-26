@@ -126,6 +126,7 @@ VIAS = frozenset({"call", "card"})
 #: A user record's step-list key (#2251, `ask_steps.owed`): what settled, and where.
 STEPS_KEY_RE = re.compile(r"^(next|hold|done):[0-9a-f]{16}:s[0-9a-f]{8}:[0-9a-f]{16}$")
 STEPS_SEEN_MAX = 8
+FIND_SOURCES = frozenset({"index", "index+model", "model"})
 #: The card states a turn's model request carried (#2372), kept on its final status so the next
 #: turn knows which settlements HQ has already been told about. Bounded; the newest win.
 CARDS_SEEN_MAX = 64
@@ -715,6 +716,10 @@ def _admit(rec: dict, secrets: list[str]) -> dict:
         # and what became of a send's message: "nothing was sent" is read from these records.
         if meta_in.get("effect") is True:
             meta["effect"] = True
+        # #2373: which path answered `find_sessions` — the index alone, the index's candidates
+        # reranked by a model, or the model path (no index). Closed words only.
+        if meta_in.get("source") in FIND_SOURCES:
+            meta["source"] = meta_in["source"]
         sent = meta_in.get("sent")
         if sent is not None:
             if sent not in SENT_OUTCOMES:

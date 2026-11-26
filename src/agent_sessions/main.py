@@ -437,6 +437,11 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         clusters_task = asyncio.create_task(clusters_loop.run())
         # Session lineage (#2325): proves which session started which, off the request path.
         lineage_task = asyncio.create_task(lineage_attribution.run())
+        # The session search index (#2373): bounded incremental passes in the background, never
+        # on a request path. A search before the first pass falls back to titles and details.
+        from . import session_index
+
+        search_index_task = asyncio.create_task(session_index.run())
         # No Pulse scan loop: the session scan was retired (#2179). `GET /api/pulse` builds its
         # cards live, and nothing else read the scan's cache.
         # Periodic Pulse orchestrator pass (#726 Phase 1): same reaper pattern, gated on the
@@ -649,6 +654,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 autosort_task,
                 clusters_task,
                 lineage_task,
+                search_index_task,
                 orchestrator_task,
                 supervisor_task,
                 update_task,

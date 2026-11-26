@@ -7,6 +7,8 @@ import type { HqModelSettings, HqThinking } from "./hq";
 export type EngineId = string;
 
 export interface Session {
+  /** Present on a text search's rows (#2373). */
+  match?: SessionMatch;
   /** engine-qualified identity, e.g. "claude:<uuid>" — the URL + socket + lock key */
   id: string;
   /** Set ONLY on a single-row lookup answered by an alias (#1405): the key that was asked for,
@@ -1777,6 +1779,31 @@ export interface DashboardSessions {
   recent: { total: number; rows: DashboardRecentRow[] };
 }
 
+/** Why a session matched a text search (#2373): its tier, where the snippet is from, and the
+ *  in-scope subagent it came from. `marks` are [start, end) offsets into `snippet`. */
+export interface SessionMatch {
+  tier: "title" | "details" | "conversation";
+  field: string;
+  snippet?: string;
+  marks?: [number, number][];
+  child?: string;
+  more?: number;
+  withheld?: boolean;
+}
+
+/** How a text search was answered (#2373): `index` searched the conversations; `titles` only
+ *  titles and session details (no index yet, or `degraded`). */
+export interface SessionSearch {
+  mode: "index" | "titles";
+  degraded?: "common";
+  short?: boolean;
+  indexing?: { indexed: number; total: number };
+  /** Every session was tried, but this many conversations are not in the index whole
+   *  (unreadable, or past the full-read bound): they may be missing from the results. */
+  incomplete?: number;
+  candidates?: string[];
+}
+
 export interface SessionsPage {
   sessions: Session[];
   next_offset: number | null;
@@ -1809,6 +1836,8 @@ export interface SessionsPage {
     count: number;
     mains: { id: string; engine: string; title: string; attention_count: number }[];
   };
+  /** Present while `q` is set (#2373): how the text search was answered. */
+  search?: SessionSearch;
   /** The pinned scan to pass on the NEXT page (#1007 Phase 3). Present only when the request sent
    *  `snapshot`, and it may differ from what was sent (an expired pin is replaced, never an error). */
   snapshot?: string;

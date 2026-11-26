@@ -561,3 +561,62 @@ input.editInput {
 .rowWrap[data-depth] .title {
   font-size: var(--fs-meta);
 }
+
+/* Text search (#2373): group dividers, the snippet line under a matched row, and the note when a
+   search could not look everywhere. Shared tokens only; marks use the accent wash, never a status
+   colour. */
+.searchTier {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 12px 6px;
+  font: 600 var(--fs-micro) var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.searchTier::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--border-subtle);
+}
+.searchTierCount {
+  letter-spacing: 0;
+  text-transform: none;
+}
+.matchSnippet {
+  margin-top: 2px;
+  font-size: var(--fs-meta);
+  line-height: 1.4;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.matchField {
+  font: var(--fs-micro) var(--font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin-right: 6px;
+}
+.matchChild {
+  color: var(--text-3);
+}
+.matchMark {
+  background: var(--accent-glow);
+  color: var(--text-1);
+  outline: 1px solid var(--accent-soft);
+  padding: 0 1px;
+}
+.matchMore,
+.matchWithheld {
+  color: var(--text-3);
+}
+.searchNote {
+  margin: 8px 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}

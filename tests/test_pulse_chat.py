@@ -757,7 +757,8 @@ def test_hq_find_sessions_reports_zero_rows_for_the_unrelated_mission(configured
     )
     out, meta = asyncio.run(ask_orchestrator._find_sessions(turn, {"query": UNRELATED_QUERY}))
     assert out == {"answer": pulse_chat.NO_MATCH_ANSWER, "sessions": [], "missions": []}
-    assert meta == {"count": 0, "keys": [], "missions": []}
+    # No operator on this turn, so the index is not reachable: the model path answered.
+    assert meta == {"count": 0, "keys": [], "missions": [], "source": "model"}
     assert turn.mission_ids == set() and turn.mission_matches == {}
 
 

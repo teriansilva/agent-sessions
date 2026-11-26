@@ -202,6 +202,40 @@ def _env_int(name: str, default: int) -> int:
 
 
 DEFAULT_MAX_MESSAGES = _env_int("AGENT_SESSIONS_TRANSCRIPT_MAX_MESSAGES", 2000)
+
+# The session search index (#2373) reads a session's WHOLE history: every reader below keeps only
+# its newest tail (`_TAIL_BYTES`, `DEFAULT_MAX_MESSAGES`), so a word said early in a long session
+# was never findable. `full_turns` sets this for its own read only; every other caller keeps the
+# tail. A session past `FULL_READ_MAX_BYTES` is read to that ceiling and reported as truncated.
+_FULL_READ: contextvars.ContextVar[bool] = contextvars.ContextVar("transcript_full", default=False)
+FULL_READ_MAX_BYTES = _env_int("AGENT_SESSIONS_TRANSCRIPT_FULL_MAX_BYTES", 256 * 1024 * 1024)
+FULL_READ_MAX_MESSAGES = 1_000_000
+
+
+def _max_messages() -> int:
+    """The message cap for this read: the tail's, or the full read's (`full_turns`)."""
+    return FULL_READ_MAX_MESSAGES if _FULL_READ.get() else DEFAULT_MAX_MESSAGES
+
+
+def _tail_limit() -> int:
+    """The byte cap for this read: the tail's, or the full read's ceiling."""
+    return FULL_READ_MAX_BYTES if _FULL_READ.get() else _TAIL_BYTES
+
+
+def _full_read_refuses(size: Callable[[], int]) -> bool:
+    """In a full read, whether a store that just read as nothing must RAISE instead: it holds
+    bytes (``size()``), so it is unreadable, never empty. An absent store (FileNotFoundError) is
+    simply empty; one whose size cannot even be read is unreadable. Outside a full read: never."""
+    if not _FULL_READ.get():
+        return False
+    try:
+        return size() > 0
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError):
+        return True
+
+
 DEFAULT_MAX_LINES = _env_int("AGENT_SESSIONS_TRANSCRIPT_MAX_LINES", 20000)
 
 
@@ -568,21 +602,25 @@ def claude_is_injected(record: dict, text: str) -> bool:
     return text.lstrip().startswith(_CLAUDE_INJECTED_PREFIXES)
 
 
-def claude_turns_from_jsonl(path: Path, *, max_messages: int = DEFAULT_MAX_MESSAGES) -> list[Turn]:
+def claude_turns_from_jsonl(path: Path, *, max_messages: int | None = None) -> list[Turn]:
     """Parse a Claude Code session JSONL into Turns. ``message.content`` is a str or a list of
     ``text`` / ``thinking`` / ``tool_use`` / ``tool_result`` blocks; ``thinking`` is hidden, tool
     calls become one-line summaries, tool results are truncated. Only the last ``_TAIL_BYTES`` are
     read (from the next line boundary), so a huge transcript stays fast. Best-effort: unreadable
-    file / bad lines are skipped (→ ``[]`` / partial)."""
+    file / bad lines are skipped (→ ``[]`` / partial) — except in a full read (`full_turns`),
+    where an unreadable file RAISES, so the index never records it as empty."""
+    limit = _tail_limit()
     try:
         with path.open("rb") as fh:
             size = path.stat().st_size
-            cut = size > _TAIL_BYTES
+            cut = size > limit
             if cut:
-                fh.seek(size - _TAIL_BYTES)
+                fh.seek(size - limit)
                 fh.readline()  # discard the (likely partial) first line after the seek
             data = fh.read()
     except OSError:
+        if _FULL_READ.get():
+            raise
         return []
     recs: list[dict] = []
     for raw in data.split(b"\n"):
@@ -596,6 +634,8 @@ def claude_turns_from_jsonl(path: Path, *, max_messages: int = DEFAULT_MAX_MESSA
         if isinstance(o, dict) and o.get("type") in ("user", "assistant"):
             recs.append(o)
     turns: list[Turn] = []
+    if max_messages is None:
+        max_messages = _max_messages()
     cut = cut or len(recs) > max_messages
     for o in recs[-max_messages:]:
         msg = o.get("message") or {}
@@ -665,22 +705,26 @@ register_growth("claude-jsonl", _path_growth(claude_jsonl_path))
 def _read_tail(path: Path) -> bytes:
     """Read the last ``_TAIL_BYTES`` of ``path`` from the next line boundary (so a huge JSONL
     transcript parses in ~constant time — we only need the last ``max_messages``). Fail-soft: an
-    unreadable file yields ``b""``."""
+    unreadable file yields ``b""`` — except in a full read (`full_turns`), where it RAISES, so the
+    index tells "unreadable" from "empty"."""
+    limit = _tail_limit()
     try:
         with path.open("rb") as fh:
             size = path.stat().st_size
-            if size > _TAIL_BYTES:
-                fh.seek(size - _TAIL_BYTES)
+            if size > limit:
+                fh.seek(size - limit)
                 fh.readline()  # discard the (likely partial) first line after the seek
             return fh.read()
     except OSError:
+        if _FULL_READ.get():
+            raise
         return b""
 
 
 def _over_tail(path: Path) -> bool:
     """True when ``path`` is larger than what :func:`_read_tail` reads, so its head was cut."""
     try:
-        return path.stat().st_size > _TAIL_BYTES
+        return path.stat().st_size > _tail_limit()
     except OSError:
         return False
 
@@ -759,9 +803,7 @@ def _codex_adapter(native_id: str, home: Path) -> list[Turn]:
     if path is None:
         return []
     turns = _codex_turns_from_records(_jsonl_dicts(_read_tail(path)))
-    return tagged_turns(
-        turns[-DEFAULT_MAX_MESSAGES:], _over_tail(path) or len(turns) > DEFAULT_MAX_MESSAGES
-    )
+    return tagged_turns(turns[-_max_messages() :], _over_tail(path) or len(turns) > _max_messages())
 
 
 register_adapter("codex-rollout", _codex_adapter)
@@ -896,7 +938,7 @@ def _kimi_cap(turns: list[Turn]) -> list[Turn]:
     """Cap to the last ``DEFAULT_MAX_MESSAGES`` **reconstructed Turns** (not raw records — Kimi
     emits many records per turn), then drop any leading ``result`` Turns whose ``tool.call`` was
     truncated off the top, so a tail read never opens on an orphaned tool result (#720)."""
-    tail = turns[-DEFAULT_MAX_MESSAGES:]
+    tail = turns[-_max_messages() :]
     start = 0
     while start < len(tail) and tail[start].kind == "result":
         start += 1
@@ -924,13 +966,13 @@ def _kimi_adapter(native_id: str, home: Path) -> list[Turn]:
         return []
     recs = _jsonl_dicts(_read_tail(path))
     try:
-        truncated = path.stat().st_size > _TAIL_BYTES
+        truncated = path.stat().st_size > _tail_limit()
     except OSError:
         truncated = False
     if truncated:
         recs = _kimi_drop_partial_head(recs)
     turns = _kimi_turns_from_wire(recs)
-    return tagged_turns(_kimi_cap(turns), truncated or len(turns) > DEFAULT_MAX_MESSAGES)
+    return tagged_turns(_kimi_cap(turns), truncated or len(turns) > _max_messages())
 
 
 register_adapter("kimi-wire", _kimi_adapter)
@@ -989,9 +1031,9 @@ def _opencode_turns_strict(native_id: str, home: Path) -> list[Turn]:
     try:
         rows = conn.execute(
             "SELECT id, data FROM message WHERE session_id=? ORDER BY id DESC LIMIT ?",
-            (native_id, DEFAULT_MAX_MESSAGES),
+            (native_id, _max_messages()),
         ).fetchall()
-        cut = len(rows) >= DEFAULT_MAX_MESSAGES  # LIMIT reached: older messages may exist
+        cut = len(rows) >= _max_messages()  # LIMIT reached: older messages may exist
         rows = rows[::-1]  # oldest-first
         turns: list[Turn] = []
         for mid, mdata in rows:
@@ -1167,9 +1209,9 @@ def _opencode2_turns_strict(native_id: str, home: Path) -> list[Turn]:
         rows = conn.execute(
             "SELECT id, type, time_created, data FROM session_message "
             "WHERE session_id=? AND type IN ('user', 'assistant') ORDER BY seq DESC LIMIT ?",
-            (native_id, DEFAULT_MAX_MESSAGES),
+            (native_id, _max_messages()),
         ).fetchall()
-        cut = len(rows) >= DEFAULT_MAX_MESSAGES
+        cut = len(rows) >= _max_messages()
         turns: list[Turn] = []
         for mid, mtype, created, mdata in rows[::-1]:
             role = "user" if mtype == "user" else "assistant"
@@ -1305,11 +1347,13 @@ def gemini_chat_path(native_id: str, home: Path) -> Path | None:
     return None
 
 
-def _gemini_turns_from_jsonl(path: Path, *, max_messages: int = DEFAULT_MAX_MESSAGES) -> list[Turn]:
+def _gemini_turns_from_jsonl(path: Path, *, max_messages: int | None = None) -> list[Turn]:
     """Parse a gemini chat JSONL into Turns. ``user`` records → user messages; ``gemini`` records →
     assistant messages (the ``thoughts`` field — hidden thinking — is omitted); the ``kind:"main"``
     header and ``info`` records are skipped. gemini stores no tool-call records in the chat log."""
     recs = _jsonl_dicts(_read_tail(path))
+    if max_messages is None:
+        max_messages = _max_messages()
     cut = _over_tail(path) or len(recs) > max_messages
     turns: list[Turn] = []
     for o in recs[-max_messages:]:
@@ -1342,9 +1386,7 @@ register_growth("gemini-chat", _path_growth(gemini_chat_path))
 # never drift.
 
 
-def _antigravity_turns_from_jsonl(
-    path: Path, *, max_messages: int = DEFAULT_MAX_MESSAGES
-) -> list[Turn]:
+def _antigravity_turns_from_jsonl(path: Path, *, max_messages: int | None = None) -> list[Turn]:
     """Parse an agy transcript JSONL into Turns. ``USER_INPUT`` steps → user messages (the
     ``<USER_REQUEST>`` body, dropping the metadata wrappers agy adds for the model); the model's
     ``PLANNER_RESPONSE`` steps → assistant messages. System bookkeeping (``CONVERSATION_HISTORY``)
@@ -1352,6 +1394,8 @@ def _antigravity_turns_from_jsonl(
     from .engines import antigravity
 
     recs = _jsonl_dicts(_read_tail(path))
+    if max_messages is None:
+        max_messages = _max_messages()
     cut = _over_tail(path) or len(recs) > max_messages
     turns: list[Turn] = []
     for o in recs[-max_messages:]:
@@ -1427,9 +1471,7 @@ def copilot_events_path(native_id: str, home: Path) -> Path | None:
     return None
 
 
-def _copilot_turns_from_events(
-    path: Path, *, max_messages: int = DEFAULT_MAX_MESSAGES
-) -> list[Turn]:
+def _copilot_turns_from_events(path: Path, *, max_messages: int | None = None) -> list[Turn]:
     """Parse a copilot ``events.jsonl`` into Turns. A human ``user.message`` is a user turn; a
     skill/command/autopilot one (``data.source`` / ``isAutopilotContinuation``) is ``context``
     (#1020: rendered, never taken as something the user said); a subagent's turn (top-level
@@ -1458,6 +1500,8 @@ def _copilot_turns_from_events(
                 turns.append(Turn("assistant", content.strip(), "text", _when(o.get("timestamp"))))
     # Cap RENDERABLE turns, not raw records: a tool-heavy exchange is mostly records that
     # render nothing, so capping first could drop the prompt and keep only its answer.
+    if max_messages is None:
+        max_messages = _max_messages()
     cut = _over_tail(path) or len(turns) > max_messages
     return tagged_turns(turns[-max_messages:], cut)
 
@@ -1491,6 +1535,9 @@ def _chat_adapter(native_id: str, home: Path) -> list[Turn]:
             return _native_turns(root, native_id)
     log = chat_store.read(root, native_id)
     if log is None:
+        # Absent, or unreadable / no valid header: the same None. A full read tells them apart.
+        if _full_read_refuses(lambda: chat_store._path(root, native_id).stat().st_size):
+            raise OSError("chat log could not be read")
         return []
     out: list[Turn] = []
     for t in log.turns:
@@ -1593,11 +1640,15 @@ def _native_turns(root: Path, native_id: str) -> list[Turn]:
     and the bounded output of each finished one, #1900, as a console transcript shows them), then
     its settled reply text. Approval payloads and turn state (completed, idle) are never
     transcript. Capped like every other reader, and says when it was cut."""
-    from . import native_journal
+    from . import native_journal, native_segments
 
     try:
         journal = native_journal.read(root, native_id)
     except native_journal.JournalError:
+        # A journal that is there but cannot be folded (corrupt, incomplete chain) is unreadable,
+        # never an empty conversation — for the full read; every other caller stays fail-soft.
+        if _full_read_refuses(lambda: native_segments.total_size(root, native_id)):
+            raise
         return []
     # Per operation, its reply's messages in order (`_fold_text`, `_reply_text`): a message's
     # SETTLED text when the client sent one, else its streamed pieces joined. Some clients
@@ -1651,7 +1702,7 @@ def _native_turns(root: Path, native_id: str) -> list[Turn]:
         reply = _reply_text(blocks.get(op.operation_id, [])) or final.get(op.operation_id)
         if reply:
             out.append(Turn("assistant", reply))
-    return tagged_turns(out[-DEFAULT_MAX_MESSAGES:], len(out) > DEFAULT_MAX_MESSAGES)
+    return tagged_turns(out[-_max_messages() :], len(out) > _max_messages())
 
 
 def chat_log_path(native_id: str, home: Path) -> Path | None:
@@ -1797,3 +1848,20 @@ def effective_model(engine_id: str, native_id: str, home: Path) -> str | None:
         return fn(native_id, home)
     except Exception:
         return None
+
+
+def full_turns(engine_id: str, native_id: str, home: Path) -> list[Turn] | None:
+    """A session's WHOLE history for the search index (#2373): every reader's tail caps lifted
+    for this read only (up to `FULL_READ_MAX_BYTES`, then reported as truncated). ``None`` when
+    the engine has no reader. RAISES where the read failed and the engine can say so (its strict
+    reader, and every file reader: under the full read an unreadable file raises instead of
+    reading as ``[]``); an empty read of a non-empty source that had rows is still treated as
+    unreadable by `session_index`, which keeps the old rows."""
+    adapter = strict_adapter_for(engine_id)
+    if adapter is None:
+        return None
+    token = _FULL_READ.set(True)
+    try:
+        return adapter(native_id, home)
+    finally:
+        _FULL_READ.reset(token)

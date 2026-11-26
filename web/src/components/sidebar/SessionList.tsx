@@ -49,6 +49,8 @@ import { useSubagentMode, type SubagentMode } from "./subagentMode";
 import { FiltersBar } from "./Filters";
 import { ProjectTree } from "./ProjectTree";
 import { RowMenu } from "./RowMenu";
+import { MatchSnippet, SearchNote } from "./SearchMatch";
+import { TIER_LABEL } from "./searchTiers";
 import { sessionPeers, useSessionMenu } from "../sessions/useSessionMenu";
 import styles from "./SessionList.module.css";
 import { useEngineRoster } from "../../app/engineRoster";
@@ -433,6 +435,7 @@ function Row({
               )}
             </MarqueeText>
           )}
+          {s.match ? <MatchSnippet m={s.match} /> : null}
           {/* The agent's newest progress/done report to HQ (#1882): one muted, ellipsised line
               behind a dashed AGENT SAYS tag, with its age. Agent text, rendered as text; neutral
               ink only — "done" is the agent's claim, so it is never green. */}
@@ -647,6 +650,7 @@ export function SessionList({
     missionFilterUnavailable,
     clusterFilterUnavailable,
     attentionOutside,
+    search,
     counts,
   } = useSessionsList();
   // Subagents (#2325): the device-local display mode, and which groups the operator opened or
@@ -1013,6 +1017,7 @@ export function SessionList({
           />
         </>
       ) : null}
+      {!shared && filters.q ? <SearchNote search={search} /> : null}
       {shared ? (
         // Shared (#2198): none of the local list is mounted here — no row, page, "Load more" or
         // row action — so nothing that works on this instance's sessions can reach a shared one.
@@ -1033,7 +1038,26 @@ export function SessionList({
         </div>
       ) : (
         <ul className={styles.list} aria-label={`${total} sessions`}>
-          {sessions.map((s) => renderRow(s, 0))}
+          {sessions.map((s, i) => {
+            // A text search's groups (#2373): the server sorts title, details, conversation;
+            // a divider opens each group, with how many of the loaded rows are in it.
+            const tier = filters.q ? s.match?.tier : undefined;
+            const opens = !!tier && sessions[i - 1]?.match?.tier !== tier;
+            return (
+              <Fragment key={s.id}>
+                {opens ? (
+                  <li className={styles.searchTier} data-testid="search-tier" aria-hidden="true">
+                    {TIER_LABEL[tier]}
+                    <span className={styles.searchTierCount}>
+                      {" "}
+                      · {sessions.filter((x) => x.match?.tier === tier).length}
+                    </span>
+                  </li>
+                ) : null}
+                {renderRow(s, 0)}
+              </Fragment>
+            );
+          })}
           {hasMore && (
             <li className={styles.more}>
               <button

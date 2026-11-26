@@ -486,6 +486,7 @@ async def ask_events(
     *,
     working_keys: set[str] | None = None,
     scope: tuple[set[str], str] | None = None,
+    candidates: list[str] | None = None,
     turns_max: int | None = HISTORY_TURNS_MAX,
     chars_max: int = HISTORY_TURN_CHARS_MAX,
 ) -> AsyncIterator[dict]:
@@ -518,6 +519,11 @@ async def ask_events(
         keys, mission_id = scope
         catalog = [c for c in catalog if c.get("id") in keys]
         mission_catalog = [m for m in mission_catalog if m.get("mission_id") == mission_id]
+    elif candidates is not None:
+        # HQ's fallback after the session index found no literal hit (#2373): the model reranks
+        # only these scoped candidates, in the index's order, instead of its own keyword slice.
+        order = {k: i for i, k in enumerate(candidates)}
+        catalog = sorted((c for c in catalog if c.get("id") in order), key=lambda c: order[c["id"]])
     if not catalog and not mission_catalog:
         yield {
             "type": "answer",
@@ -603,6 +609,7 @@ async def ask(
     working_keys: set[str] | None = None,
     on_event: Callable[[dict], None] | None = None,
     scope: tuple[set[str], str] | None = None,
+    candidates: list[str] | None = None,
     turns_max: int | None = HISTORY_TURNS_MAX,
     chars_max: int = HISTORY_TURN_CHARS_MAX,
 ) -> dict:
@@ -630,6 +637,7 @@ async def ask(
         # stored conversation, already within its budget, passes its larger limits (#2137 P2).
         turns_max=turns_max,
         chars_max=chars_max,
+        candidates=candidates,
     ):
         if ev["type"] == "answer" and ev["final"]:
             final = {k: v for k, v in ev.items() if k not in ("type", "final")}

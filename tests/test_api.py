@@ -223,9 +223,9 @@ def test_filter_by_engine(auth_cfg, fake_jsonl):
 def test_filters_combine_with_and(auth_cfg, fake_jsonl):
     c = _client(auth_cfg)
     _login(c, auth_cfg)
-    # project repo/a has 1111 ("first message on repo-a") + 2222 ("second");
-    # only 1111's title contains "repo".
-    d = c.get(f"/api/sessions?project={_REPO_A}&q=repo&limit=50").json()
+    # project repo/a has 1111 ("first message on repo-a") + 2222 ("second"); only 1111's
+    # title holds "first". (Not "repo": the project's name is a searchable detail since #2373.)
+    d = c.get(f"/api/sessions?project={_REPO_A}&q=first&limit=50").json()
     assert d["total"] == 1
     assert d["sessions"][0]["uuid"] == "11111111-1111-1111-1111-111111111111"
 

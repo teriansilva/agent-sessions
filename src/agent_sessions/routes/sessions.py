@@ -877,6 +877,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         tag: str | None = Query(None),
         snapshot: str | None = Query(None),
         running: str | None = Query(None, pattern="^(live|working)$"),
+        candidates: bool = Query(False),
     ) -> JSONResponse:
         # Flat, paginated, newest-first. Favorited (sticky) rows are a GLOBAL pin (#520): the sort
         # runs over the whole filtered set before the window is sliced, so a favorite floats to the
@@ -899,6 +900,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 tag=tag,
                 snapshot=snapshot,
                 running=running,
+                candidates=candidates,
             )
 
         # #652 measurement probe: time the whole request-serving pipeline (cached scan +
@@ -1026,6 +1028,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         tag: str | None = None,
         snapshot: str | None = None,
         running: str | None = None,
+        candidates: bool = False,
     ) -> dict:
         scoped, memberships, pinned, aliases, running_ok, _working_ok, clusters_doc = _scoped_rows(
             archived=archived, snapshot=snapshot
@@ -1034,7 +1037,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # another one started is a child of it. Facets, filters, sort and paging see main
         # sessions; a child reaches the client through its main session's row (`child_count`,
         # `rollup`, `attention_count`, `attention`) and the lazy children/attention routes.
-        scoped = lineage.project(scoped).mains
+        proj = lineage.project(scoped)
+        scoped = proj.mains
         project_index = projects.load()
         # Facets for the project/agent dropdowns (#445): the project dropdown lists PROJECT
         # ENTITIES, not folder paths. Computed over the visible (already hide-filtered)
@@ -1130,6 +1134,19 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             )
         # Normalize filters; empty / whitespace-only means "no filter".
         q_norm = (q or "").strip().casefold()
+        # Text search (#2373): the session index over conversations, with the live details of
+        # these SCOPED rows. Only scoped keys can match: a main, or an in-scope descendant of it,
+        # which lifts its main (the one text-search exception to #2325; filters, facets, sort
+        # and `total` still count mains). An out-of-scope child is not in `proj` at all.
+        found = None
+        kids: dict[str, list[dict]] = {}
+        if q_norm:
+            from .. import agent_reports, session_index
+
+            kids = {m["id"]: proj.descendants(m["id"]) for m in scoped}
+            reports = agent_reports.latest_notes()
+            titles = {k: r["title"] for k, r in proj.by_id.items()}
+            found = session_index.search(q or "", scoped, kids, reports=reports, titles=titles)
         project_f = (project or "").strip() or None
         engine_f = (engine or "").strip() or None
         # `none` = held by no mission. A mission id is `msn_<hex>`, so it cannot collide.
@@ -1180,11 +1197,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             # Match the displayed title OR the raw first message (#284): once a meaningless
             # auto-derived title normalizes to "", search must still find the session by
             # its original first message, so the normalization never narrows results.
-            if (
-                q_norm
-                and q_norm not in (r["title"] or "").casefold()
-                and q_norm not in (r["first_user_message"] or "").casefold()
-            ):
+            if found is not None and r["id"] not in found.matches:
                 return False
             if project_f is not None:
                 # Project filter (#361/#445): matches the resolved entity id, the synthetic
@@ -1251,12 +1264,54 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # tier the user picked: last-activity time (default; #525 — last real turn, not raw file
         # mtime, so a mere open no longer reorders) or creation date (stable). The created_at mode
         # tie-breaks on last_mtime so equal/zero creation times stay stable.
-        if prefs.get_session_list_order() == "created_at":
+        if found is not None:
+            # A search orders by tier (title, details, conversation), then as the list does.
+            rows.sort(key=found.order_key)
+        elif prefs.get_session_list_order() == "created_at":
             rows.sort(key=lambda r: (not r["sticky"], -r["created_at"], -r["last_mtime"]))
         else:
             rows.sort(key=lambda r: (not r["sticky"], -r["last_mtime"]))
         window = rows[offset : offset + limit]
         next_offset = offset + limit if offset + limit < len(rows) else None
+        search: dict | None = None
+        if found is not None:
+            from .. import session_index
+
+            # Only the rows shown get a snippet: the full message goes through the store's
+            # boundary first, then the window is cut (`session_index.snippet`).
+            window = [
+                {
+                    **r,
+                    "match": session_index.snippet(
+                        q or "", r, found.matches[r["id"]], kids.get(r["id"]),
+                        reports=reports, titles=titles, handoffs=found.handoffs,
+                    ).as_dict(),
+                }
+                for r in window
+            ]  # fmt: skip
+            search = {"mode": found.mode}
+            if candidates and not found.matches:
+                # HQ's fallback (#2373): no literal hit, so the scoped main sessions holding at
+                # least one of the words, ranked, at most `CANDIDATES_MAX` — never filler.
+                search["candidates"] = [
+                    c["id"]
+                    for c in session_index.candidates(
+                        q or "", scoped, kids, reports=reports, titles=titles
+                    )
+                ]
+            if found.degraded:
+                search["degraded"] = found.degraded
+            if found.short:
+                search["short"] = True
+            if found.progress is not None and not found.progress.settled:
+                search["indexing"] = {
+                    "indexed": found.progress.indexed,
+                    "total": found.progress.total,
+                }
+            elif found.progress is not None and found.progress.incomplete:
+                # Every session was tried, but some conversations are not in the index whole
+                # (unreadable, or past the full-read bound): a hit is real, an absence is not.
+                search["incomplete"] = found.progress.incomplete
         return {
             "sessions": window,
             "next_offset": next_offset,
@@ -1265,6 +1320,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             "live_total": sum(1 for r in rows if r["running"]),
             "facets": facets,
             **({"attention_outside": outside} if outside is not None else {}),
+            **({"search": search} if search is not None else {}),
             **pinned,
         }
 

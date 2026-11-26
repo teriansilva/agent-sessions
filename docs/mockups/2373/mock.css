@@ -1,0 +1,29 @@
+/* Mockup primitives built on the app's real tokens.css (copied verbatim). Fonts pinned to
+   installed families for headless rendering; the app uses BattleLab Mono/Display. */
+:root { --font-ui: "Inter", "DejaVu Sans", sans-serif; --font-m: "DejaVu Sans Mono", monospace; }
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #2a2c31; font-family: var(--font-ui); }
+button, input, select { font-family: inherit; font-size: inherit; line-height: inherit; color: inherit; }
+.board { display: flex; flex-wrap: wrap; gap: 28px; padding: 28px; align-items: flex-start; }
+.cap { width: 100%; color: #e8e9ec; font: 600 15px var(--font-ui); letter-spacing: .04em; margin: 4px 0 -12px; }
+.cap small { font-weight: 400; color: #a7abb3; margin-left: 8px; letter-spacing: 0; }
+.frame { background: var(--bg-0); color: var(--text-1); border: 1px solid var(--border); overflow: hidden; position: relative; }
+.frame .lbl { position: absolute; right: 8px; top: 6px; font: 10px var(--font-m); color: var(--text-3); }
+.desk { width: 900px; height: 760px; }
+.phone { width: 390px; height: 780px; }
+.top { height: 44px; display: flex; align-items: center; gap: 10px; padding: 0 14px; background: var(--bg-1); border-bottom: 1px solid var(--border); }
+.brand { font: 700 13px var(--font-m); letter-spacing: .12em; color: var(--accent-text); }
+.muted { color: var(--text-2); } .dim { color: var(--text-3); }
+.mono { font-family: var(--font-m); }
+.panel { background: var(--bg-1); border: 1px solid var(--border); }
+.btn { min-height: 44px; min-width: 44px; padding: 0 14px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; background: transparent; border: 1px solid var(--border); color: var(--text-1); font-size: 13px; }
+.btn.cta { background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-weight: 600; }
+.btn.danger { background: var(--status-down); color: #fff; border-color: var(--status-down); }
+.led { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
+.led.up { background: var(--status-up); } .led.deg { background: var(--status-degraded); } .led.down { background: var(--status-down); } .led.unk { background: var(--status-unknown); } .led.draft { background: var(--status-draft); }
+.sq { width: 6px; height: 6px; background: var(--accent); display: inline-block; flex: none; }
+.tier { font: 600 10px var(--font-m); letter-spacing: .14em; color: var(--text-3); padding: 12px 12px 6px; text-transform: uppercase; display: flex; align-items: center; gap: 8px; }
+.tier::after { content: ""; flex: 1; border-top: 1px solid var(--border-subtle); }
+mark { background: var(--accent-glow); color: var(--text-1); outline: 1px solid var(--accent-soft); padding: 0 1px; }
+.ok { color: var(--ok-text); } .warn { color: var(--warn-text); } .bad { color: var(--danger-text); }
+.a { color: var(--accent-text); text-decoration: underline; text-underline-offset: 2px; }

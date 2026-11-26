@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""Benchmark the session search index (#2373) on this install, reproducibly.
+
+Builds a THROWAWAY index (a temp file; the live index and every store are only read) from this
+host's real sessions, then reports:
+
+* the corpus: sessions, indexed messages and their bytes, and the index database size;
+* the first build: duration and the process's peak RSS;
+* index query latency, p50/p95 over a fixed query set (rare words, common words, a two-word
+  cross-message query and a short word), measured idle and DURING an incremental refresh pass
+  (a second thread re-reading every session while the queries run).
+
+Full `/api/sessions?q=` latency is measured on the running app separately (it adds the scan,
+metadata and row build every list request does).
+
+Usage: scripts/bench-session-search [--queries "a,b,c"] [--reps 20]
+Run with the install's Python so it reads the same stores: e.g.
+  ~/.local/share/agent-sessions/current/venv/bin/python -I scripts/bench-session-search
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import resource
+import statistics
+import sys
+import tempfile
+import threading
+import time
+from pathlib import Path
+
+QUERIES = ["hungarian", "deploy", "the", "test", "flaky deploy", "ws", "websocket reconnect"]
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--queries", default=",".join(QUERIES))
+    ap.add_argument("--reps", type=int, default=20)
+    args = ap.parse_args()
+    queries = [q for q in args.queries.split(",") if q.strip()]
+
+    tmp = tempfile.mkdtemp(prefix="bench-session-index-")
+    os.environ["AGENT_SESSIONS_SESSION_INDEX"] = str(Path(tmp) / "session-index.db")
+
+    from agent_sessions import engines, session_index
+
+    sessions = list(engines.scan_all())
+    t0 = time.monotonic()
+    rounds = 0
+    while True:
+        stats = session_index.refresh_pass(sessions, max_sessions=10_000, max_seconds=10_000)
+        rounds += 1
+        if not stats.get("pending") or rounds > 3:
+            break
+    build_s = time.monotonic() - t0
+    peak_rss_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+
+    con = session_index._open()
+    try:
+        msgs, nbytes = con.execute("SELECT sum(messages), sum(bytes) FROM sess").fetchone()
+        indexed = con.execute("SELECT count(*) FROM sess WHERE ok=1").fetchone()[0]
+        failed = con.execute("SELECT count(*) FROM sess WHERE ok=0").fetchone()[0]
+    finally:
+        con.close()
+    db_mb = Path(os.environ["AGENT_SESSIONS_SESSION_INDEX"]).stat().st_size / 1e6
+
+    # The rows `search` is given: the same shape the list builds, minimal fields.
+    rows = [
+        {"id": engines.session_key(s), "title": s.first_user_message[:80],
+         "first_user_message": s.first_user_message, "last_mtime": s.last_mtime}
+        for s in sessions
+    ]  # fmt: skip
+
+    def measure(label: str) -> dict:
+        out = {}
+        for q in queries:
+            times = []
+            for _ in range(args.reps):
+                t = time.perf_counter()
+                res = session_index.search(q, rows)
+                times.append((time.perf_counter() - t) * 1000)
+            times.sort()
+            out[q] = {
+                "p50_ms": round(statistics.median(times), 1),
+                "p95_ms": round(times[max(0, int(len(times) * 0.95) - 1)], 1),
+                "hits": len(res.matches),
+                "mode": res.mode,
+                **({"degraded": res.degraded} if res.degraded else {}),
+            }
+        return {label: out}
+
+    report = {
+        "corpus": {
+            "sessions_scanned": len(sessions),
+            "sessions_indexed": indexed,
+            "sessions_failed": failed,
+            "messages": msgs or 0,
+            "message_bytes": nbytes or 0,
+            "index_db_mb": round(db_mb, 1),
+        },
+        "build": {
+            "seconds": round(build_s, 1),
+            "passes": rounds,
+            "peak_rss_mb": round(peak_rss_mb),
+        },
+        "limits": {
+            "SEARCH_TERM_KEYS_MAX": session_index.SEARCH_TERM_KEYS_MAX,
+            "PASS_SESSIONS_MAX": session_index.PASS_SESSIONS_MAX,
+            "PASS_SECONDS_MAX": session_index.PASS_SECONDS_MAX,
+        },
+    }
+    report.update(measure("idle"))
+
+    # During an incremental refresh: the `PASS_SESSIONS_MAX` newest sessions are marked changed
+    # and ONE ordinary bounded pass re-reads them in a second thread while the same queries run.
+    # (The first build, which re-reads everything, is `build` above.)
+    newest = sorted(sessions, key=lambda x: -float(x.last_mtime or 0))
+    changed = [engines.session_key(x) for x in newest[: session_index.PASS_SESSIONS_MAX]]
+    con = session_index._open()
+    with con:
+        con.executemany("UPDATE sess SET fp='' WHERE key=?", [(k,) for k in changed])
+    con.close()
+    busy = threading.Event()
+
+    def refresh() -> None:
+        # As production runs it: the pass in its own process (`session_index.run`).
+        import subprocess
+
+        busy.set()
+        t = time.monotonic()
+        done = subprocess.run(
+            [sys.executable, "-I", "-m", "agent_sessions.session_index"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=600,
+        )
+        stats = json.loads(done.stdout or "{}") if done.returncode == 0 else {"rc": done.returncode}
+        report["refresh_pass"] = {**stats, "seconds": round(time.monotonic() - t, 1)}
+
+    th = threading.Thread(target=refresh)
+    th.start()
+    busy.wait()
+    report.update(measure("during_refresh"))
+    th.join()
+    print(json.dumps(report, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

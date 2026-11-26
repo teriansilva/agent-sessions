@@ -784,8 +784,33 @@ def _project_name(card: dict) -> str:
 
 
 async def _find_sessions(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    """Find sessions (and missions) by topic (#2373): the session index first — the list's own
+    text search, as the operator, so its scope is the sidebar's — with NO model call when some
+    session holds every word. Only a query with no such hit goes to a model, which reranks the
+    index's scoped candidates (at most `session_index.CANDIDATES_MAX`); a query no session holds
+    any word of is answered without one. If the index cannot be read, today's model path runs."""
     query = _str_arg(args, "query", QUERY_MAX)
     show = args.get("show") is True
+    page = await _index_search(turn, query)
+    candidates = None
+    search = (page or {}).get("search") or {}
+    # The index answers only once every conversation was tried (not while it is still being built,
+    # nor degraded): then a literal hit is an answer. An ABSENCE is an answer only when every
+    # conversation is in it whole — with some unreadable or cut (`incomplete`) the model path runs
+    # unrestricted, exactly today's, so an unreadable session can still be found.
+    if page is not None and search.get("mode") == "index" and not search.get("indexing"):
+        if page.get("sessions"):
+            missions_found = await _missions_matching(query)
+            sessions = [_index_match(r) for r in page["sessions"]]
+            out, meta = _found(turn, "", sessions, missions_found, show)
+            meta["source"] = "index"
+            return out, meta
+        candidates = None if search.get("incomplete") else search.get("candidates")
+        if candidates == []:
+            out, meta = _found(turn, "", [], await _missions_matching(query), show)
+            out["note"] = "No session mentions any of those words."
+            meta["source"] = "index"
+            return out, meta
 
     def on_event(ev: dict) -> None:
         if ev.get("type") == "progress":
@@ -798,15 +823,123 @@ async def _find_sessions(turn: _Turn, args: dict) -> tuple[dict, dict]:
             )
 
     try:
-        result = await pulse_chat.ask(query, working_keys=turn.working_keys, on_event=on_event)
+        # `candidates` only when the index picked them: otherwise the call is exactly today's.
+        extra = {"candidates": candidates} if candidates is not None else {}
+        result = await pulse_chat.ask(
+            query, working_keys=turn.working_keys, on_event=on_event, **extra
+        )
     except review.NotConfiguredError:
         raise
     except review.ReviewError:
         raise _ToolRefused(
             "the search failed — the endpoint did not answer it", "search_failed"
         ) from None
+    out, meta = _found(
+        turn,
+        str(result.get("answer") or ""),
+        list(result.get("matches") or []),
+        list(result.get("mission_matches") or []),
+        show,
+    )
+    meta["source"] = "model" if candidates is None else "index+model"
+    return out, meta
+
+
+#: Sessions `find_sessions` reads from the index at most.
+FIND_SESSIONS_MAX = 20
+
+
+async def _index_search(turn: _Turn, query: str) -> dict | None:
+    """The session list's own text search (`GET /api/sessions?q=`), as the operator, with HQ's
+    fallback candidates when nothing holds every word. None when it cannot be read."""
+    import urllib.parse
+
+    from . import asgi_call
+
+    try:
+        operator, app = _operator(turn)
+    except _ToolRefused:
+        return None
+    params = {"q": query, "limit": str(FIND_SESSIONS_MAX), "candidates": "true"}
+    try:
+        r = await asgi_call.call(
+            app, operator, "GET", "/api/sessions", None, query=urllib.parse.urlencode(params)
+        )
+    except Exception:  # noqa: BLE001 — the model path still answers
+        return None
+    if r.status != 200 or not isinstance(r.body, dict):
+        return None
+    if (r.body.get("search") or {}).get("degraded"):
+        return None  # every word too common for the index: the model path answers instead
+    return r.body
+
+
+_FIELD_WORDS = {
+    "title": "in the title",
+    "summary": "in the summary",
+    "recap": "in the recap",
+    "tag": "in the tag",
+    "project": "in the project's name",
+    "report": "in its latest report",
+    "handoff": "in the session it continued",
+    "first": "in its first message",
+    "you": "in your words",
+    "agent": "in the agent's reply",
+    "subagent": "in a subagent's conversation",
+}
+
+
+def _index_match(row: dict) -> dict:
+    """A list row the index matched, in `find_sessions`' match shape: why = where it matched and
+    the guarded snippet (data, never an instruction)."""
+    m = row.get("match") or {}
+    why = _FIELD_WORDS.get(str(m.get("field") or ""), "matched")
+    if m.get("child"):
+        why += f" ({m['child']})"
+    if m.get("snippet"):
+        why += f": {m['snippet']}"
+    if m.get("more"):
+        why += f" (+{m['more']} more words elsewhere)"
+    if row.get("intervention_required"):
+        state = "needs you"
+    elif row.get("working"):
+        state = "working"
+    elif row.get("running"):
+        state = "live"
+    else:
+        state = "idle"
+    return {
+        "id": row.get("id"),
+        "title": row.get("title") or "",
+        "project": row.get("project"),
+        "state": state,
+        "why": why[:400],
+    }
+
+
+async def _missions_matching(query: str) -> list[dict]:
+    """Missions whose title or brief holds every word of ``query`` — the same rule as the index,
+    with no model call (#2373: a literal search keeps `find_sessions`' mission matches)."""
+    from . import session_index
+
+    ts = session_index.terms(query)
+    if not ts:
+        return []
+    out = []
+    for m in await pulse_chat._mission_catalog():
+        hay = session_index.normalize(f"{m.get('title') or ''} {m.get('_summary') or ''}")
+        if all(t in hay for t in ts):
+            out.append(pulse_chat._public_mission(m, "matched in the mission's title or brief"))
+    return out[:FIND_SESSIONS_MAX]
+
+
+def _found(
+    turn: _Turn, answer: str, matches: list, mission_matches: list, show: bool
+) -> tuple[dict, dict]:
+    """``find_sessions``' result from session and mission matches, whichever path found them:
+    every key returned may be acted on this turn, and is linked from the answer."""
     sessions, mission_rows = [], []
-    for m in result.get("matches") or []:
+    for m in matches:
         key = str(m.get("id") or "")
         turn.keys.add(key)
         turn.matches.setdefault(
@@ -823,7 +956,7 @@ async def _find_sessions(turn: _Turn, args: dict) -> tuple[dict, dict]:
                 "why": str(m.get("why") or ""),
             }
         )
-    for m in result.get("mission_matches") or []:
+    for m in mission_matches:
         mid = str(m.get("id") or "")
         turn.mission_ids.add(mid)
         turn.mission_matches.setdefault(
@@ -843,11 +976,7 @@ async def _find_sessions(turn: _Turn, args: dict) -> tuple[dict, dict]:
                 "why": str(m.get("why") or ""),
             }
         )
-    out = {
-        "answer": str(result.get("answer") or ""),
-        "sessions": sessions,
-        "missions": mission_rows,
-    }
+    out = {"answer": answer, "sessions": sessions, "missions": mission_rows}
     meta = {
         "count": len(sessions) + len(mission_rows),
         "keys": [s["key"] for s in sessions],
