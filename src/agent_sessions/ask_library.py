@@ -876,7 +876,32 @@ def library_ops() -> tuple:
             lambda st, d, x: f"Not enabled: {d or 'refused'}. It is still off.",
             draft=True,
         ),
+        Operation(
+            "automation.run_now",
+            au,
+            "run_now",
+            "Run now",
+            "Run now",
+            "external",
+            au,
+            (),
+            lambda t, f, x: ("POST", f"/api/automations/{t}/run", None),
+            lambda f, x: "Runs it once now, within exactly the scope you approved; on a paused one "
+            "it runs once without resuming. Its run shows in Automations.",
+            _ran_now,
+            lambda st, d, x: f"Not run: {d or 'refused'}. Nothing was started.",
+        ),
     )
+
+
+def _ran_now(status: int, body: object, facts: dict) -> tuple[str, str]:
+    """Run now's outcome (#2391): the route answers 202 with the run it claimed (`public_run`)."""
+    from .ask_operations import DONE, FAILED
+
+    if not 200 <= status < 300:
+        return FAILED, ""
+    state = str(body.get("state") or "") if isinstance(body, dict) else ""
+    return DONE, f"A run started{f' ({state})' if state else ''}. Its outcome shows in Automations."
 
 
 async def facts(op, target: str, app, operator) -> dict | None:
@@ -904,6 +929,13 @@ async def facts(op, target: str, app, operator) -> dict | None:
         }
         if b.get("scope_digest"):
             out["scope"] = _digest([str(b["scope_digest"])])
+        if op.id == "automation.run_now":
+            # The class of running it now (#2391), from the scope it was approved for: read at
+            # staging, at the claim and at the route, so a scope that reaches outside (or can't
+            # be read) is external there, whatever it was when the card was staged.
+            from . import hq_authority
+
+            out["reach"] = hq_authority.automation_reach(b.get("scope"))
         return out
     name = (
         str(b.get("name") or target)
@@ -1104,6 +1136,20 @@ async def prepare(
         return _staged(op, "", config["name"], {"name": config["name"]}, draft)
 
     aid = _known(known, "automation", args)
+    if op.id == "automation.run_now":
+        # Run once now (#2391): the automation this turn read, at the revision of that read; the
+        # route's own consent, expiry and daily-cap checks decide whether it may run.
+        a = await _get(app, operator, f"/api/automations/{aid}", "that automation")
+        _as_read(known, "automation", aid, a.get("revision"))
+        trigger = a.get("trigger") if isinstance(a.get("trigger"), dict) else {}
+        if trigger.get("kind") == "webhook":
+            raise Refused(
+                "refused: a webhook automation runs only when its webhook delivers an event",
+                "not_available",
+            )
+        return _staged(
+            op, aid, str(a.get("name") or aid), {}, None, {"revision": int(a.get("revision") or 0)}
+        )
     if op.id == "automation.enable":
         a = await _get(app, operator, f"/api/automations/{aid}", "that automation")
         _as_read(known, "automation", aid, a.get("revision"))

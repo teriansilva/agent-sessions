@@ -1,5 +1,7 @@
 #!/bin/sh
-# Cut a signed release. Run by the OPERATOR, never by CI (#832 Phase 1).
+# Cut a signed release. Run with a release key unlocked in ssh-agent: by the operator with the
+# primary key, or unattended by scripts/cut-release-automated with the automation key (#2379).
+# Never by CI (#832 Phase 1).
 #
 # usage: cut-signed-release <X.Y.Z> [--mirror URL] [--origin URL] [--key FILE] [--dry-run]
 #
@@ -12,7 +14,9 @@
 # sign, which means the release cut is this script rather than a button CI can press.
 #
 # A signature an unattended pipeline can produce on demand is a signature an attacker can produce
-# on demand. Making the cut manual is the point, not a limitation.
+# on demand. That holds for the PRIMARY key, whose cut stays manual. The operator has since
+# chosen unattended cuts with a separate automation key that shares the recovery key's reach
+# (#2379, docs/release-signing.md → Accepted risk); this script is the same for both.
 #
 # That argument covers the PRIMARY key. The recovery key in the same trust root is, for now, kept
 # with its passphrase on CI-reachable storage (docs/release-signing.md, Accepted risk), so until

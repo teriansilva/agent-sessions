@@ -629,7 +629,98 @@ def mission_ops() -> tuple:
             run=_run_plan,
             follow_up=True,
         ),
+        Operation(
+            "mission.relay",
+            GROUP,
+            "relay",
+            "Relay to the mission",
+            "Send",
+            "external",
+            "mission",
+            ("session_key", "text"),
+            _relay_route,
+            _relay_describe,
+            _relay_outcome,
+            _relay_failure,
+        ),
     )
+
+
+# ---- relay to a mission (#2391) ------------------------------------------------------------------
+
+#: The longest relay HQ may stage: the card shows it whole inside its summary sentence.
+RELAY_MAX = 240
+
+
+def relay_text(v: object) -> str:
+    """The words a relay types (#2391): one short text the card shows whole."""
+    from .ask_operations import Refused
+
+    if not isinstance(v, str):
+        raise Refused("text must be a string")
+    text = v.strip()
+    if not text:
+        raise Refused("text must not be empty")
+    if len(text) > RELAY_MAX:
+        raise Refused(f"text is longer than {RELAY_MAX} characters: keep the relay short")
+    if any(c in text for c in "\x00\r"):
+        raise Refused("text is not plain text")
+    return text
+
+
+def _relay_route(target: str, f: dict, facts: dict) -> tuple[str, str, dict | None]:
+    # The mission console's own relay route (#894): its guards are the mission's (the session
+    # still held, the master switch and the OFF tier, the mission fence at the write).
+    return "POST", f"/api/missions/{target}/relay", {"session_key": f["session_key"],
+                                                      "text": f["text"]}  # fmt: skip
+
+
+def _relay_describe(f: dict, facts: dict) -> str:
+    who = facts.get("session") or "its session"
+    return f"Types this into {who}, through the mission: “{f['text']}”"
+
+
+def _relay_outcome(status: int, body: object, facts: dict) -> tuple[str, str]:
+    from .ask_operations import DONE, FAILED, UNCONFIRMED
+
+    state = body.get("state") if isinstance(body, dict) else None
+    if status == 502 and state == "indeterminate":
+        return UNCONFIRMED, (
+            "It may or may not have landed. Check the session before sending it again."
+        )
+    if not 200 <= status < 300:
+        return FAILED, ""
+    if state == "delivered":
+        return DONE, "Typed into the session, through the mission."
+    detail = str(body.get("detail") or "") if isinstance(body, dict) else ""
+    return FAILED, f"Not delivered: {detail or state or 'refused'}."
+
+
+def _relay_failure(status: int, detail: str, facts: dict) -> str:
+    return f"Not sent: {detail or 'refused'}. Nothing was typed."
+
+
+async def relay_facts(target: str, fields: dict) -> dict | None:
+    """The mission a relay goes through, as the card binds it: its title and state, and the
+    session it types into (whether the mission still holds it, and whether it is an API session:
+    HQ never types into a terminal on its own, #1613 D17). None when the mission is gone."""
+    from . import ask_operations, mission_structured, missions
+
+    key = str(fields.get("session_key") or "")
+    m = await missions.run_admitted(lambda: _mission_facts(target))
+    if m is None or m["archived"]:
+        return None
+    try:
+        held = await missions.run_admitted(lambda: missions.active_session_keys(target))
+    except Exception:  # noqa: BLE001 — unreadable: not held
+        held = set()
+    return {
+        "title": m["title"][: ask_operations.TITLE_MAX],
+        "archived": False,
+        "state": m["state"],
+        "held_now": key in held,
+        "api": bool(await asyncio.to_thread(mission_structured.is_api_key, key)),
+    }
 
 
 async def _row(target: str, app, operator) -> dict | None:
@@ -671,6 +762,8 @@ async def facts(op_id: str, target: str, fields: dict, app, operator) -> dict | 
 
     if op_id == "mission.plan":
         return await _plan_facts(target, fields)
+    if op_id == "mission.relay":
+        return await relay_facts(target, fields)
     p = await _row(target, app, operator)
     if p is None or p.get("archived"):
         return None

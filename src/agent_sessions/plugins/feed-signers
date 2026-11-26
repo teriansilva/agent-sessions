@@ -10,9 +10,13 @@
 # Public key material only. Adding a line grants release authority; removing one
 # revokes it for every build shipped afterwards. Custody, rotation and recovery:
 # docs/release-signing.md (export-ignored — it names hosts and paths).
-# The primary key signs every release. The recovery key (same principal, so every check that
+# The primary key can sign any release by hand. The recovery key (same principal, so every check that
 # names release@agent-sessions holds for either) signs NOTHING in normal operation: it exists
 # to sign the bridge release that introduces a new primary if the primary or its passphrase is
 # lost — the one case the rotation bridge cannot cover, because that bridge needs the old key.
+# The automation key (#2379) signs routine releases unattended, from an agent session; the
+# operator asked for releases that need no hand on them. It is the third line because it was
+# added last, not because it ranks last: any line here is a full signer.
 release@agent-sessions ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOjW+gor5BTHMCjx6GWhCOJXdmR9Lei9elkzV7j++zbX agent-sessions release signing
 release@agent-sessions ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIE3LUURaBPIGDEAluzrmDCS++MwgQ0DHL23J+3TjcLKL agent-sessions release recovery
+release@agent-sessions ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA//f+wPEejdHCgLUtD6uBV1sOwBXnT+rdeCW38rcXEy agent-sessions release automation

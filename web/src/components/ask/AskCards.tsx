@@ -402,10 +402,21 @@ export function SessionCard({
   // #2014: an API session HQ starts always asks before it acts, so its card has no switch.
   const api = p.runtime === "api";
   const kind = api ? "API session" : p.runtime === "pty" ? "terminal session" : "session";
+  // HQ started it itself under the Commander's Authority setting (#2391).
+  const byHq = p.decided_by === "hq";
+  const kicker = byHq
+    ? p.state === "started"
+      ? "Started by HQ"
+      : "By HQ"
+    : p.state === "pending" && p.reason
+      ? "Asks first"
+      : "Proposal";
   return (
     <div className={`${c.card} ${edge}`} data-testid="ask-session" data-state={p.state}>
       <div className={c.head}>
-        <span className={c.k}>Proposal</span>
+        <span className={c.k} data-testid="ask-session-kicker">
+          {kicker}
+        </span>
         Session
         <span className={c.st}>{out ? out.word : "Waiting for you"}</span>
       </div>
@@ -437,6 +448,10 @@ export function SessionCard({
         <div className={c.verbatim} data-testid="ask-session-brief">
           {p.text}
         </div>
+        {byHq ? <ByHqNote testId="ask-session-by-hq" /> : null}
+        {p.state === "pending" ? (
+          <AsksFirst reason={p.reason} testId="ask-session-asks-first" />
+        ) : null}
         {!out ? (
           <>
             {api ? (
@@ -684,6 +699,38 @@ const OPERATION_GROUP: Record<string, string> = {
   mcp: "MCP server",
 };
 
+/** What a card HQ ran itself is called (#2390, #2391): the verb once it went through, "By HQ" for
+ *  any other outcome (the outcome line says what happened). */
+const BY_HQ_VERB: Record<string, string> = {
+  "automation.run_now": "Ran by HQ",
+  "mission.relay": "Sent by HQ",
+};
+function operationByHq(p: AskOperationCard): string {
+  if (p.state !== "done" && p.state !== "partly_done") return "By HQ";
+  return BY_HQ_VERB[p.op] ?? "Done by HQ";
+}
+
+/** HQ did it itself: the one line under the content, with the way to the setting that let it. */
+function ByHqNote({ testId }: { testId: string }) {
+  return (
+    <p className={c.quiet} data-testid={testId}>
+      HQ did this itself, as your{" "}
+      <Link to={settingsPath("ai-hq", "hq-authority-h")}>Authority setting</Link> allows. Ask HQ to
+      undo it if it&rsquo;s not what you wanted.
+    </p>
+  );
+}
+
+/** Why a card HQ could have run itself waits for you (#2391, D4): the server's own reason. */
+function AsksFirst({ reason, testId }: { reason?: string; testId: string }) {
+  if (!reason) return null;
+  return (
+    <p className={c.asksFirst} role="note" data-testid={testId}>
+      {reason}.
+    </p>
+  );
+}
+
 /** An automation the tap lets run unattended reads as such, not as a bare "External". */
 const UNATTENDED = new Set(["automation.enable", "automation.widen"]);
 /** The largest secret file the Library takes (`vault_files.MAX_BYTES`). */
@@ -810,7 +857,7 @@ export function OperationCard({
       ) : (
         <div className={c.head}>
           <span className={c.k} data-testid="ask-operation-kicker">
-            {byHq ? "Done by HQ" : "Proposal"}
+            {byHq ? operationByHq(p) : p.state === "pending" && p.reason ? "Asks first" : "Proposal"}
           </span>
           {OPERATION_GROUP[p.op.split(".")[0]] ?? "Session"}
           <span className={c.st}>
@@ -844,12 +891,9 @@ export function OperationCard({
         <p className={c.lead} data-testid="ask-operation-text">
           {p.text}
         </p>
-        {byHq ? (
-          <p className={c.quiet} data-testid="ask-operation-by-hq">
-            HQ did this itself, as your{" "}
-            <Link to={settingsPath("ai-hq", "hq-authority-h")}>Authority setting</Link> allows.
-            Ask HQ to undo it if it&rsquo;s not what you wanted.
-          </p>
+        {byHq ? <ByHqNote testId="ask-operation-by-hq" /> : null}
+        {p.state === "pending" ? (
+          <AsksFirst reason={p.reason} testId="ask-operation-asks-first" />
         ) : null}
         {p.team ? (
           <TeamRows rows={p.team} stale={p.state === "stale"} revision={p.team_revision ?? null} />
@@ -1158,10 +1202,21 @@ export function MessageCard({
   const edge = out?.tone === "warn" ? c.edgeWarn : out?.tone === "bad" ? c.edgeBad : "";
   // An email (#1836): the server's From, To, subject and body, exactly as the transport sends them.
   const mail = p.sender !== undefined;
+  // HQ sent it itself under the Commander's Authority setting (#2391).
+  const byHq = p.decided_by === "hq";
+  const kicker = byHq
+    ? p.state === "sent"
+      ? "Sent by HQ"
+      : "By HQ"
+    : p.state === "pending" && p.reason
+      ? "Asks first"
+      : "Proposal";
   return (
     <div className={`${c.card} ${edge}`} data-testid="ask-message" data-state={p.state}>
       <div className={c.head}>
-        <span className={c.k}>Proposal</span>
+        <span className={c.k} data-testid="ask-message-kicker">
+          {kicker}
+        </span>
         {mail ? "Email" : "Message"}
         <span className={c.st}>{out ? out.word : "Waiting for you"}</span>
       </div>
@@ -1206,6 +1261,10 @@ export function MessageCard({
         <div className={c.verbatim} data-testid="ask-message-text">
           {mail ? p.body : p.text}
         </div>
+        {byHq ? <ByHqNote testId="ask-message-by-hq" /> : null}
+        {p.state === "pending" ? (
+          <AsksFirst reason={p.reason} testId="ask-message-asks-first" />
+        ) : null}
         {error ? (
           <div className={c.note} role="alert" data-testid="ask-message-error">
             <span>{error}</span>

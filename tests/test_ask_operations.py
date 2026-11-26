@@ -106,6 +106,8 @@ def test_every_catalog_operation_names_a_route_the_app_registers(app, monkeypatc
     fields = {"title": "t", "tag": "t", "color": "", "name": "n", "days": 3, "folder": "/x"}
     fields.update(project_id="p1", project_name="p", new_id="copy", enabled=True)
     fields.update(instruction="apply for the job")  # a draft mission (#1950)
+    # A relay (#2391): the session the mission holds and the words.
+    fields.update(session_key="claude-api:00000000-0000-4000-8000-0000000000a2", text="go ahead")
     # A team card (#1950): the op and the index it names.
     fields.update(op="assemble", operation_id="x", expected_revision=1, reason="r", step="o1.a",
                   index=0, listing="l")  # fmt: skip

@@ -96,8 +96,8 @@ def _act(a, cid, aid, grant=None):
 def test_every_catalog_entry_has_exactly_one_class():
     assert set(hq_authority.CLASS_OF) == set(ask_operations.CATALOG)
     assert set(hq_authority.CLASS_OF.values()) <= set(hq_authority.CLASSES)
-    # A1: only the reversible class can act; the RISKY ones are labelled.
-    assert hq_authority.ACTABLE == {"reversible"}
+    # A1: the reversible class acts (A1b, #2391: and starts or sends); the RISKY ones are labelled.
+    assert hq_authority.ACTABLE == {"reversible", "starts"}
     assert hq_authority.RISKY == {"destructive", "external", "widens"}
 
 
@@ -136,7 +136,8 @@ def test_a_stored_act_for_a_later_class_does_not_act_in_a1():
     _set("full")
     snap = hq_authority.snapshot()
     assert hq_authority.acts(snap, "reversible")
-    for klass in ("starts", "destructive", "external", "widens"):
+    assert hq_authority.acts(snap, "starts")  # A1b (#2391)
+    for klass in ("destructive", "external", "widens"):
         assert not hq_authority.acts(snap, klass)
 
 

@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from . import ask_store
@@ -40,6 +41,64 @@ TEXT_MAX = 200
 SETTLED = frozenset(
     {"done", "partly_done", "failed", "stale", "interrupted", "unconfirmed", "refused", "unsettled"}
 )
+#: What a card that returned to the Commander says it was (#2391): nothing ran.
+RETURNED = "pending"
+
+
+class Waits(Exception):
+    """An act that did not run: the card stays pending for the Commander, with this reason."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
+@dataclass(frozen=True)
+class Act:
+    """One act HQ makes on the Commander's Authority setting (#2390, #2391), carried from the
+    claim to every effect boundary of the kind that runs it: the turn's ``hq_authority.ActGrant``
+    and the acts-log fields of the turn (``class``, ``turn_id``, ``via``, ``tainted``). Memory
+    only: a restart drops it, and the entry it claimed reads interrupted."""
+
+    grant: object
+    record: dict
+
+    def admits(self, row: dict, facts: dict | None = None) -> str:
+        """Empty when the entry's EFFECTIVE class (derived now, from ``facts`` when given) may
+        act now, else why not. Blocking but cheap: it sits right before an effect, no await."""
+        from . import hq_authority
+
+        klass = hq_authority.effective_class(row, facts)
+        return self.grant.admits(klass, bool(self.record.get("tainted")))  # type: ignore[attr-defined]
+
+    @property
+    def revision(self) -> int:
+        return int(self.grant.snapshot.revision)  # type: ignore[attr-defined]
+
+    def claimed(self, row: dict, cid: str, *, op: str, label: str, title: str) -> bool:
+        """The claim's log line, before any effect: False means it was not written, and the
+        caller returns the card to pending (fail closed). Blocking."""
+        from . import hq_authority
+
+        return append(
+            {**self.fields(), "class": hq_authority.effective_class(row), "pid": row["id"],
+             "cid": cid, "op": op, "label": label, "title": title, "state": "deciding"}
+        )  # fmt: skip
+
+    def settled(self, pid: str, cid: str, *, op: str, label: str, title: str, state: str,
+                outcome: str) -> None:  # fmt: skip
+        """The settled line: the route's (or the kind's) own outcome, or ``pending`` when it
+        returned to the Commander with nothing run. Blocking; never raises."""
+        append({**self.fields(), "pid": pid, "cid": cid, "op": op, "label": label, "title": title,
+                "state": state, "outcome": outcome})  # fmt: skip
+
+    def fields(self) -> dict:
+        snap = self.grant.snapshot  # type: ignore[attr-defined]
+        return {
+            **self.record,
+            "authority_rev": snap.revision,
+            "preset": snap.preset,
+        }
 
 
 def path() -> Path:
@@ -122,7 +181,7 @@ def _resolve(row: dict) -> dict:
     """A ``deciding`` row no task here runs any more: the sidecar entry's state."""
     from . import ask_operations, ask_proposals
 
-    if row.get("state") != "deciding" or ask_operations.running(row["pid"]):
+    if row.get("state") != "deciding" or ask_operations.running_any(row["pid"]):
         return row
     try:
         cid = row.get("cid") or ""

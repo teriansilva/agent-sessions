@@ -67,6 +67,7 @@ from starlette.background import BackgroundTask
 from .. import (
     actuator,
     aitasks,
+    asgi_call,
     engines,
     gitpanel,
     headless_dispatch,
@@ -2026,6 +2027,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                         "relay": True,
                         "state": "sending",
                         **({"replaces_draft": draft_id} if draft_id else {}),
+                        # Sent through HQ (#2391): its card, or HQ on the Commander's Authority
+                        # setting. An in-process request is HQ's; no browser can mark itself so.
+                        **({"via": "hq"} if asgi_call.in_process(request.scope) else {}),
                     },
                 )
             )
@@ -2067,8 +2071,27 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             )
             return _refused(f"the relay failed ({type(e).__name__})", 502)
 
+        # AN HQ ACT'S GRANT, AT THE WRITE (#2391). A relay HQ makes itself carries its grant
+        # (authority, logout, live call, D4) in the request's scope; it is asked inside
+        # `deliver`'s final guard, under the write lock, immediately before the first byte,
+        # beside the mission's own checks. A refusal there types nothing.
+        act_admit = request.scope.get(asgi_call.ACT_ADMIT)
+        act_refused: dict = {}
+        authority = None
+        if callable(act_admit):
+
+            def authority(_live, admit=act_admit):
+                try:
+                    why = admit()
+                except Exception:  # noqa: BLE001 — fail closed
+                    why = "HQ's authority could not be checked"
+                if why:
+                    act_refused["why"] = why
+                    return False, why
+                return True, ""
+
         try:
-            rec = await actuator.deliver(action_id, registry=registry)
+            rec = await actuator.deliver(action_id, registry=registry, authority=authority)
         except actuator.NotDeliverable as e:
             # A DEFINITE ZERO-BYTE REFUSAL, so the record is settled here rather than left for
             # the reconciler (#903 review 2, finding 3). `NotDeliverable` is raised before the
@@ -2150,6 +2173,14 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         await _settle_relay(
             mission_id, action_id, str(rec.get("state") or ""), str(rec.get("detail") or "")
         )
+        if act_refused and rec.get("state") != "delivered":
+            # HQ's grant refused it at the write (#2391): nothing was typed, said as such so the
+            # act returns its card to the Commander.
+            return JSONResponse(
+                {"detail": act_refused["why"], "act_refused": True,
+                 "state": rec.get("state"), "action_id": action_id, **replaced},
+                status_code=409,
+            )  # fmt: skip
         return JSONResponse(
             {
                 "action_id": action_id,

@@ -102,7 +102,7 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Team (#1950): read the team with its re-derived verdicts, the per-step candidate and model lists; assemble, assign, override a step's model, clear it | GET …/plan/team, GET …/plan/team/choices, POST …/plan/ops | have (`read_plan`, `read_pool`; `assemble`, `assign`, `set_override`, `clear_override` as cards) |
 | Plan approval (#1951): read the card (pins, re-check, consent); approve a plan revision; give standing consent; revoke either | GET …/plan/approval, POST …/plan/approve, POST …/plan/consent, POST …/plan/approval/revoke, POST …/plan/consent/revoke | read and revoke P6 R/W (revoking narrows); **never** for approve and consent (the Commander's own tap, D3: HQ may stage, never decide) |
 | Steps (#1581): read each step's runs and whether it can start; start an agent step in its own API session; stop a step's session | GET …/steps, POST …/steps/{step}/start, POST …/steps/{step}/stop, POST …/steps/{step}/hold, POST …/budget, POST …/steps/pause, …/steps/continue, …/steps/stop-all | read, stop, pause and stop-all P6 R/W (they narrow); **never** for start, continue (the operator's tap; HQ launches steps only under an approval in force, through the runner, #1951 slice B), the per-step hold (clearing one lets HQ start the step) or the budget (raising a cap widens) |
-| Relay words to a held session; edit an AI-drafted direction and send | POST …/relay | P5 W |
+| Relay words to a held session; edit an AI-drafted direction and send | POST …/relay | have W (`propose_relay`, `mission.relay`, #2391; editing a drafted direction: P5) |
 | Spawn a sub-agent beside a held session | POST …/spawn | P5 W (starts agents) |
 | Answer menus automatically (auto-choose) | PATCH …/autonomy | **never** for on (widens autonomy); off is P5 W |
 | Send a message to the mission / retry / dismiss an ambiguous turn | POST …/message/stream, …/turns/{t}/ack | P5 W |
@@ -301,9 +301,12 @@ Every `W` operation above has one **authority class**, the class of its effectiv
 here: they live in `hq_authority.CLASS_OF`, which a test pins to exactly the ids of
 `ask_operations.CATALOG` (so a new operation cannot ship unclassed). Settings → AI → HQ → Authority
 decides, per class, whether HQ stages a card (`ask`, the default after an upgrade) or runs it at
-once (`act`). In A1 only `reversible` can act; an operation with an operator input (a folder, a
-secret's value or file), a `follow_up` continuation, or a card inside an open step list stays a
-card under every setting. `screen` rows always act. The locked rows (the Authority setting, HQ's
+once (`act`). `reversible` (A1) and `starts` (A1b, #2391: API session starts, connector messages,
+run now, relays, `automation.edit`, `memory.edit`) can act; the session and message kinds' classes
+are `hq_authority.KIND_CLASS`, pinned to the proposal kinds, and a start or send asks first after
+untrusted text unless its D4 switch is on. An operation with an operator input (a folder, a
+secret's value or file), a `follow_up` continuation, a terminal start or relay, or a card inside an
+open step list stays a card under every setting. `screen` rows always act. The locked rows (the Authority setting, HQ's
 guarded prompt, the login identity) and the operator-only rows below are never reachable.
 
 ## Never through HQ (recorded decision, §3b)
@@ -395,7 +398,7 @@ POST   /api/automations/{aid}/disable                                           
 POST   /api/automations/{aid}/enable                                              have  # propose_library automation enable (#1611)
 POST   /api/automations/{aid}/pause                                               P4
 POST   /api/automations/{aid}/resume                                              P4
-POST   /api/automations/{aid}/run                                                 P4
+POST   /api/automations/{aid}/run                                                 have  # automation.run_now: a card, or HQ's act under starts (#2391)
 POST   /api/automations/{aid}/destination-secret                                  never  # a credential, shown once (#2248 P2)
 GET    /api/automations/{aid}/runs                                                P4
 POST   /api/chat/new                                                              P7
@@ -547,7 +550,7 @@ POST   /api/missions/{mission_id}/procedure                                     
 GET    /api/missions/{mission_id}/procedures/{index}/inputs                       P5
 GET    /api/missions/{mission_id}/procedures/projects                             P5
 GET    /api/missions/{mission_id}/procedures                                      P5
-POST   /api/missions/{mission_id}/relay                                           P5
+POST   /api/missions/{mission_id}/relay                                           have  # mission.relay (propose_relay): a card, or HQ's act under starts (#2391)
 GET    /api/missions/{mission_id}/screen/{session_key:path}                       P5
 GET    /api/missions/{mission_id}/debrief                                         P5
 POST   /api/missions/{mission_id}/debrief                                         P5

@@ -1174,6 +1174,9 @@ export interface AskSessionCard {
   notice: "" | "default_changed" | "busy" | "session_limit";
   can_start: boolean;
   can_dismiss: boolean;
+  /** HQ started it itself under the Commander's Authority setting (#2391): "Started by HQ".
+   *  Absent on a card the Commander decided. */
+  decided_by?: "hq";
 }
 
 /** What `POST /api/ask/proposals/{id}/decide` answers with (and a 409 carries under `proposal`):
@@ -1189,6 +1192,7 @@ export type AskSessionDecision = Pick<
   | "notice"
   | "can_start"
   | "can_dismiss"
+  | "decided_by"
 >;
 
 /** One step of the team an `assemble` card was STAGED with (#2130): a specialist-eligible agent
@@ -1461,6 +1465,8 @@ export type AskMessageCard = {
   address?: string;
   subject?: string;
   body?: string;
+  /** HQ sent it itself under the Commander's Authority setting (#2391): "Sent by HQ". */
+  decided_by?: "hq";
 };
 export type AskMessageDecision = Omit<AskMessageCard, "action_id" | "kind">;
 export type AskProposalCard = AskNudgeCard | AskSessionCard | AskOperationCard | AskMessageCard;

@@ -1409,6 +1409,7 @@ def _admit_kind(e: dict, secrets: list[str], *, fresh: bool) -> dict:
         v = e.get(k)
         if isinstance(v, int | float) and not isinstance(v, bool):
             out[k] = float(v)
+    _admit_by_hq(e, out)
     brief = e.get("brief")
     if not isinstance(brief, str) or not brief:
         raise ValueError("a session proposal needs its brief")
@@ -1444,6 +1445,18 @@ def _admit_values(raw: object, secrets: list[str], *, fresh: bool, what: str) ->
         else:
             raise ValueError(f"malformed operation {what} value")
     return out
+
+
+def _admit_by_hq(e: dict, out: dict) -> None:
+    """HQ ran it on the Commander's Authority setting (#2390; a session start or a connector
+    message too, #2391): who decided, and the authority revision the act was admitted under.
+    Absent on a card the Commander decided; anything but these exact shapes is dropped (a card
+    returned to pending writes them as None)."""
+    if e.get("decided_by") == "hq":
+        out["decided_by"] = "hq"
+        rev = e.get("authority_rev")
+        if type(rev) is int and 0 <= rev < 10**12:
+            out["authority_rev"] = rev
 
 
 def _admit_message(e: dict, pid: str, tid: str, secrets: list[str]) -> dict:
@@ -1511,6 +1524,7 @@ def _admit_message(e: dict, pid: str, tid: str, secrets: list[str]) -> dict:
         v = e.get(k)
         if isinstance(v, int | float) and not isinstance(v, bool):
             out[k] = float(v)
+    _admit_by_hq(e, out)
     return out
 
 
@@ -1657,14 +1671,7 @@ def _admit_operation(e: dict, pid: str, tid: str, secrets: list[str], *, fresh: 
         v = e.get(k)
         if isinstance(v, int | float) and not isinstance(v, bool):
             out[k] = float(v)
-    # HQ ran it on the Commander's Authority setting (#2390): who decided, and the authority
-    # revision the act was admitted under. Absent on a card the Commander decided; anything but
-    # these exact shapes is dropped (a card returned to pending writes them as None).
-    if e.get("decided_by") == "hq":
-        out["decided_by"] = "hq"
-        rev = e.get("authority_rev")
-        if type(rev) is int and 0 <= rev < 10**12:
-            out["authority_rev"] = rev
+    _admit_by_hq(e, out)
     # What a move committed (#1786): the Library record it created and that record's file
     # revision — the only proof a resumed move accepts, never a name or matching bytes.
     committed = e.get("committed")

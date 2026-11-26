@@ -38,6 +38,7 @@ GATED = {
     "send_nudge",
     "propose_project_change",
     "propose_mission",
+    "propose_relay",  # #2391
     "propose_secret",
     "propose_mcp",
     "propose_session",

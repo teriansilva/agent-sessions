@@ -32,7 +32,8 @@ const CLASSES: { id: HqAuthorityClass; label: string; examples: string }[] = [
   {
     id: "starts",
     label: "Starts or sends",
-    examples: "Start a session, run an automation now, message a session or a mission.",
+    examples:
+      "Start an API session, run an automation now, send a connector message, relay to a mission.",
   },
   {
     id: "destructive",
@@ -67,6 +68,9 @@ const OUTCOME: Record<string, string> = {
   stale: "Out of date",
   interrupted: "Interrupted",
   unconfirmed: "Ran, unconfirmed",
+  started: "Started",
+  sent: "Sent",
+  deciding: "Running",
 };
 
 const when = (ts: number) =>
@@ -88,6 +92,50 @@ function isAuthority(v: unknown): v is HqAuthority {
     typeof a.revision === "number" &&
     Array.isArray(a.actable) &&
     Array.isArray(a.risky)
+  );
+}
+
+/** D4 (#2391): "also after HQ read untrusted text" for one class. Off by default; on is RISKY and
+ *  says what it allows. The whole row is the 44 px target; the switch is a real `role="switch"`. */
+function UntrustedSwitch({
+  id,
+  on,
+  disabled,
+  onChange,
+}: {
+  id: HqAuthorityClass;
+  on: boolean;
+  disabled: boolean;
+  onChange: (on: boolean) => void;
+}) {
+  const hint = `hq-authority-untrusted-${id}-hint`;
+  return (
+    <label
+      className={`${styles.authorityUntrusted} ${on ? styles.authorityUntrustedOn : ""}`}
+      data-testid={`hq-authority-untrusted-${id}`}
+    >
+      <span className={styles.authorityUntrustedText} id={hint}>
+        Also after HQ read text from a session, connector or file in this conversation
+        {on ? (
+          <>
+            : <b>on</b>. A hostile report can now get HQ to start or send.
+          </>
+        ) : (
+          <>. Off: HQ asks first then.</>
+        )}
+      </span>
+      <Stamp tone="down">{on ? "RISKY · ON" : "RISKY"}</Stamp>
+      <input
+        type="checkbox"
+        role="switch"
+        className={styles.authoritySwitch}
+        checked={on}
+        disabled={disabled}
+        aria-describedby={hint}
+        aria-label={`${id === "starts" ? "Starts or sends" : id}: also after untrusted text`}
+        onChange={(e) => onChange(e.currentTarget.checked)}
+      />
+    </label>
   );
 }
 
@@ -165,6 +213,8 @@ export function HqAuthoritySettings() {
     state &&
     state.classes[id] !== value &&
     void save({ revision: state.revision, classes: { [id]: value } });
+  const setUntrusted = (id: HqAuthorityClass, on: boolean) =>
+    state && void save({ revision: state.revision, untrusted: { [id]: on } });
   const off = busy || stale || !state;
 
   return (
@@ -251,6 +301,14 @@ export function HqAuthoritySettings() {
                           : "HQ can't act on these yet; a later update adds it."}
                       </span>
                     )}
+                    {state.untrusted_classes?.includes(c.id) && (
+                      <UntrustedSwitch
+                        id={c.id}
+                        on={state.untrusted?.[c.id] === true}
+                        disabled={off}
+                        onChange={(on) => setUntrusted(c.id, on)}
+                      />
+                    )}
                   </div>
                   <div className={styles.aiSeg} role="radiogroup" aria-labelledby={nameId}>
                     {(["ask", "act"] as const).map((v) => (
@@ -272,8 +330,10 @@ export function HqAuthoritySettings() {
           </ul>
           <p className={styles.hint}>
             Screen and reversible changes act even after HQ has read text an agent or a website
-            wrote (a session&rsquo;s screen, a report, a file). Messages HQ sends into sessions
-            follow Autonomy below.
+            wrote (a session&rsquo;s screen, a report, a file). Starts and sends ask first after
+            that, unless you switch them on above. HQ starts API sessions itself, never with
+            permission bypass; a terminal session is always started on its card. Messages HQ
+            types into sessions follow Autonomy below.
           </p>
         </>
       )}

@@ -218,6 +218,7 @@ def test_propose_mission_is_a_proposal_that_can_only_create_a_draft():
         "mission.create",
         "mission.create_local",  # HQ's own flow (#2152)
         "mission.plan",  # Plan with HQ on an existing draft (#2152): one apply route, no create
+        "mission.relay",  # words into a session the mission holds, its own route (#2391)
     ]
     plan = ask_operations.CATALOG["mission.plan"]
     assert plan.run is not None and plan.target == "mission" and plan.fields == ()

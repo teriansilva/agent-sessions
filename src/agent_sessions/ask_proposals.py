@@ -380,6 +380,8 @@ def view(row: dict) -> dict:
         "notice": row.get("notice") or "",
         "can_start": state == PENDING,
         "can_dismiss": state == PENDING,
+        # HQ started it on the Commander's Authority setting (#2391): "Started by HQ".
+        **({"decided_by": "hq"} if row.get("decided_by") == "hq" and state != PENDING else {}),
     }
 
 
@@ -562,52 +564,134 @@ async def decide(
                 _update, cid, pid, state=DISMISSED, notice="", settled_at=time.time()
             )
             return 200, view(row or {})
-        why = await asyncio.to_thread(precheck, row)
-        if why:
-            row = await asyncio.to_thread(
-                _update, cid, pid, state=STALE, reason=why, notice="", settled_at=time.time()
-            )
-            return 200, view(row or {})
-        current = await asyncio.to_thread(bypass_default)
-        if not api and current != row["bypass_default"]:
-            # Re-confirm: the card shows the new starting value and the operator taps again.
-            row = await asyncio.to_thread(
-                _update, cid, pid, bypass_default=current, notice="default_changed"
-            )
-            raise ProposalError(409, DEFAULT_CHANGED, view(row or {}))
-        # WHAT THE OPERATOR APPROVED is what launches: the brief and folder as read before the
-        # `deciding` write, never a copy that write re-admitted (and may have scrubbed).
-        approved = {
-            k: row[k] for k in ("id", "engine", "cwd", "real", "brief", "project_id", "project")
-        }
-        approved["bypass_default"] = row["bypass_default"]
-        if api:
-            approved["runtime"] = "api"
-        if row.get("specialist"):
-            # The specialist version the card showed (#1910): part of what was approved.
-            approved["specialist"] = dict(row["specialist"])
-        approved["decided_at"] = decided_at = time.time()
-        # DURABLE BEFORE ANYTHING IS SPAWNED: from here on a crash leaves `deciding`, which the
-        # next read settles as `interrupted`.
-        row = await asyncio.to_thread(
-            _update,
-            cid,
-            pid,
-            state=DECIDING,
-            bypass=bool(bypass),
-            notice="",
-            decided_at=decided_at,
-        )
-        if row is None:
-            raise ProposalError(404, "no such proposal")
-        launch = _launch_api if api else _launch
-        task = asyncio.create_task(launch(cid, dict(approved, bypass=bool(bypass)), fd, registry))
-        _TASKS[pid] = task
-        handed = True
-        return 202, view(row)
+        status, out, task = await _start_locked(cid, row, fd, registry, bool(bypass))
+        handed = task is not None
+        return status, out
     finally:
         if not handed:
             os.close(fd)
+
+
+async def _start_locked(
+    cid: str, row: dict, fd: int, registry, bypass: bool, act=None
+) -> tuple[int, dict, asyncio.Task | None]:
+    """A session card's start, under the conversation's decide lock ``fd``, shared by the tap and
+    HQ's act (#2391): the same re-checks, the same durable ``deciding`` write, the same launch.
+    Returns ``(status, view, task)``; the task owns ``fd`` when there is one. ``act``
+    (`hq_acts.Act`): the grant is asked right before the ``deciding`` write (raises
+    ``hq_acts.Waits``, nothing written), the write records ``decided_by: "hq"``, the claim is
+    logged (fail closed), and the launch re-checks the grant at the create and at the first turn."""
+    from . import hq_acts
+
+    pid = row["id"]
+    api = row.get("runtime") == "api"
+    why = await asyncio.to_thread(precheck, row)
+    if why:
+        row = await asyncio.to_thread(
+            _update, cid, pid, state=STALE, reason=why, notice="", settled_at=time.time()
+        )
+        return 200, view(row or {}), None
+    current = await asyncio.to_thread(bypass_default)
+    if not api and current != row["bypass_default"]:
+        if act is not None:
+            raise hq_acts.Waits(DEFAULT_CHANGED)
+        # Re-confirm: the card shows the new starting value and the operator taps again.
+        row = await asyncio.to_thread(
+            _update, cid, pid, bypass_default=current, notice="default_changed"
+        )
+        raise ProposalError(409, DEFAULT_CHANGED, view(row or {}))
+    # WHAT THE OPERATOR APPROVED is what launches: the brief and folder as read before the
+    # `deciding` write, never a copy that write re-admitted (and may have scrubbed).
+    approved = {
+        k: row[k] for k in ("id", "engine", "cwd", "real", "brief", "project_id", "project")
+    }
+    approved["bypass_default"] = row["bypass_default"]
+    approved["kind"] = "session"  # its effective class is read off it at every boundary (#2391)
+    if api:
+        approved["runtime"] = "api"
+    if row.get("specialist"):
+        # The specialist version the card showed (#1910): part of what was approved.
+        approved["specialist"] = dict(row["specialist"])
+    approved["decided_at"] = decided_at = time.time()
+    by_hq: dict = {}
+    if act is not None:
+        # The last check before the claim, after the awaits (#2391): nothing is written on a no.
+        why = act.admits(row)
+        if why:
+            raise hq_acts.Waits(why)
+        by_hq = {"decided_by": "hq", "authority_rev": act.revision}
+    # DURABLE BEFORE ANYTHING IS SPAWNED: from here on a crash leaves `deciding`, which the
+    # next read settles as `interrupted`.
+    claimed = await asyncio.to_thread(
+        _update,
+        cid,
+        pid,
+        state=DECIDING,
+        bypass=bool(bypass),
+        notice="",
+        reason="",
+        decided_at=decided_at,
+        **by_hq,
+    )
+    if claimed is None:
+        if act is not None:
+            raise hq_acts.Waits("the card is no longer tracked")
+        raise ProposalError(404, "no such proposal")
+    if act is not None and not await asyncio.to_thread(
+        act.claimed, claimed, cid, op=ACT_OP, label=ACT_LABEL, title=row.get("project") or ""
+    ):
+        await asyncio.to_thread(_back_to_pending, cid, pid, "")
+        raise hq_acts.Waits("the acts log could not be written, so HQ did not run it")
+    launch = _launch_api if api else _launch
+    approved["bypass"] = bool(bypass)
+    if act is not None:
+        task = asyncio.create_task(_launch_api(cid, approved, fd, registry, act=act))
+    else:
+        task = asyncio.create_task(launch(cid, approved, fd, registry))
+    _TASKS[pid] = task
+    return 202, view(claimed), task
+
+
+#: How an HQ session start is named in the acts log (#2391).
+ACT_OP, ACT_LABEL = "session.start", "Start a session"
+#: How long a turn waits for a session HQ started itself (create and first turn) before it says
+#: "starting" and lets the card and the follower report the end (#2391). Chosen before measuring.
+ACT_START_WAIT_S = 45.0
+
+
+def _back_to_pending(cid: str, pid: str, reason: str) -> dict | None:
+    """An act refused before any effect (#2391): the card is the Commander's again, as it was,
+    with why. Blocking."""
+    return _update(
+        cid,
+        pid,
+        state=PENDING,
+        bypass=None,
+        session_key="",
+        notice="",
+        decided_at=None,
+        decided_by=None,
+        authority_rev=None,
+        reason=reason,
+    )
+
+
+async def act_start(cid: str, row: dict, fd: int, act) -> asyncio.Task | dict:
+    """HQ starts a session card itself (#2391): the card's own start (`_start_locked`) with
+    permission bypass OFF, for an API card only. A terminal card stays a card (#1613 D17: no new
+    unattended starts for terminals), and so does a start the tap would make with bypass on (it
+    is *widens*, `hq_authority.effective_class`). Returns the launch task (it owns ``fd``), or the
+    entry settled stale; raises ``hq_acts.Waits`` when it stays a card."""
+    from . import hq_acts
+
+    if row.get("runtime") != "api":
+        raise hq_acts.Waits(
+            "a terminal session is always started on its card; HQ starts API sessions itself"
+        )
+    status, out, task = await _start_locked(cid, row, fd, None, False, act=act)
+    if task is None:
+        return await asyncio.to_thread(_row, cid, row["id"]) or out
+    return task
 
 
 async def _launch(cid: str, row: dict, fd: int, registry) -> None:
@@ -746,14 +830,21 @@ async def _launch(cid: str, row: dict, fd: int, registry) -> None:
         _TASKS.pop(pid, None)
 
 
-async def _launch_api(cid: str, row: dict, fd: int, registry) -> None:
+async def _launch_api(cid: str, row: dict, fd: int, registry, act=None) -> None:
     """An API card's launch (#2014): `mission_structured.hq_start`, settled from the same facts as
-    a terminal launch. Owns ``fd`` (the decide lock)."""
+    a terminal launch. Owns ``fd`` (the decide lock).
+
+    ``act`` (`hq_acts.Act`, #2391): HQ started it on the Commander's Authority setting. The grant
+    is asked again INSIDE the fenced check, so immediately before the create and again before the
+    first turn. Refused before the create: nothing exists, and the card is the Commander's again
+    (``pending``, with why). Refused at the first turn: the session was created and its first
+    message is not sent; the worker is contained as for any refused first turn, both are said, and
+    nothing is retried."""
     from . import headless_dispatch, mission_structured
 
     pid = row["id"]
     recorded = {"key": ""}
-    fenced = {"why": ""}
+    fenced = {"why": "", "grant": ""}
 
     def on_key(key: str) -> None:
         if _update(cid, pid, session_key=key) is None:
@@ -771,6 +862,9 @@ async def _launch_api(cid: str, row: dict, fd: int, registry) -> None:
             or _folder_refusal(row)
             or _brief_refusal(row["brief"])
         )
+        if not why and act is not None:
+            # The act's grant, at this effect boundary (#2391): authority, logout, call, D4.
+            why = fenced["grant"] = act.admits(row)
         fenced["why"] = why
         return (not why), why
 
@@ -799,11 +893,22 @@ async def _launch_api(cid: str, row: dict, fd: int, registry) -> None:
         except headless_dispatch.DispatchError as e:
             outcome = {"state": FAILED, "reason": f"{e} — nothing was started"}
         else:
-            if not out.launched and fenced["why"]:
+            if not out.launched and fenced["grant"]:
+                # The act's grant refused it before the create (#2391): nothing exists, and the
+                # card is the Commander's again.
+                outcome = {"state": PENDING, "reason": fenced["grant"]}
+            elif not out.launched and fenced["why"]:
                 # Refused inside the fence before anything ran: the card is out of date.
                 outcome = {"state": STALE, "reason": fenced["why"], "session_key": ""}
             else:
                 outcome = _outcome(out, "")
+                if fenced["grant"] and out.launched and not out.briefed:
+                    # Created, then refused at the first turn (#2391): both are said, and the
+                    # worker's containment (or not) is the launch's own fact.
+                    outcome["reason"] = (
+                        f"the session was created, but its first message was not sent "
+                        f"({fenced['grant']}); {outcome.get('reason') or ''}"
+                    )[:400]
     except asyncio.CancelledError:
         os.close(fd)
         _TASKS.pop(pid, None)
@@ -822,9 +927,18 @@ async def _launch_api(cid: str, row: dict, fd: int, registry) -> None:
     try:
         outcome.pop("retry", None)
         outcome.pop("notice", None)
-        await asyncio.to_thread(_update, cid, pid, settled_at=time.time(), **outcome)
+        if outcome.get("state") == PENDING:
+            await asyncio.to_thread(_back_to_pending, cid, pid, outcome["reason"])
+        else:
+            await asyncio.to_thread(_update, cid, pid, settled_at=time.time(), **outcome)
         if outcome.get("state") == STARTED and outcome.get("session_key"):
             await asyncio.to_thread(_follow_started, cid, outcome["session_key"], row)
+        if act is not None:
+            await asyncio.to_thread(
+                act.settled, pid, cid, op=ACT_OP, label=ACT_LABEL,
+                title=str(row.get("project") or ""), state=str(outcome.get("state") or ""),
+                outcome=str(outcome.get("reason") or outcome.get("session_key") or ""),
+            )  # fmt: skip
     except Exception as e:  # noqa: BLE001 — the entry stays `deciding` → `interrupted`
         log.warning("ask api launch outcome not recorded (%s)", type(e).__name__)
     finally:

@@ -316,6 +316,7 @@ def test_the_tool_list_and_each_tools_kind_are_pinned():
         # procedure (read by index); Begin stays the operator's.
         "list_procedures": "read",
         "propose_mission": "proposal",
+        "propose_relay": "proposal",  # #2391: words into a session a mission holds
         # #1554: usage, the fleet and the allowlisted settings view — all read-only.
         "agent_usage": "read",
         "fleet_status": "read",

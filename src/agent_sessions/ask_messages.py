@@ -128,6 +128,8 @@ def view(row: dict) -> dict:
         "reason": row.get("reason") or "",
         "can_send": state == PENDING,
         "can_dismiss": state == PENDING,
+        # HQ sent it on the Commander's Authority setting (#2391): "Sent by HQ".
+        **({"decided_by": "hq"} if row.get("decided_by") == "hq" and state != PENDING else {}),
     }
 
 
@@ -238,7 +240,12 @@ async def stage(*, cid: str, turn_id: str, turn, args: dict, append_card) -> dic
         raise Refused(
             "refused: the message could not be recorded; nothing will be sent", "not_recorded"
         ) from None
-    out = {"connector": m.label, "recipient": recipient["label"], "characters": len(text)}
+    out = {
+        "connector": m.label,
+        "recipient": recipient["label"],
+        "characters": len(text),
+        "id": pid,
+    }
     if sender is not None:
         out["subject"] = email["subject"]
     return out
@@ -303,46 +310,127 @@ async def decide_locked(cid: str, row: dict, fd: int, decision: str) -> tuple[in
             return 200, view(done or row)
         if decision != "send":
             raise ask_proposals.ProposalError(422, "a message is sent or dismissed")
-        why = await asyncio.to_thread(precheck, cid, row)
-        if why:
-            done = await asyncio.to_thread(
-                ask_proposals._update, cid, pid, state=STALE, reason=why, settled_at=time.time()
-            )
-            return 200, view(done or row)
-        try:
-            await asyncio.to_thread(
-                connector_store.take_send,
-                row["instance_id"],
-                row["generation"],
-                row["recipient"]["id"],
-            )
-        except connector_store.Refused as e:
-            state = FAILED if e.code == "rate_limited" else STALE
-            done = await asyncio.to_thread(
-                ask_proposals._update,
-                cid,
-                pid,
-                state=state,
-                code=e.code,
-                reason=f"{e}; nothing was sent",
-                settled_at=time.time(),
-            )
-            return 200, view(done or row)
-        # DURABLE BEFORE ANYTHING IS SENT: from here a crash leaves `deciding`, which the next
-        # read settles as `interrupted` and never sends again.
-        approved = dict(row)
-        done = await asyncio.to_thread(
-            ask_proposals._update, cid, pid, state=DECIDING, decided_at=time.time()
-        )
-        if done is None:
-            raise ask_proposals.ProposalError(404, "no such proposal")
-        task = asyncio.create_task(_send_task(cid, approved, fd))
-        _TASKS[pid] = task
-        handed = True
-        return 202, view(done)
+        status, out, task = await _send_locked(cid, row, fd)
+        handed = task is not None
+        return status, out
     finally:
         if not handed:
             os.close(fd)
+
+
+#: How an HQ connector send is named in the acts log (#2391).
+ACT_OP, ACT_LABEL = "message.send", "Send a message"
+#: How long a turn waits for a connector send HQ made itself before it says "sending" and the
+#: card reports the end (#2391). Above one provider request's own bound (20 s), so a normal send
+#: settles in the turn. Chosen before measuring.
+ACT_SEND_WAIT_S = 30.0
+#: What a send refused at the outbound boundary by the act's grant raises (#2391).
+_AUTHORITY_CODE = "authority"
+
+
+def _title(row: dict) -> str:
+    rec = row.get("recipient") or {}
+    return f"{row.get('connector') or 'a connector'} · {rec.get('label') or 'a recipient'}"
+
+
+async def _send_locked(cid: str, row: dict, fd: int, act=None):
+    """A pending message's send, under the decide lock ``fd``, shared by the tap and HQ's act
+    (#2391). Returns ``(status, view, task)``; the task owns ``fd`` when there is one. ``act``
+    (`hq_acts.Act`): the grant is asked before the rate claim and again right before the
+    ``deciding`` write (raises ``hq_acts.Waits``: nothing written, nothing sent), the write
+    records ``decided_by: "hq"``, the claim is logged (fail closed), and the send re-checks the
+    grant at its outbound boundary."""
+    from . import ask_proposals, hq_acts
+
+    pid = row["id"]
+    why = await asyncio.to_thread(precheck, cid, row)
+    if why:
+        done = await asyncio.to_thread(
+            ask_proposals._update, cid, pid, state=STALE, reason=why, settled_at=time.time()
+        )
+        return 200, view(done or row), None
+    if act is not None:
+        why = act.admits(row)  # before the rate claim: a refused act spends nothing
+        if why:
+            raise hq_acts.Waits(why)
+    try:
+        await asyncio.to_thread(
+            connector_store.take_send,
+            row["instance_id"],
+            row["generation"],
+            row["recipient"]["id"],
+        )
+    except connector_store.Refused as e:
+        state = FAILED if e.code == "rate_limited" else STALE
+        done = await asyncio.to_thread(
+            ask_proposals._update,
+            cid,
+            pid,
+            state=state,
+            code=e.code,
+            reason=f"{e}; nothing was sent",
+            settled_at=time.time(),
+        )
+        return 200, view(done or row), None
+    by_hq: dict = {}
+    if act is not None:
+        # The last check before the claim (the rate claim stays taken: only ever stricter).
+        why = act.admits(row)
+        if why:
+            raise hq_acts.Waits(why)
+        by_hq = {"decided_by": "hq", "authority_rev": act.revision}
+    # DURABLE BEFORE ANYTHING IS SENT: from here a crash leaves `deciding`, which the next
+    # read settles as `interrupted` and never sends again.
+    approved = dict(row)
+    done = await asyncio.to_thread(
+        ask_proposals._update,
+        cid,
+        pid,
+        state=DECIDING,
+        decided_at=time.time(),
+        reason="",
+        **by_hq,
+    )
+    if done is None:
+        if act is not None:
+            raise hq_acts.Waits("the card is no longer tracked")
+        raise ask_proposals.ProposalError(404, "no such proposal")
+    if act is not None and not await asyncio.to_thread(
+        act.claimed, done, cid, op=ACT_OP, label=ACT_LABEL, title=_title(row)
+    ):
+        await asyncio.to_thread(_back_to_pending, cid, pid, "")
+        raise hq_acts.Waits("the acts log could not be written, so HQ did not run it")
+    task = asyncio.create_task(_send_task(cid, approved, fd, act=act))
+    _TASKS[pid] = task
+    return 202, view(done), task
+
+
+def _back_to_pending(cid: str, pid: str, reason: str) -> dict | None:
+    """An act refused before anything was sent (#2391): the card is the Commander's again."""
+    from . import ask_proposals
+
+    return ask_proposals._update(
+        cid,
+        pid,
+        state=PENDING,
+        decided_at=None,
+        decided_by=None,
+        authority_rev=None,
+        code="",
+        reason=reason,
+    )
+
+
+async def act_send(cid: str, row: dict, fd: int, act) -> asyncio.Task | dict:
+    """HQ sends a message card itself (#2391): the card's own send (`_send_locked`), exactly the
+    stored entry, to the recipient and connector fixed at staging and re-read before the send.
+    Returns the send task (it owns ``fd``), or the entry settled stale. Raises ``hq_acts.Waits``."""
+    from . import ask_proposals
+
+    status, out, task = await _send_locked(cid, row, fd, act=act)
+    if task is None:
+        return await asyncio.to_thread(ask_proposals._row, cid, row["id"]) or out
+    return task
 
 
 def _bound(inst: dict) -> connector_http.Bound:
@@ -441,14 +529,38 @@ def _final_check(row: dict) -> connector_http.FinalCheck:
     return check
 
 
-async def _send_task(cid: str, row: dict, fd: int) -> None:
-    """Send once and settle, whatever happens. Owns ``fd`` (the decide lock)."""
+def _granted(check: connector_http.FinalCheck, row: dict, act, refused: dict):
+    """The final check with the act's grant asked first, at the same outbound boundary (#2391):
+    authority, logout, the call and D4, immediately before a byte could leave. A refusal raises
+    before anything was written, so nothing was sent."""
+
+    def run(fenced: bool) -> None:
+        why = act.admits(row)
+        if why:
+            refused["why"] = why
+            raise connector_http.ConnectorError(_AUTHORITY_CODE, why)
+        check(fenced)
+
+    return run
+
+
+async def _send_task(cid: str, row: dict, fd: int, act=None) -> None:
+    """Send once and settle, whatever happens. Owns ``fd`` (the decide lock). ``act``
+    (`hq_acts.Act`, #2391): HQ sent it on the Commander's Authority setting; its grant is asked
+    as the task starts and again at the outbound boundary (`_final_check`). Refused there, nothing
+    was sent and the card is the Commander's again (``pending``, with why)."""
     from . import ask_proposals
 
     pid = row["id"]
     started = False
     settle: dict = {}
+    refused: dict = {}
     try:
+        if act is not None:
+            why = await asyncio.to_thread(act.admits, row)
+            if why:
+                settle = {"state": PENDING, "reason": why}
+                return
         doc = await asyncio.to_thread(connector_store.read)
         inst = next(i for i in doc["instances"] if i["id"] == row["instance_id"])
         bound = _bound(inst)
@@ -462,6 +574,9 @@ async def _send_task(cid: str, row: dict, fd: int) -> None:
         if _HOOK_BEFORE_SEND is not None:
             await _HOOK_BEFORE_SEND()
         started = True
+        final = _final_check(row)
+        if act is not None:
+            final = _granted(final, row, act, refused)
         if bound.adapter == "smtp":
             out = await connector_smtp._send(
                 bound,
@@ -469,7 +584,7 @@ async def _send_task(cid: str, row: dict, fd: int) -> None:
                 row["text"],
                 pid,
                 row.get("sender") or "",
-                final_check=_final_check(row),
+                final_check=final,
             )
         else:
             out = await connector_http._send(
@@ -477,7 +592,7 @@ async def _send_task(cid: str, row: dict, fd: int) -> None:
                 row["recipient"]["id"],
                 row["text"],
                 idem_key=pid,
-                final_check=_final_check(row),
+                final_check=final,
                 recheck=_recheck(bound, row["recipient"]["id"]),
             )
         if _HOOK_AFTER_SEND is not None:
@@ -487,7 +602,10 @@ async def _send_task(cid: str, row: dict, fd: int) -> None:
             "code": out.get("code", ""),
             "message_id": out.get("message_id", ""),
         }
-        if out["outcome"] == FAILED and out.get("code") in FENCE_REASONS:
+        if out["outcome"] == FAILED and out.get("code") == _AUTHORITY_CODE and refused:
+            # The act's grant refused it before a byte left (#2391): nothing was sent.
+            settle = {"state": PENDING, "reason": refused["why"]}
+        elif out["outcome"] == FAILED and out.get("code") in FENCE_REASONS:
             # The final check refused it before a byte left: out of date, nothing sent.
             settle["state"] = STALE
             settle["reason"] = FENCE_REASONS[out["code"]].format(
@@ -520,10 +638,18 @@ async def _send_task(cid: str, row: dict, fd: int) -> None:
             }
     finally:
         try:
-            if settle:
+            if settle.get("state") == PENDING:
+                await asyncio.to_thread(_back_to_pending, cid, pid, settle["reason"])
+            elif settle:
                 await asyncio.to_thread(
                     ask_proposals._update, cid, pid, settled_at=time.time(), **settle
                 )
+            if settle and act is not None:
+                await asyncio.to_thread(
+                    act.settled, pid, cid, op=ACT_OP, label=ACT_LABEL, title=_title(row),
+                    state=str(settle.get("state") or ""),
+                    outcome=str(settle.get("reason") or settle.get("message_id") or ""),
+                )  # fmt: skip
         finally:
             os.close(fd)
             _TASKS.pop(pid, None)

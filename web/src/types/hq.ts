@@ -15,10 +15,16 @@ export interface HqAuthority {
   /** The classes HQ can act on in this version; a stored `act` for any other is kept, not run. */
   actable: HqAuthorityClass[];
   risky: HqAuthorityClass[];
+  /** D4 (#2391): "also after HQ read untrusted text" per class; off unless switched on. Absent
+   *  from an older server: no switch is drawn. */
+  untrusted?: Partial<Record<HqAuthorityClass, boolean>>;
+  /** The classes that have that switch in this version. */
+  untrusted_classes?: HqAuthorityClass[];
 }
 export type HqAuthorityPatch =
   | { revision: number; preset: Exclude<HqAuthorityPreset, "custom"> }
-  | { revision: number; classes: Partial<Record<HqAuthorityClass, HqAuthorityValue>> };
+  | { revision: number; classes: Partial<Record<HqAuthorityClass, HqAuthorityValue>> }
+  | { revision: number; untrusted: Partial<Record<HqAuthorityClass, boolean>> };
 /** One act HQ made on its own (#2390): read back from the acts log. */
 export interface HqAct {
   ts: number;

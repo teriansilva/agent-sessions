@@ -13,9 +13,22 @@ what it sets in motion, so it may be stronger than the card's own ``risk`` stamp
 always acts and is not stored. An absent block, an unknown class or an unknown value reads as
 ``ask`` (fail closed); an upgrade therefore keeps Ask first (D1).
 
-**What can act in this version** is :data:`ACTABLE` (A1: reversible only). A stored ``act`` for
-another class is the Commander's own configuration, kept and shown, and changes nothing until the
-child of #2070 that adds its class here ships.
+**What can act in this version** is :data:`ACTABLE` (A1: reversible; A1b, #2391: starts or
+sends). A stored ``act`` for another class is the Commander's own configuration, kept and shown,
+and changes nothing until the child of #2070 that adds its class here ships.
+
+**The effective class** is the action's class when it runs (:func:`effective_class`): the catalog
+table for an operation, except where the action's own facts decide it (an automation run now is
+*external* when its approved scope reaches outside, *widens* when it starts a bypass session, and
+*external* when its scope can't be read); a session start is *starts*, or *widens* when the tap
+would turn permission bypass on; a connector message is *starts*. It is derived at staging, at the
+claim and at the effect boundary, so a change in between can only make the act ask.
+
+**D4, after untrusted text** (#2391): once a turn or its conversation read agent- or
+outside-authored text (A1's recorded taint), a class in :data:`TAINT_GATED` asks first unless the
+Commander switched that class's ``untrusted`` switch on (``{"untrusted": {"starts": true}}``, off
+by default, RISKY). A missing, malformed or non-boolean value reads as off. Screen and reversible
+act in a tainted turn (epic §1).
 
 **Revocation.** A logout bumps an in-memory epoch (:func:`logged_out`, a logout hook): sessions
 are stateless, so a cookie stays valid after a sign-out and the epoch is what refuses an act a
@@ -36,8 +49,16 @@ ASK, ACT = "ask", "act"
 CLASSES = ("reversible", "starts", "destructive", "external", "widens")
 #: The classes labelled RISKY in Settings (D2): they may be set to act, with that label.
 RISKY = frozenset({"destructive", "external", "widens"})
-#: The classes HQ can act on in this version (#2070 A1). A1b adds "starts", A1c the RISKY ones.
-ACTABLE = frozenset({"reversible"})
+#: The classes HQ can act on in this version (#2070 A1, A1b #2391). A1c adds the RISKY ones.
+ACTABLE = frozenset({"reversible", "starts"})
+#: The classes that ask first after HQ read untrusted text unless their switch is on (D4, #2391).
+#: Screen and reversible act in a tainted turn (epic §1); every later class is gated.
+TAINT_GATED = frozenset(CLASSES) - {"reversible"}
+#: The classes whose "also after untrusted text" switch exists in this version (A1c adds the RISKY
+#: ones with their own acting).
+UNTRUSTED_SWITCHES = ("starts",)
+#: Why a gated class asks first in a tainted conversation (D4), said on the card and to HQ.
+TAINT_REASON = "HQ read text from a session or connector in this conversation, so this asks first"
 #: Presets set the classes together; any other mix reads as "custom".
 PRESETS: dict[str, dict[str, str]] = {
     "ask_first": {c: ASK for c in CLASSES},
@@ -85,6 +106,8 @@ CLASS_OF: dict[str, str] = {
     "skill.edit": "reversible",  # saves a new copy
     "automation.create": "reversible",  # saved switched off
     "automation.edit": "starts",  # changes what an enabled automation's next runs tell agents
+    # starts its approved action once now; its scope decides (`effective_class`, #2391)
+    "automation.run_now": "starts",
     "automation.widen": "widens",
     "automation.enable": "widens",  # runs agents unattended
     "specialist.create": "reversible",
@@ -106,6 +129,8 @@ CLASS_OF: dict[str, str] = {
     "mission.create": "reversible",
     "mission.create_local": "reversible",
     "mission.plan": "reversible",
+    # types into a session the mission holds; the route keeps the mission's own guards (#2391)
+    "mission.relay": "starts",
     # project memory
     "memory.edit": "starts",  # text the project's agents read
     "memory.delete": "destructive",
@@ -115,6 +140,58 @@ CLASS_OF: dict[str, str] = {
     "mcp.check": "external",
     "mcp.enable": "widens",
 }
+
+
+#: Every proposal kind's class (#2391), pinned against `ask_store.PROPOSAL_KINDS`. An operation's
+#: is its catalog entry's (`CLASS_OF`); a nudge (`send_nudge`) keeps its own authority (#1960) and
+#: never takes this path. The kinds' dynamic rule is `effective_class`.
+KIND_CLASS: dict[str, str | None] = {
+    "session": "starts",  # widens when the tap would turn permission bypass on
+    "message": "starts",  # a connector message the Commander allowed the recipient of
+    "operation": None,  # the catalog entry's class
+    "nudge": None,  # its own authority (#1960), not this setting
+}
+#: An automation's approved action kinds that stay inside BattleLab when run now (#2391). Anything
+#: else (a plugin action: a webhook call, a push, a share), an unknown kind, or a scope that can't
+#: be read is external.
+_INSIDE_ACTIONS = frozenset({"start_session", "start_mission", "send_to_session", "tell_hq"})
+
+
+def automation_reach(scope: object) -> str:
+    """The class an automation's run now takes from its approved scope (`GET /api/automations/{id}`
+    `scope`): *starts* for an action inside BattleLab, *widens* for a session it starts with
+    permission bypass, *external* for anything else and for a missing or unreadable scope."""
+    if not isinstance(scope, dict):
+        return "external"
+    action = scope.get("action")
+    if not isinstance(action, str) or action not in _INSIDE_ACTIONS:
+        return "external"
+    if action == "start_session" and scope.get("bypass") is not False:
+        return "widens"
+    return "starts"
+
+
+def effective_class(row: dict, facts: dict | None = None) -> str:
+    """The class of what ``row`` (a sidecar entry) would do NOW (#2391, epic §1's effective-action
+    rule). ``facts`` are an operation's facts as read at this boundary (its staged facts when
+    omitted). Fails toward the stronger class: anything unrecognised is *widens*."""
+    kind = row.get("kind")
+    if kind == "operation":
+        op_id = str(row.get("op") or "")
+        if op_id == "automation.run_now":
+            basis = facts if facts is not None else row.get("facts")
+            reach = basis.get("reach") if isinstance(basis, dict) else None
+            return reach if reach in ("starts", "external", "widens") else "external"
+        return class_of(op_id)
+    if kind == "session":
+        # A start the tap would make with permission bypass on (the card's starting value) is
+        # widens: HQ never starts it without a card (A1c). An API card never bypasses (#2014).
+        if row.get("runtime") != "api" and row.get("bypass_default") is not False:
+            return "widens"
+        return "starts"
+    if kind == "message":
+        return "starts"
+    return "widens"
 
 
 class AuthorityError(Exception):
@@ -143,6 +220,13 @@ def _coerce(raw: object) -> tuple[dict[str, str], int]:
     return classes, revision
 
 
+def _coerce_untrusted(raw: object) -> dict[str, bool]:
+    """The D4 switches (#2391). Fail closed: only a stored ``true`` is on; a missing block, a
+    missing class, ``"true"``, ``1`` or any other value is off."""
+    stored = raw.get("untrusted") if isinstance(raw, dict) else None
+    return {c: isinstance(stored, dict) and stored.get(c) is True for c in UNTRUSTED_SWITCHES}
+
+
 def preset_of(classes: dict[str, str]) -> str:
     for name, values in PRESETS.items():
         if all(classes.get(c) == v for c, v in values.items()):
@@ -156,9 +240,14 @@ class Snapshot:
 
     revision: int
     classes: tuple[tuple[str, str], ...]
+    #: The D4 switches then (#2391): ``(class, on)``. Off unless stored ``true``.
+    untrusted: tuple[tuple[str, bool], ...] = ()
 
     def setting(self, klass: str) -> str:
         return dict(self.classes).get(klass, ASK)
+
+    def after_untrusted(self, klass: str) -> bool:
+        return dict(self.untrusted).get(klass) is True
 
     @property
     def preset(self) -> str:
@@ -168,15 +257,23 @@ class Snapshot:
 def snapshot(path: Path | None = None) -> Snapshot:
     """The block as stored now. An unreadable prefs file reads as Ask first. Blocking."""
     try:
-        classes, revision = _coerce(prefs.read_block(KEY, path))
+        raw = prefs.read_block(KEY, path)
+        classes, revision = _coerce(raw)
+        untrusted = _coerce_untrusted(raw)
     except Exception:  # noqa: BLE001 — fail closed: nothing acts
         classes, revision = {c: ASK for c in CLASSES}, -1
-    return Snapshot(revision, tuple(classes.items()))
+        untrusted = {c: False for c in UNTRUSTED_SWITCHES}
+    return Snapshot(revision, tuple(classes.items()), tuple(untrusted.items()))
 
 
 def acts(snap: Snapshot, klass: str) -> bool:
     """Whether ``klass`` acts under ``snap`` in this version."""
     return klass in ACTABLE and snap.setting(klass) == ACT and snap.revision >= 0
+
+
+def taint_blocks(snap: Snapshot, klass: str, tainted: bool) -> bool:
+    """D4 (#2391): whether a tainted turn keeps ``klass`` on a card under ``snap``."""
+    return bool(tainted) and klass in TAINT_GATED and not snap.after_untrusted(klass)
 
 
 def view(path: Path | None = None) -> dict:
@@ -188,20 +285,39 @@ def view(path: Path | None = None) -> dict:
         "revision": max(snap.revision, 0),
         "actable": [c for c in CLASSES if c in ACTABLE],
         "risky": [c for c in CLASSES if c in RISKY],
+        # D4 (#2391): the "also after untrusted text" switches, and which classes have one.
+        "untrusted": dict(snap.untrusted),
+        "untrusted_classes": list(UNTRUSTED_SWITCHES),
     }
 
 
 def update(body: object, path: Path | None = None) -> dict:
-    """Apply the Commander's write: ``{"revision", "preset"}`` or ``{"revision", "classes"}``,
-    compare-and-set on the revision under the prefs lock. Raises :class:`AuthorityError`."""
-    if not isinstance(body, dict) or set(body) - {"revision", "preset", "classes"}:
-        raise AuthorityError(422, "send revision with preset or classes")
+    """Apply the Commander's write: ``{"revision", "preset"}``, ``{"revision", "classes"}`` or
+    ``{"revision", "untrusted": {<class>: bool}}`` (D4, #2391), compare-and-set on the revision
+    under the prefs lock. A preset sets the classes only; it never turns a D4 switch on or off.
+    Raises :class:`AuthorityError`."""
+    if not isinstance(body, dict) or set(body) - {"revision", "preset", "classes", "untrusted"}:
+        raise AuthorityError(422, "send revision with preset, classes or untrusted")
     rev = body.get("revision")
     if not isinstance(rev, int) or isinstance(rev, bool) or rev < 0:
         raise AuthorityError(422, "revision must be the revision you read")
-    if ("preset" in body) == ("classes" in body):
-        raise AuthorityError(422, "send either preset or classes")
-    if "preset" in body:
+    if sum(k in body for k in ("preset", "classes", "untrusted")) != 1:
+        raise AuthorityError(422, "send one of preset, classes or untrusted")
+    switches: dict[str, bool] = {}
+    patch: dict[str, str] = {}
+    if "untrusted" in body:
+        raw = body["untrusted"]
+        if (
+            not isinstance(raw, dict)
+            or not raw
+            or set(raw) - set(UNTRUSTED_SWITCHES)
+            or any(not isinstance(v, bool) for v in raw.values())
+        ):
+            raise AuthorityError(
+                422, "untrusted maps " + ", ".join(UNTRUSTED_SWITCHES) + " to true or false"
+            )
+        switches = dict(raw)
+    elif "preset" in body:
         if not isinstance(body["preset"], str) or body["preset"] not in PRESETS:
             raise AuthorityError(422, "preset must be ask_first, standard or full")
         patch = dict(PRESETS[body["preset"]])
@@ -222,8 +338,10 @@ def update(body: object, path: Path | None = None) -> dict:
         if revision != rev:
             stale["v"] = True
             return cur
+        untrusted = _coerce_untrusted(cur)
         classes.update(patch)
-        return {"classes": classes, "revision": revision + 1}
+        untrusted.update(switches)
+        return {"classes": classes, "untrusted": untrusted, "revision": revision + 1}
 
     prefs.mutate_block(KEY, merge, path)
     if stale["v"]:
@@ -265,14 +383,19 @@ class ActGrant:
     def now(cls, live: Callable[[], bool] | None = None) -> ActGrant:
         return cls(snapshot(), logout_epoch(), live or _always)
 
-    def admits(self, klass: str) -> str:
-        """Empty when ``klass`` may act now, else why not (said to HQ; the card waits). Blocking but
-        cheap: one small prefs read, so it can sit right before the effect with no await."""
+    def admits(self, klass: str, tainted: bool = False) -> str:
+        """Empty when ``klass`` may act now, else why not (said to HQ; the card waits). ``tainted``:
+        the turn read untrusted text (D4, #2391). Blocking but cheap: one small prefs read, so it
+        can sit right before the effect with no await."""
         if not acts(self.snapshot, klass):
             return "the Commander's Authority setting asks first for this"
+        if taint_blocks(self.snapshot, klass, tainted):
+            return TAINT_REASON
         now = snapshot()
         if now.revision != self.snapshot.revision or not acts(now, klass):
             return "the Commander changed the Authority setting during this question"
+        if taint_blocks(now, klass, tainted):
+            return TAINT_REASON
         if logout_epoch() != self.epoch:
             return "the Commander signed out after this question began"
         try:

@@ -104,10 +104,17 @@ MAX_ACTS_PER_TURN = 10
 #: model-written text. Every OTHER read taints the turn (a session's screen, transcript, brief or
 #: report, a title, a connector, the web, memory, a file): fail closed, so a new read taints until
 #: it is listed here on purpose.
+#: #2391 adds the reads a start or a send needs first, each returning only what the Commander
+#: configured: the connectors and the recipients they allowed (labels stored when allowed, never
+#: read live), their automations (name, state, trigger and action kinds) and missions (title,
+#: state, instruction, objective titles, the sessions they hold). Without them every message, run
+#: now and relay would ask first under D4 in every conversation.
 TRUSTED_READS = frozenset(
     {
         "agent_usage", "docs_read", "docs_search", "fleet_status", "list_agent_models",
         "list_agents", "list_folders", "list_projects", "read_settings", "note",
+        "list_connectors", "list_recipients", "list_automations", "list_missions",
+        "mission_status",
     }
 )  # fmt: skip
 #: Refusal codes after which a proposal MAY have been staged (an append whose outcome could not be
@@ -723,6 +730,8 @@ class _Turn:
     #: Memory only. `acts` counts what it ran (`MAX_ACTS_PER_TURN`).
     grant: hq_authority.ActGrant | None = None
     acts: int = 0
+    #: Seconds this turn waited on the effects it ran itself (#2391, `ACT_TURN_BUDGET_S`).
+    act_spent: float = 0.0
     #: The turn read agent- or outside-authored text, or its conversation had (#2390): recorded
     #: on each act and on the settled status. Screen and reversible act in a tainted turn
     #: (epic #2070 §1); the later classes' fallback reads it.
@@ -2732,6 +2741,11 @@ async def _propose_session(turn: _Turn, args: dict) -> tuple[dict, dict]:
         raise _ToolRefused(
             "refused: the proposal could not be recorded; nothing will start", "not_recorded"
         ) from None
+    acted = await _maybe_act(turn, pid, "Start a session")
+    if acted is not None:
+        return acted[0] | {"kind": "api" if api else "terminal", "project": project["name"]}, {
+            "count": 1
+        }
     return (
         {
             "proposed": True,
@@ -2772,6 +2786,7 @@ REPLACEABLE: dict[str, str] = {
         for n in (
             "propose_session_change",
             "propose_mission",
+            "propose_relay",
             "propose_project_change",
             "propose_library",
             "propose_secret",
@@ -3505,7 +3520,7 @@ async def _stage(
         await asyncio.to_thread(ask_store.guard_text, str(v), max(len(str(v)), 1))
         for v in (staged["target"], staged["summary"])
     ]
-    acted = await _maybe_act(turn, op, staged["id"]) if not refused else None
+    acted = await _maybe_act(turn, staged["id"], op.label) if not refused else None
     if acted is not None:
         return acted[0] | {"target": target_said, "what_it_did": summary_said}, {
             "count": 1,
@@ -3524,19 +3539,32 @@ async def _stage(
     )
 
 
-async def _act_refusal(turn: _Turn, op) -> str:
-    """Why this staged operation stays a card instead of running now (#2390), or "". The class
-    and its setting come from the server's table and the Commander's Authority block, never the
-    model."""
-    from . import ask_steps
+async def _act_refusal(turn: _Turn, row: dict) -> str:
+    """Why this staged card stays a card instead of running now (#2390, #2391), or "". The class
+    is the entry's EFFECTIVE class (`hq_authority.effective_class`), and its setting the
+    Commander's Authority block as the turn began, never the model. ``"taint"``: D4 keeps it on
+    its card, and the card says why."""
+    from . import ask_operations, ask_steps
 
     if turn.grant is None:
         return "no_grant"
-    klass = hq_authority.class_of(op.id)
+    klass = hq_authority.effective_class(row)
     if not hq_authority.acts(turn.grant.snapshot, klass):
         return "asks"
-    if op.inputs or op.follow_up or op.run is not None:
-        return "card_only"  # the Commander supplies its input, or a continuation would start
+    kind = row.get("kind")
+    if kind == "operation":
+        op = ask_operations.CATALOG.get(str(row.get("op") or ""))
+        if op is None or op.inputs or op.follow_up or op.run is not None:
+            return "card_only"  # the Commander supplies its input, or a continuation would start
+        if ask_operations.card_only(row):
+            return "card_only"
+    elif kind == "session":
+        if row.get("runtime") != "api":
+            return "card_only"  # a terminal start stays a card (#1613 D17)
+    elif kind != "message":
+        return "card_only"
+    if hq_authority.taint_blocks(turn.grant.snapshot, klass, turn.tainted):
+        return "taint"
     if turn.acts >= MAX_ACTS_PER_TURN:
         return "cap"
     try:
@@ -3547,46 +3575,90 @@ async def _act_refusal(turn: _Turn, op) -> str:
     return ""
 
 
-#: What HQ is told when a card it could not run itself waits for the Commander (#2390).
+#: What HQ is told when a card it could not run itself waits for the Commander (#2390, #2391).
 ACT_WAITS = {
     "cap": f"HQ ran {MAX_ACTS_PER_TURN} changes itself in this question already",
+    "taint": hq_authority.TAINT_REASON,
 }
+#: The total time one turn may wait on the effects it runs itself (#2391), across its acts (at
+#: most `MAX_ACTS_PER_TURN`). Each act also has its own deadline (`ask_operations.ACT_*`,
+#: `ask_proposals.ACT_START_WAIT_S`, `ask_messages.ACT_SEND_WAIT_S`); past either, the effect
+#: keeps going and settles on its card, and the turn says it is still going. Chosen before
+#: measuring.
+ACT_TURN_BUDGET_S = 120.0
+#: What the model is told per kind when an act it made settled or still runs (#2391).
+_ACT_DONE_NOTE = (
+    "HQ ran this itself, as the Commander's Authority setting allows: no card to confirm. Report "
+    "this outcome as it is (done, partly done, failed or out of date); it is the route's own "
+    "result. The card in the conversation shows it as done by HQ."
+)
+_ACT_RUNNING_NOTE = (
+    "HQ started this itself, as the Commander's Authority setting allows, and it is still going: "
+    "say it is {doing}, never that it is done. Its card shows the outcome when it ends."
+)
 
 
-async def _maybe_act(turn: _Turn, op, pid: str) -> tuple[dict, None] | None:
-    """Run a staged operation at once when the Commander's Authority setting lets HQ (#2390).
-    None: it stays a card, exactly as under Ask. Otherwise the tool's result: what ran and the
-    route's own outcome, or why the card still waits."""
-    why = await _act_refusal(turn, op)
-    if why and why != "cap":
+def _act_wait(kind: str) -> float:
+    from . import ask_messages, ask_operations, ask_proposals
+
+    return {
+        "session": ask_proposals.ACT_START_WAIT_S,
+        "message": ask_messages.ACT_SEND_WAIT_S,
+    }.get(kind, ask_operations.ACT_ROUTE_WAIT_S)
+
+
+async def _maybe_act(turn: _Turn, pid: str, label: str) -> tuple[dict, None] | None:
+    """Run a staged card at once when the Commander's Authority setting lets HQ (#2390, #2391).
+    None: it stays a card, exactly as under Ask. Otherwise the tool's result: what ran and its own
+    outcome, that it is still going, or why the card still waits."""
+    from . import ask_operations, ask_proposals
+
+    try:
+        row = await asyncio.to_thread(ask_proposals._row, turn.cid, pid)
+    except Exception:  # noqa: BLE001 — unreadable: it stays a card
+        row = None
+    if row is None:
         return None
-    if why == "cap":
+    why = await _act_refusal(turn, row)
+    if why == "taint":
+        # D4 (#2391): the card stays pending and says why; the tap still works as ever.
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(ask_proposals._update, turn.cid, pid, reason=ACT_WAITS[why])
+    if why and why not in ACT_WAITS:
+        return None
+    if why:
         return {
             "proposed": True,
-            "action": op.label,
+            "action": label,
             "ran": False,
-            "why_not": ACT_WAITS["cap"],
+            "why_not": ACT_WAITS[why],
             "note": "The card waits for the Commander. Nothing has happened yet; never say it has.",
         }, None
     operator, app = _operator(turn)
     turn.acts += 1
-    klass = hq_authority.class_of(op.id)
+    kind = str(row.get("kind") or "")
     record = {
-        "class": klass,
+        "class": hq_authority.effective_class(row),
         "turn_id": turn.turn_id,
         "via": turn.via,
         "tainted": turn.tainted,
     }
-    kind, row = await ask_operations.act(
-        turn.cid, pid, operator=operator, app=app, grant=turn.grant, record=record
-    )
-    if kind != "ran":
+    left = max(0.0, ACT_TURN_BUDGET_S - turn.act_spent)
+    began = time.monotonic()
+    try:
+        result, out = await ask_operations.act(
+            turn.cid, pid, operator=operator, app=app, grant=turn.grant, record=record,
+            wait=min(_act_wait(kind), left), lock_wait=min(ask_operations.ACT_LOCK_WAIT_S, left),
+        )  # fmt: skip
+    finally:
+        turn.act_spent += time.monotonic() - began
+    if result not in ("ran", "running"):
         turn.acts -= 1  # nothing ran: the slot goes back
-        if kind in ("stale", "decided"):
-            state = (row or {}).get("state") or "unknown"
+        if result in ("stale", "decided"):
+            state = (out or {}).get("state") or "unknown"
             return {
                 "proposed": True,
-                "action": op.label,
+                "action": label,
                 "ran": False,
                 "state": state,
                 "note": "It did not run: the card is "
@@ -3595,22 +3667,35 @@ async def _maybe_act(turn: _Turn, op, pid: str) -> tuple[dict, None] | None:
             }, None
         return {
             "proposed": True,
-            "action": op.label,
+            "action": label,
             "ran": False,
-            "why_not": str((row or {}).get("reason") or "")[:REASON_MAX],
+            "why_not": str((out or {}).get("reason") or "")[:REASON_MAX],
             "note": "HQ could not run it itself, so the card waits for the Commander. Nothing "
             "has happened yet; never say it has.",
         }, None
-    state = str(row.get("state") or "")
-    said = str(row.get("outcome") or row.get("reason") or "")[:REASON_MAX]
+    state = str(out.get("state") or "")
+    extra: dict = {}
+    key = out.get("session_key") if kind == "session" else None
+    if isinstance(key, str) and key:
+        turn.keys.add(key)
+        extra["session_key"] = key
+    if result == "running":
+        doing = {"session": "starting", "message": "sending"}.get(kind, "running")
+        return {
+            "proposed": True,
+            "action": label,
+            "ran": "running",
+            **extra,
+            "note": _ACT_RUNNING_NOTE.format(doing=doing),
+        }, None
+    said = str(out.get("outcome") or out.get("reason") or "")[:REASON_MAX]
     return {
         "proposed": True,
-        "action": op.label,
+        "action": label,
         "ran": state,
         "outcome": said,
-        "note": "HQ ran this itself, as the Commander's Authority setting allows: no card to "
-        "confirm. Report this outcome as it is (done, partly done, failed or out of date); it is "
-        "the route's own result. The card in the conversation shows it as done by HQ.",
+        **extra,
+        "note": _ACT_DONE_NOTE,
     }, None
 
 
@@ -4051,6 +4136,34 @@ async def _propose_mission(turn: _Turn, args: dict) -> tuple[dict, dict]:
     return await _stage(turn, op, mid or pid, title, fields, draft, expected=validated)
 
 
+async def _propose_relay(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    """Relay words into a session a mission holds (#2391): the mission console's own relay route,
+    as a card (or at once, when the Commander's Authority setting lets HQ). The mission and the
+    session are ones this turn's tools returned; the mission's own guards decide at the route."""
+    from . import ask_mission, ask_operations
+
+    mid = _known_mission(turn, args)
+    key = args.get("key")
+    if not isinstance(key, str) or key not in turn.keys:
+        raise _ToolRefused(
+            "refused: use a session key mission_status returned in this turn", "unknown_session"
+        )
+    op = ask_operations.CATALOG["mission.relay"]
+    try:
+        fields = {"session_key": key, **ask_operations.gate_fields(op, args)}
+    except ask_operations.Refused as e:
+        raise _ToolRefused(f"refused: {e}", e.code) from None
+    facts = await ask_mission.relay_facts(mid, fields)
+    if facts is None:
+        raise _ToolRefused("refused: that mission no longer exists", "not_available")
+    if not facts["held_now"]:
+        raise _ToolRefused(
+            "refused: that mission does not hold that session; nothing was proposed",
+            "not_available",
+        )
+    return await _stage(turn, op, mid, facts["title"], fields)
+
+
 async def _propose_project_change(turn: _Turn, args: dict) -> tuple[dict, dict]:
     from . import ask_operations
 
@@ -4450,12 +4563,14 @@ async def _propose_message(turn: _Turn, args: dict) -> tuple[dict, dict]:
     except (ask_messages.Refused, connector_hq.Refused) as e:
         raise _ToolRefused(str(e), e.code) from None
     said = await asyncio.to_thread(ask_store.guard_text, staged["recipient"], 120)
+    shown = {"to": said, "through": staged["connector"], "characters": staged["characters"]}
+    acted = await _maybe_act(turn, staged["id"], "Send a message")
+    if acted is not None:
+        return acted[0] | shown, {"count": 1}
     return (
         {
             "proposed": True,
-            "to": said,
-            "through": staged["connector"],
-            "characters": staged["characters"],
+            **shown,
             "note": "a card now waits for the Commander's tap; nothing has been sent",
         },
         {"count": 1},
@@ -4889,7 +5004,9 @@ TOOLS: dict[str, Tool] = {
                 "in this turn, an agent by the index list_agents returned OR a specialist by "
                 "the index list_specialists returned (the session then runs on the "
                 "specialist's agent with its Library skills), and the brief the agent gets as "
-                "its first message. Nothing starts: the operator sees a card and decides.",
+                "its first message. The operator sees a card and decides, unless their Authority "
+                "setting lets HQ start an API session at once: then the result says ran (started, "
+                "with its session_key) or running (still starting).",
                 {
                     "project_index": {"type": "integer"},
                     "engine_index": {"type": "integer"},
@@ -5025,6 +5142,25 @@ TOOLS: dict[str, Tool] = {
                 [],
             ),
             _propose_mission,
+        ),
+        Tool(
+            "propose_relay",
+            "proposal",
+            _spec(
+                "propose_relay",
+                "Relay a short message into a session a mission holds, through the mission (its "
+                "own guards decide): mission_id and key from mission_status in this turn, and the "
+                "text (240 letters at most). The operator sees a card and sends it or not, "
+                "unless their Authority setting lets HQ send it at once: then the result says "
+                "ran, with the outcome. A terminal session is always relayed on its card.",
+                {
+                    "mission_id": {"type": "string"},
+                    **_KEY_PROP,
+                    "text": {"type": "string"},
+                },
+                ["mission_id", "key", "text"],
+            ),
+            _propose_relay,
         ),
         Tool(
             "propose_project_change",
@@ -5171,7 +5307,8 @@ TOOLS: dict[str, Tool] = {
                 "text; start_mission takes project_index and autonomy propose | dispatch; "
                 "start_session takes project_index and engine_index; send_to_session takes a "
                 "session key — indexes from list_projects / list_agents in this turn), edit "
-                "(id and only what changes), enable (id). A new automation is saved switched "
+                "(id and only what changes), enable (id), run_now (id: runs it once now, within "
+                "the scope it was approved for). A new automation is saved switched "
                 "off; enabling is a separate card. Never ask for permission bypass or for "
                 "answering the agents' menus automatically: those are the operator's alone. "
                 "specialist: create (title, summary, engine_index from list_agents, model_index "
@@ -5199,6 +5336,7 @@ TOOLS: dict[str, Tool] = {
                             "archive",
                             "unarchive",
                             "import",
+                            "run_now",
                         ],
                     },
                     "title": {"type": "string"},
@@ -5478,8 +5616,9 @@ TOOLS: dict[str, Tool] = {
             _spec(
                 "propose_message",
                 "Propose a message to one allowed recipient: it becomes a card the Commander "
-                "taps to send, showing the exact text. Nothing is sent unless they tap Send. Write "
-                "the whole message; it is sent exactly as written.",
+                "taps to send, showing the exact text. Nothing is sent unless they tap Send, or "
+                "their Authority setting lets HQ send it at once: then the result says ran, with "
+                "the outcome. Write the whole message; it is sent exactly as written.",
                 {
                     **_CONNECTOR_PROP,
                     "recipient_index": {
@@ -5889,7 +6028,13 @@ async def _call(turn: _Turn, name: str, raw_args: str) -> tuple[str, dict, dict,
             turn.tainted = True  # it returned text an agent or the outside wrote (#2390)
         if tool.kind == "proposal" and name not in CARD_FREE_TOOLS:
             _count_card(turn, wrote)
-            if result.get("proposed") is True and args.get("replaces") is None:
+            if (
+                result.get("proposed") is True
+                and args.get("replaces") is None
+                # A card HQ ran itself (#2391) waits on nobody: it is no step of the Commander's,
+                # so other kinds of change may follow it in the same turn.
+                and not result.get("ran")
+            ):
                 result = {
                     **result,
                     **await _attach_card(turn, step_plan, _card_kind(name, args), wrote),

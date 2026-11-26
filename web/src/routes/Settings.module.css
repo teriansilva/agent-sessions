@@ -1989,6 +1989,74 @@
     flex: 1;
   }
 }
+/* D4 (#2391): the class's "also after untrusted text" switch, a dashed inset under its row. The
+ * whole label is the 44 px target; on, the dashes take the down tone. */
+.authorityUntrusted {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-height: 44px;
+  margin-top: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px dashed var(--line-strong);
+  cursor: pointer;
+}
+.authorityUntrustedOn {
+  border-color: var(--status-down);
+}
+.authorityUntrustedText {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-2);
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+}
+.authorityUntrustedText b {
+  color: var(--text-1);
+}
+.authoritySwitch {
+  flex: none;
+  appearance: none;
+  position: relative;
+  margin: 0;
+  width: 52px;
+  height: 28px;
+  border: 1px solid var(--border);
+  background: var(--surface-3);
+  border-radius: 0;
+  cursor: pointer;
+}
+.authoritySwitch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  background: var(--text-3);
+  transition: transform var(--t-fast) var(--ease-out);
+}
+.authoritySwitch:checked {
+  border-color: var(--status-down);
+  background: color-mix(in srgb, var(--status-down) 22%, var(--bg-2));
+}
+.authoritySwitch:checked::after {
+  transform: translateX(24px);
+  background: var(--status-down);
+}
+.authoritySwitch:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
+.authoritySwitch:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+@media (max-width: 800px) {
+  .authorityUntrusted {
+    flex-wrap: wrap;
+  }
+}
 .authorityAct {
   display: flex;
   flex-direction: column;

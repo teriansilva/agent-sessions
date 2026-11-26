@@ -38,9 +38,10 @@ def _embedded(name: str) -> str:
 
 
 #: The trust root, by fingerprint. Pinned here so a swapped or edited key line is a red build, not a
-#: silent change of who can sign releases. Custody of both: docs/release-signing.md.
+#: silent change of who can sign releases. Custody of all three: docs/release-signing.md.
 PRIMARY_FPR = "SHA256:2aBGF8oP1PEvJFiD2/GWVLnl8sC3IJ2lhNahZjm/reY"
 RECOVERY_FPR = "SHA256:kUrh/5H71d27nPuIZan3Uv+//Ny+Bxy2IExdOAbQvVo"
+AUTOMATION_FPR = "SHA256:SmjXIV5yaW1B1EqrmUUDOQOzbOl7uJM/GrXVEoU3D9g"
 
 
 def _fingerprint(line: str) -> str:
@@ -52,18 +53,19 @@ def _fingerprint(line: str) -> str:
     return out.stdout.split()[1]
 
 
-def test_signers_file_holds_the_primary_then_the_recovery_key():
-    """Two entries, one principal. The recovery key (Recovery §2) signs only the bridge release
-    that replaces a lost primary; sharing the principal keeps every `Good "git" signature for
-    release@agent-sessions` check valid for it without a second rule."""
+def test_signers_file_holds_the_primary_the_recovery_and_the_automation_key():
+    """Three entries, one principal. The recovery key (Recovery §2) signs only bridge releases;
+    the automation key (#2379) signs routine releases unattended. Sharing the principal keeps
+    every `Good "git" signature for release@agent-sessions` check valid for each without a
+    second rule."""
     lines = _signer_lines(SIGNERS.read_text())
-    assert len(lines) == 2, f"expected primary + recovery, got {len(lines)}: {lines}"
+    assert len(lines) == 3, f"expected primary + recovery + automation, got {len(lines)}: {lines}"
     for line in lines:
         principal, keytype, b64, *_ = line.split()
         assert principal == "release@agent-sessions"
         assert keytype == "ssh-ed25519"
         assert len(b64) > 40
-    assert [_fingerprint(line) for line in lines] == [PRIMARY_FPR, RECOVERY_FPR]
+    assert [_fingerprint(line) for line in lines] == [PRIMARY_FPR, RECOVERY_FPR, AUTOMATION_FPR]
 
 
 def test_the_trust_root_never_contains_private_key_material():
