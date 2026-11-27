@@ -41,6 +41,9 @@ export interface Session {
   /** Custom per-session tag (#551): a short user label (text / emoji) rendered before the
    *  AI summary on the row's second line. "" / undefined when unset. */
   tag?: string;
+  /** Who started it (#2437): `null` when the automation store could not be read. Absent on
+   *  older servers. */
+  origin?: SessionOrigin | null;
   archived: boolean;
   /** AI review (#356): one-line summary from the last successful review. */
   ai_summary?: string;
@@ -1889,7 +1892,16 @@ export interface SessionsPage {
     /** Every distinct custom tag in scope, case variants grouped, with its count (#2338). Absent
      *  on older servers. */
     tags?: SessionTagFacet[];
+    /** Main sessions in scope by who started them (#2437), before any filter. Absent when the
+     *  automation store could not be read (unknown, never "0 automation sessions"). */
+    origins?: SessionOriginCounts;
   };
+  /** `origin=operator` (#2437): the sessions every OTHER filter keeps that an automation launched
+   *  — exactly what "Show" adds — and how many of them need the operator. */
+  origin_hidden?: { count: number; needs_you: number };
+  /** An `origin` filter was requested but the automation store could not be read (#2437). For
+   *  `operator` the list is the unfiltered one; for `automation` it is empty. */
+  origin_filter_unavailable?: boolean;
   /** A `mission` filter was requested but the mission store could not be read (#948). */
   mission_filter_unavailable?: boolean;
   /** A `cluster` filter was requested but could not be answered (#1997). */
@@ -1907,6 +1919,15 @@ export interface SessionsPage {
   /** The pinned scan to pass on the NEXT page (#1007 Phase 3). Present only when the request sent
    *  `snapshot`, and it may differ from what was sent (an expired pin is replaced, never an error). */
   snapshot?: string;
+}
+
+/** Who started a session (#2437): an automation launched it, or anything else did. */
+export type SessionOrigin = "operator" | "automation";
+
+/** `facets.origins` (#2437): main sessions in scope by who started them. */
+export interface SessionOriginCounts {
+  operator: number;
+  automation: number;
 }
 
 /** A tag filter option (#2338): the tag as displayed, the group key to send back as `tag=`, and
@@ -3118,6 +3139,9 @@ export interface SessionsQuery {
   cluster?: string;
   /** A custom tag (#551), matched trimmed and case-insensitively (#2338). */
   tag?: string;
+  /** Who started it (#2437): `operator` hides what an automation launched; `automation` lists
+   *  only those. Omitted: every session. */
+  origin?: SessionOrigin;
   /** Pin one server scan across a paging sequence (#1007 Phase 3): `new` on the first page, then
    *  the `snapshot` the previous page returned. Omitted (the sidebar), nothing is pinned. */
   snapshot?: string;

@@ -18,6 +18,8 @@ import type {
   ProjectRef,
   Session,
   SessionClusterFacet,
+  SessionOrigin,
+  SessionOriginCounts,
   SessionTagFacet,
   SessionMissionFacet,
   SessionsPage,
@@ -46,6 +48,10 @@ export interface Filters {
   cluster?: string;
   /** A custom tag, or "" for all (#2338). Optional for the same reason as `mission`. */
   tag?: string;
+  /** Started by (#2437): `operator` (the default — sessions an automation launched are hidden),
+   *  `automation` (only those) or `all`. Optional for the same reason as `mission`; absent reads
+   *  as the default. */
+  origin?: OriginFilter;
   archived: boolean;
   /** The Shared scope (#2198): the list shows what peers share with this instance instead of
    *  this instance's own sessions. Client-only: it is never part of the `/api/sessions` query,
@@ -55,6 +61,33 @@ export interface Filters {
   /** The Shared scope's own search (title or peer name, matched in the browser). A separate
    *  value from `q`: neither search ever narrows the other scope's list. */
   sharedQ?: string;
+}
+
+/** The Started-by choice (#2437). `all` is client-side only: it sends no `origin`. */
+export type OriginFilter = "operator" | "automation" | "all";
+
+/** The default Started-by choice (#2437): automation-launched sessions hidden. */
+export const DEFAULT_ORIGIN: OriginFilter = "operator";
+
+/** The Started-by choice in force — a state saved without one reads as the default. */
+export function originChoice(filters: Filters): OriginFilter {
+  return filters.origin ?? DEFAULT_ORIGIN;
+}
+
+/** Whether the Started-by control is offered (#2437): while any session in scope was launched by
+ *  an automation, and whenever the choice is not the default — so the operator can always get back
+ *  to it, also when the counts are unknown (`facets.origins` absent: the store could not be read). */
+export function offersOrigin(
+  filters: Filters,
+  origins: SessionOriginCounts | undefined,
+): boolean {
+  return originChoice(filters) !== DEFAULT_ORIGIN || (origins?.automation ?? 0) > 0;
+}
+
+/** The `origin` the server is asked for: none for `all`. */
+export function originQuery(filters: Filters): SessionOrigin | undefined {
+  const o = originChoice(filters);
+  return o === "all" ? undefined : o;
 }
 
 /** Which list the sidebar shows (#2198). */
@@ -79,6 +112,7 @@ const EMPTY: Filters = {
   mission: "",
   cluster: "",
   tag: "",
+  origin: DEFAULT_ORIGIN,
   archived: false,
   shared: false,
   sharedQ: "",
@@ -94,6 +128,8 @@ interface Facets {
   clusters?: SessionClusterFacet[];
   /** Absent on servers older than #2338. */
   tags?: SessionTagFacet[];
+  /** Absent when the automation store could not be read, and on servers older than #2437. */
+  origins?: SessionOriginCounts;
 }
 
 /** The sidebar's data layer: filtered + paginated session list with server facets.
@@ -113,6 +149,10 @@ export function useSessionsList() {
   const [missionFilterUnavailable, setMissionFilterUnavailable] = useState(false);
   /** The same for the cluster filter (#1997). */
   const [clusterFilterUnavailable, setClusterFilterUnavailable] = useState(false);
+  /** The same for Started by (#2437): the list is the unfiltered one, or empty for Auto. */
+  const [originFilterUnavailable, setOriginFilterUnavailable] = useState(false);
+  /** What the default Started-by choice hides (#2437), from the first page. */
+  const [originHidden, setOriginHidden] = useState<SessionsPage["origin_hidden"] | null>(null);
   /** Subagents needing the operator whose main session the active filter dropped (#2325). */
   const [attentionOutside, setAttentionOutside] = useState<
     SessionsPage["attention_outside"] | null
@@ -161,6 +201,7 @@ export function useSessionsList() {
     return () => clearTimeout(h);
   }, [filters.q, debouncedQ]);
 
+  const originQ = originQuery(filters);
   const query: SessionsQuery = useMemo(
     () => ({
       q: debouncedQ,
@@ -169,6 +210,7 @@ export function useSessionsList() {
       mission: filters.mission || undefined,
       cluster: filters.cluster || undefined,
       tag: filters.tag || undefined,
+      origin: originQ,
       archived: filters.archived,
       limit: PAGE,
     }),
@@ -179,6 +221,7 @@ export function useSessionsList() {
       filters.mission,
       filters.cluster,
       filters.tag,
+      originQ,
       filters.archived,
     ],
   );
@@ -227,6 +270,8 @@ export function useSessionsList() {
         setFacets(page.facets);
         setMissionFilterUnavailable(Boolean(page.mission_filter_unavailable));
         setClusterFilterUnavailable(Boolean(page.cluster_filter_unavailable));
+        setOriginFilterUnavailable(Boolean(page.origin_filter_unavailable));
+        if (offset === 0) setOriginHidden(page.origin_hidden ?? null);
         if (offset === 0) setAttentionOutside(page.attention_outside ?? null);
         if (offset === 0) setSearch(page.search ?? null);
       } catch (e) {
@@ -575,6 +620,8 @@ export function useSessionsList() {
     counts,
     missionFilterUnavailable,
     clusterFilterUnavailable,
+    originFilterUnavailable,
+    originHidden,
     attentionOutside,
     search,
     facets,

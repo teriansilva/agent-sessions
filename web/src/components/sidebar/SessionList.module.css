@@ -620,3 +620,60 @@ input.editInput {
   font-size: var(--fs-meta);
   color: var(--text-2);
 }
+
+/* STARTED BY (#2437): one quiet line above the list saying what the default choice hides, with
+   the one-press way to show it. Never a status colour except the "need you" count, which is the
+   attention state it reports. */
+.originLine {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 7px var(--sp-3);
+  border-bottom: 1px solid var(--border-subtle);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-label);
+  color: var(--text-3);
+}
+.originGlyph {
+  flex: none;
+  color: var(--accent-text);
+}
+.originText {
+  flex: 1;
+  min-width: 0;
+}
+.originText b {
+  color: var(--text-2);
+  font-weight: 600;
+}
+.originText b.originNeeds {
+  color: var(--warn-text);
+}
+.originShow {
+  flex: none;
+  min-height: 32px;
+  padding: 0 var(--sp-2);
+  background: transparent;
+  border: 0;
+  color: var(--hud-text);
+  cursor: pointer;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-label);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.originShow:hover {
+  color: var(--text-1);
+}
+.originShow:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -2px;
+}
+@media (pointer: coarse), (max-width: 800px) {
+  .originShow {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}

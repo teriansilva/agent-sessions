@@ -245,6 +245,24 @@ button.clear {
   }
 }
 
+/* "Started by" (#2437): a small caption over the segment, in the tree's quiet label voice. */
+.caption {
+  padding: 2px 2px 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+/* The automation mark (⟳), the origin badge's glyph (#1201): membership, so the accent ink. */
+.glyph {
+  letter-spacing: 0;
+  color: var(--accent-text);
+}
+.tabs button.on .glyph {
+  color: var(--hud-text);
+}
+
 /* The mission filter could not be applied (#948). */
 .note {
   font-family: var(--font-mono, ui-monospace, monospace);

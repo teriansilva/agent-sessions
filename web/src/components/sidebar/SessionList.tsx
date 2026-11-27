@@ -25,7 +25,7 @@ import { useSessionsStore } from "../../app/sessionsStore";
 import { useRemoteShares, useRemoteSharesStatus } from "../../app/remoteShares";
 import { searchRemoteShares } from "../../lib/federation";
 import { RemoteRows } from "../federation/RemoteRow";
-import { scopePatch, useSessionsList } from "../../hooks/useSessionsList";
+import { originChoice, scopePatch, useSessionsList } from "../../hooks/useSessionsList";
 import { ApiError } from "../../lib/api";
 import {
   engineBadge,
@@ -648,10 +648,14 @@ export function SessionList({
     setProject,
     missionFilterUnavailable,
     clusterFilterUnavailable,
+    originFilterUnavailable,
+    originHidden,
     attentionOutside,
     search,
     counts,
   } = useSessionsList();
+  // Started by (#2437): what the default choice leaves out is said, never silent.
+  const origin = originChoice(filters);
   // Subagents (#2325): the device-local display mode (chosen in Settings → Appearance), and which
   // groups the operator opened or closed. A group with a subagent that needs the operator opens by
   // itself until closed.
@@ -1014,6 +1018,36 @@ export function SessionList({
           renderRow={renderRow}
         />
       ) : null}
+      {!shared && originFilterUnavailable ? (
+        <div className={styles.originLine} role="status" data-testid="origin-unavailable">
+          {origin === "automation"
+            ? "Couldn’t tell which sessions automations started."
+            : "Couldn’t tell which sessions automations started — showing all."}
+        </div>
+      ) : !shared && origin === "operator" && originHidden && originHidden.count > 0 ? (
+        <div className={styles.originLine} role="status" data-testid="origin-hidden">
+          <span className={styles.originGlyph} aria-hidden="true">
+            ⟳
+          </span>
+          <span className={styles.originText}>
+            <b>{originHidden.count}</b> started by automations, hidden
+            {originHidden.needs_you > 0 ? (
+              <>
+                {" · "}
+                <b className={styles.originNeeds}>{originHidden.needs_you} need you</b>
+              </>
+            ) : null}
+          </span>
+          <button
+            type="button"
+            className={styles.originShow}
+            onClick={() => update({ origin: "all" })}
+            aria-label={`Show the ${originHidden.count} sessions automations started`}
+          >
+            Show
+          </button>
+        </div>
+      ) : null}
       {!shared && filters.q ? <SearchNote search={search} /> : null}
       {shared ? (
         // Shared (#2198): none of the local list is mounted here — no row, page, "Load more" or
@@ -1029,7 +1063,11 @@ export function SessionList({
           filters.mission ||
           filters.cluster
             ? "No sessions match — clear filters."
-            : filters.archived
+            : origin === "operator" && (originHidden?.count ?? 0) > 0
+              ? "No sessions started by you."
+              : origin === "automation"
+                ? "No sessions started by automations."
+                : filters.archived
               ? "No archived sessions."
               : "No sessions yet."}
         </div>

@@ -4,7 +4,15 @@ import { api } from "../lib/api";
 import { createElement, type ReactNode } from "react";
 import { ConfigCtx } from "../app/config";
 import type { AppConfig, Session, SessionsPage } from "../types/api";
-import { scopeOf, scopePatch, useSessionsList, type Filters } from "./useSessionsList";
+import {
+  offersOrigin,
+  originChoice,
+  originQuery,
+  scopeOf,
+  scopePatch,
+  useSessionsList,
+  type Filters,
+} from "./useSessionsList";
 
 vi.mock("../lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/api")>();
@@ -785,8 +793,72 @@ test("the list's reset clears the local filters and leaves the Shared search alo
     mission: "",
     cluster: "",
     tag: "",
+    // Started by (#2437): the reset returns to the default, automation-launched sessions hidden.
+    origin: "operator",
     archived: false,
     shared: false,
     sharedQ: "gpu",
   });
+});
+
+// ---- Started by (#2437) ----
+
+test("the list asks for sessions you started by default; All asks for every session (#2437)", async () => {
+  mockSessions.mockResolvedValue({
+    ...pageOf([sess("A")]),
+    facets: { projects: [], engines: [], origins: { operator: 1, automation: 2 } },
+    origin_hidden: { count: 2, needs_you: 1 },
+  });
+  const { result } = renderHook(() => useSessionsList());
+  await waitFor(() =>
+    expect(mockSessions).toHaveBeenLastCalledWith(
+      expect.objectContaining({ origin: "operator", offset: 0 }),
+    ),
+  );
+  await waitFor(() => expect(result.current.originHidden).toEqual({ count: 2, needs_you: 1 }));
+  expect(result.current.facets.origins).toEqual({ operator: 1, automation: 2 });
+
+  act(() => result.current.update({ origin: "automation" }));
+  await waitFor(() =>
+    expect(mockSessions).toHaveBeenLastCalledWith(expect.objectContaining({ origin: "automation" })),
+  );
+  act(() => result.current.update({ origin: "all" }));
+  await waitFor(() => {
+    const last = mockSessions.mock.calls.at(-1)![0]!;
+    expect(last.origin).toBeUndefined();
+    expect(last.offset).toBe(0);
+  });
+  // Clear returns to the default, so the automation sessions are hidden again.
+  act(() => result.current.clear());
+  await waitFor(() =>
+    expect(mockSessions).toHaveBeenLastCalledWith(expect.objectContaining({ origin: "operator" })),
+  );
+});
+
+test("a state saved without a Started-by choice reads as the default (#2437)", () => {
+  const legacy: Filters = { q: "", project: "", engine: "", archived: false };
+  expect(originChoice(legacy)).toBe("operator");
+  expect(originQuery(legacy)).toBe("operator");
+  expect(originQuery({ ...legacy, origin: "all" })).toBeUndefined();
+});
+
+test("the control is offered while automations started a session in scope, or off the default (#2437)", () => {
+  const f: Filters = { q: "", project: "", engine: "", archived: false };
+  expect(offersOrigin(f, { operator: 3, automation: 0 })).toBe(false);
+  expect(offersOrigin(f, { operator: 3, automation: 2 })).toBe(true);
+  // Unknown counts (the store could not be read): offered only to get back to the default.
+  expect(offersOrigin(f, undefined)).toBe(false);
+  expect(offersOrigin({ ...f, origin: "automation" }, undefined)).toBe(true);
+  expect(offersOrigin({ ...f, origin: "all" }, { operator: 3, automation: 0 })).toBe(true);
+});
+
+test("an unreadable automation store is said, and Shared keeps the Started-by choice (#2437)", async () => {
+  mockSessions.mockResolvedValue({ ...pageOf([sess("A")]), origin_filter_unavailable: true });
+  const { result } = renderHook(() => useSessionsList());
+  await waitFor(() => expect(result.current.originFilterUnavailable).toBe(true));
+  expect(result.current.originHidden).toBeNull();
+  act(() => result.current.update({ origin: "all" }));
+  act(() => result.current.update(scopePatch("shared")));
+  act(() => result.current.update(scopePatch("active")));
+  expect(result.current.filters.origin).toBe("all");
 });

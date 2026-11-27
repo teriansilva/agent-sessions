@@ -2,13 +2,22 @@ import { ChevronRight } from "lucide-react";
 import { useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 
 import {
+  DEFAULT_ORIGIN,
+  offersOrigin,
+  originChoice,
   scopeOf,
   scopePatch,
   type Filters,
+  type OriginFilter,
   type SessionScope,
 } from "../../hooks/useSessionsList";
 import { isClusterId } from "../../lib/clusters";
-import type { ProjectRef, SessionClusterFacet, SessionTagFacet } from "../../types/api";
+import type {
+  ProjectRef,
+  SessionClusterFacet,
+  SessionOriginCounts,
+  SessionTagFacet,
+} from "../../types/api";
 import styles from "./Filters.module.css";
 
 interface Props {
@@ -20,6 +29,7 @@ interface Props {
     no_mission?: number;
     clusters?: SessionClusterFacet[];
     tags?: SessionTagFacet[];
+    origins?: SessionOriginCounts;
   };
   /** The server could not apply a mission filter (#948). */
   missionFilterUnavailable?: boolean;
@@ -45,6 +55,18 @@ function readOpen(): boolean {
     return true;
   }
 }
+
+const ORIGINS: OriginFilter[] = ["operator", "automation", "all"];
+const ORIGIN_LABEL: Record<OriginFilter, string> = {
+  operator: "You",
+  automation: "Auto",
+  all: "All",
+};
+const ORIGIN_TITLE: Record<OriginFilter, string> = {
+  operator: "Sessions you started, and every other session no automation launched",
+  automation: "Only sessions an automation launched",
+  all: "Every session",
+};
 
 const TAB_LABEL: Record<SessionScope, string> = {
   active: "Active",
@@ -88,9 +110,11 @@ function scopeLabel(filters: Filters, facets: Props["facets"]): string {
  *  Shared scope (#2198) only its own search counts: the local filters are not in force there. */
 function summary(filters: Filters, scoped: boolean): string {
   const tab = scopeOf(filters);
-  const n = (tab === "shared" ? [filters.sharedQ] : [filters.q, filters.engine, filters.tag]).filter(
-    Boolean,
-  ).length;
+  const n = (
+    tab === "shared"
+      ? [filters.sharedQ]
+      : [filters.q, filters.engine, filters.tag, originChoice(filters) !== DEFAULT_ORIGIN]
+  ).filter(Boolean).length;
   const parts = [TAB_LABEL[tab]];
   if (n) parts.push(scoped ? `+${n}` : `${n} filter${n === 1 ? "" : "s"}`);
   return parts.join(" · ");
@@ -122,9 +146,48 @@ export function FiltersBar({
   const sharedQ = filters.sharedQ ?? "";
   const tag = filters.tag ?? "";
   const tags = facets.tags ?? [];
+  const origin = originChoice(filters);
   const hasFilter = shared
     ? !!sharedQ
-    : !!(filters.q || filters.project || filters.engine || mission || filters.cluster || tag);
+    : !!(
+        filters.q ||
+        filters.project ||
+        filters.engine ||
+        mission ||
+        filters.cluster ||
+        tag ||
+        origin !== DEFAULT_ORIGIN
+      );
+  const originRefs = useRef<Partial<Record<OriginFilter, HTMLButtonElement | null>>>({});
+  const pickOrigin = (next: OriginFilter) => {
+    if (next !== origin) onChange({ origin: next });
+    originRefs.current[next]?.focus();
+  };
+  // A radio group's keys: arrows move AND select (wrapping), Home and End jump.
+  const onOriginKey = (e: KeyboardEvent<HTMLButtonElement>) => {
+    const i = ORIGINS.indexOf(origin);
+    const next =
+      e.key === "ArrowRight" || e.key === "ArrowDown"
+        ? ORIGINS[(i + 1) % ORIGINS.length]
+        : e.key === "ArrowLeft" || e.key === "ArrowUp"
+          ? ORIGINS[(i - 1 + ORIGINS.length) % ORIGINS.length]
+          : e.key === "Home"
+            ? ORIGINS[0]
+            : e.key === "End"
+              ? ORIGINS[ORIGINS.length - 1]
+              : null;
+    if (!next) return;
+    e.preventDefault();
+    pickOrigin(next);
+  };
+  const originCounts = facets.origins;
+  const originCount = (o: OriginFilter): number | null =>
+    originCounts == null
+      ? null
+      : o === "all"
+        ? originCounts.operator + originCounts.automation
+        : originCounts[o];
+  const captionId = useId();
   // The project / cluster / mission chip names a filter of the LOCAL list: not in force on Shared.
   const scope = shared ? "" : scopeLabel(filters, facets);
   const tabs: SessionScope[] =
@@ -308,6 +371,57 @@ export function FiltersBar({
                 ))}
               </select>
             </div>
+          ) : null}
+          {/* Started by (#2437): who launched a session. "You" — the default — leaves out every
+              session an automation launched; the list says how many it hides. The control filters
+              this instance's own sessions, so like the agent and mission filters it is not shown
+              on Shared and keeps its value there. */}
+          {!shared && offersOrigin(filters, originCounts) ? (
+            <>
+              <div className={styles.caption} id={captionId}>
+                Started by
+              </div>
+              <div
+                className={`${styles.tabs} ${styles.three}`}
+                role="radiogroup"
+                aria-labelledby={captionId}
+                data-testid="origin-filter"
+              >
+                {ORIGINS.map((o) => {
+                  const n = originCount(o);
+                  return (
+                    <button
+                      key={o}
+                      ref={(el) => {
+                        originRefs.current[o] = el;
+                      }}
+                      type="button"
+                      role="radio"
+                      aria-checked={o === origin}
+                      tabIndex={o === origin ? 0 : -1}
+                      className={o === origin ? styles.on : ""}
+                      title={ORIGIN_TITLE[o]}
+                      onClick={() => pickOrigin(o)}
+                      onKeyDown={onOriginKey}
+                      data-testid={`origin-${o}`}
+                    >
+                      {o === "automation" ? (
+                        <span className={styles.glyph} aria-hidden="true">
+                          ⟳
+                        </span>
+                      ) : null}
+                      {ORIGIN_LABEL[o]}
+                      {n != null ? (
+                        <>
+                          {" "}
+                          <span className={styles.tabCount}>{n}</span>
+                        </>
+                      ) : null}
+                    </button>
+                  );
+                })}
+              </div>
+            </>
           ) : null}
           {missionFilterUnavailable && !shared ? (
             <div className={styles.note} role="status">

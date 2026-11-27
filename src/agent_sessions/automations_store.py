@@ -1622,6 +1622,51 @@ def launched_session_keys() -> set[str]:
     return {r[0] for r in rows}
 
 
+def launched_among(keys) -> set[str] | None:
+    """Which of ``keys`` an automation LAUNCHED (#2437): the ``automation_origins`` rows of kind
+    ``session`` among them. The session list asks this once per request with the keys it has in
+    scope, so the cost follows the scoped rows and never the table's history, which is never
+    pruned.
+
+    Unlike :func:`launched_session_keys`, it tells "none" from "unknown": ``set()`` when the store
+    file does not exist (no automation ever ran), ``None`` when it exists but cannot be opened or
+    read, or has no ``automation_origins`` table. A caller must not read ``None`` as "none of
+    these" — the list then says it could not tell.
+
+    **A read that never writes**, for the same reason as :func:`launched_session_keys`: read-only
+    URI, a bounded wait, never ``_connect`` (no create, migrate or backup)."""
+    wanted = list(dict.fromkeys(k for k in keys if isinstance(k, str) and k))
+    p = db_path()
+    if not p.exists():
+        return set()
+    try:
+        con = sqlite3.connect(f"{p.resolve().as_uri()}?mode=ro", uri=True, timeout=1.0)
+    except sqlite3.Error:
+        return None
+    try:
+        has = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='automation_origins'"
+        ).fetchone()
+        if has is None:
+            return None
+        # ONE bound parameter (a JSON array), never SQL built from the keys. `CROSS JOIN` pins the
+        # loop order (SQLite never reorders it): the wanted keys outside, one primary-key probe
+        # each inside, so the cost follows the keys asked and never the table's history. A plain
+        # `key IN (SELECT value FROM json_each(?))` let the planner scan the whole table instead
+        # (measured: 359 ms against 3 ms at 100,000 rows).
+        rows = con.execute(
+            "SELECT o.key FROM json_each(?) AS j CROSS JOIN automation_origins AS o "
+            "ON o.key = j.value WHERE o.kind = 'session'",
+            (json.dumps(wanted),),
+        ).fetchall()
+        out = {r[0] for r in rows}
+        return out
+    except sqlite3.Error:
+        return None
+    finally:
+        con.close()
+
+
 # ---- retention ----------------------------------------------------------------------------------
 
 

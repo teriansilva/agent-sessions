@@ -229,7 +229,18 @@ test("no /api/sessions request differs because of the Shared scope", async () =>
   expect(mockSessions.mock.calls.map((c) => c[0])).toEqual(first);
   for (const [q] of mockSessions.mock.calls) {
     expect(Object.keys(q ?? {}).sort()).toEqual(
-      ["archived", "cluster", "engine", "limit", "mission", "offset", "project", "q", "tag"].sort(),
+      [
+        "archived",
+        "cluster",
+        "engine",
+        "limit",
+        "mission",
+        "offset",
+        "origin",
+        "project",
+        "q",
+        "tag",
+      ].sort(),
     );
     expect(q).toMatchObject({ q: "", project: "p-1", archived: true });
   }

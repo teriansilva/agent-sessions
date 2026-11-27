@@ -432,3 +432,61 @@ test("a long or emoji tag keeps the select inside the bar (#2338)", () => {
   expect(screen.getByLabelText("Filter by tag")).toHaveValue(long.tag);
   expect(screen.getByRole("option", { name: `${long.tag} (12)` })).toBeInTheDocument();
 });
+
+// ---- Started by (#2437) ----
+
+const withOrigins = { ...facets, origins: { operator: 12, automation: 35 } };
+
+test("Started by is a radio group with counts; arrows move and pick (#2437)", () => {
+  const onChange = vi.fn();
+  render(<FiltersBar filters={base} facets={withOrigins} onChange={onChange} onClear={noop} />);
+  const group = screen.getByRole("radiogroup", { name: "Started by" });
+  expect(group).toBeInTheDocument();
+  const you = screen.getByRole("radio", { name: /You 12/ });
+  expect(you).toHaveAttribute("aria-checked", "true");
+  expect(you).toHaveAttribute("tabindex", "0");
+  expect(screen.getByRole("radio", { name: /Auto 35/ })).toHaveAttribute("tabindex", "-1");
+  expect(screen.getByRole("radio", { name: /All 47/ })).toBeInTheDocument();
+  fireEvent.keyDown(you, { key: "ArrowRight" });
+  expect(onChange).toHaveBeenLastCalledWith({ origin: "automation" });
+  fireEvent.keyDown(you, { key: "End" });
+  expect(onChange).toHaveBeenLastCalledWith({ origin: "all" });
+  fireEvent.click(screen.getByRole("radio", { name: /Auto/ }));
+  expect(onChange).toHaveBeenLastCalledWith({ origin: "automation" });
+});
+
+test("Started by is not offered when no automation started a session in scope (#2437)", () => {
+  render(
+    <FiltersBar
+      filters={base}
+      facets={{ ...facets, origins: { operator: 5, automation: 0 } }}
+      onChange={noop}
+      onClear={noop}
+    />,
+  );
+  expect(screen.queryByRole("radiogroup", { name: "Started by" })).toBeNull();
+});
+
+test("off the default, Started by counts as a filter, Clear resets it, and unknown counts drop (#2437)", () => {
+  render(
+    <FiltersBar filters={{ ...base, origin: "automation" }} facets={facets} onChange={noop} onClear={noop} />,
+  );
+  // facets.origins absent (store unreadable): still offered so the operator can get back to You.
+  const auto = screen.getByRole("radio", { name: "Auto" });
+  expect(auto).toHaveAttribute("aria-checked", "true");
+  expect(screen.getByLabelText("Clear filters")).toBeInTheDocument();
+  expect(screen.getByTestId("filters-toggle")).toHaveTextContent("1 filter");
+});
+
+test("Started by is not shown on Shared (#2437)", () => {
+  render(
+    <FiltersBar
+      filters={{ ...base, shared: true }}
+      facets={withOrigins}
+      onChange={noop}
+      onClear={noop}
+      sharedCount={2}
+    />,
+  );
+  expect(screen.queryByRole("radiogroup", { name: "Started by" })).toBeNull();
+});

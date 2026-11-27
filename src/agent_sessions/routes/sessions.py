@@ -20,6 +20,7 @@ from .. import (
     aitasks,
     archive,
     assessment,
+    automations_store,
     autosort,
     engines,
     freeze_lock,
@@ -702,6 +703,23 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         except Exception:
             return None
 
+    def _stamp_origin(rows: list[dict], aliases: dict) -> set[str] | None:
+        """Stamp each row's ``origin`` (#2437): ``automation`` when an automation LAUNCHED it
+        (`automations_store.launched_among`, keyed by the row id or its physical key, so a
+        reconciled placeholder still matches), else ``operator``; ``None`` on every row when the
+        store could not be read. ONE store read per request, over these rows' keys only. Returns
+        the launched set, or ``None`` when unknown."""
+        phys = {r["id"]: engines.physical_key(r["id"], aliases) for r in rows}
+        launched = automations_store.launched_among({*phys, *phys.values()})
+        for r in rows:
+            if launched is None:
+                r["origin"] = None
+            elif r["id"] in launched or phys[r["id"]] in launched:
+                r["origin"] = "automation"
+            else:
+                r["origin"] = "operator"
+        return launched
+
     def _stamp_mission(row: dict, index: dict[str, dict] | None, aliases: dict) -> None:
         """``row["mission"]``: the holding mission's ``{id, title, state}``, or ``None``.
 
@@ -916,6 +934,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         snapshot: str | None = Query(None),
         running: str | None = Query(None, pattern="^(live|working)$"),
         candidates: bool = Query(False),
+        origin: str | None = Query(None, pattern="^(operator|automation)$"),
     ) -> JSONResponse:
         # Flat, paginated, newest-first. Favorited (sticky) rows are a GLOBAL pin (#520): the sort
         # runs over the whole filtered set before the window is sliced, so a favorite floats to the
@@ -939,6 +958,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 snapshot=snapshot,
                 running=running,
                 candidates=candidates,
+                origin=origin,
             )
 
         # #652 measurement probe: time the whole request-serving pipeline (cached scan +
@@ -1067,6 +1087,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         snapshot: str | None = None,
         running: str | None = None,
         candidates: bool = False,
+        origin: str | None = None,
     ) -> dict:
         scoped, memberships, pinned, aliases, running_ok, _working_ok, clusters_doc = _scoped_rows(
             archived=archived, snapshot=snapshot
@@ -1077,6 +1098,9 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         # `rollup`, `attention_count`, `attention`) and the lazy children/attention routes.
         proj = lineage.project(scoped)
         scoped = proj.mains
+        # Started by (#2437): stamped on the main rows once, before facets and filters, like the
+        # mission stamp. `None` = the automation store could not be read — unknown, never "you".
+        launched = _stamp_origin(scoped, aliases)
         project_index = projects.load()
         # Facets for the project/agent dropdowns (#445): the project dropdown lists PROJECT
         # ENTITIES, not folder paths. Computed over the visible (already hide-filtered)
@@ -1127,6 +1151,11 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             "engines": sorted({r["engine"] for r in scoped}),
             "tags": _tag_facets(scoped),
         }
+        # Started-by facet (#2437): over the same unfiltered set, so the control's counts never
+        # move with the filters. Omitted when unknown — `{automation: 0}` would be a claim.
+        if launched is not None:
+            n_auto = sum(1 for r in scoped if r["origin"] == "automation")
+            facets["origins"] = {"operator": len(scoped) - n_auto, "automation": n_auto}
         # Mission facets (#948): computed over the SAME unfiltered scoped set as the project and
         # agent facets, so the dropdown keeps every option however the list is filtered. Only
         # missions holding at least one scoped row are listed; `no_mission` counts the rest.
@@ -1218,6 +1247,23 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 "mission_filter_unavailable": True,
                 **pinned,
             }
+        # Started by (#2437). Unknown provenance cannot answer "only automations" (say so, as the
+        # mission filter does), and must not answer "only yours" by hiding nothing silently or
+        # everything: the list stays whole and says the filter could not be applied.
+        origin_f = origin if origin in ("operator", "automation") else None
+        origin_unavailable = origin_f is not None and launched is None
+        if origin_unavailable and origin_f == "automation":
+            return {
+                "sessions": [],
+                "next_offset": None,
+                "total": 0,
+                "live_total": 0,
+                "facets": facets,
+                "origin_filter_unavailable": True,
+                **pinned,
+            }
+        if origin_unavailable:
+            origin_f = None
         if cluster_f is not None and not clusters_known:
             # A cluster filter that cannot be answered (the store is unreadable, the mission
             # stamp it depends on is unknown, or clusters are off): same reasoning as above.
@@ -1273,10 +1319,26 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             return True
 
         # Filter BEFORE limit/offset so total + next_offset describe the filtered
-        # set and "load more" stays within results.
-        rows = [r for r in scoped if _keep(r)]
+        # set and "load more" stays within results. Started by is one more AND (#2437); the rows
+        # it alone leaves out are counted, so the list can say what the default hides.
+        rows: list[dict] = []
+        hidden: list[dict] = []
+        for r in scoped:
+            if not _keep(r):
+                continue
+            if origin_f is None or r["origin"] == origin_f:
+                rows.append(r)
+            elif r["origin"] == "automation":
+                hidden.append(r)
         filtered = bool(
-            q_norm or project_f or engine_f or tag_f or mission_f or cluster_f or running
+            q_norm
+            or project_f
+            or engine_f
+            or tag_f
+            or mission_f
+            or cluster_f
+            or running
+            or origin_f
         )
         # Attention guarantee 3 (#2325): a child that needs the operator never matches a filter,
         # so when its main session is filtered out the page says how many such sessions there are
@@ -1380,6 +1442,17 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             ),
             **({"attention_outside": outside} if outside is not None else {}),
             **({"search": search} if search is not None else {}),
+            **(
+                {
+                    "origin_hidden": {
+                        "count": len(hidden),
+                        "needs_you": sum(1 for r in hidden if lineage.row_state(r) == "attention"),
+                    }
+                }
+                if origin_f == "operator"
+                else {}
+            ),
+            **({"origin_filter_unavailable": True} if origin_unavailable else {}),
             **pinned,
         }
 
@@ -1560,6 +1633,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             # sidebar row can never disagree about which mission holds this session.
             _stamp_mission(row, _membership_index(), aliases)
             _stamp_cluster(row, _cluster_doc(), aliases)
+            # Who started it (#2437): the list's stamp, so the pane and the row agree.
+            _stamp_origin([row], aliases)
             # Same stamp as the list (#1085), so the lookup stays the list's row shape exactly.
             _stamp_activity([row], aliases)
             row["memory_pressure"] = _memory_pressures().get(row["id"])
