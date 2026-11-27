@@ -45,7 +45,7 @@ import {
   refreshConversations,
   useAskConversations,
 } from "../ask/askConversationsStore";
-import { HQ_FOCUS_COMPOSER_EVENT } from "../ask/askPanel";
+import { HQ_FOCUS_COMPOSER_EVENT, takeHqComposerFocus } from "../ask/askPanel";
 import { hqTarget } from "./hqRoute";
 import { NotificationsView } from "./NotificationsView";
 import { HqTasksStrip } from "./tasks/HqTasksStrip";
@@ -122,10 +122,12 @@ export default function HqPage() {
   const [focusAsked, setFocusAsked] = useState(0);
   useEffect(() => {
     const on = () => {
+      if (!takeHqComposerFocus()) return;
       // Notifications are read only: the composer is a new conversation's.
       if ((isMobile && !showThread) || onDispatches) navigate(HQ_PATH, { state: { hqCompose: true } });
       setFocusAsked((n) => n + 1);
     };
+    on(); // a tap that landed while this page was still loading
     window.addEventListener(HQ_FOCUS_COMPOSER_EVENT, on);
     return () => window.removeEventListener(HQ_FOCUS_COMPOSER_EVENT, on);
   }, [isMobile, showThread, onDispatches, navigate]);

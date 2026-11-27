@@ -8,10 +8,10 @@
  *  Running sessions keep what they started with until they exit; the page says so. */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { ArrowLeft, KeyRound, MoreHorizontal, Plug, Power, RefreshCw, Trash2, Upload, Package } from "lucide-react";
+import { ArrowLeft, GitBranch, KeyRound, MoreHorizontal, Plug, Power, RefreshCw, Trash2, Upload, Package } from "lucide-react";
 
 import { api } from "../lib/api";
-import { MCP_ID_RE, MCP_PATH } from "../lib/routes";
+import { MCP_ID_RE, MCP_PATH, mcpServerUpdatePath } from "../lib/routes";
 import type { McpProjectStatus, McpReviewFacts, McpServerDetail, McpSource } from "../types/mcp";
 import { Callsign, Panel } from "../components/hud/Panel";
 import { Disclosure, Field, Switch, Tabs } from "../components/hud/Controls";
@@ -209,12 +209,20 @@ function McpServerPage({ serverId }: { serverId: string }) {
           icon: <Power size={15} />,
           onSelect: () => void act("toggle", () => api.updateMcpServer(s.id, { enabled: true }, s.updated_at), "Enabled again."),
         },
-    {
-      key: "update",
-      label: s.transport === "stdio" ? "Update…" : "Edit source…",
-      icon: <Upload size={15} />,
-      onSelect: () => setTab("settings"),
-    },
+    // A server added from a repository link updates from that link (#2427): read again, old → new.
+    s.origin
+      ? {
+          key: "update-source",
+          label: "Update from source…",
+          icon: <GitBranch size={15} />,
+          onSelect: () => navigate(mcpServerUpdatePath(s.id)),
+        }
+      : {
+          key: "update",
+          label: s.transport === "stdio" ? "Update…" : "Edit source…",
+          icon: <Upload size={15} />,
+          onSelect: () => setTab("settings"),
+        },
     "separator",
     { key: "remove", label: "Remove…", icon: <Trash2 size={15} />, danger: true, onSelect: () => setConfirmRemove(true) },
   ];
@@ -441,8 +449,9 @@ function McpServerPage({ serverId }: { serverId: string }) {
           }}
         >
           <p>
-            Its settings, install and check history go. Its credentials stay in Variables. No new session gets its
-            tools; sessions already running keep them until they exit.
+            This removes its registration: its settings, project choices and check history. Its credentials stay in
+            Variables, and its installed files stay on disk. No new session gets its tools; sessions already running
+            keep them until they exit.
           </p>
         </ConfirmDialog>
       )}
@@ -517,7 +526,7 @@ function Overview({
             </>
           ) : (
             <>
-              <dt>Package</dt>
+              <dt>{src.kind === "go" ? "Module" : "Package"}</dt>
               <dd className={styles.mono}>{src.package}</dd>
               <dt>Version</dt>
               <dd className={styles.mono}>{src.version}</dd>
@@ -689,7 +698,11 @@ function SettingsTab({
           <Callsign title="Install" value={s.source.kind === "remote" ? "" : `${s.source.package} ${s.source.version}`} />
           {!facts ? (
             <>
-              <p className={styles.note}>This version is not installed. Review what would run, then install it.</p>
+              <p className={styles.note}>
+                {s.source.kind === "go"
+                  ? "This version is not built yet. Review what would be built, then install it."
+                  : "This version is not installed. Review what would run, then install it."}
+              </p>
               <div className={styles.btnRow}>
                 <button type="button" className={styles.primary} onClick={() => void review()} disabled={busy}>
                   {busy ? "Reviewing…" : "Review"}
@@ -697,7 +710,9 @@ function SettingsTab({
               </div>
               {busy && (
                 <p className={styles.note} role="status" data-testid="mcp-op-note">
-                  Resolving the exact version into a lock. On a busy host this can take a minute or two.
+                  {s.source.kind === "go"
+                    ? "Checking the module and every dependency against sum.golang.org. On a busy host this can take a minute or two."
+                    : "Resolving the exact version into a lock. On a busy host this can take a minute or two."}
                 </p>
               )}
             </>
@@ -714,7 +729,9 @@ function SettingsTab({
               </div>
               {busy && (
                 <p className={styles.note} role="status" data-testid="mcp-op-note">
-                  A package can take a few minutes; the install carries on even if you leave this page.
+                  {s.source.kind === "go"
+                    ? "A build can take a few minutes; it carries on even if you leave this page."
+                    : "A package can take a few minutes; the install carries on even if you leave this page."}
                 </p>
               )}
             </>
@@ -788,19 +805,31 @@ function SettingsTab({
           </div>
         )}
       </Panel>
-      <Panel rail="short" faceClassName={styles.face}>
+      <Panel rail="short" faceClassName={styles.face} data-testid="mcp-source-panel">
         <Callsign title="Source" value={s.source.kind} />
         {s.origin && <OriginNote origin={s.origin} source={s.source} />}
         {s.source.kind === "remote" ? (
           <Field label="Server URL" mono type="url" value={url} onChange={(e) => setUrl(e.target.value)} hint="https only." />
-        ) : (
+        ) : s.source.kind === "go" ? null : (
+          // A Go module's version is never typed in (#2427): only Update from source changes it.
           <Field
             label={`${s.source.package} version`}
             mono
             value={version}
             onChange={(e) => setVersion(e.target.value)}
-            hint="A new exact version is reviewed and installed again before it runs."
+            hint={
+              s.origin
+                ? "A new exact version is reviewed and installed again before it runs. Typing one drops the repository line; Update from source keeps it."
+                : "A new exact version is reviewed and installed again before it runs."
+            }
           />
+        )}
+        {s.origin && (
+          <div className={styles.btnRow}>
+            <Link className={styles.ghost} to={mcpServerUpdatePath(s.id)} data-testid="mcp-update-from-source">
+              <GitBranch size={14} aria-hidden="true" /> Update from source
+            </Link>
+          </div>
         )}
       </Panel>
       <p className={styles.note}>

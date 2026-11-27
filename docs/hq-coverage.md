@@ -882,6 +882,8 @@ POST   /api/voice/test                                                          
 POST   /api/voice/voices                                                          never  # reads a draft speech endpoint's lists
 POST   /api/voice/preview                                                         n/a  # a fixed line the operator listens to
 GET    /api/voice/capabilities                                                    n/a  # whether a call can start: calling HQ is HQ
+GET    /api/voice/callbacks                                                       n/a  # a session's "call me back" (#2341): the pane's banner
+DELETE /api/voice/callbacks/{cb_id}                                               n/a  # Cancel on the pane: the Commander's own tap
 POST   /api/voice/calls                                                           n/a  # calling HQ is HQ (#1397)
 DELETE /api/voice/calls/{call_id}                                                 n/a  # hanging up on HQ
 GET    /api/voice/local                                                           never  # the local speech server's status (#1625)

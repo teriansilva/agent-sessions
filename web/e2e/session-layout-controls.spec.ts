@@ -24,6 +24,25 @@ async function matchedButtons(page: Page) {
     expect(box.x + box.width).toBeLessThanOrEqual(page.viewportSize()!.width);
   }
 }
+// The API composer's mic is a glyph-only square since #2341 S1 (hold to dictate; Call speaks):
+// no "Talk" label, at Send's height, before Send, on the touch floor.
+async function apiMicAndSend(page: Page) {
+  const talk = page.getByRole("button", { name: /start voice input/i });
+  const send = page.getByRole("button", { name: "Send", exact: true });
+  await expect(talk).toHaveText("");
+  const t = (await talk.boundingBox())!, s = (await send.boundingBox())!;
+  expect(t.height).toBe(s.height);
+  expect(t.y).toBe(s.y);
+  expect(t.x + t.width).toBeLessThanOrEqual(s.x);
+  if (await page.evaluate(() => matchMedia("(pointer: coarse), (max-width: 800px)").matches))
+    expect(t.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+  for (const button of [talk, send]) {
+    await expect(button).toBeInViewport();
+    const box = (await button.boundingBox())!;
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(page.viewportSize()!.width);
+  }
+}
 
 test("terminal composer matches Talk and Send at full and narrow widths", async ({ page }, info) => {
   await voice(page);
@@ -50,7 +69,7 @@ test("terminal composer matches Talk and Send at full and narrow widths", async 
 });
 
 for (const theme of ["dark", "light"]) {
- test(`API composer keeps a small left toggle and matched Talk/Send — ${theme}`, async ({ page }, info) => {
+ test(`API composer keeps a small left toggle, the mic glyph and Send — ${theme}`, async ({ page }, info) => {
   await voice(page);
   const fixture = await mockStructuredGuidance(page, "codex-api", "steer", theme);
   await page.goto(`/s/codex-api/${ID}`);
@@ -67,7 +86,7 @@ for (const theme of ["dark", "light"]) {
   await expect(toggle).toHaveAttribute("title", /queue messages again/);
   await expect.poll(() => fixture.calls.length).toBe(1);
   expect(await toggle.evaluate(el => [getComputedStyle(el, "::before").backgroundColor, getComputedStyle(el, "::after").backgroundColor, getComputedStyle(el).color].join("|"))).not.toBe(color);
-  await matchedButtons(page);
+  await apiMicAndSend(page);
   const form = page.getByRole("form", { name: "Compose message" });
   // An intrinsic-width tool group must not count a nonexistent trailing gap as overflow.
   await expect(form.getByRole("button", { name: "Use a template", exact: true })).toBeVisible();
@@ -84,10 +103,10 @@ for (const theme of ["dark", "light"]) {
   if (info.project.name === "desktop")
     await page.locator(".terminal-pane").evaluate(el => { (el as HTMLElement).style.width = "360px"; });
   else await page.setViewportSize({ width: 320, height: 640 });
-  await matchedButtons(page);
+  await apiMicAndSend(page);
   await expect(toggle).toBeInViewport();
-  // ONE ROW (operator, 2026-10-22): narrow, the toggle stays beside the tools, Talk and Send as its
-  // icon — never a second line — and keeps its name for a screen reader.
+  // ONE ROW (operator, 2026-10-22): narrow, the toggle stays beside the tools, Send as its
+  // icon, the mic its glyph — never a second line — and keeps its name for a screen reader.
   const box = (await toggle.boundingBox())!, send = (await form.getByRole("button", { name: "Send", exact: true }).boundingBox())!;
   expect(Math.abs(box.y + box.height / 2 - (send.y + send.height / 2))).toBeLessThan(2);
   expect(box.x + box.width).toBeLessThanOrEqual(send.x);

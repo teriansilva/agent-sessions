@@ -33,6 +33,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from .. import metadata as _metadata
+from .. import scancache
 from ..scanner import Session, derive_created_at
 from . import base
 
@@ -286,10 +287,51 @@ class AntigravityProvider:
             return out
         cache_cwd = _cwd_by_id(root)
         for db in dbs:
-            row = self._row(root, db, cache_cwd)
+            row = self._memo_row(root, db, cache_cwd)
             if row is not None:
                 out.append(row)
         return out
+
+    def _memo_row(
+        self, root: Path, db: Path, cache_cwd: dict[str, str], *, checked: bool = False
+    ) -> Session | None:
+        """`_row`, memoised per conversation (#2435). Without it every walk opened all of agy's
+        SQLite conversation dbs and read every transcript twice: 23k of a warm walk's 43k
+        syscalls on the operator's 266 conversations, each a GIL handoff that a busy app turns
+        into milliseconds.
+
+        The key is everything the row is built from:
+        * the conversation db;
+        * its ``-wal`` (agy writes in WAL mode, so the cwd blob of a new conversation can sit
+          there while the db's own identity is unchanged);
+        * the transcript `_row` reads (absence is an identity too);
+        * the cwd hint from ``last_conversations.json``, in the namespace, so a changed hint
+          misses.
+
+        A row that is not listable yet (``None``: no cwd so far) is never stored: it is read
+        again on every walk, as before. The checked walk keeps its raising builder in its own
+        namespace (scancache's rule: a fail-soft answer never reaches a measurement that
+        authorises deletion)."""
+        native_id = db.stem
+        if not self.id_pattern.match(native_id):
+            return None
+        transcript = _transcript_path(root, native_id) or (
+            root / "brain" / native_id / ".system_generated" / "logs" / "transcript.jsonl"
+        )
+        if checked:
+            namespace, build = (
+                "antigravity-checked",
+                lambda: self._row(root, db, cache_cwd, read=_db_cwd_checked, checked=True),
+            )
+        else:
+            namespace, build = "antigravity", lambda: self._row(root, db, cache_cwd)
+        return scancache.memoized(
+            f"{namespace}\0{cache_cwd.get(native_id, '')}",
+            db,
+            build,
+            also=(db.with_name(db.name + "-wal"), transcript),
+            keep=lambda row: row is not None,
+        )
 
     def scan_checked(self) -> tuple[list[Session], list[str]]:
         """``scan()``'s rows, plus a line for each conversation db that could not be READ (#993).
@@ -308,7 +350,7 @@ class AntigravityProvider:
         cache_cwd = _cwd_by_id_checked(root)
         return base.checked_rows(
             sorted(paths),
-            lambda db: self._row(root, db, cache_cwd, read=_db_cwd_checked, checked=True),
+            lambda db: self._memo_row(root, db, cache_cwd, checked=True),
             engine_id=self.engine_id,
         )
 

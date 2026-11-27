@@ -12,15 +12,25 @@
   ``npm ci --ignore-scripts``. PyPI: a venv and ``uv pip install --require-hashes --only-binary
   :all:`` — wheels only, because an sdist would run its build backend.
 
-The registries are fixed (``registry.npmjs.org``, ``pypi.org``); a lock entry resolved anywhere
-else is refused. Every tool runs as a literal argv (no shell), with a whitelisted environment
-(no proxy or npm/uv configuration from the operator's environment or home: ``--no-config``,
-``npm_config_userconfig=/dev/null``), bounded in time and output. An installed directory is made
-read-only. A server's command is resolved from its install, which must match its CURRENT source.
+**Go modules (#2427)**, from a repository link only (`mcp_gitsource`): the review downloads the
+module at its exact version through the Go module proxy, verified against the Go checksum
+database (its ``h1:`` hash is the lock), and finds the one command it builds; the install
+downloads it again, compares the hash, and builds that command with BattleLab's own toolchain
+(`mcp_gotool`) into the install's ``bin/``: ``go install -trimpath`` with cgo off, no toolchain
+switch, no direct VCS fetch (``GOVCS=off``), only ``proxy.golang.org`` + ``sum.golang.org``
+reachable. A Go build runs no repository code (no install hooks; ``go:generate`` never runs).
+
+The registries are fixed (``registry.npmjs.org``, ``pypi.org``, the Go proxy and checksum
+database); a lock entry resolved anywhere else is refused. Every tool runs as a literal argv
+(no shell), with a whitelisted environment (no proxy or npm/uv/Go configuration from the
+operator's environment or home: ``--no-config``, ``npm_config_userconfig=/dev/null``,
+``GOENV=off``), bounded in time and output. An installed directory is made read-only. A
+server's command is resolved from its install, which must match its CURRENT source.
 """
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -28,11 +38,14 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import stat
 import subprocess
+import sys
 import time
 from pathlib import Path
 
+from . import mcp_jobs
 from .mcp_egress import EgressProxy, origin
 from .mcp_registry import RegistryError
 
@@ -41,6 +54,8 @@ log = logging.getLogger(__name__)
 NPM_REGISTRY = "https://registry.npmjs.org/"
 PYPI_INDEX = "https://pypi.org/simple"
 PYPI_FILES = "https://files.pythonhosted.org/"
+GO_PROXY = "https://proxy.golang.org"
+GO_SUMDB = "https://sum.golang.org"
 TOOL_TIMEOUT_S = 300
 #: An install downloads every wheel or tarball of the closure (a server with heavy dependencies
 #: takes minutes on a busy host); a review only resolves.
@@ -53,6 +68,10 @@ _NPM_VERSION = re.compile(
     r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$"
 )
 _PYPI_NAME = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9])?$")
+#: A Go module path: a dotted host, then path elements (``…/v3`` major suffixes included).
+_GO_MODULE = re.compile(r"^[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)+(?:/[A-Za-z0-9._~-]+)+$")
+#: A Go module version: a tag (``v3.3.0``) or a pseudo-version, never a branch or ``latest``.
+_GO_VERSION = re.compile(r"^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+incompatible)?$")
 _PYPI_VERSION = re.compile(
     r"^[0-9]+(?:\.[0-9]+)*(?:(?:a|b|rc)[0-9]+)?(?:\.post[0-9]+)?(?:\.dev[0-9]+)?$"
 )
@@ -73,7 +92,12 @@ def validate_source(raw: dict) -> dict:
     if unknown:
         raise RegistryError("unknown source field")
     package, version = raw.get("package"), raw.get("version")
-    if kind == "npm":
+    if kind == "go":  # #2427: ``package`` is the module path
+        if not isinstance(package, str) or len(package) > 300 or not _GO_MODULE.fullmatch(package):
+            raise RegistryError("a Go module path is a host name, then its path")
+        if not isinstance(version, str) or not _GO_VERSION.fullmatch(version):
+            raise RegistryError("an exact Go module version (a tag or a pseudo-version)")
+    elif kind == "npm":
         if not isinstance(package, str) or not _NPM_NAME.fullmatch(package):
             raise RegistryError("an npm package name is lowercase (an optional @scope/ first)")
         if not isinstance(version, str) or not _NPM_VERSION.fullmatch(version):
@@ -84,7 +108,7 @@ def validate_source(raw: dict) -> dict:
         if not isinstance(version, str) or not _PYPI_VERSION.fullmatch(version):
             raise RegistryError("an exact version. Ranges and 'latest' are refused")
     else:
-        raise RegistryError("source kind is npm or pypi")
+        raise RegistryError("source kind is npm, pypi or go")
     out = {"kind": kind, "package": package, "version": version}
     entry = raw.get("entrypoint")
     if entry is not None:
@@ -127,7 +151,41 @@ def _allowed(kind: str) -> set[tuple[str, int]]:
     """The hosts a tool run for ``kind`` may reach (`mcp_egress`): its registry, nothing else."""
     if kind == "npm":
         return {origin(NPM_REGISTRY)}
+    if kind == "go":
+        return {origin(GO_PROXY), origin(GO_SUMDB)}
     return {origin(PYPI_INDEX), origin(PYPI_FILES)}
+
+
+def _go_env(gobin: Path | None = None) -> dict[str, str]:
+    """Go's settings for a build (#2427): every location under the MCP root, nothing from the
+    operator's ``go env`` file or environment; the module proxy and checksum database fixed and
+    nothing exempt from them; no cgo, no toolchain switch, no direct VCS fetch, no telemetry."""
+    cache = root() / ".cache" / "go"
+    cache.mkdir(parents=True, exist_ok=True, mode=0o700)
+    env = {
+        "GOENV": "off",
+        "GOPATH": str(cache / "path"),
+        "GOMODCACHE": str(cache / "mod"),
+        "GOCACHE": str(cache / "build"),
+        "GOFLAGS": "-mod=readonly",
+        "CGO_ENABLED": "0",
+        "GOTOOLCHAIN": "local",
+        "GOPROXY": GO_PROXY,
+        "GOSUMDB": "sum.golang.org",
+        "GONOSUMDB": "",
+        "GONOSUMCHECK": "",
+        "GOPRIVATE": "",
+        "GONOPROXY": "",
+        "GOINSECURE": "",
+        "GOVCS": "off",
+        "GOTELEMETRY": "off",
+        "GOWORK": "off",
+        "GOMAXPROCS": "2",
+        "GOMEMLIMIT": "1GiB",
+    }
+    if gobin is not None:
+        env["GOBIN"] = str(gobin)
+    return env
 
 
 def _env(cwd: Path, proxy: str) -> dict[str, str]:
@@ -169,24 +227,55 @@ def _env(cwd: Path, proxy: str) -> dict[str, str]:
     }
 
 
-def _run(argv: list[str], cwd: Path, what: str, kind: str, timeout: int = TOOL_TIMEOUT_S) -> str:
+def _run(
+    argv: list[str],
+    cwd: Path,
+    what: str,
+    kind: str,
+    timeout: int = TOOL_TIMEOUT_S,
+    extra_env: dict[str, str] | None = None,
+    home: Path | None = None,
+) -> str:
     """One tool run: literal argv, whitelisted env, egress only to ``kind``'s registry
     (`mcp_egress`), bounded. Raises `InstallError` in words; the tool's own output is logged (it
     can name packages, never a credential: none is involved)."""
     with EgressProxy(_allowed(kind)) as proxy:
         try:
-            proc = subprocess.run(  # noqa: S603 — a literal argv, never a shell
+            proc = subprocess.Popen(  # noqa: S603 — a literal argv, never a shell
                 argv,
                 cwd=cwd,
-                env=_env(cwd, proxy.url),
-                capture_output=True,
-                timeout=timeout,
-                check=False,
+                # ``home``: the run's writable home when ``cwd`` is not ours to write (a Go module
+                # in the read-only module cache, #2427).
+                env={**_env(home or cwd, proxy.url), **(extra_env or {})},
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                # Its own process group: a timeout ends the tool AND what it started (a Go build's
+                # compiler processes), never only the parent.
+                start_new_session=True,
             )
-        except subprocess.TimeoutExpired:
-            raise InstallError(f"{what} took longer than {timeout} s") from None
         except OSError as e:
             raise InstallError(f"{what} could not run ({e.strerror or type(e).__name__})") from None
+        try:
+            # Waited in short slices so a Stop kills the run (and its process group) at once,
+            # not when the step's own bound runs out (#2427).
+            deadline = time.monotonic() + timeout
+            while True:
+                left = deadline - time.monotonic()
+                try:
+                    stdout, stderr = proc.communicate(timeout=max(0.01, min(0.5, left)))
+                    break
+                except subprocess.TimeoutExpired:
+                    if left <= 0.5:
+                        raise
+                    mcp_jobs.raise_if_stopped()
+        except BaseException:
+            _kill_group(proc)
+            with contextlib.suppress(Exception):
+                proc.communicate(timeout=5)
+            if isinstance(sys.exc_info()[1], subprocess.TimeoutExpired):
+                raise InstallError(f"{what} took longer than {timeout} s") from None
+            raise
+        proc = subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
         refused = proxy.refused
     out = proc.stdout.decode("utf-8", "replace")[-OUTPUT_MAX:]
     if refused:
@@ -204,8 +293,22 @@ def _run(argv: list[str], cwd: Path, what: str, kind: str, timeout: int = TOOL_T
     return out
 
 
+def _kill_group(proc: subprocess.Popen) -> None:
+    """SIGKILL the tool's own process group. Never for a pid of 1 or less: ``killpg(1)`` is
+    ``kill(-1)``, every process this user owns."""
+    pid = proc.pid
+    if not isinstance(pid, int) or pid <= 1:
+        return
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(pid, signal.SIGKILL)
+
+
 def _hint(err: str) -> str:
     low = err.lower()
+    if "cgo" in low or "build constraints exclude all go files" in low:
+        return "it needs cgo (a C compiler), which BattleLab never uses for a build"
+    if "unknown revision" in low or "invalid version" in low:
+        return "that version isn't in the module's own repository"
     if "404" in low or "not found" in low or "no matching distribution" in low:
         return "the package or version was not found"
     if "no solution" in low or "only-binary" in low or "no wheels" in low or "has no wheel" in low:
@@ -233,14 +336,13 @@ def review(rec: dict) -> dict:
     """Resolve ``rec``'s package source into a lock in a staging directory; return the facts the
     operator reviews, with a ``review_id`` that `install` takes. Installs nothing."""
     source = rec["source"]
-    if source["kind"] not in ("npm", "pypi"):
+    if source["kind"] not in ("npm", "pypi", "go"):
         raise InstallError("only a package source is reviewed")
     review_id = secrets.token_hex(8)
     stage = _private_dir(_staging(rec["id"], review_id))
+    reviewers = {"npm": _review_npm, "pypi": _review_pypi, "go": _review_go}
     try:
-        facts = (
-            _review_npm(source, stage) if source["kind"] == "npm" else _review_pypi(source, stage)
-        )
+        facts = reviewers[source["kind"]](source, stage)
     except BaseException:
         shutil.rmtree(stage, ignore_errors=True)
         raise
@@ -434,6 +536,8 @@ def install(rec: dict, review_id: object) -> dict:
         if rec["source"]["kind"] == "npm":
             shutil.copy2(stage / "package.json", work / "package.json")
             installed = _install_npm(rec["source"], facts, work)
+        elif rec["source"]["kind"] == "go":
+            installed = _install_go(rec["source"], facts, work)
         else:
             installed = _install_pypi(rec["source"], facts, work)
         installed.update(
@@ -555,6 +659,297 @@ def _console_scripts(venv: Path, package: str) -> list[str]:
                 out.append(line.split("=", 1)[0].strip())
         return [s for s in out if _ENTRY.fullmatch(s)]
     return []
+
+
+# ---- Go modules (#2427) -------------------------------------------------------------------------
+
+#: One Go step's wall clock (a cold build of a mid-size server measured ~4 min here).
+GO_STEP_TIMEOUT_S = 600
+#: The shared Go caches are cleared above this (under the build lock: no job is using them).
+GO_CACHE_CEILING = 2 * 1024**3
+#: A build is refused with less free space than this on the MCP root's filesystem.
+GO_FREE_MIN = 1024**3
+
+
+def _go_json(go: Path, args: list[str], cwd: Path, what: str, timeout: int) -> dict:
+    out = _run([str(go), *args], cwd, what, "go", timeout, _go_env())
+    try:
+        doc = json.loads(out)
+    except ValueError:
+        doc = None
+    if not isinstance(doc, dict):
+        raise InstallError(f"{what}: the Go tool's answer could not be read")
+    if doc.get("Error"):
+        log.info("MCP install: %s: %s", what, str(doc["Error"])[:500])
+        raise InstallError(f"{what} failed: {_hint(str(doc['Error'])) or 'the Go tool refused it'}")
+    return doc
+
+
+def _go_download(go: Path, source: dict, cwd: Path) -> dict:
+    """``go mod download -json`` of exactly the source: the module verified against the Go
+    checksum database, its ``h1:`` hash, its go.mod and its source directory."""
+    doc = _go_json(
+        go,
+        ["mod", "download", "-json", f"{source['package']}@{source['version']}"],
+        cwd,
+        "downloading the Go module",
+        GO_STEP_TIMEOUT_S,
+    )
+    if doc.get("Path") != source["package"] or doc.get("Version") != source["version"]:
+        raise InstallError("the Go module proxy answered for another module")
+    if not isinstance(doc.get("Sum"), str) or not doc["Sum"].startswith("h1:"):
+        raise InstallError("the Go module has no checksum")
+    return doc
+
+
+def _go_mod(go: Path, go_mod: Path, cwd: Path) -> dict:
+    """The module's go.mod as ``go mod edit -json`` parses it (never executed), refused when it
+    holds what ``go install <pkg>@<version>`` refuses: a ``replace`` or an ``exclude``. Review and
+    install then see the same module graph (#2427 round 1)."""
+    if not go_mod.is_file():
+        raise InstallError("the Go module's go.mod could not be read")
+    doc = _go_json(go, ["mod", "edit", "-json", str(go_mod)], cwd, "reading go.mod", 60)
+    if doc.get("Replace") or doc.get("Exclude"):
+        raise InstallError(
+            "this module's go.mod replaces or excludes modules, which go install refuses; "
+            "BattleLab builds only what go install builds"
+        )
+    return doc
+
+
+#: A semantic-import major-version path element: ``v2`` … ``v9``, ``v10`` and up (never ``v0``,
+#: ``v1`` or a leading zero).
+_MAJOR = re.compile(r"^v(?:[2-9]|[1-9]\d+)$")
+
+
+def _go_binary(import_path: str) -> str:
+    """The executable ``go install`` writes: the import path's last element, skipping a major
+    version suffix (``…/forgejo-mcp/v3`` → ``forgejo-mcp``)."""
+    parts = import_path.split("/")
+    if len(parts) > 1 and _MAJOR.fullmatch(parts[-1]):
+        return parts[-2]
+    return parts[-1]
+
+
+def _pick_command(module: str, mains: list[str], wanted: str | None) -> str:
+    """The ONE command a Go module builds: its root if it is a main package, else the single
+    ``cmd/<name>``; ``wanted`` (an entry point) picks among several by name."""
+    if wanted:
+        named = [m for m in mains if _go_binary(m) == wanted]
+        if len(named) != 1:
+            raise InstallError(f"the module has no command named {wanted}")
+        return named[0]
+    if module in mains:
+        return module
+    depth = module.count("/") + 2
+    under_cmd = [m for m in mains if m.startswith(module + "/cmd/") and m.count("/") == depth]
+    if len(under_cmd) == 1:
+        return under_cmd[0]
+    if not mains:
+        raise InstallError(
+            "the module builds no command: no main package at its root or under cmd/"
+        )
+    shown = ", ".join(m.removeprefix(module + "/") for m in (under_cmd or mains)[:6])
+    raise InstallError(
+        f"the module builds several commands ({shown}), and BattleLab never picks one for you"
+    )
+
+
+def _go_room() -> None:
+    if shutil.disk_usage(root()).free < GO_FREE_MIN:
+        raise InstallError(
+            "less than 1 GB is free where BattleLab keeps MCP servers; nothing was built"
+        )
+
+
+def _tree_size(path: Path) -> int:
+    total = 0
+    for dirpath, _dirs, files in os.walk(path, followlinks=False):
+        for name in files:
+            with contextlib.suppress(OSError):
+                total += (Path(dirpath) / name).lstat().st_size
+    return total
+
+
+def _scratch_home() -> Path:
+    home = root() / ".cache" / "home"
+    home.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return home
+
+
+def _trim_go_caches(go: Path) -> None:
+    """Clear the shared Go caches above the ceiling. Called under `mcp_gotool.job()`: no review or
+    build is using them. Installed binaries are never in a cache."""
+    cache = root() / ".cache" / "go"
+    if _tree_size(cache) <= GO_CACHE_CEILING:
+        return
+    with contextlib.suppress(InstallError):
+        _run([str(go), "clean", "-cache", "-modcache"], root(), "clearing the Go caches", "go",
+             120, _go_env(), home=_scratch_home())  # fmt: skip
+
+
+_WRAPPER = "battlelab.invalid/review"
+
+
+def _sum_lines(text: str) -> dict[tuple[str, str], str]:
+    """``go.sum`` as ``{(path, version or version/go.mod): hash}``."""
+    out: dict[tuple[str, str], str] = {}
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) == 3 and parts[2].startswith("h1:"):
+            out[(parts[0], parts[1])] = parts[2]
+    return out
+
+
+def _authenticate_graph(go: Path, source: dict, need: str, moddir: Path, stage: Path) -> list[str]:
+    """Every module ``go install <pkg>@<version>`` will use, with its hash checked against the Go
+    checksum database (#2427 round 2), and the module's own go.sum shown to agree.
+
+    Go checks a download against the main module's go.sum FIRST and asks sum.golang.org only for a
+    missing entry, so the module's go.sum can't be the evidence. A throwaway wrapper module that
+    requires exactly the module and starts with an EMPTY go.sum has nothing to trust: every hash
+    it records was checked against the database. With replace/exclude refused (`_go_mod`), its
+    build list is the module's own (minimal version selection). Returns the dependencies."""
+    wrapper = stage / "wrapper"
+    wrapper.mkdir(mode=0o700)
+    requirement = f"{source['package']} {source['version']}"
+    (wrapper / "go.mod").write_text(
+        f"module {_WRAPPER}\n\ngo {need or '1.21'}\n\nrequire {requirement}\n"
+    )
+    (wrapper / "go.sum").write_text("")
+    env = {**_go_env(), "GOFLAGS": "-mod=mod"}  # the wrapper's own go.mod/go.sum may be written
+    _run([str(go), "mod", "download", "all"], wrapper, "checking every dependency against the "
+         "Go checksum database", "go", GO_STEP_TIMEOUT_S, env)  # fmt: skip
+    listed = _run([str(go), "list", "-m", "all"], wrapper, "reading the Go module's dependencies",
+                  "go", GO_STEP_TIMEOUT_S, env)  # fmt: skip
+    authentic = _sum_lines((wrapper / "go.sum").read_text())
+    try:
+        own = _sum_lines((moddir / "go.sum").read_text())
+    except OSError:
+        own = {}
+    for key, value in own.items():
+        if key in authentic and authentic[key] != value:
+            raise InstallError(
+                f"this module's go.sum doesn't match the Go checksum database for {key[0]} "
+                f"{key[1]}; nothing was built"
+            )
+    deps = []
+    for line in listed.splitlines():
+        path = line.split(" ", 1)[0].strip()
+        if path and path not in (_WRAPPER, source["package"]):
+            deps.append(path)
+    return deps
+
+
+@contextlib.contextmanager
+def _go_job():
+    """One Go review or build (`mcp_gotool.job`, serialized per MCP root) with room checked first
+    and the shared caches recovered AFTER it, whatever its outcome: success, failure, timeout or
+    cancellation. Still under the build lock, so no job is using the caches."""
+    from . import mcp_gotool
+
+    with mcp_gotool.job():
+        try:
+            _go_room()
+            yield
+        finally:
+            have = mcp_gotool._current()
+            if have is not None:
+                with contextlib.suppress(Exception):
+                    _trim_go_caches(have[1])
+
+
+def _review_go(source: dict, stage: Path) -> dict:
+    from . import mcp_gotool
+
+    with _go_job():
+        go = mcp_gotool.ensure(None)
+        with mcp_gotool.building():
+            if not go.exists():
+                raise InstallError("the Go toolchain changed meanwhile; review it again")
+            doc = _go_download(go, source, stage)
+            mod = _go_mod(go, Path(doc.get("GoMod") or ""), stage)
+        need = (mod.get("Go") or "") if isinstance(mod.get("Go"), str) else ""
+        go = mcp_gotool.ensure(need or None)  # the module's own go directive (refreshes once)
+        moddir = Path(doc.get("Dir") or "")
+        if not moddir.is_dir():
+            raise InstallError("the Go module's source could not be read")
+        with mcp_gotool.building():
+            if not go.exists():
+                raise InstallError("the Go toolchain changed meanwhile; review it again")
+            toolchain = mcp_gotool.identity()
+            modules = _authenticate_graph(go, source, need, moddir, stage)
+            listed = _run(
+                [str(go), "list", "-f", '{{if eq .Name "main"}}{{.ImportPath}}{{end}}', "./..."],
+                moddir,
+                "reading the Go module's commands",
+                "go",
+                GO_STEP_TIMEOUT_S,
+                _go_env(),
+                home=stage,
+            )
+    mains = sorted({line.strip() for line in listed.splitlines() if line.strip()})
+    command = _pick_command(source["package"], mains, source.get("entrypoint"))
+    deps = len(modules)
+    if deps > DEPENDENCIES_MAX:
+        raise InstallError(f"more than {DEPENDENCIES_MAX} dependencies")
+    entry = _go_binary(command)
+    if not _ENTRY.fullmatch(entry):
+        raise InstallError("the module's command name is not one BattleLab runs")
+    lock = {"module": source["package"], "version": source["version"], "sum": doc["Sum"],
+            "command": command, "toolchain": toolchain}  # fmt: skip
+    (stage / "go.lock.json").write_text(json.dumps(lock, sort_keys=True))
+    version = toolchain.get("version", "")
+    return {
+        "lock_file": "go.lock.json",
+        "integrity": doc["Sum"],
+        "registry": "proxy.golang.org",
+        "dependencies": deps,
+        "install_scripts_declared": [],
+        "entrypoints": sorted(_go_binary(m) for m in mains),
+        "entrypoint": entry,
+        "command": command,
+        "go": need,
+        "toolchain": toolchain,
+        "license": "",
+        "runs": f"{entry} (stdio), built with go{version}" if version else f"{entry} (stdio)",
+    }
+
+
+def _install_go(source: dict, facts: dict, work: Path) -> dict:
+    from . import mcp_gotool
+
+    bindir = work / "bin"
+    bindir.mkdir(mode=0o700)
+    with _go_job():
+        with mcp_gotool.building():
+            # The compiler is pinned like the source: exactly the reviewed toolchain, or a review.
+            if not facts.get("toolchain") or mcp_gotool.identity() != facts["toolchain"]:
+                raise InstallError("the Go toolchain changed since the review; review it again")
+            go = mcp_gotool.ensure(None)
+            doc = _go_download(go, source, work)
+            if doc["Sum"] != facts["integrity"]:
+                raise InstallError("the Go module's checksum differs from the reviewed one")
+            _go_mod(go, Path(doc.get("GoMod") or ""), work)
+            _run(
+                [
+                    str(go),
+                    "install",
+                    "-p",
+                    "2",
+                    "-trimpath",
+                    f"{facts['command']}@{source['version']}",
+                ],  # fmt: skip
+                work,
+                "building the Go module",
+                "go",
+                GO_STEP_TIMEOUT_S,
+                _go_env(bindir),
+            )
+        binary = bindir / facts["entrypoint"]
+        if not binary.is_file() or binary.is_symlink():
+            raise InstallError("the build produced no command")
+    return {"dir": str(work), "command": str(binary), "args": [], "entrypoint": facts["entrypoint"]}
 
 
 # ---- the command a launch execs -----------------------------------------------------------------

@@ -16,11 +16,14 @@ import type {
   McpCheckRow,
   McpLinkFacts,
   McpOperation,
+  McpOrigin,
   McpResolution,
+  McpResolveProgress,
   McpReviewFacts,
   McpServerDetail,
   McpServerSummary,
   McpSetting,
+  McpSource,
 } from "../src/types/mcp";
 import { commonMocks } from "./mission-directions";
 
@@ -44,7 +47,17 @@ export interface FakeVar {
 
 /** An operation as the fake keeps it: the view, plus how many reads it has left and (install)
  *  the review it installs. */
-export type FakeOp = McpOperation & { polls: number; reviewId?: string; link?: string; reserved?: string; consumed?: boolean };
+export type FakeOp = McpOperation & {
+  polls: number;
+  reviewId?: string;
+  link?: string;
+  reserved?: string;
+  consumed?: boolean;
+  /** Update from source (#2427): the server this reading may update, and what it was when read. */
+  updateOf?: string;
+  previous?: { source: McpSource; origin: McpOrigin | undefined };
+  installedNow?: boolean;
+};
 
 /** What reading a repository link answers (#2353): its resolution, or a refusal in words with what
  *  was read before it. A link the fake does not know is "no git repository". */
@@ -73,6 +86,9 @@ export interface Fake {
   installFails: string;
   /** Repository links by their link as typed (`mcp_gitsource.resolve`'s stand-in, #2353). */
   links: Record<string, FakeLink>;
+  /** A reading's progress stops advancing at this step (and does not settle) until cleared: lets a
+   *  spec see one step running, e.g. a Go link's first toolchain download (#2427). */
+  resolveHold?: McpResolveProgress["step"];
 }
 
 let seq = 0;
@@ -348,10 +364,88 @@ export function linkResolution(): Omit<McpResolution, "resolution_id"> {
   };
 }
 
+export const GO_LINK = "https://codeberg.org/goern/forgejo-mcp";
+export const GO_SHA = "9c3fa38c6708a24918bd2e9ae2f171f211202155";
+export const GO_NEW_SHA = "4b1d2e7f0a93c5e8d61b27a4f9c03e5d8b7a6c21";
+export const GO_MODULE = "git.b4mad.industries/agentic-forges/forgejo-mcp/v3";
+export const GO_HOME = "git.b4mad.industries/agentic-forges/forgejo-mcp";
+export const GO_LINE =
+  "Built from this commit with the Go toolchain. No install scripts run; every download is verified against sum.golang.org.";
+export const GO_SUM = "h1:a7TU1kvcAEAtlPIzQwErTy0123456789abcdefghij=";
+export const GO_NEW_SUM = "h1:Qx9mLp2RtVw8kZ4nB6yC1dF3gH5jK7lM9oP0qS2uX4=";
+
+/** What reading the Codeberg forgejo-mcp link answers (#2427): a mirror of the module's home, at
+ *  the commit v3.3.0 is tagged at; the review a real run produced (46 modules in its build). */
+export function goResolution(
+  over: { version?: string; commit?: string; sum?: string; reviewId?: string } = {},
+): Omit<McpResolution, "resolution_id"> {
+  const version = over.version ?? "v3.3.0";
+  const commit = over.commit ?? GO_SHA;
+  const source = { kind: "go" as const, package: GO_MODULE, version };
+  const declared = { manifest: "go.mod" as const, kind: "go" as const, package: GO_MODULE, version: "" };
+  return {
+    source,
+    origin: { url: GO_LINK, commit },
+    facts: {
+      repository: "codeberg.org/goern/forgejo-mcp",
+      url: GO_LINK,
+      commit,
+      found: [declared],
+      declared,
+      release: {
+        module: GO_MODULE,
+        version,
+        home: GO_HOME,
+        mirror: true,
+        same_commit: true,
+        go: "1.26.0",
+        time: "2026-11-20T10:00:00Z",
+        ref: `refs/tags/${version}`,
+      },
+    },
+    review: {
+      review_id: over.reviewId ?? "b0c1d2e3f4a5b6c7",
+      source,
+      reviewed_at: NOW,
+      lock_digest: "sha256:9a9a",
+      lock_file: "go.lock.json",
+      integrity: over.sum ?? GO_SUM,
+      registry: "proxy.golang.org",
+      dependencies: 46,
+      install_scripts_declared: [],
+      entrypoints: ["forgejo-mcp"],
+      entrypoint: "forgejo-mcp",
+      license: "",
+      runs: "forgejo-mcp (stdio), built with go1.27.4",
+      command: GO_MODULE,
+      go: "1.26.0",
+      toolchain: { version: "1.27.4", sha256: "ab".repeat(32), platform: "linux/amd64" },
+    },
+    disclaimer: GO_LINE,
+  };
+}
+
+/** A Go server added from the Codeberg link at v3.3.0, installed (and checked when `checked`). */
+export function goServer(f: Fake, checked = true): Rec {
+  const source = { kind: "go" as const, package: GO_MODULE, version: "v3.3.0" };
+  const rec = record({
+    name: "forgejo-mcp",
+    label: "Forgejo MCP",
+    source,
+    transport: "stdio",
+    origin: { url: GO_LINK, commit: GO_SHA },
+    installed: { installed_at: NOW - 86_400 * 3, integrity: GO_SUM, source } as Rec["installed"],
+  });
+  f.servers.push(rec);
+  if (checked) addCheck(f, rec, passedRow(rec.id, "shared", rec.rev, NOW - 4000));
+  return rec;
+}
+
 const RESOLVE_STEPS = ["commit", "manifest", "release", "repository", "review"] as const;
 
 /** `mcp_jobs.start_resolve`: no server; the same id with another link is a 409. */
 function startResolve(r: Route, f: Fake, body: Record<string, unknown>) {
+  if (body && Object.keys(body).sort().join() === "request_id,server_id") return startUpdateRead(r, f, body);
   if (!body || Object.keys(body).sort().join() !== "request_id,url" || typeof body.url !== "string")
     return json(r, { detail: "send the repository link (url) and a request_id (a UUID)" }, 422);
   const id = body.request_id;
@@ -381,21 +475,72 @@ function startResolve(r: Route, f: Fake, body: Record<string, unknown>) {
   return json(r, opView(op), 202);
 }
 
+/** Update from source (#2427): the server's OWN link is read (never one from the client); a server
+ *  without an origin is a 422; one read per server at a time (409). */
+function startUpdateRead(r: Route, f: Fake, body: Record<string, unknown>) {
+  const id = body.request_id;
+  if (typeof id !== "string" || !UUID.test(id)) return json(r, { detail: "request_id must be a UUID" }, 422);
+  const rec = f.servers.find((s) => s.id === body.server_id);
+  if (!rec) return json(r, { detail: "No such MCP server." }, 404);
+  if (!rec.origin)
+    return json(r, { detail: "this server was not added from a repository link; update it by version" }, 422);
+  const existing = f.ops[id];
+  if (existing) {
+    if (existing.kind !== "resolve" || existing.updateOf !== rec.id)
+      return json(r, { detail: "that request_id belongs to another operation or link; resolve with a new one" }, 409);
+    return json(r, opView(existing), 202);
+  }
+  if (Object.values(f.ops).some((o) => o.updateOf === rec.id && o.state === "running"))
+    return json(r, { detail: "this server's link is already being read" }, 409);
+  const inst = rec.installed as { source?: McpSource } | null;
+  const op: FakeOp = {
+    id,
+    server: null,
+    kind: "resolve",
+    state: "running",
+    created_at: NOW,
+    updated_at: NOW,
+    result: null,
+    error: null,
+    progress: { step: "commit" },
+    details: null,
+    polls: f.opPolls,
+    link: rec.origin.url,
+    reserved: rec.id,
+    updateOf: rec.id,
+    previous: { source: rec.source, origin: rec.origin },
+    installedNow: JSON.stringify(inst?.source) === JSON.stringify(rec.source),
+  };
+  f.ops[id] = op;
+  return json(r, opView(op), 202);
+}
+
 /** A read of a running resolution: it moves through its steps, then settles. */
 function readResolve(f: Fake, op: FakeOp) {
   const known = f.links[op.link ?? ""];
+  if (f.resolveHold && op.progress?.step === f.resolveHold) return;
   const at = RESOLVE_STEPS.indexOf(op.progress?.step ?? "commit");
   const next = RESOLVE_STEPS[Math.min(at + 1, RESOLVE_STEPS.length - 1)];
   const res = known && "resolution" in known ? known.resolution : null;
   op.progress = {
     step: next,
-    commit: LINK_SHA,
+    commit: res?.origin.commit ?? LINK_SHA,
     ...(res?.facts.declared && at >= 1 ? { ...res.facts.declared } : {}),
+    ...(res?.source.kind === "go" && at >= 2 ? { version: res.source.version } : {}),
   };
+  if (f.resolveHold && op.progress.step === f.resolveHold) return;
   if (--op.polls > 0) return;
   if (!known) Object.assign(op, { state: "failed", error: "there is no git repository at that link" });
   else if ("error" in known) Object.assign(op, { state: "failed", error: known.error, details: known.details ?? null });
-  else Object.assign(op, { state: "done", result: { ...known.resolution, resolution_id: op.id } });
+  else if (op.updateOf) {
+    const res = known.resolution;
+    const same = JSON.stringify(res.source) === JSON.stringify(op.previous?.source);
+    const result =
+      same && op.installedNow
+        ? { resolution_id: op.id, up_to_date: true, source: res.source, origin: res.origin, previous: op.previous, facts: res.facts, disclaimer: res.disclaimer }
+        : { ...res, resolution_id: op.id, up_to_date: false, previous: op.previous };
+    Object.assign(op, { state: "done", result });
+  } else Object.assign(op, { state: "done", result: { ...known.resolution, resolution_id: op.id } });
   op.updated_at = NOW;
 }
 
@@ -406,6 +551,7 @@ function createFromResolution(r: Route, f: Fake, body: Record<string, unknown>) 
   if (!op || op.kind !== "resolve" || op.state !== "done" || !op.result)
     return json(r, { detail: "this link's resolution is no longer held (it expired, or BattleLab restarted); resolve the link again" }, 404);
   if (op.consumed) return json(r, { detail: "a server was already registered from this resolution; resolve again" }, 409);
+  if (op.updateOf) return json(r, { detail: "that resolution updates an existing server; it registers nothing new" }, 409);
   const res = op.result as McpResolution;
   if (body.source && JSON.stringify(body.source) !== JSON.stringify(res.source))
     return json(r, { detail: "the source differs from the package the link resolved to; resolve the link again" }, 409);
@@ -421,6 +567,27 @@ function createFromResolution(r: Route, f: Fake, body: Record<string, unknown>) 
   });
   f.servers.push(rec);
   return json(r, summary(f, rec), 201);
+}
+
+/** `PATCH …/{id} {resolution_id, expected_updated_at}` (Update from source, #2427): source and
+ *  origin replaced together, fenced to what the link was read against (`mcp_registry.update`). */
+function applyUpdate(r: Route, f: Fake, rec: Rec, body: Record<string, unknown>) {
+  if (Object.keys(body).sort().join() !== "expected_updated_at,resolution_id")
+    return json(r, { detail: "an update from source takes its source from the link, not from a field" }, 422);
+  const op = f.ops[body.resolution_id as string];
+  if (!op || op.kind !== "resolve" || op.state !== "done" || !op.result)
+    return json(r, { detail: "this link's resolution is no longer held (it expired, or BattleLab restarted); resolve the link again" }, 404);
+  if ((op.result as { up_to_date?: boolean }).up_to_date)
+    return json(r, { detail: "the server is already up to date with its link; there is nothing to apply" }, 409);
+  if (op.consumed) return json(r, { detail: "a server was already registered from this resolution; resolve again" }, 409);
+  if (rec.updated_at !== body.expected_updated_at) return json(r, { detail: "the server changed since you loaded it" }, 409);
+  if (op.updateOf !== rec.id) return json(r, { detail: "that resolution is not this server's update; read its link again" }, 409);
+  if (JSON.stringify([rec.source, rec.origin]) !== JSON.stringify([op.previous?.source, op.previous?.origin]))
+    return json(r, { detail: "the server changed since its link was read; update it again" }, 409);
+  const res = op.result as McpResolution;
+  op.consumed = true;
+  Object.assign(rec, { source: res.source, origin: res.origin, rev: rec.rev + 1, updated_at: rec.updated_at + 1 });
+  return json(r, summary(f, rec));
 }
 
 /** `mcp_jobs.start`: the same id returns the same operation; another id while one runs for this
@@ -466,7 +633,10 @@ function readOp(f: Fake, op: FakeOp) {
     Object.assign(op, { state: "failed", error: f.installFails });
     f.installFails = "";
   } else {
-    rec.installed = { installed_at: NOW, integrity: "sha512-AbC" };
+    const fromLink = Object.values(f.ops).find(
+      (o) => o.kind === "resolve" && (o.result as McpResolution | null)?.review?.review_id === op.reviewId,
+    );
+    rec.installed = { installed_at: NOW, integrity: (fromLink?.result as McpResolution | undefined)?.review.integrity ?? "sha512-AbC" };
     Object.assign(rec.installed, { source: rec.source, review_id: op.reviewId });
     rec.updated_at += 1;
     Object.assign(op, { state: "done", result: summary(f, rec) });
@@ -543,6 +713,7 @@ export async function mockMcp(page: Page, f: Fake): Promise<void> {
     if (!m || !rec) return json(r, { detail: "no such MCP server" }, 404);
     const sub = m[2] ?? "";
     if (sub === "" && method === "GET") return json(r, detail(f, rec));
+    if (sub === "" && method === "PATCH" && body && "resolution_id" in body) return applyUpdate(r, f, rec, body);
     if (sub === "" && method === "PATCH") {
       const fields = { ...body };
       delete fields.expected_updated_at;

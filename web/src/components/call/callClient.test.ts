@@ -455,3 +455,117 @@ describe("the running turn and its Stop (#2076)", () => {
     expect(c.snapshot.phase).toBe("connected");
   });
 });
+
+describe("a call to an API session (#2341)", () => {
+  const party = {
+    key: "claude-api:11111111-2222-4333-8444-555555555555",
+    title: "docs-refresh",
+    engine: "Claude",
+    project: "agent-sessions",
+    voice: "sol",
+    voice_shared: false,
+    bypass: true,
+  };
+
+  test("admits with the party and shows it from the admission on", async () => {
+    deps.admit = vi.fn(async () => ({ id: "call1", conversation_id: "c".repeat(32), party }));
+    const c = new CallClient(deps);
+    await c.start({ contact: "asia-woman", party: party.key });
+    expect(deps.admit).toHaveBeenCalledWith({
+      contact: "asia-woman",
+      conversation_id: null,
+      party: party.key,
+    });
+    expect(c.snapshot.party).toEqual(party);
+    expect(phaseAnnouncement(c.snapshot, "General Tanaka")).toBe("Calling docs-refresh.");
+  });
+
+  test("the session's lines are captions that play like HQ's; a party change clears the work band", async () => {
+    deps.admit = vi.fn(async () => ({ id: "call1", conversation_id: "c".repeat(32), party }));
+    const c = new CallClient(deps);
+    await c.start({ contact: null, party: party.key });
+    sock.open();
+    sock.msg({ t: "connected" });
+    sock.msg({ t: "caption", who: "session", id: "s1", text: "Both pass now." });
+    expect(c.snapshot.captions.at(-1)).toMatchObject({ who: "session", status: "queued" });
+    sock.msg({ t: "speaking", on: true });
+    expect(c.snapshot.captions.at(-1)?.status).toBe("speaking");
+    sock.msg({ t: "progress", step: "Running a command.", steps: 1 });
+    expect(c.snapshot.work?.step).toBe("Running a command.");
+    sock.msg({ t: "leg_turn", state: "completed" });
+    expect(c.snapshot.work).toBeNull();
+    sock.msg({ t: "progress", step: "Reading files.", steps: 2 });
+    sock.msg({ t: "party", party: null, hq: true });
+    expect(c.snapshot.party).toBeNull();
+    expect(c.snapshot.work).toBeNull();
+    expect(c.snapshot.requestedParty).toBeNull();
+  });
+
+  test("a session turn with no tool yet has Stop: the work-start opens the band (review 9031 P2)", async () => {
+    deps.admit = vi.fn(async () => ({ id: "call1", conversation_id: "c".repeat(32), party }));
+    const c = new CallClient(deps);
+    await c.start({ contact: null, party: party.key });
+    sock.open();
+    sock.msg({ t: "connected" });
+    sock.msg({ t: "state", state: "thinking" });
+    sock.msg({ t: "progress", step: "Working on it." }); // the server's work-start: no tools yet
+    expect(c.snapshot.work).toMatchObject({ step: "Working on it.", steps: 0, stopping: false });
+    c.stopTurn();
+    expect(sock.json().filter((m) => m.t === "stop")).toHaveLength(1);
+    expect(c.snapshot.work?.stopping).toBe(true);
+    sock.msg({ t: "leg_turn", state: "interrupted" });
+    expect(c.snapshot.work).toBeNull();
+  });
+
+  test("a voice pick mid-turn keeps the band and Stop; a real switch still clears them (review 9091)", async () => {
+    deps.admit = vi.fn(async () => ({ id: "call1", conversation_id: "c".repeat(32), party }));
+    const c = new CallClient(deps);
+    await c.start({ contact: null, party: party.key });
+    sock.open();
+    sock.msg({ t: "connected" });
+    sock.msg({ t: "party", party, hq: true });
+    sock.msg({ t: "state", state: "thinking" });
+    sock.msg({ t: "progress", step: "Working on it." }); // a tool-free turn
+    // `set_voice`: the same session, its new voice, marked an update.
+    sock.msg({ t: "party", party: { ...party, voice: "nova" }, hq: true, update: true });
+    expect(c.snapshot.party?.voice).toBe("nova");
+    expect(c.snapshot.work).toMatchObject({ step: "Working on it." });
+    c.stopTurn();
+    expect(sock.json().filter((m) => m.t === "stop")).toHaveLength(1);
+    // An update naming ANOTHER party is no update: treated as the switch it is.
+    sock.msg({ t: "party", party: { ...party, key: "codex-api:other" }, hq: true, update: true });
+    expect(c.snapshot.work).toBeNull();
+    sock.msg({ t: "progress", step: "Working on it." });
+    sock.msg({ t: "party", party: null, hq: true });
+    expect(c.snapshot.work).toBeNull();
+  });
+
+  test("Back to HQ is one message on a session leg, and nothing on HQ's", async () => {
+    deps.admit = vi.fn(async () => ({ id: "call1", conversation_id: "c".repeat(32), party }));
+    const c = new CallClient(deps);
+    await c.start({ contact: null, party: party.key });
+    sock.open();
+    sock.msg({ t: "connected" });
+    c.backToHq();
+    expect(sock.json().filter((m) => m.t === "back")).toHaveLength(1);
+    sock.msg({ t: "party", party: null });
+    c.backToHq();
+    expect(sock.json().filter((m) => m.t === "back")).toHaveLength(1);
+  });
+
+  test("a session that can't take calls ends with its fixed line, and Call again keeps the party", async () => {
+    deps.admit = vi.fn(async () => {
+      throw Object.assign(new Error("docs-refresh can't take calls right now."), {
+        record: { code: "unavailable", detail: "docs-refresh can't take calls right now." },
+      });
+    });
+    const c = new CallClient(deps);
+    await c.start({ contact: null, party: party.key });
+    expect(c.snapshot.ended?.reason).toBe("unavailable");
+    expect(endedText(c.snapshot.ended!, { stt: "", tts: "" })).toBe(
+      "docs-refresh can't take calls right now.",
+    );
+    expect(c.snapshot.requestedParty).toBe(party.key);
+    expect(normalEnd("unavailable")).toBe(false);
+  });
+});

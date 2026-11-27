@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import re
 import threading
 from pathlib import Path
 
@@ -64,7 +65,13 @@ _DEFAULTS: dict = {
     "stt_detects_language": None,
     # Did the TTS server accept a `language` field in the conformance probe? Only then is one sent.
     "tts_accepts_language": False,
+    # The voice each API session answers a call in (#2341), by session key: picked once from the
+    # pool (`voice_session.session_voice`) and kept, so a session sounds the same on every call.
+    "session_voices": {},
 }
+#: Session keys kept in `session_voices` (#2341); the oldest picks go first past it.
+SESSION_VOICES_MAX = 200
+SESSION_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}:[A-Za-z0-9._-]{1,128}\Z")
 SPEED_MIN, SPEED_MAX = 0.75, 1.5
 STYLE_MAX = 40
 LANGUAGE_VOICES_MAX = 12  # a voice per language, per contact (#1397 P3)
@@ -221,7 +228,38 @@ def coerce(raw: object) -> dict:
                 clean = _coerce_profile(prof)
                 if clean:
                     out["contacts"][cid] = clean
+    picks = raw.get("session_voices")
+    if isinstance(picks, dict):
+        out["session_voices"] = dict(
+            [
+                (k, v)
+                for k, v in picks.items()
+                if isinstance(k, str) and SESSION_KEY_RE.match(k)
+                and isinstance(v, str) and 0 < len(v) <= VOICE_MAX
+            ][-SESSION_VOICES_MAX:]
+        )  # fmt: skip
     return out
+
+
+def set_session_voice(key: str, voice: str, path: Path | None = None) -> None:
+    """Keep the voice the API session `key` answers calls in (#2341). Server-side only: the call
+    screen's voice pick and the first call's hashed pick write it, never the settings route."""
+    if (
+        not SESSION_KEY_RE.match(key)
+        or not isinstance(voice, str)
+        or not 0 < len(voice) <= VOICE_MAX
+    ):
+        raise SettingsError("not a session voice")
+
+    def merge(raw: object) -> dict:
+        new = coerce(raw)
+        picks = dict(new["session_voices"])
+        picks.pop(key, None)
+        picks[key] = voice  # newest last: the bound drops the oldest
+        new["session_voices"] = dict(list(picks.items())[-SESSION_VOICES_MAX:])
+        return new
+
+    prefs.mutate_block(BLOCK, merge, path)
 
 
 def _coerce_profile(prof: dict) -> dict:
@@ -331,7 +369,8 @@ PREVIEW_CONTACT_LINES = {
 
 def public(path: Path | None = None) -> dict:
     block = get(path)
-    out = {k: v for k, v in block.items() if k not in SIDES}
+    # A session's voice pick (#2341) belongs to the call screen, not to Settings.
+    out = {k: v for k, v in block.items() if k not in SIDES and k != "session_voices"}
     for s in SIDES:
         side = block[s]
         out[s] = {

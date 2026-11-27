@@ -46,7 +46,14 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import ask_orchestrator, ask_store, hq_calls_settings, hq_contacts, voice_setup
+from . import (
+    ask_orchestrator,
+    ask_store,
+    hq_calls_settings,
+    hq_contacts,
+    voice_session,
+    voice_setup,
+)
 from .voice_cues import CUE_LINES
 from .voice_text import WHOLE_MIN_WORDS
 
@@ -253,6 +260,10 @@ def progress_line(work: dict, now: float) -> str:
 SEND_BUDGET_S = 2.0
 #: How long the "can the worker's interpreter import Pipecat?" probe may take.
 RUNTIME_PROBE_S = 30.0
+
+
+#: `Call.say`'s `leg` for a line of the call itself, spoken whoever the party is (#2341).
+ANY_PARTY = object()
 
 
 class CallError(Exception):
@@ -543,6 +554,23 @@ class Call:
     follow_reads: int = 0
     #: The contact's resolved voice profile (#1397 P3): voice, style (only if advertised), speed.
     profile: dict | None = None
+    #: Who the Commander is talking to (#2341): ``None`` is HQ, else the API session's leg
+    #: (`voice_session.SessionLeg`). Changed only by `switch_party`.
+    leg: object = None
+    #: Bumped by every party change (#2341 §1b): what began under an older one is not acted on.
+    party_gen: int = 0
+    #: The HQ conversation exists in the store. A call that starts on a session creates it only
+    #: when the Commander goes to HQ (`switch_party`), so a direct call leaves no empty one.
+    hq_created: bool = True
+    #: HQ has greeted on this call: coming back from a session it says `BACK_LINE` instead.
+    hq_greeted: bool = False
+    #: The line the call ends after (#2341 "call me back"): ``{"say_id", "reason"}``.
+    hang_up: dict | None = None
+    #: Party-change flushes whose `interrupt` echo the worker has not sent back yet (#2341).
+    flush_echoes: int = 0
+    #: A put-through under way (#2341 §5): ``{"leg", "say_id", "gen"}``. The party switches once
+    #: HQ's hand-off line has played (or its fallback ran); Stay with HQ, or newer words, drop it.
+    transfer: dict | None = None
     #: The call's language (#1397 P3): the operator's fixed choice, else the last one detected.
     language: str | None = None
     fixed_language: str | None = None
@@ -611,6 +639,7 @@ class Call:
             "muted": self.muted,
             "elapsed_s": int(time.monotonic() - self.started),
             "ended_reason": self.ended_reason,
+            "party": None if self.leg is None else self.leg.public(),
         }
 
     # -- wiring ---------------------------------------------------------------------------------
@@ -641,12 +670,18 @@ class Call:
         heard: bool = True,
         cue: bool = False,
         card: str | None = None,
+        leg: object = None,
     ) -> str | None:
         """`heard=False`: its `played` ack is no sign of the operator (#1702 status lines — HQ
         talking while it waits proves nobody is listening). `cue`: a thinking-cue line (#2339),
-        played from the worker's checked take or not at all."""
+        played from the worker's checked take or not at all.
+
+        `leg` (#2341 §1b): the party this line is FOR — ``None`` is HQ, `ANY_PARTY` a line of the
+        call itself (the still-there question). A line for a party that is not the call's party
+        now is never spoken: an HQ answer landing after a put-through, a session's reply after
+        "back to HQ"."""
         text = text.strip()
-        if not text or self.state == "ended":
+        if not text or self.state == "ended" or not self._speaks_for(leg):
             return None
         sid = sid or uuid.uuid4().hex[:12]
         self.hq_quiet_at = max(self.hq_quiet_at, time.monotonic() + speech_seconds(text))
@@ -658,11 +693,12 @@ class Call:
         now = time.monotonic()
         self.audible.append({"id": sid, "text": text, "start": now, "until": now + ECHO_UNACKED_S})
         del self.audible[:-AUDIBLE_KEPT]
-        await self.client({"t": "caption", "who": "hq", "id": sid, "text": text, "kind": kind,
+        who = "hq" if self.leg is None else "session"
+        await self.client({"t": "caption", "who": who, "id": sid, "text": text, "kind": kind,
                            "turn_id": turn_id})  # fmt: skip
-        if self.state == "ended":
-            return None  # hung up during the caption send: nothing recorded, nothing spoken
-        if kind in ask_store.SAID_KINDS:
+        if self.state == "ended" or not self._speaks_for(leg):
+            return None  # hung up (or the party changed) during the caption send: never spoken
+        if kind in ask_store.SAID_KINDS and self.leg is None:
             # What HQ said outside an answer (#2137): the greeting, a read-back, an outcome, the
             # still-there question. Kept in the conversation so HQ's next turn knows it was said.
             rec = {"type": "said", "kind": kind, "text": text}
@@ -690,11 +726,149 @@ class Call:
         msg = {"t": "say", "id": sid, "text": text, "language": lang, "voice": voice}
         if cue:
             msg["cue"] = True
-        if self.state == "ended":
+        if self.state == "ended" or not self._speaks_for(leg):
             self._said_pending.pop(sid, None)
             return None  # hung up while the cues were asked for: never sent after the stop
         await self.worker(msg)
         return sid
+
+    def _speaks_for(self, leg: object) -> bool:
+        return leg is ANY_PARTY or leg is self.leg
+
+    async def caption_you(self, text: str) -> None:
+        """The Commander's words on the call screen, as heard."""
+        await self.client({"t": "caption", "who": "you", "id": uuid.uuid4().hex[:12], "text": text})
+
+    async def switch_party(self, leg: object, *, record: bool = True) -> None:
+        """Change who the Commander talks to (#2341 §1b): HQ (``None``) or a session's leg. The
+        FENCE is one synchronous step, before anything awaits: the party generation moves, and
+        everything of the old party that has not happened yet is void — an open HQ draft, a held
+        or interjected utterance, a goodbye being judged, an armed challenge (a late judge result
+        for it then finds a newer `challenge_seq` and `generation`). A turn already submitted runs
+        on as the old party's own work; its answer, progress lines and late events are not
+        spoken here (`say` refuses a line for a party that is not this one). The old party's lines
+        still audible stay in the echo set (`audible`) until their tail ends."""
+        if self.state == "ended" or leg is self.leg:
+            return
+        old = self.leg
+        self.transfer = None
+        self.hang_up = None
+        self.party_gen += 1
+        self.generation += 1  # an HQ answer or offer in flight is not this party's
+        self.challenge_seq += 1
+        self.challenge = None
+        self.goodbye_pending = None
+        self.interjection = None
+        self.held = None
+        self.held_later.clear()
+        self.ask = None
+        self.ending = None
+        self.work = None
+        self.leg = leg
+        d = self.draft
+        claimed = d is not None and self._take_draft(d)
+        if claimed:
+            d.dropped = True
+        self.say_ids.clear()  # their acks are no longer this party's speech
+        self._quiet_from(None)  # nothing more of the old party comes out: only its echo tail
+        # Everything the worker still has queued for the old party is dropped, and the browser's
+        # playback with it.
+        self.flush_echoes += 1  # the worker answers the flush with an `interrupt` of its own
+        await self.worker({"t": "flush"})
+        await self.client({"t": "interrupt"})
+        await self.client({"t": "challenge", "cards": []})
+        if claimed:
+            await self._discard_claimed(d)
+        if leg is None and not self.hq_created and ask_store.valid_cid(self.cid):
+            # A call that began on a session meets HQ for the first time: its conversation now.
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(ask_store.create, self.cid)
+                self.hq_created = True
+        if record and self.hq_created:
+            # HQ's conversation records the hand-off as one line (#2341 §5), never the leg's words.
+            target = old if leg is None else leg
+            what = "Back from" if leg is None else "Put through to"
+            stamp = time.strftime("%H:%M")
+            self._record(
+                {"type": "said", "kind": "handoff", "text": f"{what} {target.title}, {stamp}"}
+            )
+        await self.client({"t": "party", "party": None if leg is None else leg.public(),
+                           "hq": voice_session.hq_available()})  # fmt: skip
+        if self.state != "ended":
+            await self.set_state("listening")
+            await self.greet()
+
+    async def hang_up_after(self, text: str, reason: str, *, leg: object = None) -> None:
+        """Say `text`, then end the call once it has played (or its fallback ran): "call me
+        back" (#2341 §4) ends the call on the session's own line."""
+        sid = uuid.uuid4().hex[:12]
+        self.hang_up = {"say_id": sid, "reason": reason}
+        if await self.say(text, kind="status", sid=sid, leg=leg) is None:
+            self.hang_up = None
+            return
+        self._side(self._hang_up_fallback(sid, speech_seconds(text) + PLAYBACK_FALLBACK_S))
+
+    async def _hang_up_fallback(self, sid: str, after: float) -> None:
+        await asyncio.sleep(after)
+        h = self.hang_up
+        if h is not None and h["say_id"] == sid:
+            await self.end(h["reason"])
+
+    async def put_through(self, key: str, turn_id: str | None = None) -> None:
+        """HQ's `put_through` (#2341 §5): admit the session as the operator, say HQ's FIXED
+        "Putting you through to …", and switch the party once that has played. A session that
+        can't take calls is its FIXED line and the call stays with HQ; a failed hand-off says so."""
+        gen = self.generation
+        block = self.settings or await asyncio.to_thread(hq_calls_settings.get)
+        try:
+            leg = await voice_session.resolve(self.app, self.operator, key, block, self.voice)
+        except voice_session.Unavailable as e:
+            await self.say(e.line, kind="status", turn_id=turn_id)
+            return
+        except Exception:  # noqa: BLE001 — a failed admission is a failed hand-off, never a crash
+            log.warning("voice call %s: put-through failed", self.id, exc_info=True)
+            await self.say(voice_session.transfer_failed_line("that session"), kind="error")
+            return
+        if gen != self.generation or self.leg is not None or self.state == "ended":
+            return  # newer words, or the party changed, while it was admitted
+        line = voice_session.put_through_line(leg.title)
+        sid = uuid.uuid4().hex[:12]
+        self.transfer = {"leg": leg, "say_id": sid, "gen": gen}
+        await self.client({"t": "transfer", "party": leg.public()})
+        if await self.say(line, kind="status", turn_id=turn_id, sid=sid) is None:
+            await self.cancel_transfer()
+            return
+        self._side(self._transfer_fallback(sid, speech_seconds(line) + PLAYBACK_FALLBACK_S))
+
+    async def _transfer_fallback(self, sid: str, after: float) -> None:
+        """A hand-off line whose `played` ack never comes (a backgrounded tab) still hands over."""
+        await asyncio.sleep(after)
+        t = self.transfer
+        if t is not None and t["say_id"] == sid:
+            await self._complete_transfer(t)
+
+    async def _complete_transfer(self, t: dict) -> None:
+        if self.transfer is not t:
+            return
+        self.transfer = None
+        if t["gen"] != self.generation or self.leg is not None or self.state == "ended":
+            await self.client({"t": "transfer", "party": None})
+            return
+        try:
+            await self.switch_party(t["leg"])
+        except Exception:  # noqa: BLE001 — still with HQ: say so
+            log.warning("voice call %s: the hand-off failed", self.id, exc_info=True)
+            if self.leg is not None:
+                await self.switch_party(None, record=False)
+            await self.client({"t": "transfer", "party": None})
+            await self.say(voice_session.transfer_failed_line(t["leg"].title), kind="error")
+
+    async def cancel_transfer(self) -> None:
+        """Stay with HQ (#2341 §7): the hand-off under way is dropped; the call stays with HQ."""
+        if self.transfer is None:
+            return
+        self.transfer = None
+        await self.client({"t": "transfer", "party": None})
 
     # -- events from the worker -----------------------------------------------------------------
 
@@ -754,7 +928,12 @@ class Call:
             # The turn model took the sentence for unfinished (#1996): HQ waits longer.
             self.stopped_unfinished = ev.get("unfinished") is True
             await self.client({"t": "user", "speaking": False})
+        elif t == "interrupt" and self.flush_echoes:
+            # The worker's echo of a party change's flush (#2341): handled at the switch. Acting
+            # on it again would cut the new party's greeting, already captioned and queued.
+            self.flush_echoes -= 1
         elif t == "interrupt":
+            voice_session.on_interrupt(self)  # an unplayed permission read-back is void (#2341)
             # The browser flushes what it had queued: those says never play, so their late or
             # duplicate acks are not speech (#1668).
             self.say_ids.clear()
@@ -822,6 +1001,8 @@ class Call:
             )
 
     def _turn_running(self) -> bool:
+        if self.leg is not None:
+            return bool(self.leg.running)  # the session's turn (#2341)
         return self.turn_task is not None and not self.turn_task.done()
 
     def _log_answer_clock(self) -> None:
@@ -900,7 +1081,10 @@ class Call:
             rec.update(route="dropped", why=why)
         else:
             rec.update(route="received", text=self._without_echo(ev))
-        self._record(rec)
+        if self.leg is None:
+            # On a session leg the words are the session's turn (#2341 §5): none of them is
+            # written into HQ's conversation.
+            self._record(rec)
         log.info(
             "voice call %s heard: turn %s, %s, %d words", self.id, n,
             f"dropped ({why})" if why else "received", len(raw.split()),
@@ -1032,6 +1216,16 @@ class Call:
         return strip_echo(text, said) if said else text
 
     async def greet(self) -> None:
+        if self.leg is not None:
+            leg = self.leg
+            await self.say(voice_session.greeting_line(leg.title), kind="greeting", leg=leg)
+            # The session may already be working: follow that turn (#2341 Hermes 9018).
+            self._side(voice_session.attach(self, leg))
+            return
+        if self.hq_greeted:
+            await self.say(voice_session.BACK_LINE, kind="greeting")  # back from a session
+            return
+        self.hq_greeted = True
         name = ""
         with contextlib.suppress(KeyError):
             name = hq_contacts.get(self.contact).name.split()[-1]
@@ -1047,6 +1241,15 @@ class Call:
             said = self._said_pending.pop(say_id, None)
             if said is not None:
                 self._record(said)  # played out to its end: now it was said (#2372)
+        voice_session.on_played(self, say_id)  # a session's permission read-back arms (#2341)
+        h = self.hang_up
+        if h is not None and say_id == h["say_id"]:
+            await self.end(h["reason"])  # its line played out: the call ends (#2341)
+            return
+        t = self.transfer
+        if t is not None and say_id == t["say_id"]:
+            await self._complete_transfer(t)  # HQ's hand-off line played out (#2341)
+            return
         if say_id in self.say_ids and self.state != "ended":
             self.say_ids.remove(say_id)  # heard ONCE: a duplicate or old ack is not new speech
             now = time.monotonic()
@@ -1103,8 +1306,8 @@ class Call:
         is never a reply to a pending confirmation: it is a NEW question, so its generation is
         taken BEFORE anything is awaited and any older offer still in flight is stale (#1631
         review 6874)."""
-        if self.state == "ended":
-            return
+        if self.state == "ended" or self.leg is not None:
+            return  # HQ's question: not asked of a session (#2341)
         self.touch()
         self.generation += 1
         gen = self.generation
@@ -1167,6 +1370,12 @@ class Call:
     ) -> None:
         if self.muted:
             self._link(heard_id, "muted")
+            return
+        if self.leg is not None:
+            # A session leg (#2341): the words are the session's next turn, past every fence the
+            # call already ran on them (no-speech, language, echo).
+            self.touch()
+            await voice_session.on_utterance(self, text)
             return
         pending = self.goodbye_pending
         if pending is not None and not captioned:
@@ -1607,6 +1816,8 @@ class Call:
         conversation is flagged here, at once, and every queue is withdrawn."""
         if self.state == "ended":
             return False
+        if self.leg is not None:
+            return voice_session.stop_turn(self)  # the session's running turn (#2341)
         # Stop all's own fence first, with no await (#2103): the "no successor" marks and every
         # running turn's stop flag.
         elsewhere = bool(ask_orchestrator.request_stop_all()) if everything else False
@@ -2111,6 +2322,10 @@ class Call:
             # A quiet answer (#2354) has nothing to be ready with: nothing is said.
             if view.get("status") == "done" and self.state != "speaking" and not view.get("quiet"):
                 await self.say(ANSWER_READY_LINE, kind="status", turn_id=view.get("turn_id"))
+        elif view.get("status") == "done" and isinstance(view.get("put_through"), str):
+            # HQ puts the call through to a session (#2341 §5): its FIXED line, then the party.
+            self.ask = None
+            await self.put_through(view["put_through"], view.get("turn_id"))
         elif view.get("status") == "done":
             ask = view.get("ask")
             if isinstance(ask, dict) and ask.get("question_id"):
@@ -3327,7 +3542,10 @@ class Call:
 
     def _say_voice(self) -> str | None:
         """A voice per language (#1397 P3): the contact's voice for the call's language, if set;
-        None means the contact's own voice (`self.voice`, the worker's default)."""
+        None means the contact's own voice (`self.voice`, the worker's default). On a session leg
+        the session's own voice (#2341 §3)."""
+        if self.leg is not None:
+            return self.leg.voice
         return (self.profile or {}).get("language_voices", {}).get(self.language or "")
 
     def pick_cue(self) -> str | None:
@@ -3514,7 +3732,7 @@ class Call:
                 self.ask = None
                 self.replying_still_there = True
                 self.still_there_since = self.user_starts
-                said = await self.say(STILL_THERE_LINE, kind="still_there", sid=sid)
+                said = await self.say(STILL_THERE_LINE, kind="still_there", sid=sid, leg=ANY_PARTY)
                 st = self.still_there
                 if st is not None and st["say_id"] == sid:
                     if said is None:

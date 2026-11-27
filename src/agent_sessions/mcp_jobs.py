@@ -62,6 +62,10 @@ class Operation:
     link: str = ""
     #: The server id a registration from this resolution takes (its review is staged under it).
     reserved: str = ""
+    #: Update from source (#2427): the existing server this resolution may update (``reserved``
+    #: is then that server's own id), and its source when the link was read.
+    update_of: str = ""
+    current: dict | None = field(default=None, repr=False)
     cancel: threading.Event = field(default_factory=threading.Event, repr=False)
     #: What has been read so far, for the page's progress rows.
     progress: dict = field(default_factory=dict)
@@ -93,6 +97,35 @@ class Operation:
 
 
 _ops: dict[str, Operation] = {}
+
+
+class Stopped(Exception):  # noqa: N818 — words, like the other refusals
+    """The operator stopped this operation (`stop`). Deliberately NOT a `RegistryError`: no
+    generic refusal handler may reword it; the resolver turns it into its ``stopped`` refusal."""
+
+
+_local = threading.local()
+
+
+def stop_requested() -> bool:
+    """Has the operation running on THIS thread been stopped? False outside an operation."""
+    event = getattr(_local, "cancel", None)
+    return event is not None and event.is_set()
+
+
+def raise_if_stopped() -> None:
+    """Called by every wait inside an operation (a lock, a download, a tool run, #2427): a Stop
+    ends it promptly instead of at the wait's own bound."""
+    if stop_requested():
+        raise Stopped("stopped")
+
+
+def _in_operation(op: Operation, fn: Callable[[], dict]) -> dict:
+    _local.cancel = op.cancel
+    try:
+        return fn()
+    finally:
+        _local.cancel = None
 
 
 def request_id(value: object) -> str:
@@ -128,18 +161,37 @@ def start(sid: str, kind: str, op_id: object, fn: Callable[[], dict]) -> Operati
     return op
 
 
-def start_resolve(op_id: object, link: str, fn: Callable[[Operation], dict]) -> Operation:
+def start_resolve(
+    op_id: object,
+    link: str,
+    fn: Callable[[Operation], dict],
+    *,
+    update_of: str = "",
+    current: dict | None = None,
+) -> Operation:
     """Start resolving ``link`` as operation ``op_id`` (no server), or return the resolution
-    already started under that id for the SAME link. Must run on the event loop."""
+    already started under that id for the SAME link. With ``update_of`` (Update from source,
+    #2427) the review is staged under that existing server's id and the result may only update
+    it. Must run on the event loop."""
     op_id = request_id(op_id)
     existing = _ops.get(op_id)
     if existing is not None:
-        if existing.kind != "resolve" or existing.link != link:
+        if existing.kind != "resolve" or existing.link != link or existing.update_of != update_of:
             raise Conflict(
                 "that request_id belongs to another operation or link; resolve with a new one"
             )
         return existing
-    op = Operation(id=op_id, server="", kind="resolve", link=link, reserved=secrets.token_hex(8))
+    if update_of and any(o.update_of == update_of and o.state == "running" for o in _ops.values()):
+        raise Conflict("this server's link is already being read")
+    op = Operation(
+        id=op_id,
+        server="",
+        kind="resolve",
+        link=link,
+        reserved=update_of or secrets.token_hex(8),
+        update_of=update_of,
+        current=current,
+    )
     _ops[op_id] = op
     op.task = asyncio.get_running_loop().create_task(_run(op, lambda: fn(op)))
     _trim()
@@ -165,13 +217,15 @@ def resolution(op_id: object) -> dict:
         raise NotFound(GONE)
     if op.state == "running":
         raise Conflict("the link is still being read")
+    if op.state == "done" and (op.result or {}).get("up_to_date"):
+        raise Conflict("the server is already up to date with its link; there is nothing to apply")
     if op.state != "done" or op.bound is None:
         raise Conflict("that link was refused; nothing can be registered from it")
     if time.time() - op.updated_at > RESOLUTION_TTL_S:
         raise NotFound(GONE)
     if op.consumed:
         raise Conflict("a server was already registered from this resolution; resolve again")
-    return dict(op.bound)
+    return {**op.bound, "update_of": op.update_of}
 
 
 def consume(op_id: str) -> None:
@@ -182,8 +236,10 @@ def consume(op_id: str) -> None:
 
 async def _run(op: Operation, fn: Callable[[], dict]) -> None:
     try:
-        op.result = await asyncio.to_thread(fn)
+        op.result = await asyncio.to_thread(_in_operation, op, fn)
         op.state = "done"
+    except Stopped:
+        op.error, op.state = "stopped", "failed"
     except RegistryError as e:  # InstallError included: words for the operator
         op.error, op.state = str(e), "failed"
         op.details = getattr(e, "facts", None)

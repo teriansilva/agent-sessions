@@ -163,7 +163,8 @@ HEARD_ROUTES = frozenset(
     }
 )
 HEARD_DROPS = frozenset({"echo", "foreign", "no_speech"})
-SAID_KINDS = frozenset({"greeting", "readback", "outcome", "still_there", "farewell"})
+#: `handoff` (#2341): a put-through to an API session and the return, one line each.
+SAID_KINDS = frozenset({"greeting", "readback", "outcome", "still_there", "farewell", "handoff"})
 #: Bounds per conversation (#2137): past them a call counts instead of storing.
 HEARD_DROPPED_MAX = 200
 HEARD_SAID_MAX = 2_000

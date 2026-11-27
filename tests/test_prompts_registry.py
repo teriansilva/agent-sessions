@@ -135,6 +135,9 @@ HTTP_MODULES = frozenset(
         # #2353 a repository link's published release: the npm / PyPI registry's own metadata,
         # through P1b's egress proxy (registry hosts only), never a URL found in that metadata.
         "mcp_gitsource",
+        # #2427 BattleLab's own Go toolchain: go.dev's release list and the tarball it names from
+        # dl.google.com, through `mcp_egress` (those two hosts only), sha256-checked.
+        "mcp_gotool",
         # #2190 the Home Free agent uploads a SHARED artifact's blobs to its own relay's upload
         # path (never a prompt, never a credential beyond the relay's one-time token in the URL)
         "artifactlink",
@@ -165,6 +168,10 @@ POST_SITES = {
     # redirects, no ambient proxy, TLS verified. No prompt; a repository URL in the answer is
     # only parsed (`mcp_gitsource.identity`), never requested.
     ("mcp_gitsource", "_registry_get"): 1,
+    # #2427 one bounded, anonymous GET per read (the release list, then the tarball it names),
+    # to fixed origins, through `mcp_egress` (go.dev + dl.google.com only), no redirects, no
+    # ambient proxy, TLS verified; the tarball is compared with go.dev's sha256 and size.
+    ("mcp_gotool", "_get"): 1,
     ("memory_embeddings", "_request"): 1,  # pinned vetted origin, bounded non-chat vectors
     ("gallery_client", "_get"): 1,  # public signed content; fixed origin, anonymous bounded GET
     # #1259 fixed public GitHub feed, anonymous bounded GET (public `read_asset` since #2082 P3:
@@ -781,10 +788,27 @@ def test_every_id_used_by_a_call_site_is_declared():
             prompts.get(pid)  # raises UnknownPromptError for a typo'd id
 
 
+#: Registered prompts that are never a system message (#2341): their effective text travels to an
+#: agent INSIDE a turn, visibly marked. Each is pinned to the one module that reads it.
+TURN_PROMPTS = {"session_call": "voice_session.py"}
+
+
 def test_every_declared_prompt_is_actually_reached():
     """A registry entry nothing sends is dead config in the operator's Settings panel."""
     used = {pid for path in SRC.rglob("*.py") for _, pid in scan(path)[0]}
-    assert used == set(prompts.IDS)
+    assert used | set(TURN_PROMPTS) == set(prompts.IDS)
+    assert not used & set(TURN_PROMPTS)
+
+
+def test_a_turn_prompt_is_read_through_the_registry_where_it_is_pinned():
+    for pid, module in TURN_PROMPTS.items():
+        readers = [
+            path.name
+            for path in sorted(SRC.rglob("*.py"))
+            if f'prompts.effective("{pid}")' in path.read_text()
+            or f"prompts.effective('{pid}')" in path.read_text()
+        ]
+        assert readers == [module], (pid, readers)
 
 
 # ---- the checker itself ---------------------------------------------------------------

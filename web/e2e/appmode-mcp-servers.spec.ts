@@ -9,7 +9,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { MCP_NEW_PATH, MCP_PATH } from "../src/lib/routes";
+import { MCP_NEW_PATH, MCP_PATH, mcpServerUpdatePath } from "../src/lib/routes";
 import { PY_STACK_AVAILABLE, startStack, type Stack } from "./appmode";
 import { HOOK_TIMEOUT_MS } from "./harness";
 
@@ -82,6 +82,42 @@ test("register a remote server with a new credential; the real check's failure i
   expect(detail.json.checks[0]).toMatchObject({ scope: "shared", outcome: "failed" });
   for (const answer of [vars.text, servers.text, detail.text]) expect(answer).not.toContain(SECRET);
   expect(await page.locator("body").evaluate((b) => b.innerHTML)).not.toContain(SECRET);
+});
+
+test("Update from source is only for a repository-link server; a Go module is never typed in (#2427)", async ({ page }) => {
+  const servers = await read(page, "/api/mcp/servers");
+  const sid = servers.json.servers[0].id as string;
+  // The page offers no update from a source this server doesn't have, and reads nothing.
+  await page.goto(`${base()}${mcpServerUpdatePath(sid)}`);
+  await expect(page.getByTestId("mcp-update-no-origin")).toContainText("wasn’t added from a repository link");
+  await expect(page.getByRole("button", { name: "Install" })).toHaveCount(0);
+  await page.goto(`${base()}${MCP_PATH}/${sid}`);
+  await page.getByTestId("mcp-server-menu").click();
+  await expect(page.getByRole("menuitem", { name: "Update from source…" })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  // The real routes say the same in words: no link to read again, and no typed-in Go module.
+  const answers = await page.evaluate(async (sid) => {
+    const csrf = (await (await fetch("/api/config")).json()).csrf as string;
+    const headers = { "X-CSRF-Token": csrf, "Content-Type": "application/json" };
+    const post = async (path: string, body: unknown) => {
+      const r = await fetch(path, { method: "POST", headers, body: JSON.stringify(body) });
+      return { status: r.status, detail: ((await r.json()) as { detail?: string }).detail ?? "" };
+    };
+    return {
+      update: await post("/api/mcp/servers/resolve-link", { server_id: sid, request_id: crypto.randomUUID() }),
+      go: await post("/api/mcp/servers", {
+        name: "typed-go",
+        source: { kind: "go", package: "git.example.org/x/server", version: "v1.0.0" },
+      }),
+    };
+  }, sid);
+  expect(answers.update).toEqual({
+    status: 422,
+    detail: "this server was not added from a repository link; update it by version",
+  });
+  expect(answers.go.status).toBe(422);
+  expect(answers.go.detail).toMatch(/a Go module is added only from its repository link/);
+  expect((await read(page, "/api/mcp/servers")).json.servers).toHaveLength(1);
 });
 
 test("the server page shows the failed check in Activity, and Remove keeps the credential", async ({ page }) => {

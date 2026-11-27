@@ -205,6 +205,50 @@ English-only: on a call in another language, HQ reads that card and asks you to 
 screen. If your speech server can tell languages apart, a "send it" it heard as another language
 is ignored, even on an English call.
 
+## Calling an API session
+
+You can also call an **API session** directly: it hears you and answers in its own voice. On the
+session's composer, **Call** (the phone, before Send) starts the call. The mic beside it is still
+hold-to-dictate, unchanged.
+
+- What you say becomes the session's next message, exactly as if you typed it in its composer. It
+  goes through the same route, so a session that is working queues it, an archived one refuses it,
+  and the message shows in its chat as heard.
+- The first message of a call starts with a visible **[on a call]** note asking the agent for a
+  short spoken answer. Later messages carry the note alone. You can edit the note's text in
+  **Settings → Prompts → An API session — on a call**.
+- The session's last message is read out in its own voice: never the voice of the General on
+  the line. Markdown is left out, code and tables are replaced by "I've put the code in the chat.",
+  and a long answer stops with "The rest is in the chat."
+- While it works you hear short fixed lines from its tool calls ("Running a command.", "Reading
+  files."), never the agent's own text. **Stop** in the call's working band, or saying "stop",
+  stops its turn. The call stays open.
+- If a message's delivery is uncertain, the session says "I can't tell whether that reached
+  docs-refresh; check its chat." It is never sent again automatically.
+- When the session asks permission to run something, it reads the command and asks "Allow it
+  once, refuse it, or skip it?". Say **allow it** or **refuse it**; **skip** leaves it waiting in
+  its chat. "Allow always" is never by voice: that stays a screen decision. If you answered it on
+  screen meanwhile, the call says so and sends nothing. A question from the agent is announced
+  ("docs-refresh needs a decision from you") and answered in its chat.
+- Say **"call me back when you're done"** while the session works: it says "I'll call you back
+  when this is done." and the call ends. When that turn finishes, stops or fails you get a
+  notification ("docs-refresh is done.") with **Call**, in the bell and as a push where you have
+  them on. It never rings. The session's pane shows "Calls you back when this turn finishes"
+  with **Cancel** until then.
+- The session's voice can be changed on the call screen (**Voice**). The pick is kept for its
+  next calls.
+- A session that **skips permission prompts** shows its warning chip on the call screen for the
+  whole call: what you say runs without asking.
+- On a call with HQ, ask to be put through ("put me through to the docs session"). HQ says
+  "Putting you through to docs-refresh." and the session picks up in its own voice. **Stay with
+  HQ** on the transfer card cancels it.
+- Say **"back to HQ"**, or tap **Back to HQ**, to hand the call to HQ. HQ's conversation records
+  the hand-off as one line; nothing the session said is written into it or sent to HQ's model.
+  Back to HQ needs HQ's AI endpoint; a direct call to a session needs only the speech endpoints.
+
+Only API sessions take calls. Terminal sessions, archived sessions and agents that were removed
+say "… can't take calls right now."
+
 ## Voices and languages
 
 Each General has their own voice, speaking style and speed. Defaults match their personality, and

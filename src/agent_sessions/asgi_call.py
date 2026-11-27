@@ -36,6 +36,11 @@ ACT_ADMIT = "battlelab_act_admit"
 #: last_turn, verb}``, what the card bound, which the structured routes admit it by
 #: (`session_driver.check`). Like `IN_PROCESS`, no HTTP client can set it.
 DRIVE = "battlelab_drive"
+#: The scope key a call's session leg sets (#2341): the request carries the Commander's OWN words
+#: spoken to an API session on a call (or their spoken Stop), not HQ's. The structured routes
+#: treat it as the Commander's request: it takes a session HQ drives over, as typing does
+#: (#2397). Only `voice_session` sets it (pinned by a source scan). No HTTP client can set it.
+COMMANDER = "battlelab_commander"
 #: The headers a confirmed operation forwards, lowercase as ASGI carries them.
 FORWARDED = (b"cookie", b"x-csrf-token", b"origin")
 #: The largest response body kept. Every catalog route answers a small JSON object.
@@ -118,13 +123,17 @@ async def call(
     form: tuple[str, str, bytes] | None = None,
     act_admit=None,
     drive: dict | None = None,
+    commander: bool = False,
 ) -> Response:
     """Send ``method path`` with ``body`` (JSON) through ``app`` as ``operator``. ``query`` is a
     fixed string the caller authors (a facts read), never part of a catalog path. ``form`` is
     instead ONE file part ``(field, file name, bytes)`` as a bounded multipart body (#1786: a
     secret file moved into the Library through the same upload route the page uses).
     ``act_admit``: an HQ act's grant check (#2391), carried to the route as `ACT_ADMIT`.
-    ``drive``: an HQ drive request's binding (#2397), carried to the route as `DRIVE`."""
+    ``drive``: an HQ drive request's binding (#2397), carried to the route as `DRIVE`.
+    ``commander``: the Commander's own words on a call (#2341), carried as `COMMANDER`."""
+    if commander and drive is not None:
+        raise ValueError("a request is the Commander's or an HQ drive request, not both")
     if not path.startswith("/") or "?" in path or "#" in path:
         raise ValueError("a catalog path is an absolute path with no query")
     if form is not None and body is not None:
@@ -157,6 +166,7 @@ async def call(
         IN_PROCESS: True,
         **({ACT_ADMIT: act_admit} if act_admit is not None else {}),
         **({DRIVE: dict(drive)} if drive is not None else {}),
+        **({COMMANDER: True} if commander else {}),
     }
     sent = {"done": False}
 

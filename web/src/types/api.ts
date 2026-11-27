@@ -1418,6 +1418,16 @@ export interface AskMcpLink {
   runs: string;
   license: string;
   disclaimer: string;
+  /** A Go module (`kind: "go"`, #2427): its home repository and whether the link mirrors it (the
+   *  same commit), the ref its version was tagged at, the Go its go.mod asks for, the main package it
+   *  builds and the binary's name, and the toolchain version that builds it. */
+  home?: string;
+  mirror?: boolean;
+  ref?: string;
+  go?: string;
+  command?: string;
+  entrypoint?: string;
+  toolchain?: string;
 }
 
 /** One file of an imported skill as the card's table shows it. `bytes` is null when the server

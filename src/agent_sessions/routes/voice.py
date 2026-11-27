@@ -10,8 +10,11 @@
 * ``GET  /api/voice/local`` — the speech set up on this machine (#1397 P4): installed, running.
 * ``POST /api/voice/local/use`` — point both endpoints at it, after the compatibility check; its
   token is read from its 0600 file server-side and never returned.
-* ``POST /api/voice/calls`` — admit a call (one per instance) into an HQ conversation.
+* ``POST /api/voice/calls`` — admit a call (one per instance) into an HQ conversation, or with
+  ``party`` (an API session's key, #2341) straight to that session; needs no HQ endpoint then.
 * ``DELETE /api/voice/calls/{id}`` — end it.
+* ``GET  /api/voice/callbacks?key=`` — the "call me back" waiting on a session (#2341 §4).
+* ``DELETE /api/voice/callbacks/{id}`` — Cancel it on the session's pane.
 * ``WS /ws/voice/{id}`` — the call itself: binary PCM16 both ways, JSON control.
 
 Every HTTP route is ``logged_in``; every state change is ``csrf_guard`` (CSRF + Origin). The socket
@@ -41,7 +44,9 @@ from .. import (
     prefs,
     speech_conformance,
     speech_endpoints,
+    voice_callbacks,
     voice_calls,
+    voice_session,
     voice_setup,
 )
 from ..auth import AuthConfig, current_csrf, origin_matches, session_uid
@@ -408,6 +413,14 @@ def register(
             reason = "HQ's AI endpoint is not configured"
         elif _over_home_free(request):
             reason = HOME_FREE_REASON
+        # A call to an API session (#2341 §6b) needs speech only: it runs on the session's model.
+        session_reason = ""
+        if not configured:
+            session_reason = "set up calls first: speech endpoints and voices"
+        elif not ready:
+            session_reason = why
+        elif _over_home_free(request):
+            session_reason = HOME_FREE_REASON
         current = voice_calls.REGISTRY.current
         if os.environ.get("AGENT_SESSIONS_VOICE_PYTHON"):
             runtime_note = "the call runtime is overridden (AGENT_SESSIONS_VOICE_PYTHON)"
@@ -415,6 +428,7 @@ def register(
             runtime_note = await asyncio.to_thread(voice_setup.stale) or ""
         if not ready and configured and voice_setup.runtime_python() is None:
             reason = "the call runtime isn't installed: run `agent-sessions voice setup`"
+            session_reason = reason
         return JSONResponse(
             {
                 "configured": configured,
@@ -424,6 +438,8 @@ def register(
                 and bool(ai.get("configured"))
                 and not _over_home_free(request),
                 "reason": reason,
+                "sessions": configured and ready and not _over_home_free(request),
+                "session_reason": session_reason,
                 "runtime_note": runtime_note,
                 "destinations": _destinations(block),
                 "captions": block["captions"],
@@ -448,17 +464,32 @@ def register(
             return JSONResponse({"detail": "calls are not set up", "code": "unconfigured"}, 409)
         if await heal_tts_lists():  # the Generals' own voices and styles, before the profile
             block = await asyncio.to_thread(hq_calls_settings.get)
-        if not prefs.public_ai_review().get("configured"):
+        party = body.get("party")
+        # HQ's endpoint is checked for an HQ party only (#2341 §6b): a session answers on its own.
+        if party is None and not prefs.public_ai_review().get("configured"):
             return JSONResponse({"detail": "HQ's AI endpoint is not configured", "code": "ai"}, 409)
         ready, why = await voice_calls.runtime_ready()
         if not ready:
             return JSONResponse({"detail": why, "code": "runtime"}, status_code=409)
+        if body.get("party") is not None and not isinstance(body.get("party"), str):
+            return JSONResponse({"detail": "party must be a session key"}, status_code=422)
         contact = hq_contacts.resolve(body.get("contact"))
         cid = body.get("conversation_id")
         if cid is not None:
             if not ask_store.valid_cid(cid) or not await asyncio.to_thread(ask_store.exists, cid):
                 return JSONResponse({"detail": "conversation not found"}, status_code=404)
         profile = voice_calls.profile_for(block, contact)
+        operator = asgi_call.Operator.from_scope(request.scope)
+        leg = None
+        if party is not None:
+            # The session the Commander called (#2341 §1): admitted only as an API session that
+            # can take a turn now, read as the operator. Anything else is its FIXED line.
+            try:
+                leg = await voice_session.resolve(
+                    request.app, operator, party, block, profile["voice"]
+                )
+            except voice_session.Unavailable as e:
+                return JSONResponse({"detail": e.line, "code": "unavailable", "why": e.why}, 409)
         # Reserve the one call slot FIRST: a refused (busy) call must not leave an empty
         # conversation behind (each one counts against the store's retention).
         new_cid = ask_store.new_cid() if cid is None else None
@@ -469,14 +500,20 @@ def register(
                 contact=contact,
                 voice=profile["voice"],
                 profile=profile,
-                operator=asgi_call.Operator.from_scope(request.scope),
+                operator=operator,
                 app=request.app,
                 registry=registry,
                 session_csrf=current_csrf(cfg, request) or "",
             )
         except voice_calls.CallError as e:
             return JSONResponse({"detail": e.detail, "code": e.code}, status_code=e.status)
-        if new_cid is not None:
+        if leg is not None:
+            # Straight to the session: its HQ conversation is created only if the Commander goes
+            # to HQ (`Call.switch_party`), so a direct call leaves no empty conversation behind.
+            call.leg = leg
+            call.party_gen = 1
+            call.hq_created = cid is not None
+        if new_cid is not None and leg is None:
             write = asyncio.ensure_future(asyncio.to_thread(ask_store.create, new_cid))
             try:
                 await asyncio.shield(write)
@@ -512,6 +549,31 @@ def register(
             return JSONResponse({"detail": "no such call"}, status_code=404)
         await call.end("hung_up")
         return JSONResponse(call.public())
+
+    @app.get("/api/voice/callbacks")
+    async def list_callbacks(key: str = "", _u: str = Depends(logged_in)) -> JSONResponse:
+        """The call-backs waiting (#2341 §4): one session's (``key``), or every one."""
+        if key and not voice_callbacks.KEY_RE.match(key):
+            return JSONResponse({"detail": "not a session key"}, status_code=422)
+        rows = await asyncio.to_thread(voice_callbacks.pending, key or None)
+        return JSONResponse(
+            {
+                "callbacks": [
+                    {"id": r["id"], "key": r["key"], "turn_id": r["turn_id"], "at": r.get("at")}
+                    for r in rows
+                ]
+            }
+        )
+
+    @app.delete("/api/voice/callbacks/{cb_id}")
+    async def cancel_callback(
+        cb_id: str, _u: str = Depends(logged_in), _c: None = Depends(csrf_guard)
+    ) -> JSONResponse:
+        if not voice_callbacks.ID_RE.match(cb_id):
+            return JSONResponse({"detail": "no such call-back"}, status_code=404)
+        if not await asyncio.to_thread(voice_callbacks.remove, cb_id):
+            return JSONResponse({"detail": "no such call-back"}, status_code=404)
+        return JSONResponse({"cancelled": True})
 
     async def _end_call_on_logout() -> None:
         await voice_calls.REGISTRY.end_all("signed_out")
@@ -628,6 +690,15 @@ def register(
                     if ev.get("t") == "stop":
                         # Stop on the call screen (#2076): the running turn, never the call.
                         call.stop_turn()
+                    if ev.get("t") == "back":
+                        # Back to HQ on a session leg (#2341 §1): HQ's conversation picks up.
+                        await voice_session.back_to_hq(call)
+                    if ev.get("t") == "voice":
+                        # The session's voice, picked on the call screen (#2341 §3).
+                        await voice_session.set_voice(call, ev.get("voice"))
+                    if ev.get("t") == "stay":
+                        # Stay with HQ (#2341 §7): the put-through under way is dropped.
+                        await call.cancel_transfer()
                     if ev.get("t") == "card_decided":
                         await call.on_card_decided(ev.get("id"))
                     if ev.get("t") == "mute":

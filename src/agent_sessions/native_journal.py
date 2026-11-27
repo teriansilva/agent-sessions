@@ -729,8 +729,49 @@ def _prewarm(root: Path, session_id: str) -> list | None:
         return None
 
 
+#: Active segments this process already fsynced, by exact identity (#2435). Every observation
+#: crossed `os.fsync`, so the session-list walk fsynced every API conversation on every pass:
+#: 1.8 ms each idle on the operator's install, and two thirds of a busy walk's GIL handoffs.
+_SYNCED: OrderedDict[tuple, None] = OrderedDict()
+_SYNCED_MAX = 16_384
+_SYNCED_LOCK = threading.Lock()
+#: A segment modified this recently is never recorded: two writes inside one timestamp tick that
+#: leave its size unchanged would share an identity (scancache's racy window, git's answer).
+_SYNCED_RACY_NS = 1_000_000_000
+
+
+def _durable_for_read(view) -> None:
+    """The observation's fsync, unless THIS process already fsynced this exact segment.
+
+    The rule it keeps: bytes a writer left without syncing (it died between write and sync) are
+    never observed before they are durable. An fsync made every byte the segment held durable. A
+    segment whose identity is unchanged since then holds no byte that was not:
+    * the identity is (dev, ino, size, mtime_ns, ctime_ns) of the checked descriptor;
+    * an append moves the size and mtime, and an in-place rewrite moves mtime or ctime, even with
+      the mtime restored;
+    * a replaced file has another inode.
+    An identity is recorded only once its last change is older than the racy window, so a later
+    write cannot share it. Never a shortcut around the lock, the private-file checks or the
+    stability check: those run on every observation, unchanged."""
+    st = view.st
+    key = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+    with _SYNCED_LOCK:
+        if key in _SYNCED:
+            _SYNCED.move_to_end(key)
+            return
+    os.fsync(view.fd)
+    if time.time_ns() - max(st.st_mtime_ns, st.st_ctime_ns) < _SYNCED_RACY_NS:
+        return
+    with _SYNCED_LOCK:
+        _SYNCED[key] = None
+        while len(_SYNCED) > _SYNCED_MAX:
+            _SYNCED.popitem(last=False)
+
+
 def observe(root: Path, session_id: str, use: Callable):
-    """``use(view, load)`` under the chain's SHARED lock, after its private-file checks and fsync;
+    """``use(view, load)`` under the chain's SHARED lock, after its private-file checks and fsync
+    (skipped only for a segment this process already fsynced in exactly this state,
+    `_durable_for_read`);
     ``load()`` folds the whole chain (`read`). Appends hold the lock exclusively, so this never
     observes a partial transaction; a writer that died between write and sync must not have its
     bytes observed (and acted on) before they are durable, so it still crosses fsync.
@@ -748,7 +789,7 @@ def observe(root: Path, session_id: str, use: Callable):
                     st = view.st
                     if st.st_size > MAX_BYTES:
                         raise ValueError("conversation is not a private bounded journal")
-                    os.fsync(view.fd)
+                    _durable_for_read(view)
                     result = use(view, lambda: _load(view, root, session_id))
                     after = os.fstat(view.fd)
                     if (st.st_size, st.st_mtime_ns, st.st_ctime_ns) != (

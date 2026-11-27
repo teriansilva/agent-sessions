@@ -10,6 +10,7 @@ push-fanout	notification	notifications:fanout	self	write	none	warm	unscoped	send
 push-send	notification	webpush:send	self	write	none	warm	unscoped	the Web Push transport; the payload carries title, project and link only
 notify-routes	notification	notify_routes:pass_once	self	write	none	cold	unscoped	sends bell events to the Commander's own Telegram, Matrix or mail; becomes per-user
 needs-you	notification	needs_you_notify:sync_once	session	view	none	warm	unscoped	the one needs-you producer; per-recipient episodes in P3a, still one producer
+voice-callback	notification	voice_callbacks:sweep	session	view	none	warm	unscoped	one notice per call-back when its session turn settles (#2341); through bell-add and push-fanout
 supervisor	background	orchestrator:run_pass	session	send	none	warm	unscoped	the supervisor pass can deliver into sessions; carries the initiating actor in P4
 missions-advance	background	mission_runner:advance	mission	intervene	none	warm	unscoped	advances a running mission; reauthorizes at each effect handoff in P4
 mission-dispatch	background	mission_dispatch:run	mission	intervene	none	warm	unscoped	dispatches mission steps into sessions

@@ -71,7 +71,9 @@
 
 .kv {
   display: grid;
-  grid-template-columns: 76px minmax(0, 1fr);
+  /* A label longer than the column ("DEPENDENCIES", "MODULE HASH") widens it instead of running
+   * into its value (#2427). */
+  grid-template-columns: minmax(76px, min-content) minmax(0, 1fr);
   gap: 5px var(--sp-3);
   margin: 0;
   font-size: var(--fs-meta);
@@ -506,7 +508,7 @@
     justify-content: center;
   }
   .kv {
-    grid-template-columns: 64px minmax(0, 1fr);
+    grid-template-columns: minmax(64px, min-content) minmax(0, 1fr);
   }
   .teamRow {
     grid-template-columns: 20px minmax(0, 1fr);

@@ -113,6 +113,7 @@ STORE_ENV_PATHS: dict[str, str] = {
     "AGENT_SESSIONS_CLUSTERS": ".config/agent-sessions/clusters.json",  # #1997
     "AGENT_SESSIONS_LINEAGE": ".config/agent-sessions/lineage.json",  # #2325
     "AGENT_SESSIONS_SESSION_INDEX": ".config/agent-sessions/session-index.db",  # #2373
+    "AGENT_SESSIONS_VOICE_CALLBACKS": ".config/agent-sessions/voice-callbacks.json",  # #2341
     "AGENT_SESSIONS_VAPID_KEYS": ".config/agent-sessions/vapid.json",
     "AGENT_SESSIONS_PROFILE_DIR": ".config/agent-sessions/profile",  # #1931 operator avatar
     "AGENT_SESSIONS_HOME": ".local/share/agent-sessions",
@@ -758,6 +759,7 @@ def _isolate_prefs(tmp_path, monkeypatch) -> None:
         ("AGENT_SESSIONS_CLUSTERS", "clusters.json"),  # #1997
         ("AGENT_SESSIONS_LINEAGE", "lineage.json"),  # #2325
         ("AGENT_SESSIONS_SESSION_INDEX", "session-index.db"),  # #2373
+        ("AGENT_SESSIONS_VOICE_CALLBACKS", "voice-callbacks.json"),  # #2341 call me back
     ):
         monkeypatch.setenv(var, str(tmp_path / ".config" / "agent-sessions" / name))
     from agent_sessions import template_secrets
@@ -1572,3 +1574,14 @@ def _close_federation_anchors():
     fed_store = sys.modules.get("agent_sessions.federation.store")
     if fed_store is not None:
         fed_store.close_anchors()
+
+
+@pytest.fixture
+def racy_by_mtime(monkeypatch):
+    """For walk-memo tests that age a file with ``os.utime`` to get past the racy window: utime
+    backdates the mtime but always sets the ctime to now, which no test can backdate. This judges
+    the racy window by the mtime alone; the identity key still carries the ctime. The real
+    rule (the later of mtime and ctime) is pinned on its own in `tests/test_scancache.py`."""
+    from agent_sessions import scancache
+
+    monkeypatch.setattr(scancache, "_changed_at", lambda mtime_ns, ctime_ns: mtime_ns)

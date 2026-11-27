@@ -79,3 +79,62 @@ test("the link card shows where the package comes from, the release, and the dis
   expect(body.lastElementChild).toBe(disclaimer);
   expect(screen.getByRole("button", { name: "Register" })).toBeEnabled();
 });
+
+const GO_LINE =
+  "Built from this commit with the Go toolchain. No install scripts run; every download is verified against sum.golang.org.";
+const MODULE = "git.b4mad.industries/agentic-forges/forgejo-mcp/v3";
+
+test("a Go link's card (#2427): the Go facts, the computed dependencies, the build line last", async () => {
+  vi.mocked(api.askProposalContent).mockResolvedValue({
+    kind: "mcp_link",
+    link: {
+      repository: "codeberg.org/goern/forgejo-mcp",
+      commit: "9c3fa38",
+      manifest: "go.mod",
+      kind: "go",
+      package: MODULE,
+      version: "v3.3.0",
+      registry: "proxy.golang.org",
+      record_field: "",
+      names: "",
+      integrity: "h1:a7TU1kvcAEAt",
+      dependencies: 46,
+      install_scripts: "",
+      runs: "forgejo-mcp (stdio), built with go1.27.4",
+      license: "",
+      disclaimer: GO_LINE,
+      home: "git.b4mad.industries/agentic-forges/forgejo-mcp",
+      mirror: true,
+      ref: "refs/tags/v3.3.0",
+      go: "1.26.0",
+      command: MODULE,
+      entrypoint: "forgejo-mcp",
+      toolchain: "1.27.4",
+    },
+    server: JSON.stringify({ name: "forgejo-mcp", source: { kind: "go", package: MODULE, version: "v3.3.0" } }, null, 2),
+  });
+  render(
+    <MemoryRouter>
+      <OperationCard p={{ ...card, title: "forgejo-mcp" }} deciding={false} error={null} onConfirm={vi.fn()} onDismiss={vi.fn()} />
+    </MemoryRouter>,
+  );
+  const body = await screen.findByTestId("ask-mcp-link");
+  expect(body).toHaveAttribute("data-kind", "go");
+  expect(within(body).getByTestId("ask-mcp-link-source")).toHaveTextContent("codeberg.org/goern/forgejo-mcp @ 9c3fa38");
+  expect(body).toHaveTextContent(`go.mod → Go module ${MODULE}`);
+  expect(body).toHaveTextContent("same commit as the link (the link is a mirror)");
+  expect(body).toHaveTextContent("v3.3.0 · the tag at this commit");
+  expect(body).toHaveTextContent("forgejo-mcp · the module root");
+  expect(body).toHaveTextContent("Go 1.26.0");
+  expect(body).toHaveTextContent("h1:a7TU1kvcAEAt… · verified against sum.golang.org");
+  expect(body).toHaveTextContent("46 modules in its build · each verified against sum.golang.org");
+  expect(body).toHaveTextContent("go1.27.4 · BattleLab’s own, sha256-verified · cgo off");
+  expect(body).not.toHaveTextContent("Installs the published release");
+  // The label and its value are separate cells — "DEPENDENCIES46" was one run of text (#2427).
+  const deps = within(body).getByText("Dependencies");
+  expect(deps.tagName).toBe("DT");
+  expect(deps.nextElementSibling).toHaveTextContent(/^46 modules/);
+  const line = within(body).getByTestId("ask-mcp-disclaimer");
+  expect(line).toHaveTextContent(GO_LINE);
+  expect(body.lastElementChild).toBe(line);
+});

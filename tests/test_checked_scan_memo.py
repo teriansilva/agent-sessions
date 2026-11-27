@@ -20,6 +20,8 @@ import agent_sessions.engines.codex as cdx
 from agent_sessions import scancache, scanner
 from agent_sessions.engines.copilot import CopilotProvider
 
+pytestmark = pytest.mark.usefixtures("racy_by_mtime")
+
 _SID = "11111111-2222-4333-8444-555555555555"
 _U1 = "019e2ba1-1590-7003-8e4a-51ab62cec96e"
 

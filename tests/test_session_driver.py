@@ -264,6 +264,46 @@ def test_hq_reaches_a_sessions_turns_only_through_a_drive_request(app, host, pro
     assert r.status == 403
 
 
+def test_a_calls_spoken_turn_is_the_commanders_and_takes_the_session_over(app, host, project):
+    """#2341 on #2397: a call's session leg submits the Commander's own spoken words in process,
+    marked `asgi_call.COMMANDER`. It is admitted as their typing is (no 403 side-door refusal),
+    and a session HQ drives becomes theirs before the turn is submitted."""
+    key, _cid = _driven(app, project)
+    assert session_driver.view(key)["who"] == "hq"
+    r = asyncio.run(
+        asgi_call.call(
+            app.app, _operator(app), "POST", f"/api/structured/sessions/{key}/turns",
+            {"operation_id": ident(), "text": "spoken on a call"}, commander=True,
+        )
+    )  # fmt: skip
+    assert r.status in (200, 202), r.body
+    assert session_driver.view(key)["who"] == "commander"
+    assert "spoken on a call" in _texts(key)
+    # A Commander request never carries an HQ drive binding as well.
+    with pytest.raises(ValueError):
+        asyncio.run(
+            asgi_call.call(
+                app.app, _operator(app), "POST", f"/api/structured/sessions/{key}/turns",
+                {"operation_id": ident(), "text": "x"}, commander=True, drive={"verb": "send"},
+            )
+        )  # fmt: skip
+
+
+def test_only_the_calls_session_leg_marks_a_request_the_commanders():
+    """The `commander` mark lifts HQ's drive admission, so it is set in ONE module: the call's
+    session leg, whose requests carry the Commander's own spoken words (#2341)."""
+    import pathlib
+    import re
+
+    src = pathlib.Path(asgi_call.__file__).parent
+    marked = {
+        p.relative_to(src).as_posix()
+        for p in src.rglob("*.py")
+        if re.search(r"commander\s*=\s*True|asgi_call\.COMMANDER\s*:", p.read_text())
+    }
+    assert marked == {"voice_session.py"}, marked
+
+
 # ---- the take-over races, send ------------------------------------------------------------------
 
 

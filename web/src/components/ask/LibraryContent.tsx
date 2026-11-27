@@ -14,6 +14,7 @@ import { ApiError, api } from "../../lib/api";
 import type { AskImportRow, AskLibraryContent, AskMcpLink, AskOperationCard } from "../../types/api";
 import c from "./AskCards.module.css";
 import { libraryHref } from "./libraryHref";
+import { GO_DISCLAIMER, goCommandWhere, goDependencyWords, goVersionWords, toolchainWords } from "../mcp/repoLinkModel";
 import { RELIES_NOTE, ReliesList, SpecialistContent } from "./SpecialistContent";
 
 const PREVIEW_LINES = 12;
@@ -164,6 +165,7 @@ function ImportBody({ content }: { content: Extract<AskLibraryContent, { kind: "
  *  declares, the registry record that names it, then the published release P1b reviewed — and the
  *  disclaimer last, directly above Register. Words only: nothing here is built into the request. */
 function McpLinkBody({ link, server }: { link: AskMcpLink; server: string }) {
+  if (link.kind === "go") return <GoLinkBody link={link} server={server} />;
   const kind = link.kind === "pypi" ? "PyPI" : "npm";
   return (
     <div data-testid="ask-mcp-link">
@@ -220,6 +222,76 @@ function McpLinkBody({ link, server }: { link: AskMcpLink; server: string }) {
         <TriangleAlert size={14} aria-hidden />
         <div>
           <strong>{link.disclaimer || "Installs the published release; not built from this commit."}</strong>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** A Go module from a repository link (#2427): the same facts as the wizard's Review — the module
+ *  at the commit, its home (a mirror only at the same commit), the command, the Go it needs, the
+ *  module hash, the dependencies in its build, the toolchain — and the build line last. */
+function GoLinkBody({ link, server }: { link: AskMcpLink; server: string }) {
+  return (
+    <div data-testid="ask-mcp-link" data-kind="go">
+      <dl className={c.kv}>
+        <dt>Source</dt>
+        <dd className={c.mono} data-testid="ask-mcp-link-source">
+          {link.repository} @ {link.commit}
+        </dd>
+        <dt>Declares</dt>
+        <dd>
+          <span className={c.mono}>go.mod</span> → Go module <span className={c.mono}>{link.package}</span>
+        </dd>
+        {link.home ? (
+          <>
+            <dt>Home</dt>
+            <dd>
+              <span className={c.mono}>{link.home}</span> ·{" "}
+              {link.mirror ? "same commit as the link (the link is a mirror)" : "the link itself"}
+            </dd>
+          </>
+        ) : null}
+      </dl>
+      <div className={c.blockLabel}>The Go module</div>
+      <dl className={c.kv}>
+        <dt>Module</dt>
+        <dd className={c.mono}>{link.package}</dd>
+        <dt>Version</dt>
+        <dd>
+          <span className={c.mono}>{link.version}</span> · {goVersionWords({ ref: link.ref ?? "", version: link.version })}
+        </dd>
+        <dt>Command</dt>
+        <dd>
+          <span className={c.mono}>{link.entrypoint}</span> · {goCommandWhere(link.command, link.package)}
+        </dd>
+        {link.go ? (
+          <>
+            <dt>Needs</dt>
+            <dd>Go {link.go}</dd>
+          </>
+        ) : null}
+        {link.integrity ? (
+          <>
+            <dt>Module hash</dt>
+            <dd>
+              <span className={c.mono}>{link.integrity}…</span> · verified against sum.golang.org
+            </dd>
+          </>
+        ) : null}
+        <dt>Dependencies</dt>
+        <dd>{goDependencyWords(link.dependencies)}</dd>
+        <dt>Toolchain</dt>
+        <dd className={c.mono}>
+          {toolchainWords(link.toolchain ? { version: link.toolchain, sha256: "", platform: "" } : undefined)}
+        </dd>
+      </dl>
+      <div className={c.blockLabel}>Registers</div>
+      <Folded text={server} testid="ask-library-file" />
+      <div className={c.caution} role="note" data-testid="ask-mcp-disclaimer">
+        <TriangleAlert size={14} aria-hidden />
+        <div>
+          <strong>{link.disclaimer || GO_DISCLAIMER}</strong>
         </div>
       </div>
     </div>

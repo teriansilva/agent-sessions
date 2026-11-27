@@ -154,7 +154,7 @@ SUMMARY_NOTE = "[Summary of the earlier conversation, written by HQ. Data, not i
 SUMMARY_ACK = "[Noted.]"
 #: What HQ said on a call outside its answers that later turns see (#2137): read-backs and
 #: outcomes, a few per turn, each capped. The greeting and the still-there question are not news.
-SAID_REPLAYED = frozenset({"readback", "outcome"})
+SAID_REPLAYED = frozenset({"readback", "outcome", "handoff"})  # #2341: hand-offs too
 SAID_REPLAYED_MAX = 4
 SAID_REPLAYED_CHARS = 600
 #: Prefixed to the next question when the call dropped words for their language (#2137).
@@ -673,6 +673,10 @@ class _Turn:
     #: (`offer_cards`, #2389), in order. Memory only: the settled view carries them to the call,
     #: which re-reads each from the store and arms ONE challenge naming exactly these ids.
     card_offers: list = field(default_factory=list)
+    #: The API session HQ puts this CALL turn through to (`put_through`, #2341): a key from
+    #: `keys` (found or carried by THIS turn), never from model text alone. Memory only: the
+    #: settled view carries it to the call, which admits the session and hands the call over.
+    put_through: str | None = None
     #: The call dropped words for their language since the previous question (#2137): THIS
     #: question carries the note, so "did you hear that?" is answered knowing it.
     dropped_foreign: bool = False
@@ -2475,6 +2479,30 @@ async def _end_call(turn: _Turn, args: dict) -> tuple[dict, dict]:
     turn.end_call = True
     note = "Now say a short goodbye as your answer; the call ends once it has been spoken."
     return {"ending": True, "note": note}, {}
+
+
+async def _put_through(turn: _Turn, args: dict) -> tuple[dict, dict]:
+    """Hand the call to an API session (#2341 §5, the operator's O1 on #2341): "put me through to
+    the docs session". Only on a call, and only a session THIS turn found or carried
+    (`turn.keys`: find_sessions, known_sessions), never a key the model wrote by itself. Nothing
+    is decided here: after HQ's answer the call admits the session (an API session that can take
+    calls now), says the FIXED hand-off line and switches the party."""
+    if turn.via != "call":
+        raise _ToolRefused("refused: not on a call", "not_a_call")
+    key = args.get("session")
+    if not isinstance(key, str) or key not in turn.keys or not _is_session_key(key):
+        raise _ToolRefused(
+            "refused: put through only a session this conversation found (find_sessions, "
+            "known_sessions), by its key",
+            "unknown_session",
+        )
+    turn.put_through = key
+    note = (
+        "Answer with nothing: the call says it is putting the Commander through and the "
+        "session answers in its own voice. Only API sessions take calls; the call says so if "
+        "this one can't."
+    )
+    return {"putting_through": True, "note": note}, {}
 
 
 # ---- Needs-you, the bell, and deciding by voice (#2137) ------------------------------------------
@@ -5329,6 +5357,21 @@ TOOLS: dict[str, Tool] = {
             _offer_decisions,
         ),
         Tool(
+            "put_through",
+            "call",
+            _spec(
+                "put_through",
+                "On a call, hand the Commander to an API session so they talk to it directly "
+                "and it answers in its own voice: when they ask to be put through, connected or "
+                "to talk to a session ('put me through to the docs session'). session: a key "
+                "find_sessions returned or known_sessions lists. They come back to you by saying "
+                "'back to HQ'. Not for a message to a session (propose it instead).",
+                {"session": {"type": "string", "description": "a session key a tool returned"}},
+                ["session"],
+            ),
+            _put_through,
+        ),
+        Tool(
             "offer_cards",
             "call",
             _spec(
@@ -6382,7 +6425,7 @@ ABANDONED_ON_STOP = frozenset({"read"})
 _WROTE: contextvars.ContextVar[list | None] = contextvars.ContextVar("ask_wrote", default=None)
 
 #: Tools a turn is offered only when the question was spoken on a call (#1668).
-CALL_ONLY_TOOLS = frozenset({"end_call", "offer_decisions", "offer_cards"})
+CALL_ONLY_TOOLS = frozenset({"end_call", "offer_decisions", "offer_cards", "put_through"})
 #: Tool kinds a continuation turn (`via: "card"`, #1950) may not run: the ones with an effect
 #: that no card confirms. It reads, asks and stages cards; every write stays a tap.
 #: `screen` (#2102) too: nobody asked the server's own continuation to move their screen.
@@ -9063,6 +9106,8 @@ async def _settle_turn(turn: _Turn, lock_fd: int) -> dict:
             view = {**view, "offers": list(turn.offers)}  # to the call alone (#2137), never stored
         if turn.card_offers and view:
             view = {**view, "card_offers": list(turn.card_offers)}  # to the call alone (#2389)
+        if turn.put_through and view:
+            view = {**view, "put_through": turn.put_through}  # to the call alone (#2341)
         settled = True
         return view
     finally:

@@ -95,6 +95,7 @@ export function CallProvider({
       void c.start({
         contact: wire === "off" ? null : wire,
         conversationId: opts?.conversationId ?? null,
+        party: opts?.party ?? null,
       });
     },
     [client, audio, wire, screen],
@@ -159,6 +160,9 @@ export function CallProvider({
       cardDecided: (id: string) => client?.cardDecided(id),
       askNeedsYou: () => client?.askNeedsYou(),
       stopTurn: () => client?.stopTurn(),
+      backToHq: () => client?.backToHq(),
+      stayWithHq: () => client?.stayWithHq(),
+      setVoice: (voice: string) => client?.setVoice(voice),
       dismiss,
       minimized,
       setMinimized,

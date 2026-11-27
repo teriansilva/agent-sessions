@@ -17,18 +17,19 @@
  *  back only when playback reaches it (an interrupt flushes it: no ack). `challenge` names the cards
  *  a spoken "confirm" may settle and for how long; `settled` is what the card's route answered. A
  *  tap on any card during the call says `card_decided`, which voids the spoken window. */
-import type { CallServerMessage, CallState, CardSettlement } from "../../types/voice";
+import type { CallParty, CallServerMessage, CallState, CardSettlement } from "../../types/voice";
 import type { CallAudio, DeviceAudio } from "./callAudio";
 
 export type CallPhase = "idle" | "starting" | "dialing" | "connected" | "ended";
 
 export interface Caption {
   id: string;
-  who: "you" | "hq";
+  /** `session`: the API session the call is with spoke this line (#2341). */
+  who: "you" | "hq" | "session";
   text: string;
   kind?: string;
   turnId?: string | null;
-  /** HQ's lines only: where playback is. */
+  /** The call's lines only (HQ's or the session's): where playback is. */
   status?: "queued" | "speaking" | "spoken" | "cut";
 }
 
@@ -44,6 +45,16 @@ export interface CallSnapshot {
   callId: string | null;
   conversationId: string | null;
   contact: string | null;
+  /** Who the Commander is talking to (#2341): an API session, or `null` for HQ. */
+  party: CallParty | null;
+  /** Back to HQ can work on this call (HQ's endpoint is set up). */
+  hqReachable: boolean;
+  /** The session this call was placed to (#2341), kept when admission refused it, so "Call
+   *  again" calls the same session; `null` once the call is with HQ. */
+  requestedParty: string | null;
+  /** HQ is putting the call through to this session (#2341 §5): the transfer card, until the
+   *  party changes or the hand-off is dropped (Stay with HQ, newer words). */
+  transfer: CallParty | null;
   captions: Caption[];
   muted: boolean;
   userSpeaking: boolean;
@@ -69,9 +80,10 @@ export interface CallSnapshot {
 
 export interface CallDeps {
   audio: () => CallAudio;
-  admit: (body: { contact?: string; conversation_id?: string | null }) => Promise<{
+  admit: (body: { contact?: string; conversation_id?: string | null; party?: string }) => Promise<{
     id: string;
     conversation_id: string;
+    party?: CallParty | null;
   }>;
   hangUp: (id: string) => Promise<unknown>;
   openSocket: (url: string) => WebSocket;
@@ -89,6 +101,10 @@ export const IDLE: CallSnapshot = {
   callId: null,
   conversationId: null,
   contact: null,
+  party: null,
+  hqReachable: true,
+  requestedParty: null,
+  transfer: null,
   captions: [],
   muted: false,
   userSpeaking: false,
@@ -109,7 +125,7 @@ export const IDLE: CallSnapshot = {
  *  never quotes a queued (not yet spoken) or cut (interrupted) line as if HQ said it, matching
  *  the expanded panel, where those lines are muted. `undefined` until HQ has finished one. */
 export function spokenHqCaption(captions: Caption[]): Caption | undefined {
-  return [...captions].reverse().find((c) => c.who === "hq" && c.status === "spoken");
+  return [...captions].reverse().find((c) => c.who !== "you" && c.status === "spoken");
 }
 
 function socketUrl(path: string): string {
@@ -120,6 +136,13 @@ function socketUrl(path: string): string {
 /** The error text an admission refusal carries (an `ApiError` message is the server's detail). */
 function detailOf(e: unknown): string {
   return e instanceof Error && e.message ? e.message : "the call could not start";
+}
+
+/** A refusal whose body says the session can't take calls (#2341 §6b): its FIXED line is shown
+ *  as it is, not as "the call was refused". */
+function unavailable(e: unknown): boolean {
+  const rec = (e as { record?: { code?: unknown } } | null)?.record;
+  return !!rec && rec.code === "unavailable";
 }
 
 export class CallClient {
@@ -153,9 +176,20 @@ export class CallClient {
     return this.snap.phase === "starting" || this.snap.phase === "dialing" || this.snap.phase === "connected";
   }
 
-  async start(opts: { contact: string | null; conversationId?: string | null }): Promise<void> {
+  async start(opts: {
+    contact: string | null;
+    conversationId?: string | null;
+    /** Call an API session directly (#2341): its key. */
+    party?: string | null;
+  }): Promise<void> {
     if (this.active) return;
-    this.set({ ...IDLE, phase: "starting", contact: opts.contact, startedAt: this.now() });
+    this.set({
+      ...IDLE,
+      phase: "starting",
+      contact: opts.contact,
+      requestedParty: opts.party ?? null,
+      startedAt: this.now(),
+    });
     const audio = this.deps.audio();
     this.audio = audio;
     try {
@@ -167,22 +201,28 @@ export class CallClient {
       return;
     }
     if (this.snap.phase !== "starting") return; // ended while the prompt was up
-    let call: { id: string; conversation_id: string };
+    let call: { id: string; conversation_id: string; party?: CallParty | null };
     try {
       call = await this.deps.admit({
         ...(opts.contact ? { contact: opts.contact } : {}),
         conversation_id: opts.conversationId ?? null,
+        ...(opts.party ? { party: opts.party } : {}),
       });
     } catch (e) {
       if (this.hasEnded()) return; // hung up meanwhile: keep that reason
-      this.finish("refused", detailOf(e));
+      this.finish(unavailable(e) ? "unavailable" : "refused", detailOf(e));
       return;
     }
     if (this.snap.phase !== "starting") {
       void this.deps.hangUp(call.id).catch(() => undefined);
       return;
     }
-    this.set({ phase: "dialing", callId: call.id, conversationId: call.conversation_id });
+    this.set({
+      phase: "dialing",
+      callId: call.id,
+      conversationId: call.conversation_id,
+      party: call.party ?? null,
+    });
     let ws: WebSocket;
     try {
       ws = this.deps.openSocket(socketUrl(`/ws/voice/${encodeURIComponent(call.id)}`));
@@ -250,7 +290,7 @@ export class CallClient {
           text: msg.text,
           kind: msg.kind,
           turnId: msg.turn_id ?? null,
-          status: msg.who === "hq" ? "queued" : undefined,
+          status: msg.who === "you" ? undefined : "queued",
         };
         this.set({ captions: [...this.snap.captions, cap].slice(-CAPTIONS_KEPT) });
         return;
@@ -258,7 +298,7 @@ export class CallClient {
       case "speaking": {
         const caps = this.snap.captions.map((c) => ({ ...c }));
         if (msg.on) {
-          const next = caps.find((c) => c.who === "hq" && c.status === "queued");
+          const next = caps.find((c) => c.who !== "you" && c.status === "queued");
           if (next) next.status = "speaking";
         } else {
           for (const c of caps) if (c.status === "speaking") c.status = "spoken";
@@ -269,13 +309,37 @@ export class CallClient {
       case "interrupt": {
         this.audio?.flush();
         const caps = this.snap.captions.map((c) =>
-          c.who === "hq" && (c.status === "queued" || c.status === "speaking")
+          c.who !== "you" && (c.status === "queued" || c.status === "speaking")
             ? { ...c, status: "cut" as const }
             : c,
         );
         this.set({ hqSpeaking: false, captions: caps });
         return;
       }
+      case "party":
+        // The same session re-described (its voice pick, review 9091): no switch, so the running
+        // turn's working band, its Stop and any challenge stay.
+        if (msg.update && msg.party && this.snap.party?.key === msg.party.key) {
+          this.set({ party: msg.party, hqReachable: msg.hq !== false });
+          return;
+        }
+        // The party changed (#2341): the old party's work band and challenge go with it.
+        this.set({
+          party: msg.party ?? null,
+          requestedParty: msg.party?.key ?? null,
+          transfer: null,
+          hqReachable: msg.hq !== false,
+          work: null,
+          progress: null,
+          challenge: null,
+        });
+        return;
+      case "transfer":
+        this.set({ transfer: msg.party ?? null });
+        return;
+      case "leg_turn":
+        this.set({ work: null, progress: null });
+        return;
       case "user":
         this.set({ userSpeaking: msg.speaking });
         return;
@@ -386,6 +450,28 @@ export class CallClient {
     this.set({ work: { ...this.snap.work, stopping: true } });
   }
 
+  /** Back to HQ on a session leg (#2341): the same HQ conversation picks up. */
+  backToHq(): void {
+    if (this.snap.phase !== "connected" || this.ws?.readyState !== WebSocket.OPEN) return;
+    if (!this.snap.party) return;
+    this.ws.send(JSON.stringify({ t: "back" }));
+  }
+
+  /** Pick the voice the session on the line speaks in (#2341 §3); kept for its next calls. */
+  setVoice(voice: string): void {
+    if (this.snap.phase !== "connected" || this.ws?.readyState !== WebSocket.OPEN) return;
+    if (!this.snap.party?.voices?.includes(voice)) return;
+    this.ws.send(JSON.stringify({ t: "voice", voice }));
+  }
+
+  /** Stay with HQ (#2341): the put-through under way is dropped. */
+  stayWithHq(): void {
+    if (this.snap.phase !== "connected" || this.ws?.readyState !== WebSocket.OPEN) return;
+    if (!this.snap.transfer) return;
+    this.ws.send(JSON.stringify({ t: "stay" }));
+    this.set({ transfer: null });
+  }
+
   setMuted(on: boolean): void {
     if (!this.active) return;
     this.audio?.setMuted(on);
@@ -423,7 +509,7 @@ export class CallClient {
       }
     }
     const caps = this.snap.captions.map((c) =>
-      c.who === "hq" && (c.status === "queued" || c.status === "speaking") ? { ...c, status: "cut" as const } : c,
+      c.who !== "you" && (c.status === "queued" || c.status === "speaking") ? { ...c, status: "cut" as const } : c,
     );
     this.set({
       work: null,
@@ -461,7 +547,7 @@ export class CallClient {
 /** Ends the operator chose (#1668): the hang-up, HQ ending the call on their goodbye, or no
  *  answer to HQ's still-there question. Everything else is a dropped call. */
 export function normalEnd(reason: string): boolean {
-  return reason === "hung_up" || reason === "hq_ended" || reason === "no_answer";
+  return reason === "hung_up" || reason === "hq_ended" || reason === "no_answer" || reason === "call_back";
 }
 
 /** What the dropped state says, from the server's reason and the configured hosts. */
@@ -473,6 +559,9 @@ export function endedText(end: CallEnd, hosts: { stt: string; tts: string }): st
       return "HQ ended the call.";
     case "no_answer":
       return "No answer — the call ended.";
+    case "call_back":
+      // "Call me back" (#2341 §4): a notification, never a ring, when the turn settles.
+      return "Call ended. You'll get a notification with Call when it's done.";
     case "tts_failed":
       return `${hosts.tts || "The text-to-speech endpoint"} (text-to-speech) stopped answering.`;
     case "stt_failed":
@@ -495,6 +584,9 @@ export function endedText(end: CallEnd, hosts: { stt: string; tts: string }): st
       return "Calls over Home Free are not available yet. Call from your local network.";
     case "refused":
       return end.detail ? `The call was refused: ${end.detail}` : "The call was refused.";
+    case "unavailable":
+      // The session can't take calls (#2341): its FIXED line, as the server said it.
+      return end.detail || "That session can't take calls right now.";
     default:
       return "The connection dropped.";
   }
@@ -502,12 +594,13 @@ export function endedText(end: CallEnd, hosts: { stt: string; tts: string }): st
 
 /** What the live region says: the phase, nothing more. */
 export function phaseAnnouncement(snap: CallSnapshot, name: string): string {
+  const who = snap.party ? snap.party.title : `HQ${name ? `, ${name}` : ""}`;
   switch (snap.phase) {
     case "starting":
     case "dialing":
-      return `Calling HQ${name ? `, ${name}` : ""}.`;
+      return `Calling ${who}.`;
     case "connected":
-      return `Connected to HQ${name ? `, ${name}` : ""}.`;
+      return `Connected to ${who}.`;
     case "ended":
       return "Call ended.";
     default:

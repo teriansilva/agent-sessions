@@ -3,7 +3,12 @@
 
 export type McpSource =
   | { kind: "remote"; url: string }
-  | { kind: "npm" | "pypi"; package: string; version: string; entrypoint?: string };
+  | { kind: "npm" | "pypi"; package: string; version: string; entrypoint?: string }
+  /** A Go module built from a repository link's pinned commit (#2427): `package` is the module path.
+   *  Never typed in: only a link's resolution sets it. */
+  | { kind: "go"; package: string; version: string; entrypoint?: string };
+
+export type McpPackageSource = Exclude<McpSource, { kind: "remote" }>;
 
 export type McpSetting =
   | { key: string; deliver: "env" | "header"; kind: "plain"; value: string }
@@ -48,7 +53,7 @@ export interface McpServerSummary {
   probe: McpProbe | null;
   enabled: boolean;
   rev: number;
-  installed: { installed_at?: number; integrity?: string } | null;
+  installed: { installed_at?: number; integrity?: string; source?: McpSource } | null;
   origin?: McpOrigin;
   created_at: number;
   updated_at: number;
@@ -114,6 +119,19 @@ export interface McpReviewFacts {
   entrypoint: string;
   license: string;
   runs: string;
+  /** A Go module's review only (#2427): the main package it builds (an import path), the Go
+   *  version its go.mod asks for, and the toolchain that will build it (pinned: Install refuses
+   *  another). `integrity` is then the module hash (`h1:…`), `dependencies` the modules in the build
+   *  list, each authenticated against sum.golang.org. */
+  command?: string;
+  go?: string;
+  toolchain?: McpToolchain;
+}
+
+export interface McpToolchain {
+  version: string;
+  sha256: string;
+  platform: string;
 }
 
 /** A review or install running on the server (#2163 P1b): `POST …/review` and `POST …/install`
@@ -136,8 +154,8 @@ export interface McpOperation<T = unknown> {
 
 /** The manifest a repository root declares (#2353). */
 export interface McpDeclared {
-  manifest: "package.json" | "pyproject.toml";
-  kind: "npm" | "pypi";
+  manifest: "package.json" | "pyproject.toml" | "go.mod";
+  kind: "npm" | "pypi" | "go";
   package: string;
   version: string;
   dynamic?: boolean;
@@ -147,7 +165,7 @@ export interface McpResolveProgress {
   step?: "commit" | "manifest" | "release" | "repository" | "review";
   commit?: string;
   manifest?: string;
-  kind?: "npm" | "pypi";
+  kind?: "npm" | "pypi" | "go";
   package?: string;
   version?: string;
 }
@@ -159,14 +177,31 @@ export interface McpLinkFacts {
   commit: string;
   found?: McpDeclared[];
   declared?: McpDeclared;
-  release?: {
-    registry: string;
-    record_field: string;
-    names?: string;
-    license?: string;
-    direct_dependencies?: number;
-    install_scripts?: string[];
-  };
+  release?: McpPackageRelease | McpGoRelease;
+}
+
+/** The npm / PyPI release a link's manifest names, and the registry record that names the link. */
+export interface McpPackageRelease {
+  registry: string;
+  record_field: string;
+  names?: string;
+  license?: string;
+  direct_dependencies?: number;
+  install_scripts?: string[];
+}
+
+/** The Go module at the link's pinned commit, from the Go module proxy (#2427): its canonical
+ *  version, its home repository and whether the link is a mirror of it (the proxy's commit equals
+ *  the link's: `same_commit`), the go directive, the version's time and the ref it was tagged at. */
+export interface McpGoRelease {
+  module: string;
+  version: string;
+  home: string;
+  mirror: boolean;
+  same_commit: boolean;
+  go: string;
+  time: string;
+  ref: string;
 }
 
 /** `POST /api/mcp/servers/resolve-link`'s result: the draft source, the origin, the facts, and
@@ -180,6 +215,28 @@ export interface McpResolution {
   disclaimer: string;
 }
 
+/** What the server was when its link was read again (Update from source, #2427). */
+export interface McpPrevious {
+  source: McpSource;
+  origin: McpOrigin;
+}
+
+/** `POST /api/mcp/servers/resolve-link {server_id, request_id}`'s result (Update from source,
+ *  #2427): the server's own link read again. Up to date → nothing to apply; otherwise a resolution
+ *  `PATCH …/{id} {resolution_id}` applies (source and origin together), then P1b's install of
+ *  `review.review_id`. */
+export type McpUpdateResolution =
+  | {
+      up_to_date: true;
+      resolution_id?: string;
+      source: McpSource;
+      origin: McpOrigin;
+      previous: McpPrevious;
+      facts: McpLinkFacts;
+      disclaimer: string;
+    }
+  | (McpResolution & { up_to_date: false; previous: McpPrevious });
+
 export interface McpServerInput {
   name: string;
   label?: string;
@@ -192,4 +249,4 @@ export interface McpServerInput {
   resolution_id?: string;
 }
 
-export type McpServerUpdate = Partial<McpServerInput> & { enabled?: boolean };
+export type McpServerUpdate = Partial<Omit<McpServerInput, "resolution_id">> & { enabled?: boolean };

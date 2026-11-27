@@ -149,6 +149,44 @@
 }
 /* A narrow composer keeps the toggle IN the row as its icon: the label stays the accessible name
  * (visually hidden), and the title still says what it does. */
+/* #2341: the mic is a glyph-only plate (hold to dictate, S1), and Call sits before Send. Both are
+ * the row's square: 36px on a fine pointer, the 44px floor on touch and at <=800px. Call is the
+ * ghost plate; on a call with this session it reads "On call" with an accent edge — never a
+ * status colour (the mockup's composer states, #2341 comment 139577). */
+.composeRow > button.micGlyph {
+  min-width: 36px;
+  width: 36px;
+  padding-inline: 0;
+}
+.callBtn {
+  composes: ghost from "../ui/actionButton.module.css";
+  flex: 0 0 auto;
+  justify-content: center;
+  height: 36px;
+  min-height: 0;
+  padding: 0 var(--sp-3);
+  font-weight: 700;
+  white-space: nowrap;
+}
+.callBtn[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: default;
+}
+button.callOn,
+button.callOn:hover {
+  --nj-edge: var(--accent);
+  --nj-face: color-mix(in srgb, var(--accent) 15%, var(--bg-1));
+  color: var(--accent-text);
+}
+@media (pointer: coarse), (max-width: 800px) {
+  .composeRow > button.micGlyph {
+    min-width: 44px;
+    width: 44px;
+  }
+  .callBtn {
+    height: 44px;
+  }
+}
 /* The narrowest composers (a 320 px phone): Talk and Send keep their icons too, still matched
  * (#1478), so five controls fit one row even while Send reads "Starting…". */
 @container composer (max-width: 360px) {

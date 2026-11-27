@@ -73,9 +73,10 @@ def test_registry_covers_every_system_prompt():
     # the session scan.
     # #2059 handoff_remote_brief (Continue here: a record another instance shares is DATA;
     # unguarded, with that rule locked onto it).
+    # #2341 session_call (the note an API session's first call turn carries; not a system message).
     # #2342 H1 voice_pick_judge (on a call: which option did the reply pick? guarded).
     # #1715 P2 voice_decision_judge (on a call: what did the reply decide for an agent? guarded).
-    assert len(prompts.REGISTRY) == 53
+    assert len(prompts.REGISTRY) == 54
     assert len(prompts.IDS) == len(set(prompts.IDS))
     # PINNED BY NAME, not by count — adding a guarded prompt should have to say so here.
     # `mission_objectives` earns it without emitting a verb: an objective list is what the
@@ -225,6 +226,7 @@ EXPECTED_DEFAULT_SHA = {
     "voice_decision_judge": "e02cd81e21ee408b",  # #1715 P2: what a reply decides for an agent
     "voice_confirm_judge": "7d166766d9e1df5c",  # #1715; #2389: the cards as data, all, N to 20
     "hq_call_interject": "7e47474a9554c821",  # #2113: the Commander speaks while HQ works
+    "session_call": "f48405c968be4bd2",  # #2341: an API session answers a call
     "hq_conversation_compact": "c7fe648ee4b538ff",  # #2137 P2: the background summary
     "hq_notify": "7e181d31107a52e1",  # #1837 (+ #2221 "automation message"): facts only
     "hq_handover": "a27b7d563b8cb484",  # the Commander switched contact mid-conversation

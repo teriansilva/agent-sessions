@@ -23,8 +23,9 @@ mission correlation is ever read from a browser (mission callers use the facade 
   reply_to?}`` — ``reply_to``: the async question this message answers (#1463), admitted only
   while that question is still open.
 * ``POST /api/structured/sessions/{key}/decisions {decision_id, turn_id, request_id, decision,
-  grant?, expected_revision?}`` — one exact pending request: approve / reject / cancel, or
-  ``always`` with the id of one proposed standing grant the snapshot offers (#1339).
+  grant?, expected_revision?, expected_digest?}`` — one exact pending request: approve / reject /
+  cancel, or ``always`` with the id of one proposed standing grant the snapshot offers (#1339).
+  ``expected_digest``: the payload digest the caller read (a call's spoken answer, #2341).
 * ``POST /api/structured/sessions/{key}/interrupt {operation_id, turn_id}``
 * ``POST /api/structured/sessions/{key}/send-now {operation_id, turn_id, queued_turn_id}`` —
   steer or explicitly cancel the observed response and send the selected queued input next.
@@ -165,8 +166,12 @@ def _canonical(key: str) -> str:
 def _drive_binding(request: Request, verb: str) -> dict | None:
     """An HQ drive request's binding (#2397), or None for the Commander's own request. An
     in-process request without one is refused: HQ reaches a session's turns only through the
-    catalog's drive entries, so there is no side door around their class."""
+    catalog's drive entries, so there is no side door around their class. The one in-process
+    request that is the Commander's own is a call's session leg (#2341, `asgi_call.COMMANDER`):
+    their spoken words, so it is admitted as their typing is (and takes the session over)."""
     if not asgi_call.in_process(request.scope):
+        return None
+    if request.scope.get(asgi_call.COMMANDER) is True and asgi_call.DRIVE not in request.scope:
         return None
     binding = session_driver.binding_of(request.scope.get(asgi_call.DRIVE))
     if binding is None or binding["verb"] != verb:
@@ -678,12 +683,21 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         _csrf: None = Depends(csrf_guard),
     ) -> JSONResponse:
         fields = {"decision_id", "turn_id", "request_id", "decision"}
-        body = await _json(request, fields | {"expected_revision", "grant", "answers"}, fields)
+        body = await _json(
+            request, fields | {"expected_revision", "grant", "answers", "expected_digest"}, fields
+        )
         for name in ("turn_id", "request_id", "decision"):
             if not isinstance(body[name], str):
                 raise HTTPException(status_code=422, detail=f"{name} must be a string")
         if "grant" in body and not isinstance(body["grant"], str):
             raise HTTPException(status_code=422, detail="grant must be a string")
+        # The payload digest of the exact request the caller read (#2059): a call answering a
+        # session's request by voice binds its answer to those bytes (#2341 §6).
+        digest = body.get("expected_digest", "")
+        if "expected_digest" in body and (
+            not isinstance(digest, str) or not 0 < len(digest) <= 128 or not digest.isprintable()
+        ):
+            raise HTTPException(status_code=422, detail="expected_digest must be a payload digest")
         # An agent question's answer (#1463): only with `answer`; its shape and the offered
         # options are checked by the runtime and again by the worker.
         if ("answers" in body) != (body["decision"] == "answer"):
@@ -703,6 +717,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
                 expected_revision=_revision(body.get("expected_revision")),
                 grant=body.get("grant"),
                 answers=body.get("answers"),
+                expected_digest=body.get("expected_digest"),
             )
         )
         await _settled(app, out.get("session_key") or key, body["turn_id"], body["request_id"])

@@ -10,6 +10,9 @@
  *  same contract the bell's drawer keeps (`useModalDrawer`). */
 import { createContext, useContext, type RefObject } from "react";
 
+import { stripBase } from "../../lib/appBase";
+import { isHqPath } from "../../lib/routes";
+
 export interface AskPanel {
   open: boolean;
   openAsk: () => void;
@@ -20,6 +23,30 @@ export interface AskPanel {
 
 /** On HQ's page the corner icon asks the page to take the operator to its composer (#1776). */
 export const HQ_FOCUS_COMPOSER_EVENT = "hq:focus-composer";
+
+/** A request the page has not taken yet: a tap that lands while HQ's page is still loading (its
+ *  code is lazy) is kept until the page mounts, never dropped. */
+let composerFocusPending = false;
+
+/** Ask HQ's page for its composer: the page takes it now if it is listening, else on mount. */
+export function requestHqComposerFocus(): void {
+  composerFocusPending = true;
+  window.dispatchEvent(new CustomEvent(HQ_FOCUS_COMPOSER_EVENT));
+}
+
+/** Is the operator on HQ's page at the moment of a tap? The shell's last render (``renderedOnHq``)
+ *  can lag a redirect to the page, so the browser's own URL counts too, as a ROUTE path: the
+ *  connect build serves under `/connect/`, where `/connect/hq` is HQ's page. */
+export function hqPageAtTap(renderedOnHq: boolean): boolean {
+  return renderedOnHq || isHqPath(stripBase(window.location.pathname));
+}
+
+/** Take the pending request (true at most once per request). */
+export function takeHqComposerFocus(): boolean {
+  const pending = composerFocusPending;
+  composerFocusPending = false;
+  return pending;
+}
 
 /** Where HQ's panel is a modal drawer instead of a sidebar beside the page. */
 export const ASK_DRAWER_MQ = "(max-width: 800px)";

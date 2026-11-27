@@ -13,7 +13,12 @@ re-parsed ~94,000 JSON records, while a ``stat()``-only pass over the same 1,372
 
 ## Identity, not just the path
 
-An entry is keyed on ``(namespace, path, st_dev, st_ino, st_size, st_mtime_ns)``.
+An entry is keyed on ``(namespace, path, st_dev, st_ino, st_size, st_mtime_ns, st_ctime_ns)``.
+
+* ``st_ctime_ns`` (#2435) — an in-place rewrite that keeps the size and RESTORES the mtime
+  (``utime``) changes nothing else, but the kernel moves the ctime, which no caller can set. The
+  racy window applies to the later of the two, so a restored old mtime cannot make a file that
+  was just rewritten look old.
 
 * ``st_mtime_ns`` and not ``st_mtime`` — a 1 s stamp cannot separate two writes inside the same
   second, and an agent appending to a transcript does exactly that.
@@ -109,9 +114,15 @@ _hits = 0
 _misses = 0
 
 
-def identity(st: os.stat_result) -> tuple[int, int, int, int]:
+def _changed_at(mtime_ns: int, ctime_ns: int) -> int:
+    """When a file last changed, for the racy window: the later stamp, since a restored mtime is
+    older than the write that restored it (the ctime is not)."""
+    return max(mtime_ns, ctime_ns)
+
+
+def identity(st: os.stat_result) -> tuple[int, int, int, int, int]:
     """The version of a file, as the memo keys it. See the module note on each field."""
-    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
 
 
 def _retained_size(value: Any, seen: set[int] | None = None) -> int:
@@ -142,8 +153,8 @@ def _identities(path: Path, also: Sequence[Path]) -> tuple | None:
     """``(identity of path, identity of each also path)``, or ``None`` when one cannot be named.
 
     ``path`` must stat. An ``also`` path may be absent (:data:`_ABSENT`); any other stat failure
-    leaves nothing trustworthy to key on. Each present path's ``st_mtime_ns`` travels too, for the
-    racy-window check."""
+    leaves nothing trustworthy to key on. Each present path's ``st_mtime_ns`` and ``st_ctime_ns``
+    travel too, for the racy-window check."""
     try:
         ids = [identity(path.stat())]
     except OSError:
@@ -161,7 +172,7 @@ def _identities(path: Path, also: Sequence[Path]) -> tuple | None:
 def _racy(ids: tuple) -> bool:
     """Was any keyed path modified inside the racy window? See :data:`RACY_WINDOW_NS`."""
     now = time.time_ns()
-    return any(i is not _ABSENT and now - i[3] < RACY_WINDOW_NS for i in ids)
+    return any(i is not _ABSENT and now - _changed_at(i[3], i[4]) < RACY_WINDOW_NS for i in ids)
 
 
 def memoized(
@@ -224,7 +235,10 @@ def memoized(
             return row
         # …and only once the file is old enough that a further write could not hide inside the
         # filesystem's timestamp granularity. See RACY_WINDOW_NS.
-        if time.time_ns() - st_after.st_mtime_ns < RACY_WINDOW_NS:
+        if (
+            time.time_ns() - _changed_at(st_after.st_mtime_ns, st_after.st_ctime_ns)
+            < RACY_WINDOW_NS
+        ):
             return row
     if keep is not None and not keep(row):
         return row

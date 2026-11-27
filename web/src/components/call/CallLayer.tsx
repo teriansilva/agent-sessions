@@ -6,6 +6,8 @@
  *  closing the ended state returns it to the control that started the call. Escape inside the
  *  panel minimises it (the call goes on). */
 import {
+  ArrowLeft,
+  ArrowRight,
   ChevronDown,
   ChevronUp,
   Keyboard,
@@ -24,6 +26,7 @@ import { createPortal } from "react-dom";
 import { useAskPanel } from "../ask/askPanel";
 import { formatElapsed } from "../ask/askProcess";
 import { askStepLabel, type AskStep } from "../ask/askStep";
+import { Avatar } from "../chat/Avatar";
 import { contactById } from "../hq/contacts";
 import { HqPortrait } from "../hq/HqPortrait";
 import b from "../ui/actionButton.module.css";
@@ -32,6 +35,7 @@ import { CallCards } from "./CallCards";
 import { endedText, normalEnd, phaseAnnouncement, spokenHqCaption } from "./callClient";
 import { callActive, requestAskConversation, useCall } from "./callContext";
 import s from "./call.module.css";
+import type { CallParty } from "../../types/voice";
 
 const STATE_WORD: Record<string, string> = {
   dialing: "Calling HQ…",
@@ -40,6 +44,21 @@ const STATE_WORD: Record<string, string> = {
   speaking: "HQ speaking",
   ended: "Call ended",
 };
+
+/** The state word on a session leg (#2341): the session, not HQ, is working or speaking. */
+function stateWord(state: string, party: CallParty | null): string {
+  if (!party) return STATE_WORD[state] ?? state;
+  if (state === "dialing") return `Calling ${party.title}…`;
+  if (state === "thinking") return "Working";
+  if (state === "speaking") return `${party.title} speaking`;
+  return STATE_WORD[state] ?? state;
+}
+
+/** The session's facts on the call screen (#2341 §7): agent, project and the voice it speaks in. */
+function partyFacts(party: CallParty): string {
+  const voice = party.voice_shared ? "HQ's voice (only one voice is set up)" : `voice ${party.voice}`;
+  return [party.engine, party.project, voice].filter(Boolean).join(" · ");
+}
 
 function fmt(ms: number): string {
   const t = Math.max(0, Math.floor(ms / 1000));
@@ -82,6 +101,7 @@ function CallPanel() {
   const { snap, caps, captionsOn } = call;
   const { openAsk } = useAskPanel();
   const contact = contactById(snap.contact);
+  const party = snap.party;
   const live = callActive(snap);
   const now = useTick(live);
   // Choosing the microphone and speaker (#1670): only where the audio engine supports it.
@@ -124,8 +144,11 @@ function CallPanel() {
   };
   const callAgain = (e: React.MouseEvent<HTMLButtonElement>) => {
     const cid = snap.conversationId;
+    const again = snap.party?.key ?? snap.requestedParty;
     call.dismiss();
-    call.start({ conversationId: cid, trigger: e.currentTarget });
+    call.start(
+      again ? { party: again, trigger: e.currentTarget } : { conversationId: cid, trigger: e.currentTarget },
+    );
   };
 
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -144,18 +167,19 @@ function CallPanel() {
       ref={panelRef}
       className={`nj-panel ${s.panel}`}
       role="region"
-      aria-label="Call with HQ"
+      aria-label={party ? `Call with ${party.title}` : "Call with HQ"}
       tabIndex={-1}
       onKeyDown={onKeyDown}
       data-focus-claim="" // a drawer closing as the call opens leaves focus here (useModalDrawer)
       data-testid="call-panel"
       data-phase={snap.phase}
       data-state={snap.serverState}
+      data-party={party ? "session" : "hq"}
     >
       <div className={s.head}>
         <div className="nj-callsign">
           <span className="nj-notch" />
-          <span className="nj-title">HQ</span>
+          <span className="nj-title">{party ? "Session" : "HQ"}</span>
           <span>//</span>
           <span className="nj-value">{dialing ? "Call" : ended ? "Call" : "On call"}</span>
           <span className="nj-meta">
@@ -188,15 +212,19 @@ function CallPanel() {
 
       {dialing ? (
         <div className={s.dialing}>
-          {contact ? (
+          {party ? (
+            <Avatar spec={{ kind: "agent" }} className={s.partyPlateBig} />
+          ) : contact ? (
             <HqPortrait contact={contact} playing className={s.bigPortrait} testId="call-portrait" />
           ) : null}
-          <p className={s.name}>{contact?.name ?? "HQ"}</p>
+          <p className={s.name}>{party ? party.title : (contact?.name ?? "HQ")}</p>
           <span className={s.state}>
             <span className="hud-led att" aria-hidden="true" />
-            Calling HQ…
+            {party ? `Calling ${party.title}…` : "Calling HQ…"}
           </span>
-          <p className={s.endedText}>Your microphone is ready but sends nothing until HQ picks up.</p>
+          <p className={s.endedText}>
+            Your microphone is ready but sends nothing until {party ? party.title : "HQ"} picks up.
+          </p>
           <span className={s.lvl}>
             Mic{" "}
             <span className="nj-stamp" data-testid="call-mic">
@@ -205,12 +233,45 @@ function CallPanel() {
           </span>
         </div>
       ) : (
-        <div className={s.who}>
-          {contact ? (
+        <div className={s.who} data-testid={party ? "call-party" : undefined}>
+          {party ? (
+            <Avatar spec={{ kind: "agent" }} className={s.partyPlate} />
+          ) : contact ? (
             <HqPortrait contact={contact} playing={live} className={s.smallPortrait} testId="call-portrait" />
           ) : null}
           <div className={s.whoText}>
-            <p className={s.name}>{contact?.name ?? "HQ"}</p>
+            <p className={s.name} data-testid={party ? "call-party-title" : undefined}>
+              {party ? party.title : (contact?.name ?? "HQ")}
+            </p>
+            {party ? (
+              <span className={s.partyFacts} data-testid="call-party-facts">
+                {partyFacts(party)}
+              </span>
+            ) : null}
+            {party && live && (party.voices?.length ?? 0) > 1 ? (
+              <label className={s.partyVoice}>
+                Voice
+                <select
+                  className={s.partyVoiceSelect}
+                  value={party.voice}
+                  onChange={(e) => call.setVoice(e.target.value)}
+                  disabled={snap.phase !== "connected"}
+                  data-testid="call-party-voice"
+                >
+                  {party.voices!.map((v) => (
+                    <option key={v} value={v}>
+                      {v}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+            {party?.bypass ? (
+              <span className={s.partyRisk} data-testid="call-party-bypass">
+                <span className={`nj-chip ${s.skipChip}`}>Skip permissions</span>
+                Skips permission prompts — what you say runs without asking.
+              </span>
+            ) : null}
             <span className={s.timer} data-testid="call-timer">
               {ended ? `Ended at ${elapsed}` : elapsed}
             </span>
@@ -221,11 +282,11 @@ function CallPanel() {
                     className={`hud-led ${snap.serverState === "speaking" || snap.serverState === "listening" ? "up" : "att"}`}
                     aria-hidden="true"
                   />
-                  {STATE_WORD[snap.serverState] ?? snap.serverState}
+                  {stateWord(snap.serverState, party)}
                 </span>
                 <span className={s.levels}>
                   <Pips level={snap.muted ? 0 : lv.input} label="You" testId="call-level-you" />
-                  <Pips level={lv.output} label="HQ" testId="call-level-hq" />
+                  <Pips level={lv.output} label={party ? "Agent" : "HQ"} testId="call-level-hq" />
                 </span>
                 <span className={s.lvl}>
                   Mic{" "}
@@ -266,14 +327,16 @@ function CallPanel() {
               >
                 <RotateCcw size={15} aria-hidden="true" /> Call again
               </button>
-              <button
-                type="button"
-                className={b.ghost}
-                onClick={continueInText}
-                data-testid="call-continue-text"
-              >
-                <Keyboard size={15} aria-hidden="true" /> Continue in text
-              </button>
+              {party || snap.requestedParty ? null : (
+                <button
+                  type="button"
+                  className={b.ghost}
+                  onClick={continueInText}
+                  data-testid="call-continue-text"
+                >
+                  <Keyboard size={15} aria-hidden="true" /> Continue in text
+                </button>
+              )}
             </div>
             <p className={s.note}>Calling again is your tap: the microphone is never reopened on its own.</p>
           </div>
@@ -293,7 +356,13 @@ function CallPanel() {
                 data-who={c.who}
                 data-status={c.status ?? "heard"}
               >
-                <span className={s.spk}>{c.who === "you" ? "Commander" : contact?.name ?? "HQ"}</span>
+                <span className={s.spk}>
+                  {c.who === "you"
+                    ? "Commander"
+                    : c.who === "session"
+                      ? (party?.title ?? "Session")
+                      : (contact?.name ?? "HQ")}
+                </span>
                 {c.text}
               </p>
             ))
@@ -301,9 +370,17 @@ function CallPanel() {
         </div>
       ) : null}
 
-      {!dialing ? <CallCards cid={snap.conversationId} seq={snap.turnSeq + snap.cardSeq} /> : null}
+      {!dialing && !party ? (
+        <CallCards cid={snap.conversationId} seq={snap.turnSeq + snap.cardSeq} />
+      ) : null}
 
-      {snap.phase === "connected" ? (
+      {snap.phase === "connected" && party ? (
+        <p className={s.note}>
+          Talk any time — {party.title} hears each sentence as a message. A permission it can
+          read out in full you can allow once or refuse here; the rest stays in its chat.
+        </p>
+      ) : null}
+      {snap.phase === "connected" && !party ? (
         <>
           <p className={s.note}>
             Talk any time — HQ stops and listens. Say “confirm” when HQ reads a card back; tapping always
@@ -328,9 +405,15 @@ function CallPanel() {
           <span>
             Speech <b>{speechHost || "—"} · {speechKind}</b>
           </span>
-          <span>
-            HQ AI <b>{dest.ai_host || "—"} · {word(dest.ai)}</b>
-          </span>
+          {party ? (
+            <span>
+              Agent <b>{party.engine || "—"} · its own model</b>
+            </span>
+          ) : (
+            <span>
+              HQ AI <b>{dest.ai_host || "—"} · {word(dest.ai)}</b>
+            </span>
+          )}
           <span>
             Audio <b>never stored</b>
           </span>
@@ -353,7 +436,9 @@ function CallPanel() {
                 <span role="status" className={s.workNow} data-testid="call-work-step">
                   {snap.work.stopping
                     ? "Stopping…"
-                    : askStepLabel(callStep(snap.work.step))}
+                    : party
+                      ? snap.work.step
+                      : askStepLabel(callStep(snap.work.step))}
                 </span>
                 <span className={s.workTally} aria-hidden="true" data-testid="call-work-tally">
                   {snap.work.steps.toLocaleString("en-US")} {snap.work.steps === 1 ? "step" : "steps"}
@@ -364,7 +449,7 @@ function CallPanel() {
               <button
                 type="button"
                 className={`${b.danger} ${s.workStop}`}
-                aria-label="Stop HQ"
+                aria-label={party ? `Stop ${party.title}` : "Stop HQ"}
                 disabled={snap.work.stopping}
                 onClick={call.stopTurn}
                 data-testid="call-stop"
@@ -374,6 +459,47 @@ function CallPanel() {
               </button>
             </div>
             <p className={s.workSay}>Or say “stop”. The call stays open.</p>
+          </div>
+        ) : null}
+        {/* #2341 §5: HQ putting you through — the card until the session picks up. */}
+        {!party && snap.transfer && snap.phase === "connected" ? (
+          <div className={`nj-panel is-sm ${s.transfer}`} data-testid="call-transfer">
+            <div className="nj-face">
+              <span className="nj-rail" />
+              <p className={s.transferRoute}>
+                HQ <ArrowRight size={14} aria-hidden="true" /> {snap.transfer.title}
+              </p>
+              <span className={s.state}>
+                <span className="hud-led att" aria-hidden="true" />
+                Connecting…
+              </span>
+              <span className={s.partyFacts}>{partyFacts(snap.transfer)}</span>
+              <button
+                type="button"
+                className={`${b.ghost} ${s.backBtn}`}
+                onClick={call.stayWithHq}
+                data-testid="call-stay-hq"
+              >
+                Stay with HQ
+              </button>
+            </div>
+          </div>
+        ) : null}
+        {/* #2341: Back to HQ gets its own row above the controls on a session leg. */}
+        {party && snap.phase === "connected" ? (
+          <div className={s.backRow}>
+            <button
+              type="button"
+              className={`${b.ghost} ${s.backBtn}`}
+              disabled={!snap.hqReachable}
+              onClick={call.backToHq}
+              data-testid="call-back-hq"
+            >
+              <ArrowLeft size={16} aria-hidden="true" /> Back to HQ
+            </button>
+            {!snap.hqReachable ? (
+              <span className={s.voiceNote}>HQ isn&apos;t set up for calls.</span>
+            ) : null}
           </div>
         ) : null}
         <div className={s.controls}>
@@ -393,20 +519,22 @@ function CallPanel() {
               {snap.muted ? "Unmute" : "Mute"}
             </span>
           </div>
-          <div className={s.ctl}>
-            <button
-              type="button"
-              className={`${b.ghost} ${s.ctlBtn}`}
-              aria-label="Type instead"
-              onClick={continueInTextLive(call, openAsk, snap.conversationId)}
-              data-testid="call-type"
-            >
-              <Keyboard size={20} aria-hidden="true" />
-            </button>
-            <span className={s.ctlLabel} aria-hidden="true">
-              Type
-            </span>
-          </div>
+          {party ? null : (
+            <div className={s.ctl}>
+              <button
+                type="button"
+                className={`${b.ghost} ${s.ctlBtn}`}
+                aria-label="Type instead"
+                onClick={continueInTextLive(call, openAsk, snap.conversationId)}
+                data-testid="call-type"
+              >
+                <Keyboard size={20} aria-hidden="true" />
+              </button>
+              <span className={s.ctlLabel} aria-hidden="true">
+                Type
+              </span>
+            </div>
+          )}
           <div className={s.ctl}>
             <button
               type="button"
@@ -483,10 +611,18 @@ function CallBar() {
     openRef.current?.focus();
   }, []);
   const last = spokenHqCaption(snap.captions);
-  const word = STATE_WORD[snap.serverState] ?? "";
+  const party = snap.party;
+  const word = stateWord(snap.serverState, party);
   return (
-    <div className={s.bar} role="region" aria-label="Call with HQ" data-testid="call-bar">
-      {contact ? (
+    <div
+      className={s.bar}
+      role="region"
+      aria-label={party ? `Call with ${party.title}` : "Call with HQ"}
+      data-testid="call-bar"
+    >
+      {party ? (
+        <Avatar spec={{ kind: "agent" }} className={s.barPortrait} />
+      ) : contact ? (
         <HqPortrait contact={contact} playing={false} className={s.barPortrait} testId="call-bar-portrait" />
       ) : (
         <Phone size={18} aria-hidden="true" />
@@ -494,13 +630,13 @@ function CallBar() {
       <div className={s.barText}>
         <span className={s.barL1}>
           <span className={`hud-led ${snap.phase === "connected" ? "up" : "att"}`} aria-hidden="true" />
-          {contact ? contact.name.replace(/^General /, "Gen. ") : "HQ"} ·{" "}
+          {party ? party.title : contact ? contact.name.replace(/^General /, "Gen. ") : "HQ"} ·{" "}
           {snap.connectedAt ? fmt(now - snap.connectedAt) : "Calling"}
           <span className={s.barHideNarrow}>&nbsp;· On call</span>
         </span>
         <span className={s.barL2}>
           {word}
-          {last ? ` · HQ: “${last.text}”` : ""}
+          {last ? ` · ${last.who === "session" ? (party?.title ?? "Session") : "HQ"}: “${last.text}”` : ""}
         </span>
       </div>
       <button

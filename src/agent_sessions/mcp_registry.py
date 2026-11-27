@@ -48,7 +48,7 @@ TOOLS_MAX = 512
 
 SHARED = "shared"
 TRANSPORTS = ("stdio", "http")
-SOURCE_KINDS = ("remote", "npm", "pypi")
+SOURCE_KINDS = ("remote", "npm", "pypi", "go")
 DELIVER = ("env", "header")
 SETTING_KINDS = ("plain", "credential")
 OUTCOMES = ("passed", "failed", "superseded")
@@ -138,7 +138,9 @@ def validate_url(raw: object) -> str:
     return url
 
 
-def _source(raw: object) -> dict:
+def _source(raw: object, *, resolved: bool = False) -> dict:
+    """A server's source. A Go module (#2427) is BUILT from a repository's code, so it is taken
+    only from a link's server-held resolution (``resolved``), never typed in."""
     if not isinstance(raw, dict):
         raise RegistryError("source is an object")
     kind = raw.get("kind")
@@ -147,7 +149,12 @@ def _source(raw: object) -> dict:
         if unknown:
             raise RegistryError("unknown source field")
         return {"kind": "remote", "url": validate_url(raw.get("url"))}
-    if kind in ("npm", "pypi"):
+    if kind == "go" and not resolved:
+        raise RegistryError(
+            "a Go module is added only from its repository link (Add MCP server → Repository "
+            "link), which proves the code at its commit"
+        )
+    if kind in ("npm", "pypi", "go"):
         from . import mcp_install
 
         return mcp_install.validate_source(raw)
@@ -382,8 +389,10 @@ def create(payload: object, *, resolution: dict | None = None) -> dict:
         raise RegistryError("unknown server field")
     origin = None
     if resolution is not None:
-        bound = _source(resolution["source"])
-        if "source" in payload and _source(payload["source"]) != bound:
+        if resolution.get("update_of"):
+            raise Conflict("that resolution updates an existing server; it registers nothing new")
+        bound = _source(resolution["source"], resolved=True)
+        if "source" in payload and _source(payload["source"], resolved=True) != bound:
             raise Conflict(
                 "the source differs from the package the link resolved to; resolve the link again"
             )
@@ -430,9 +439,16 @@ def create(payload: object, *, resolution: dict | None = None) -> dict:
 _DELIVERY_FIELDS = ("source", "args", "settings", "probe")
 
 
-def update(sid: str, payload: object, expected: float) -> dict:
+def update(sid: str, payload: object, expected: float, *, resolution: dict | None = None) -> dict:
+    """Change a server. With ``resolution`` (Update from source, #2427: the server-held ``{id,
+    source, origin, update_of}`` of re-reading this server's own link) the source and origin are
+    replaced together; the install then follows the new source (a new install, a new check)."""
     if not isinstance(payload, dict):
         raise RegistryError("an update is an object")
+    if resolution is not None and "source" in payload:
+        raise RegistryError(
+            "an update from source takes its source from the link, not from a field"
+        )
     unknown = set(payload) - {
         "name",
         "label",
@@ -456,12 +472,30 @@ def update(sid: str, payload: object, expected: float) -> dict:
         if rec["updated_at"] != expected:
             raise Conflict("the server changed since you loaded it")
         new = dict(rec)
+        if resolution is not None:
+            if resolution.get("update_of") != sid or resolution.get("id") != sid:
+                raise Conflict("that resolution is not this server's update; read its link again")
+            previous = resolution.get("previous") or {}
+            if (rec["source"], rec.get("origin")) != (
+                previous.get("source"),
+                previous.get("origin"),
+            ):
+                raise Conflict("the server changed since its link was read; update it again")
+            if not rec.get("origin"):
+                raise RegistryError("this server was not added from a repository link")
+            source = _source(resolution["source"], resolved=True)
+            if _transport(source) != rec["transport"]:
+                raise RegistryError("a server keeps its kind: a package stays a package")
+            new["source"], new["origin"] = source, _origin(resolution["origin"])
         if "name" in payload:
             new["name"] = _check_name(payload["name"], doc["servers"], sid)
         if "label" in payload:
             new["label"] = _text(payload["label"], "the label", cap=80)
         if "source" in payload:
-            source = _source(payload["source"])
+            # A Go module's source is never typed in (#2427): resending its own source unchanged
+            # is not a change; a new version is a new repository-link resolution.
+            same = payload["source"] == rec["source"]
+            source = _source(payload["source"], resolved=same and rec["source"]["kind"] == "go")
             if _transport(source) != rec["transport"]:
                 raise RegistryError(
                     "a server keeps its kind: remote stays remote, a package stays a package"

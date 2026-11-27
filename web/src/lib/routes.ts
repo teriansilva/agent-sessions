@@ -66,6 +66,9 @@ export const MCP_PATH = "/library/mcp";
 export const MCP_NEW_PATH = `${MCP_PATH}/new`;
 export const MCP_SERVER_ROUTE = `${MCP_PATH}/:serverId`;
 export const mcpServerPath = (id: string) => `${MCP_PATH}/${encodeURIComponent(id)}`;
+/** Update a repository-link server from its source (#2427): its link read again, old → new. */
+export const MCP_SERVER_UPDATE_ROUTE = `${MCP_SERVER_ROUTE}/update`;
+export const mcpServerUpdatePath = (id: string) => `${mcpServerPath(id)}/update`;
 /** A server id as the registry mints it (`mcp_registry.ID_RE`): checked before any API call. */
 export const MCP_ID_RE = /^[0-9a-f]{16}$/;
 

@@ -296,6 +296,8 @@ def test_the_tool_list_and_each_tools_kind_are_pinned():
         "offer_decisions": "call",
         # #2389: on a CALL turn only, puts open cards of this conversation to the Commander again.
         "offer_cards": "call",
+        # #2341: on a CALL turn only, hands the call to a session this turn found.
+        "put_through": "call",
         "send_nudge": "send",
         # #2102: asks the asking device to show something. No platform state changes, no route
         # is called, and the target comes from a closed catalog — a kind of its own.
@@ -370,7 +372,7 @@ def test_the_tool_list_and_each_tools_kind_are_pinned():
     on_call = [s["function"]["name"] for s in ask_orchestrator.tool_specs("call")]
     assert on_call == list(ask_orchestrator.TOOLS)
     typed = [s["function"]["name"] for s in ask_orchestrator.tool_specs()]
-    call_only = ("end_call", "offer_decisions", "offer_cards")
+    call_only = ("end_call", "offer_decisions", "offer_cards", "put_through")
     assert typed == [n for n in ask_orchestrator.TOOLS if n not in call_only]
 
 

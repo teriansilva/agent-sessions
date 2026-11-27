@@ -385,6 +385,18 @@
 .disclaimer {
   color: var(--text-1);
 }
+/* A fact that changes (Update from source, #2427): the old value quiet, the new one bold. */
+.change {
+  overflow-wrap: anywhere;
+}
+.old {
+  color: var(--text-2);
+}
+.kv dd.stack {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
 .checks .res.resQuiet {
   color: var(--text-2);
 }

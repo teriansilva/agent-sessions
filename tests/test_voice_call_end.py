@@ -37,8 +37,8 @@ def test_end_call_is_offered_on_call_turns_only():
     call = {s["function"]["name"] for s in ask_orchestrator.tool_specs("call")}
     assert "end_call" not in typed
     assert "end_call" in call
-    # nothing else differs (#2137; #2389 offer_cards)
-    assert call - typed == {"end_call", "offer_decisions", "offer_cards"}
+    # nothing else differs (#2137; #2389 offer_cards; #2341 put_through)
+    assert call - typed == {"end_call", "offer_decisions", "offer_cards", "put_through"}
 
 
 def test_end_call_is_refused_off_a_call():

@@ -18,6 +18,8 @@ import { useEngineRoster } from "../../app/engineRoster";
 import { bellGroups } from "./notificationFeed";
 import { targetPath } from "./notificationLinks";
 import { NotificationRow } from "./NotificationRow";
+import { CallbackCall } from "../call/CallbackCall";
+import { isCallbackNotice } from "../call/callbackNotice";
 import { mutateNotifications, refreshNotifications, useNotifications } from "./notificationsStore";
 
 /** The notification bell (#726 Phase 3), beside the Pulse chip in the top bar.
@@ -342,6 +344,12 @@ export function NotificationBell() {
                 open={targetPath(n)}
                 onOpen={() => setOpen(false)}
                 onDismiss={() => void dismissOne(n.id)}
+                extra={
+                  // "Call me back" (#2341 §4): the notice offers Call, straight to the session.
+                  isCallbackNotice(n) ? (
+                    <CallbackCall sessionKey={n.session_id} title={n.title} onCall={() => setOpen(false)} />
+                  ) : undefined
+                }
               />
               );
             });

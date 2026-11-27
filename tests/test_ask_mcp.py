@@ -746,6 +746,75 @@ def test_a_typed_link_stages_a_create_card_with_its_facts_and_registers_it(live,
     assert rec["source"] == _LINK_SRC and rec["origin"] == {"url": _LINK, "commit": _SHA}
 
 
+_GO_MODULE = "git.b4mad.industries/agentic-forges/forgejo-mcp/v3"
+_GO_SRC = {"kind": "go", "package": _GO_MODULE, "version": "v3.3.0"}
+
+
+def test_a_go_link_card_shows_the_go_facts_and_the_build_line(live, ai, mcp, monkeypatch):
+    """#2427: a link whose root is a go.mod drafts the same card, with the Go module's facts (the
+    module, its home and the mirror note, the command, the Go it needs, the hash, the build's
+    dependencies, the toolchain) and the build line instead of "not built from this commit"."""
+    from agent_sessions import mcp_gitsource, mcp_jobs
+
+    mcp_jobs._reset_for_tests()
+
+    def resolve(url, *, cancel=None, progress=None):
+        return {
+            "source": dict(_GO_SRC),
+            "origin": {"url": _LINK, "commit": _SHA},
+            "facts": {
+                "repository": "github.com/owner/repo",
+                "commit": _SHA,
+                "declared": {"manifest": "go.mod", "kind": "go", "package": _GO_MODULE,
+                             "version": None},
+                "release": {"module": _GO_MODULE, "version": "v3.3.0", "mirror": True,
+                            "home": "git.b4mad.industries/agentic-forges/forgejo-mcp",
+                            "same_commit": True, "go": "1.26.0", "time": "",
+                            "ref": "refs/tags/v3.3.0"},
+            },
+        }  # fmt: skip
+
+    def review(rec):
+        return {
+            "review_id": "a1b2c3d4e5f60718",
+            "source": rec["source"],
+            "integrity": "h1:a7TU1kvcAEAtlPIzQwErTy0123456789abcdefghij=",
+            "registry": "proxy.golang.org",
+            "dependencies": 46,
+            "install_scripts_declared": [],
+            "entrypoint": "forgejo-mcp",
+            "command": _GO_MODULE,
+            "go": "1.26.0",
+            "toolchain": {"version": "1.27.4", "sha256": "ab" * 32, "platform": "linux/amd64"},
+            "runs": "forgejo-mcp (stdio), built with go1.27.4",
+        }
+
+    monkeypatch.setattr(mcp_gitsource, "resolve", resolve)
+    monkeypatch.setattr(mcp_install, "review", review)
+    try:
+        cid, _ = _link_card(live, ai)
+        (card,) = _cards(live, cid)
+        assert (
+            f"the Go module {_GO_MODULE} v3.3.0 that github.com/owner/repo declares at 3f2a9c1"
+            in card["text"]
+        )
+        assert "It builds, enables and runs nothing yet" in card["text"]
+        shown = live.c.get(
+            f"/api/ask/proposals/{card['action_id']}/content", headers=live.hdr
+        ).json()
+        link = shown["link"]
+        assert link["kind"] == "go" and link["manifest"] == "go.mod"
+        assert link["package"] == _GO_MODULE and link["version"] == "v3.3.0"
+        assert link["home"] == "git.b4mad.industries/agentic-forges/forgejo-mcp" and link["mirror"]
+        assert link["entrypoint"] == "forgejo-mcp" and link["command"] == _GO_MODULE
+        assert link["go"] == "1.26.0" and link["toolchain"] == "1.27.4"
+        assert link["integrity"] == "h1:a7TU1kvcAEAt" and link["dependencies"] == 46
+        assert link["disclaimer"] == mcp_gitsource.GO_DISCLAIMER
+        assert '"kind": "go"' in shown["server"]
+    finally:
+        mcp_jobs._reset_for_tests()
+
+
 @pytest.mark.parametrize(
     "question",
     [

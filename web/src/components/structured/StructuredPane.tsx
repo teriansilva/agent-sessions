@@ -101,6 +101,8 @@ import { SentMessagesModal } from "../terminal/SentMessagesModal";
 import { TemplatePickerModal } from "../templates/TemplatePickerModal";
 import { UploadImage } from "../templates/UploadImage";
 import { useDictation } from "../terminal/useDictation";
+import { SessionCallButton } from "../call/SessionCallButton";
+import { CallbackBanner } from "../call/CallbackBanner";
 import compose from "../terminal/Compose.module.css";
 import term from "../terminal/Terminal.module.css";
 import type {
@@ -4236,6 +4238,8 @@ export function StructuredPane({
       </QuestionDockTarget.Provider>
       {/* The open question, pinned between the log and the composer (#2234). */}
       <QuestionDock dockRef={setQuestionDock} />
+      {/* "Call me back" waiting on this session (#2341 §4), where the background strip sits. */}
+      {!readOnly && <CallbackBanner sessionKey={actionKey} />}
       {/* Live background jobs (#1726): one line glued above the composer, never in the log. */}
       <BackgroundStrip
         snap={snap}
@@ -4412,13 +4416,13 @@ export function StructuredPane({
               <button
                 type="button"
                 ref={micBtnRef}
-                className={
+                className={`${styles.micGlyph} ${
                   dictListening
                     ? `${compose.mic} ${compose.micOn}`
                     : dictFinalizing
                       ? `${compose.mic} ${compose.micFinalizing}`
                       : compose.mic
-                }
+                }`}
                 aria-label={
                   dictListening
                     ? "Stop voice input — release to finish"
@@ -4438,11 +4442,19 @@ export function StructuredPane({
                 disabled={busy || notStarted}
                 {...micHandlers}
               >
+                {/* #2341 S1: the mic is a glyph (hold to dictate, unchanged); Call speaks. */}
                 <Mic size={16} aria-hidden />
-                <span className={`${compose.micLabel} ${styles.actionLabel}`}>
-                  Talk
-                </span>
               </button>
+            )}
+            {!readOnly && snap && (
+              <SessionCallButton
+                sessionKey={actionKey}
+                title={row?.title ?? ""}
+                className={styles.callBtn}
+                onClassName={styles.callOn}
+                labelClassName={styles.actionLabel}
+                disabled={notStarted || createFailed}
+              />
             )}
             <button
               type="submit"

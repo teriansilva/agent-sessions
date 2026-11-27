@@ -24,7 +24,15 @@ bounded, reads from git objects only) and decides, deterministically:
   parse is refused. **A URL found in metadata is never fetched or followed**: it is only parsed.
 
 That match is a consistency check against typos and squatted names, never proof the release was
-built from that commit; the Review screen says so. The result is P1b's source unchanged
+built from that commit; the Review screen says so.
+
+**A root ``go.mod`` (#2427)** is the exception: a Go module is BUILT from the pinned commit
+(`mcp_install`'s Go branch; a Go build runs no repository code). Its identity is proven by the
+commit, not by names: the Go module proxy is asked for ``<module>@<pinned commit>`` (no direct VCS
+fetch) and its answer's ``Origin.Hash`` must equal the pinned commit, so a mirror link (the same
+commit, as on Codeberg) is accepted and shown with the module's home, and a repository whose
+``go.mod`` names someone else's module never matches. The version built is the proxy's canonical
+one for that commit (its tag, or a pseudo-version). The result is P1b's source unchanged
 (``{kind: npm|pypi, package, version}``) plus a display-only ``origin {url, commit}``.
 
 `run` is the polled operation (`mcp_jobs`, kind ``resolve``): resolve, then P1b's own review
@@ -42,7 +50,7 @@ import tomllib
 from collections.abc import Callable
 from urllib.parse import quote, urlsplit
 
-from . import mcp_install, skill_repo
+from . import mcp_install, mcp_jobs, skill_repo
 from .mcp_egress import EgressProxy, origin
 from .mcp_registry import RegistryError
 
@@ -62,6 +70,12 @@ _SEGMENT = re.compile(r"\A[A-Za-z0-9_.][A-Za-z0-9_.-]{0,99}\Z")
 _INSTALL_SCRIPTS = ("preinstall", "install", "postinstall")
 
 DISCLAIMER = "Installs the published release; not built from this commit."
+GO_DISCLAIMER = (
+    "Built from this commit with the Go toolchain. No install scripts run; every download is "
+    "verified against sum.golang.org."
+)
+#: ``module <path>`` in go.mod (optionally quoted), one per file.
+_GO_MODULE_LINE = re.compile(r'^\s*module\s+"?([^\s"]+)"?\s*(?://.*)?$', re.M)
 
 
 class LinkRefused(RegistryError):
@@ -222,8 +236,14 @@ def _pypi_manifest(text: str, facts: dict) -> dict | None:
     return found
 
 
+def _go_manifest(text: str, facts: dict) -> dict:
+    m = _GO_MODULE_LINE.search(text)
+    return _found("go.mod", "go", m.group(1) if m else None, None)
+
+
 def declared(snap: skill_repo.Snapshot, facts: dict) -> dict:
-    """The ONE package the repository root declares, as P1b's source. Raises `LinkRefused`."""
+    """The ONE package the repository root declares, as P1b's source (a Go module's version is
+    the proxy's, found by `resolve`). Raises `LinkRefused`."""
     found = []
     npm_text = _text_at(snap, "package.json", facts)
     if npm_text is not None:
@@ -233,24 +253,37 @@ def declared(snap: skill_repo.Snapshot, facts: dict) -> dict:
         py = _pypi_manifest(py_text, facts)
         if py is not None:
             found.append(py)
+    go_text = _text_at(snap, "go.mod", facts)
+    if go_text is not None:
+        found.append(_go_manifest(go_text, facts))
     facts["found"] = found
     if not found:
         raise LinkRefused(
-            "this repository declares no package at its root: there is no package.json, and no "
-            "pyproject.toml with a [project] table",
+            "this repository declares no package at its root: there is no package.json, no "
+            "pyproject.toml with a [project] table, and no go.mod",
             "no_manifest",
             facts,
         )
     if len(found) > 1:
+        kinds = {f["kind"] for f in found}
+        what = (
+            "both an npm and a Python package"
+            if kinds == {"npm", "pypi"}
+            else "more than one kind of package ("
+            + " and ".join(f["manifest"] for f in found)
+            + ")"
+        )
         raise LinkRefused(
-            "this repository declares both an npm and a Python package. BattleLab never picks "
-            "one for you, so nothing was registered",
+            f"this repository declares {what}. BattleLab never picks one for you, so nothing "
+            "was registered",
             "both_manifests",
             facts,
         )
     (one,) = found
     if not one["package"]:
         raise LinkRefused(f"{one['manifest']} names no package", "no_name", facts)
+    if one["kind"] == "go":
+        return {"kind": "go", "package": one["package"]}  # its version is the proxy's (resolve)
     if not one["version"]:
         why = " (its version is dynamic)" if one.get("dynamic") else ""
         raise LinkRefused(
@@ -438,6 +471,78 @@ def _match(link_id: tuple[str, str, str], candidates: list[object], facts: dict)
 # ---- the resolution -----------------------------------------------------------------------------
 
 
+def _go_release(module: str, commit: str, link_id: tuple[str, str, str], facts: dict) -> dict:
+    """The Go module at exactly the pinned commit, from the Go module proxy (#2427): its canonical
+    version and home. Refused unless the proxy's ``Origin.Hash`` is the pinned commit."""
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    from . import mcp_gotool
+
+    if not mcp_install._GO_MODULE.fullmatch(module):
+        raise LinkRefused(f"go.mod's module {module!r} is not a module path BattleLab builds",
+                          "manifest", facts)  # fmt: skip
+    mcp_install.root().mkdir(parents=True, exist_ok=True, mode=0o700)
+    cwd = Path(tempfile.mkdtemp(prefix="golist-", dir=mcp_install.root()))
+    try:
+        with mcp_gotool.job():
+            try:
+                go = mcp_gotool.ensure(None)
+            except RegistryError as e:
+                raise LinkRefused(
+                    f"the Go toolchain could not be had: {e}", "toolchain", facts
+                ) from None
+            with mcp_gotool.building():
+                doc = mcp_install._go_json(
+                    go,
+                    ["list", "-m", "-json", f"{module}@{commit}"],
+                    cwd,
+                    "asking the Go module proxy",
+                    mcp_install.GO_STEP_TIMEOUT_S,
+                )
+    except LinkRefused:
+        raise
+    except mcp_gotool.ToolchainError as e:  # e.g. another Go build kept the build slot
+        raise LinkRefused(str(e), "toolchain", facts) from None
+    except RegistryError as e:
+        raise LinkRefused(
+            f"{e}. The Go module proxy has no {module} at this commit ({commit[:7]}): it isn't in "
+            "the module's own repository, or the proxy doesn't serve it, so nothing was registered",
+            "unpublished",
+            facts,
+        ) from None
+    finally:
+        shutil.rmtree(cwd, ignore_errors=True)
+    found = doc.get("Origin") if isinstance(doc.get("Origin"), dict) else {}
+    if doc.get("Path") != module or found.get("Hash") != commit:
+        raise LinkRefused(
+            f"the Go module proxy's {module} is not at this repository's commit ({commit[:7]}), "
+            "so this repository is not that module's code. Nothing was registered",
+            "provenance",
+            facts,
+        )
+    try:
+        source = mcp_install.validate_source(
+            {"kind": "go", "package": module, "version": doc.get("Version")}
+        )
+    except RegistryError as e:
+        raise LinkRefused(f"the Go module proxy's answer: {e}", "registry", facts) from None
+    home_url = found.get("URL") if isinstance(found.get("URL"), str) else ""
+    home_id = identity(home_url)
+    facts["release"] = {
+        "module": module,
+        "version": source["version"],
+        "home": said(home_id) if home_id else _text(home_url),
+        "mirror": bool(home_id) and home_id != link_id,
+        "same_commit": True,
+        "go": _text(doc.get("GoVersion") or "", 20),
+        "time": _text(doc.get("Time") or "", 40),
+        "ref": _text(found.get("Ref") or "", 120),
+    }
+    return source
+
+
 def _fetch(url: str, cancel: threading.Event | None) -> skill_repo.Snapshot:
     return skill_repo.fetch(url, cancel=cancel)
 
@@ -476,6 +581,16 @@ def resolve(
     progress("release", **facts["declared"])
     if cancel is not None and cancel.is_set():
         raise LinkRefused("stopped: the link was not read", "stopped", facts)
+    if source["kind"] == "go":
+        # The same steps the page shows: `release` = the module at this commit from the proxy
+        # (its first use also fetches the toolchain), `repository` = the commit match.
+        try:
+            source = _go_release(source["package"], snap.commit, link_id, facts)
+        except mcp_jobs.Stopped:
+            raise LinkRefused("stopped: the link was not read", "stopped", facts) from None
+        progress("repository", version=source["version"])
+        origin_rec = {"url": origin_url, "commit": snap.commit}
+        return {"source": source, "origin": origin_rec, "facts": facts}
     reader = _npm_release if source["kind"] == "npm" else _pypi_release
     candidates, release = reader(source, facts)
     facts["release"] = release
@@ -491,24 +606,61 @@ def run(op) -> dict:
     resolved = resolve(op.link, cancel=op.cancel, progress=op.report)
     if op.cancel.is_set():
         raise LinkRefused("stopped: the link was not read", "stopped", resolved["facts"])
+    disclaimer = GO_DISCLAIMER if resolved["source"]["kind"] == "go" else DISCLAIMER
+    current = op.current or {}
+    if op.update_of and current.get("source") == resolved["source"] and current.get("installed"):
+        # Update from source (#2427): the link's head is what is installed. Nothing to apply.
+        return {
+            "resolution_id": op.id,
+            "up_to_date": True,
+            "source": resolved["source"],
+            "origin": resolved["origin"],
+            "previous": {"source": current.get("source"), "origin": current.get("origin")},
+            "facts": resolved["facts"],
+            "disclaimer": disclaimer,
+        }
     op.report("review")
     try:
         review = mcp_install.review({"id": op.reserved, "source": resolved["source"]})
+    except mcp_jobs.Stopped:  # the review removed its own staging on the way out
+        raise LinkRefused("stopped: the link was not read", "stopped", resolved["facts"]) from None
     except RegistryError as e:
-        raise LinkRefused(
-            f"the release matches, but its review failed: {e}", "review", resolved["facts"]
-        ) from None
-    if op.cancel.is_set():
+        said = (
+            f"BattleLab can't build this Go module: {e}"
+            if resolved["source"]["kind"] == "go"
+            else f"the release matches, but its review failed: {e}"
+        )
+        raise LinkRefused(said, "review", resolved["facts"]) from None
+    if op.cancel.is_set():  # stopped just after the review: nothing of it is kept
+        import shutil
+
+        shutil.rmtree(mcp_install._staging(op.reserved, review["review_id"]), ignore_errors=True)
         raise LinkRefused("stopped: the link was not read", "stopped", resolved["facts"])
     op.bound = {"id": op.reserved, "source": resolved["source"], "origin": resolved["origin"]}
-    return {
+    if op.update_of:
+        # What the server was when its link was read: applying requires it unchanged (#2427).
+        op.bound["previous"] = {"source": current.get("source"), "origin": current.get("origin")}
+    out = {
         "resolution_id": op.id,
         "source": resolved["source"],
         "origin": resolved["origin"],
         "facts": resolved["facts"],
         "review": review,
-        "disclaimer": DISCLAIMER,
+        "disclaimer": disclaimer,
     }
+    if op.update_of:
+        out["up_to_date"] = False
+        out["previous"] = {"source": current.get("source"), "origin": current.get("origin")}
+    return out
 
 
-__all__ = ["DISCLAIMER", "LinkRefused", "declared", "identity", "resolve", "root_link", "run"]
+__all__ = [
+    "DISCLAIMER",
+    "GO_DISCLAIMER",
+    "LinkRefused",
+    "declared",
+    "identity",
+    "resolve",
+    "root_link",
+    "run",
+]

@@ -551,3 +551,115 @@
   align-self: flex-start;
   min-height: 44px;
 }
+
+/* #2341: a call with an API session. A session has no portrait: the agent's plate stands in, at
+   the portrait's place. Its facts (agent, project, voice) under the title; a skip-permissions
+   session keeps the pane head's warning chip and one risk line for the whole call. */
+.partyPlate {
+  --avatar-size: 72px;
+  font-size: var(--fs-readout);
+}
+.partyPlateBig {
+  --avatar-size: 120px;
+  font-size: var(--fs-readout);
+}
+.partyFacts {
+  font: 500 var(--fs-meta) / 1.4 var(--font-mono);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.partyRisk {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-2);
+  font: 500 var(--fs-meta) / 1.4 var(--font-mono);
+  color: var(--warn-text);
+}
+/* The pane head's chip (#1339): a standing state, so the warning status colour, never red. */
+.skipChip {
+  border-color: var(--status-degraded);
+  color: var(--warn-text);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.backRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+  padding: var(--sp-2) var(--sp-3) 0;
+}
+.backBtn {
+  min-height: 44px;
+  flex: 1 1 auto;
+  justify-content: center;
+}
+.transfer {
+  margin: var(--sp-2) var(--sp-3) 0;
+}
+.transfer :global(.nj-face) {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.transferRoute {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  font: 600 var(--fs-row) / 1.3 var(--font-display);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+.partyVoice {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font: 500 var(--fs-micro) / 1 var(--font-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.partyVoiceSelect {
+  min-height: 32px;
+  max-width: 14rem;
+  font: 500 var(--fs-meta) / 1 var(--font-mono);
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-1);
+  background: var(--bg-1);
+  border: 1px solid var(--line-strong);
+  padding: 0 var(--sp-2);
+}
+@media (pointer: coarse), (max-width: 800px) {
+  .partyVoiceSelect {
+    min-height: 44px;
+  }
+}
+/* #2341 §4: "Calls you back when this turn finishes · Cancel" on the session's pane, and the
+   bell notice's Call. */
+.callback {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-3);
+  border-top: 1px solid var(--line);
+  font: 500 var(--fs-meta) / 1.4 var(--font-mono);
+  color: var(--accent-text);
+}
+.callbackText {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.callbackCancel {
+  flex: none;
+}
+.callbackCall {
+  align-self: flex-start;
+  margin-top: var(--sp-1);
+}

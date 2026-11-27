@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+"""Time the list routes the sidebar, Projects and Automations pages load, on this install's
+real sessions, reproducibly.
+
+Each route is requested repeatedly, ``--gap`` seconds apart. The engine scan snapshot lives 10 s,
+so a gap over 10 s makes each request walk again, as the sidebar's 15 s poll does. Per route the
+report gives p50 / p95 / max. ``--busy N`` runs N CPU-busy Python threads beside the requests.
+The running app always has other threads working, and work that hands the GIL back and forth is
+far slower there than in an idle process.
+
+Nothing live is written:
+
+* The app's own stores (`~/.config/agent-sessions`) are copied into a temp sandbox, SQLite
+  through the backup API, and every store variable points there.
+* A store that migrates or writes on open only ever touches the copy. The sandbox is deleted
+  afterwards.
+* The engines' transcript stores (`~/.claude`, `~/.codex`, the native journals) are only read,
+  exactly as the running app's list walk reads them.
+
+Usage (the install's Python, so it reads the same stores):
+  PYTHONPATH=src ~/.local/share/agent-sessions/current/venv/bin/python scripts/bench-list-routes \\
+      [--reps 12] [--gap 11] [--busy 1] [--route /api/projects ...] [--json]
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import sqlite3
+import statistics
+import sys
+import tempfile
+import threading
+import time
+from pathlib import Path
+
+ROUTES = [
+    "/api/sessions?limit=20&offset=0&archived=0",
+    "/api/projects",
+    "/api/automations",
+    "/api/automations/origins",
+    "/api/missions",
+    "/api/dashboard/sessions",
+    "/api/pulse/needs-you?window_days=1",
+]
+
+CONFIG = Path.home() / ".config" / "agent-sessions"
+#: Store variable → the file or directory under `~/.config/agent-sessions` it names.
+STORES = {
+    "AGENT_SESSIONS_MISSIONS_DB": "missions.db",
+    "AGENT_SESSIONS_AUTOMATIONS_DB": "automations.db",
+    "AGENT_SESSIONS_SPECIALISTS_DB": "specialists.db",
+    "AGENT_SESSIONS_MISSION_PLANS_DB": "mission-plans.db",
+    "AGENT_SESSIONS_SHARES_DB": "shares.db",
+    "AGENT_SESSIONS_ARTIFACTS_DB": "artifact_store.db",
+    "AGENT_SESSIONS_FEDERATION_DIR": "federation",
+    "AGENT_SESSIONS_PREFS": "prefs.json",
+    "AGENT_SESSIONS_METADATA": "metadata.json",
+    "AGENT_SESSIONS_PROJECTS": "projects.json",
+    "AGENT_SESSIONS_NOTIFICATIONS": "notifications.json",
+    "AGENT_SESSIONS_ORCHESTRATOR_LEDGER": "orchestrator-ledger.jsonl",
+    "AGENT_SESSIONS_AGENT_USAGE": "agent-usage.json",
+    "AGENT_SESSIONS_HQ_DISPATCHES": "hq-dispatches.json",
+    "AGENT_SESSIONS_WORK_RECAP": "work-recap.json",
+    "AGENT_SESSIONS_NEEDS_YOU_DISMISSED": "needs-you-dismissed.json",
+    "AGENT_SESSIONS_AGENT_REPORTS": "agent-reports.json",
+    "AGENT_SESSIONS_CLUSTERS": "clusters.json",
+    "AGENT_SESSIONS_LINEAGE": "lineage.json",
+    "AGENT_SESSIONS_SESSION_INDEX": "session-index.db",
+    "AGENT_SESSIONS_ASK_DIR": "ask",
+    "AGENT_SESSIONS_MEMORY_DIR": "memory",
+    "AGENT_SESSIONS_TEMPLATES": "templates.json",
+    "AGENT_SESSIONS_CONNECTORS_STORE": "connectors.json",
+}
+
+
+def _load_env() -> None:
+    env = Path.home() / ".local/share/agent-sessions/env"
+    if env.exists():
+        for line in env.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k, v.strip('"'))
+
+
+def _sandbox(root: Path) -> None:
+    """Copy each store into ``root`` (a missing one stays missing) and point its variable there."""
+    for var, name in STORES.items():
+        src, dst = CONFIG / name, root / name
+        if src.is_dir():
+            shutil.copytree(src, dst, symlinks=True, ignore_dangling_symlinks=True)
+        elif src.exists() and name.endswith(".db"):
+            s = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+            d = sqlite3.connect(dst)
+            s.backup(d)
+            d.close()
+            s.close()
+        elif src.exists():
+            shutil.copy2(src, dst)
+        os.environ[var] = str(dst)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--route", action="append", help="repeatable; default: the list routes")
+    ap.add_argument("--reps", type=int, default=12)
+    ap.add_argument("--gap", type=float, default=11.0)
+    ap.add_argument("--busy", type=int, default=0)
+    ap.add_argument(
+        "--duty",
+        type=float,
+        default=1.0,
+        help="each busy thread computes this share of every 4 ms and sleeps the rest (the live "
+        "app's ~500 threads used 40-65%% of a core in total, in bursts, not one spinner)",
+    )
+    ap.add_argument("--json", action="store_true", help="one JSON line per request")
+    ap.add_argument(
+        "--switch-interval",
+        type=float,
+        default=None,
+        help="sys.setswitchinterval for this run (seconds); default: what the served app sets",
+    )
+    args = ap.parse_args()
+    routes = args.route or ROUTES
+
+    _load_env()
+    tmp = Path(tempfile.mkdtemp(prefix="bench-list-routes-"))
+    try:
+        _sandbox(tmp)
+        return _run(routes, args)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _run(routes: list[str], args) -> int:
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from agent_sessions import session_stream
+    from agent_sessions.routes import automations as automations_routes
+    from agent_sessions.routes import missions as missions_routes
+    from agent_sessions.routes import pulse as pulse_routes
+    from agent_sessions.routes import sessions as sessions_routes
+
+    app = FastAPI()
+    registry = session_stream.SessionRegistry()
+    auth = {"logged_in": lambda: "bench", "csrf_guard": lambda: None}
+    sessions_routes.register(app, registry=registry, **auth)
+    automations_routes.register(app, registry=registry, **auth)
+    missions_routes.register(app, registry=registry, **auth)
+    pulse_routes.register(app, registry=registry, **auth)
+    client = TestClient(app)
+
+    stop = threading.Event()
+
+    def busy() -> None:
+        period, n = 0.004, 0
+        while not stop.is_set():
+            until = time.perf_counter() + period * args.duty
+            while time.perf_counter() < until:
+                n += 1
+            if args.duty < 1.0:
+                time.sleep(period * (1.0 - args.duty))
+
+    if args.switch_interval is None:
+        # What the served app sets in its lifespan (this bench never enters the lifespan), on the
+        # tree being measured: absent on a tree that predates it.
+        from agent_sessions import main as app_main
+
+        args.switch_interval = getattr(app_main, "GIL_SWITCH_INTERVAL_S", None)
+    if args.switch_interval is not None:
+        sys.setswitchinterval(args.switch_interval)
+    print(f"switch interval {sys.getswitchinterval() * 1000:.2f} ms", flush=True)
+    for _ in range(args.busy):
+        threading.Thread(target=busy, daemon=True).start()
+    client.get(routes[0])  # the first walk, as a running app has done long before
+    times: dict[str, list[float]] = {r: [] for r in routes}
+    try:
+        for i in range(args.reps):
+            time.sleep(args.gap)
+            for r in routes:
+                t = time.perf_counter()
+                resp = client.get(r)
+                ms = (time.perf_counter() - t) * 1000
+                times[r].append(ms)
+                if args.json:
+                    print(
+                        json.dumps(
+                            {"route": r, "rep": i, "ms": round(ms), "status": resp.status_code}
+                        ),
+                        flush=True,
+                    )
+                elif resp.status_code != 200:
+                    print(f"  {r}: HTTP {resp.status_code}", flush=True)
+    finally:
+        stop.set()
+    print(
+        f"\n{'route':45s} {'p50':>7s} {'p95':>7s} {'max':>7s}"
+        f"   (ms, n={args.reps}, busy={args.busy}, duty={args.duty})"
+    )
+    for r, v in times.items():
+        v = sorted(v)
+        p95 = v[min(len(v) - 1, round(0.95 * (len(v) - 1)))]
+        print(f"{r:45s} {statistics.median(v):7.0f} {p95:7.0f} {v[-1]:7.0f}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

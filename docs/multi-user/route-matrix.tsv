@@ -494,6 +494,8 @@ PUT	/api/variables/{vid}/projects	variables	credentials	manage	login	mutate	cold
 GET	/api/version	system	instance	system.read	login	read	cold	unscoped	instance status and administration
 POST	/api/voice/calls	voice	self	write	login	mutate	cold	unscoped	HQ voice settings and calls; one operator account today (#1620)
 DELETE	/api/voice/calls/{call_id}	voice	self	write	login	mutate	cold	unscoped	HQ voice settings and calls; one operator account today (#1620)
+GET	/api/voice/callbacks	voice	self	read	login	read	warm	unscoped	the call-backs waiting on sessions (#2341); one operator account today
+DELETE	/api/voice/callbacks/{cb_id}	voice	self	write	login	mutate	cold	unscoped	cancels a call-back on a session pane (#2341); one operator account today
 GET	/api/voice/capabilities	voice	self	read	login	read	cold	unscoped	HQ voice settings and calls; one operator account today (#1620)
 GET	/api/voice/local	voice	self	read	login	read	cold	unscoped	HQ voice settings and calls; one operator account today (#1620)
 POST	/api/voice/local/use	voice	self	write	login	mutate	cold	unscoped	HQ voice settings and calls; one operator account today (#1620)

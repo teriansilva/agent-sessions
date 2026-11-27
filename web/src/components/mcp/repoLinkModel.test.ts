@@ -1,6 +1,11 @@
 import { describe, expect, test } from "vitest";
 
 import {
+  declaredWords,
+  goCommandWhere,
+  goDependencyWords,
+  goVersionWords,
+  installedIntegrity,
   linkDisplay,
   linkError,
   nameFromLink,
@@ -9,6 +14,10 @@ import {
   refusalHint,
   resolveRows,
   sentence,
+  toolchainWords,
+  updatedFlash,
+  updateSteps,
+  upToDateWords,
 } from "./repoLinkModel";
 
 describe("a repository link (#2353)", () => {
@@ -69,5 +78,80 @@ describe("a repository link (#2353)", () => {
     expect(sentence("this repository declares both")).toBe("This repository declares both.");
     expect(sentence("Done.")).toBe("Done.");
     expect(sentence("npm has no published release a 1.0.0")).toBe("npm has no published release a 1.0.0.");
+  });
+});
+
+const MODULE = "git.b4mad.industries/agentic-forges/forgejo-mcp/v3";
+
+describe("a Go module from a repository link (#2427)", () => {
+  test("the progress rows are worded for Go: Module (the toolchain's first download), Commit match", () => {
+    const at = (step: "commit" | "manifest" | "release" | "repository" | "review", extra = {}) =>
+      resolveRows({ step, commit: "9c3fa38c6708", manifest: "go.mod", kind: "go", package: MODULE, ...extra });
+    const release = at("release");
+    expect(release.map((r) => r.label)).toEqual(["Commit", "Manifest", "Module", "Commit match", "Review"]);
+    expect(release[1].what).toBe(`go.mod → ${MODULE}`);
+    expect(release[2].state).toBe("running");
+    expect(release[2].what).toMatch(/^Downloading the Go toolchain \(first time only\)/);
+    const review = at("review", { version: "v3.3.0" });
+    expect(review[2].what).toBe(`${MODULE} v3.3.0, from the module proxy`);
+    expect(review[2].state).toBe("done");
+    expect(review[4].what).toMatch(/nothing built/);
+    // An npm link keeps its own rows.
+    expect(resolveRows({ step: "release", kind: "npm", package: "a", version: "1.0.0" })[2].label).toBe("Release");
+  });
+
+  test("Update from source puts the installed commit beside the head just read", () => {
+    const rows = resolveRows({ step: "manifest", commit: "4b1d2e7f0a93" }, "9c3fa38c6708");
+    expect(rows[0].what).toBe("default branch head 4b1d2e7 · installed 9c3fa38");
+    expect(resolveRows({ step: "commit" }, "9c3fa38c6708")[0].what).not.toMatch(/installed/);
+  });
+
+  test("the Go facts in words", () => {
+    expect(declaredWords({ manifest: "go.mod", kind: "go", package: MODULE, version: "" })).toBe(`Go module ${MODULE}`);
+    expect(goVersionWords({ ref: "refs/tags/v3.3.0", version: "v3.3.0" })).toBe("the tag at this commit");
+    expect(goVersionWords({ ref: "", version: "v0.0.0-20261127-9c3fa38c6708" })).toMatch(/pseudo-version/);
+    expect(goCommandWhere(MODULE, MODULE)).toBe("the module root");
+    expect(goCommandWhere(`${MODULE}/cmd/server`, MODULE)).toBe("cmd/server");
+    expect(toolchainWords({ version: "1.27.4", sha256: "x", platform: "linux/amd64" })).toBe(
+      "go1.27.4 · BattleLab’s own, sha256-verified · cgo off",
+    );
+    expect(toolchainWords({ version: "go1.27.4", sha256: "x", platform: "" })).toMatch(/^go1\.27\.4 ·/);
+    // The computed count, in the copy the review asked for (not "pinned by go.sum").
+    expect(goDependencyWords(46)).toBe("46 modules in its build · each verified against sum.golang.org");
+    expect(goDependencyWords(1)).toBe("1 module in its build · each verified against sum.golang.org");
+  });
+
+  test("a Go refusal's hint names the way forward", () => {
+    const go = { repository: "github.com/someone/x-mirror", commit: "7d41c9e", found: [
+      { manifest: "go.mod" as const, kind: "go" as const, package: "git.example.org/x", version: "" },
+    ] };
+    expect(refusalHint(go, "BattleLab can't build this Go module: the module builds several commands (cmd/a, cmd/b), and BattleLab never picks one for you")).toMatch(
+      /exactly one command per server/,
+    );
+    expect(refusalHint(go, "the Go module proxy's git.example.org/x is not at this repository's commit (7d41c9e)")).toBe(
+      "A mirror is accepted only when the module’s own repository has the same commit. Link git.example.org/x itself, or a commit it has published. Nothing was built or registered.",
+    );
+  });
+
+  test("update words: up to date, updated, the old hash only when that source is installed", () => {
+    const src = { kind: "go", package: MODULE, version: "v3.3.0" };
+    expect(upToDateWords(src, { url: "https://codeberg.org/goern/forgejo-mcp", commit: "9c3fa38c6708" })).toBe(
+      "Already up to date at v3.3.0 (9c3fa38)",
+    );
+    expect(updatedFlash({ kind: "go", version: "v3.4.0" })).toBe(
+      "Updated to v3.4.0 — run the checks; new sessions don't get this server until a check passes.",
+    );
+    expect(installedIntegrity({ integrity: "h1:a", source: src }, { ...src })).toBe("h1:a");
+    expect(installedIntegrity({ integrity: "h1:a", source: { ...src, version: "v3.2.0" } }, src)).toBe("");
+    expect(installedIntegrity(null, src)).toBe("");
+  });
+
+  test("the update's three steps: Check says the existing check still counts when nothing changed", () => {
+    const steps = updateSteps("forgejo-mcp", "https://codeberg.org/goern/forgejo-mcp", "go", false);
+    expect(steps.map(([b]) => b)).toEqual(["Source", "Review", "Check"]);
+    expect(steps[1][1]).toMatch(/builds exactly the new module version and hash/);
+    expect(steps[2][1]).toMatch(/needs its own passing check/);
+    expect(updateSteps("x", "https://h/o/r", "npm", false)[1][1]).toMatch(/fetches exactly the new lock/);
+    expect(updateSteps("x", "https://h/o/r", "go", true)[2][1]).toMatch(/keeps its install and its passing check/);
   });
 });

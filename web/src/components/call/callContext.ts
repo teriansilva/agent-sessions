@@ -10,16 +10,27 @@ export interface CallContextValue {
   snap: CallSnapshot;
   caps: VoiceCapabilities | null;
   refreshCaps: () => void;
-  /** Start a call (the Call tap). `trigger` gets focus back when the call panel closes. */
-  start: (opts?: { conversationId?: string | null; trigger?: HTMLElement | null }) => void;
+  /** Start a call (the Call tap). `trigger` gets focus back when the call panel closes. `party`:
+   *  call an API session directly (#2341), by its key. */
+  start: (opts?: {
+    conversationId?: string | null;
+    trigger?: HTMLElement | null;
+    party?: string | null;
+  }) => void;
   end: () => void;
   setMuted: (on: boolean) => void;
   /** A card was tapped (confirm or dismiss) during the call: its spoken window closes (#1397 P2). */
   cardDecided: (id: string) => void;
   /** "What needs me?" by tap: HQ reads the Needs-you list out, as if asked aloud. */
   askNeedsYou: () => void;
-  /** Stop the HQ turn running on this call (#2076). The call stays open. */
+  /** Stop the turn running on this call (#2076) — HQ's, or the session's (#2341). */
   stopTurn: () => void;
+  /** Back to HQ from a session (#2341). */
+  backToHq: () => void;
+  /** Stay with HQ: drop the put-through under way (#2341). */
+  stayWithHq: () => void;
+  /** The voice the session on the line speaks in (#2341). */
+  setVoice: (voice: string) => void;
   /** Close the ended state and hand focus back to what started the call. */
   dismiss: () => void;
   minimized: boolean;
@@ -44,6 +55,9 @@ export const CallContext = createContext<CallContextValue>({
   cardDecided: noop,
   askNeedsYou: noop,
   stopTurn: noop,
+  backToHq: noop,
+  stayWithHq: noop,
+  setVoice: noop,
   dismiss: noop,
   minimized: false,
   setMinimized: noop,

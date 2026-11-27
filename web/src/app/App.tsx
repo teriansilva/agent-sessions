@@ -26,7 +26,8 @@ import { CallProvider } from "../components/call/CallProvider";
 import { callActive, useCall } from "../components/call/callContext";
 import {
   AskPanelContext,
-  HQ_FOCUS_COMPOSER_EVENT,
+  hqPageAtTap,
+  requestHqComposerFocus,
   type AskPanel,
 } from "../components/ask/askPanel";
 import { SessionList } from "../components/sidebar/SessionList";
@@ -109,6 +110,7 @@ import {
   MCP_PATH,
   MCP_NEW_PATH,
   MCP_SERVER_ROUTE,
+  MCP_SERVER_UPDATE_ROUTE,
   WEBHOOKS_PATH,
   WEBHOOK_NEW_PATH,
   ACTIONS_PATH,
@@ -184,6 +186,7 @@ const Memory = lazyWithReload(() => import("../routes/Memory"), "memory");
 const McpServers = lazyWithReload(() => import("../routes/McpServers"), "mcp-servers");
 const McpWizard = lazyWithReload(() => import("../routes/McpWizard"), "mcp-wizard");
 const McpServer = lazyWithReload(() => import("../routes/McpServer"), "mcp-server");
+const McpUpdate = lazyWithReload(() => import("../routes/McpUpdate"), "mcp-update");
 const Webhooks = lazyWithReload(() => import("../routes/Webhooks"), "webhooks");
 const Actions = lazyWithReload(() => import("../routes/Actions"), "actions");
 const WebhookNew = lazyWithReload(() => import("../routes/WebhookNew"), "webhook-new");
@@ -255,8 +258,10 @@ function Layout() {
   // Arriving on the page closes the panel (state adjusted while rendering, not in an effect).
   if (onHqPage && askOpen) setAskOpen(false);
   const toggleAsk = useCallback(() => {
-    if (onHqPage) {
-      window.dispatchEvent(new CustomEvent(HQ_FOCUS_COMPOSER_EVENT));
+    // The URL at the moment of the tap, not only the last render's: a tap landing between a
+    // redirect to the page and the shell's re-render must not open the panel beside it.
+    if (hqPageAtTap(onHqPage)) {
+      requestHqComposerFocus();
       return;
     }
     setAskOpen((o) => !o);
@@ -969,6 +974,7 @@ function Layout() {
                   <Route path={MCP_PATH} element={<McpServers />} />
                   <Route path={MCP_NEW_PATH} element={<McpWizard />} />
                   <Route path={MCP_SERVER_ROUTE} element={<McpServer />} />
+                  <Route path={MCP_SERVER_UPDATE_ROUTE} element={<McpUpdate />} />
                   <Route path={ACTIONS_PATH} element={<Actions />} />
                   <Route path={WEBHOOKS_PATH} element={<Webhooks />} />
                   <Route path={WEBHOOK_NEW_PATH} element={<WebhookNew />} />

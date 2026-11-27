@@ -9,7 +9,7 @@ Protocol with the app (JSON text + binary PCM16 mono):
 
 - app → worker: first ``{"t":"config", stt, tts, in_rate, out_rate, stop_secs, interrupt}``;
   then mic audio (binary, ``in_rate``), ``{"t":"say","id","text"}``, ``{"t":"mute","on"}``,
-  ``{"t":"stop"}``.
+  ``{"t":"flush"}`` (a party change, #2341: drop what is queued), ``{"t":"stop"}``.
 - worker → app: ``{"t":"ready"}``, ``{"t":"user_started","turn"}``,
   ``{"t":"user_stopped","turn","at"}`` (``at``: the stop's own ``time.monotonic()``, the app's
   clock too), ``{"t":"utterance","text","turn"}`` (``turn``: the number of the user turn it was
@@ -583,6 +583,18 @@ class Bridge(FrameProcessor):
             self.muted = bool(msg.get("on"))
             if self.muted and self._tts.cues is not None:
                 self._tts.cues.interrupt()
+        elif t == "flush":
+            # The call's party changed (#2341 §1b): what the worker still has queued for the old
+            # party is dropped, as a barge-in drops it (the app hears `interrupt` back).
+            if self._tts.cues is not None:
+                self._tts.cues.interrupt()
+            self._tts.drop_prefetch()
+            # Pipecat 0.0.104+ names it `broadcast_interruption`; older runtimes, the task frame.
+            interrupt = (
+                getattr(self, "broadcast_interruption", None)
+                or self.push_interruption_task_frame_and_wait
+            )
+            await interrupt()
         elif t == "stop":
             await self.push_frame(EndFrame())
 

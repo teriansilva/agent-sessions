@@ -40,8 +40,9 @@ leaves a registered server where it is; you can continue on its page.
    - **Repository link**: paste a public repository's link, such as
      `https://github.com/owner/repo` (the repository itself: a `/tree/` or `/blob/` link is
      refused). BattleLab reads the repository at its current commit and installs **the npm or
-     PyPI release it publishes**. Nothing is built from the repository's code. See
-     [From a repository link](#from-a-repository-link) below.
+     PyPI release it publishes**, or, for a Go repository, **builds its Go module from that
+     commit**. See [From a repository link](#from-a-repository-link) and
+     [Go repositories](#go-repositories) below.
 
    The name is how agents see the tools. It is suggested from the source; change it if you like.
    If you also registered a server of the same name in your CLI's own config, remove that one.
@@ -83,8 +84,9 @@ but no server is registered and no package is downloaded while it is, so the foo
 
 The rules are fixed, and BattleLab never guesses:
 
-- The root holds **exactly one** package manifest: `package.json` (npm) or a `pyproject.toml` with
-  a `[project]` table (PyPI). A repository with both is refused, and so is one with neither.
+- The root holds **exactly one** package manifest: `package.json` (npm), a `pyproject.toml` with
+  a `[project]` table (PyPI), or a `go.mod` (Go, see [Go repositories](#go-repositories)). A
+  repository with more than one is refused, and so is one with none.
 - The manifest names the package and states a **fixed version**. A missing version, or a
   `pyproject.toml` whose version is `dynamic`, is refused.
 - That exact version must be **published** on npm or PyPI (PyPI: with a wheel). An unpublished
@@ -106,6 +108,49 @@ The server keeps where it came from (`github.com/owner/repo @ 3f2a9c1`). Its pag
 **Settings → Source**, for display only. Saving a different source (another version, say) removes
 it, because it no longer describes what is installed.
 
+### Go repositories
+
+A repository whose root holds a `go.mod` is a **Go module**, and BattleLab **builds** it from the
+commit it read. A Go build runs none of the repository's own code: Go has no install scripts,
+`go:generate` never runs on a build, and cgo is off, so no C compiler runs either.
+
+While the link is read, the rows are **Commit**, **Manifest**, **Module**, **Commit match** and
+**Review**:
+
+- **Module** asks Go's public module proxy (`proxy.golang.org`) for the module at exactly that
+  commit. The first Go link also downloads **BattleLab's own Go toolchain** (about 70 MB, checked
+  against the sha256 go.dev lists for it); the row says *"Downloading the Go toolchain (first time
+  only)"*. On a slow connection that takes a few minutes, once. BattleLab never uses a Go installed
+  on your machine.
+- **Commit match** proves the code: the proxy's record for that version must name the **same
+  commit** as your link. A mirror (a Codeberg copy of a module that lives elsewhere, say) is
+  accepted only at the identical commit, and Review names the module's own home. A repository whose
+  `go.mod` names someone else's module never matches.
+- **Review** downloads the module and every module in its build, each one checked against Go's
+  checksum database (`sum.golang.org`), and finds the one command it builds. Nothing is built yet.
+
+Review then shows the repository and commit, the line *"Built from this commit with the Go
+toolchain. No install scripts run; every download is verified against sum.golang.org."*, and the
+Go module: its path, the version (the tag at that commit, or a pseudo-version when no tag points at
+it), its home and *"same commit as the link"* for a mirror, the command, the Go version it needs,
+the module hash (`h1:…`), how many modules are in its build, and the toolchain. **Install** builds
+exactly that version and hash with exactly that toolchain; a build takes a few minutes the first
+time and seconds after that.
+
+What a Go repository can't be:
+
+- **cgo**: a module that needs a C compiler is refused when it is built.
+- **`replace` or `exclude` in its `go.mod`**: refused at Review, because `go install` refuses them
+  too, and BattleLab builds only what `go install` builds.
+- **Not on the public proxy**: a private module, or one the proxy doesn't serve, is refused. Go
+  never fetches from the repository itself here.
+- **Several commands**: a module whose root isn't a command and that has more than one under
+  `cmd/` is refused; BattleLab builds exactly one command per server and never picks one for you.
+- **A newer Go than the newest stable release**: refused.
+
+Go builds run one at a time. A second one waits for the first (*"another Go build is still
+running"* after 20 minutes), and each step stops after 10 minutes.
+
 In **HQ**, *"add the MCP server at https://github.com/owner/repo"* drafts the same card with the
 same facts and the same sentence, directly above **Register**. HQ only reads a link that you
 typed in your message, never one it found in a page or a tool result. If the card sits until its
@@ -122,15 +167,43 @@ the link again.
   **Use shared** binds the shared value to a project that has none. **Run check** checks that
   project's values. A project with no credentials can't be switched on.
 - **Settings**: the shared settings and credentials, the arguments, the probe call, and the source.
-  Changing the version of a package means reviewing and installing again.
+  Changing the version of a package means reviewing and installing again. A Go module's version
+  can't be typed in; it changes only through **Update from source**.
 - **Activity**: every check, newest first, with its steps.
 
 Each project's page (HQ → Projects → **Memory & equipment**) lists the servers chosen for that
 project, read-only, with the same credential source and check state as this tab. Its links lead
 back here; nothing is edited there.
 
-The **⋯** menu disables, enables again, or removes the server. **Remove** deletes its settings,
-install and check history. Its credentials stay in Variables.
+The **⋯** menu disables, enables again, updates, or removes the server. **Remove** deletes the
+server's registration: its settings, project choices and check history. Its credentials stay in
+Variables, and its installed files stay on disk.
+
+### Update from source
+
+A server added from a repository link (npm, PyPI or Go) has **Update from source**, in the **⋯**
+menu and under **Settings → Source**. It reads the server's own link again, at its default branch's
+current head, with the same rows as adding it. **Stop reading** or **Cancel** leaves everything as
+it was, and the server keeps working meanwhile.
+
+- If the link's head is what is installed, the page says *"Already up to date at v3.3.0
+  (9c3fa38)"*. Nothing is built, nothing changes, and the server's check still counts.
+- Otherwise **Review** shows what changes, old → new: the commit, the version, and the module hash
+  (Go) or the release's integrity (npm, PyPI), with the same facts as adding it.
+- **Install** replaces the server's source and where it came from in one step, then installs (or
+  builds) exactly what Review showed. You land on the **Projects** tab: *"Updated to v3.4.0 — run
+  the checks; new sessions don't get this server until a check passes."* Settings, credentials and
+  project choices are kept.
+
+If the server changed after its link was read (someone saved it, or another update ran first),
+Install changes nothing and says so; **Update again** reads the link against what the server is
+now. If the reading expired (after a few hours, or after BattleLab restarts), the page reads the
+link again. If the install fails after the update was applied, the server names the new version but
+no new session gets it until **Install again** succeeds and a check passes; running sessions keep
+what they started with.
+
+An npm or PyPI server added by name has no link to read: change its version under **Settings →
+Source** as before. Typing a version for a server added from a link drops its repository line.
 
 ### Checks go stale
 

@@ -47,7 +47,7 @@ import {
 } from "../components/mcp/McpBits";
 import { SettingsEditor } from "../components/mcp/SettingsEditor";
 import { OperationEnded, useMcpOperation } from "../components/mcp/mcpOperation";
-import { LinkRefusal, OriginFacts, ResolveProgress } from "../components/mcp/RepoLink";
+import { GoFacts, LinkRefusal, OriginFacts, ResolveProgress } from "../components/mcp/RepoLink";
 import { linkDisplay, linkError, nameFromLink, normalizeLink } from "../components/mcp/repoLinkModel";
 import { bindShared, errorText, storeNewCredentials, useProjects, useSecrets } from "../components/mcp/mcpData";
 import {
@@ -72,8 +72,10 @@ import styles from "../components/mcp/mcp.module.css";
 
 type Kind = "remote" | "npm" | "pypi" | "repo";
 
+// Not "nothing is downloaded": reading a Go link fetches the module's metadata (and, the first time,
+// BattleLab's Go toolchain). What waits for Install is the server itself (#2427).
 const LINK_SOURCE_NOTE =
-  "where the server comes from. A repository link is read at one commit; no package is downloaded yet.";
+  "where the server comes from. A repository link is read at one commit; the server is installed or built only when you press Install.";
 
 const STEPS: WizardStep[] = [
   { id: "source", label: "Source" },
@@ -540,7 +542,7 @@ export default function McpWizard() {
                     "repo",
                     GitBranch,
                     "Repository link",
-                    "A public repository, read at one commit. Installs the npm or PyPI release it publishes.",
+                    "A public repository, read at one commit. Installs the npm or PyPI release it publishes, or builds its Go module from that commit.",
                   ],
                 ] as const
               ).map(([value, Icon, title, text]) => (
@@ -576,7 +578,8 @@ export default function McpWizard() {
                   hint={
                     <>
                       Only the repository root — no <code>/tree/</code> or <code>/blob/</code> links. BattleLab installs its{" "}
-                      <em>published</em> npm or PyPI release; nothing is built from the code.
+                      <em>published</em> npm or PyPI release, or builds its Go module from that commit with BattleLab’s own
+                      Go toolchain.
                     </>
                   }
                   error={tried && sourceErrors.link ? sourceErrors.link : undefined}
@@ -670,11 +673,24 @@ export default function McpWizard() {
                     </p>
                   )}
                   <OriginFacts resolution={resolution} />
-                  <ReviewFacts facts={resolution.review} />
+                  {resolution.source.kind === "go" ? (
+                    <GoFacts review={resolution.review} facts={resolution.facts} />
+                  ) : (
+                    <ReviewFacts facts={resolution.review} />
+                  )}
                   <Caution title="Third-party code">
                     It runs as your user inside every session that gets this server. Review before installing.
                   </Caution>
-                  {busy ? (
+                  {resolution.source.kind === "go" ? (
+                    busy ? (
+                      <p className={styles.note} role="status" data-testid="mcp-op-note">
+                        Registering it and building exactly this module version. A build can take a few minutes; it
+                        carries on even if you leave this page.
+                      </p>
+                    ) : (
+                      <p className={styles.note}>Nothing has been built yet: Install builds exactly this module version and hash.</p>
+                    )
+                  ) : busy ? (
                     <p className={styles.note} role="status" data-testid="mcp-op-note">
                       Registering it and installing exactly this lock. A package can take a few minutes; the install
                       carries on even if you leave this page.
@@ -714,7 +730,11 @@ export default function McpWizard() {
             ) : (
               <>
                 {server.origin && resolution && <OriginFacts resolution={resolution} />}
-                <ReviewFacts facts={facts} />
+                {facts.source.kind === "go" ? (
+                  <GoFacts review={facts} facts={resolution?.facts} />
+                ) : (
+                  <ReviewFacts facts={facts} />
+                )}
                 <Caution title="Third-party code">
                   It runs as your user inside every session that gets this server. Review before installing.
                 </Caution>

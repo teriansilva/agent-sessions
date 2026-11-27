@@ -20,6 +20,7 @@ import contextlib
 import json
 import logging
 import os
+import sys
 from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
@@ -290,6 +291,10 @@ async def _reconcile_new_session(
         return result
 
 
+#: The served process's GIL switch interval (see the lifespan, #2435).
+GIL_SWITCH_INTERVAL_S = 0.001
+
+
 def create_app(cfg: AuthConfig | None = None) -> FastAPI:
     cfg = cfg or AuthConfig.from_env()
     # Shared project memory (#1441): the app itself never carries the memory variables, so no
@@ -382,6 +387,14 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
             from concurrent.futures import ThreadPoolExecutor
 
             asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=512))
+        # The GIL switch interval (#2435). Every file a request reads releases the GIL for the
+        # syscall and waits to take it back; with the app's other threads computing (hundreds of
+        # session streams, the event loop), each wait could last a whole interval (5 ms by
+        # default). A session-list walk makes thousands of such calls: on the operator's install,
+        # with one other busy thread, 11.1 s at 5 ms, 3.9 s at 1 ms. A CPU-bound thread still
+        # runs; it only yields sooner, so the I/O-bound request gets its fair share.
+        switch_was = sys.getswitchinterval()
+        sys.setswitchinterval(GIL_SWITCH_INTERVAL_S)
         # Deploy-hygiene guard (#434): the single-active-viewer take-over model is EXPERIMENTAL
         # and staging-only. It once leaked into the prod env file and made every non-active tab /
         # device blank, so surface it loudly at startup — an operator scanning the journal sees it
@@ -473,6 +486,10 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # Feed alerts (#1730, #1994): the publisher's warnings where host config says this install
         # publishes; everyone else hears only that agent updates are paused by a lapsed catalog.
         feed_alerts_task = asyncio.create_task(feed_alerts.run())
+        # "Call me back" (#2341 §4): one notice when the session turn a call left settles.
+        from . import voice_callbacks
+
+        voice_callbacks_task = asyncio.create_task(voice_callbacks.run())
         # Buffer-cap sweeper (#678): enforces the scrollback ring cap OFF the event loop
         # (periodic + kick-coalesced), so the byte pump never probes dtach sockets.
         cap_sweep_task = asyncio.create_task(scrollback.run_cap_sweeper())
@@ -604,6 +621,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         try:
             yield
         finally:
+            sys.setswitchinterval(switch_was)
             with contextlib.suppress(Exception):
                 await _app.state.federation.stop()
             # Automations stop FIRING first, then drain the runs already started (their outcome is
@@ -670,6 +688,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 update_task,
                 catalog_task,
                 feed_alerts_task,
+                voice_callbacks_task,
                 cap_sweep_task,
                 mission_task,
                 usage_task,

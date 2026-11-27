@@ -806,31 +806,77 @@ def test_a_same_length_interior_rewrite_is_never_served_from_the_fold_cache(conv
     assert folded.operations[operation_id].request["params"]["text"] == changed
 
 
-def test_unchanged_observation_skips_bytes_but_still_checks_privacy_and_fsync(
-    conversation, monkeypatch
-):
-    root, sid, binding = conversation
-    journal.claim(root, request(binding))
-    journal.read(root, sid)
-    inode = path_of(conversation).stat().st_ino
-    pread, fsync = os.pread, os.fsync
-    synced = []
-
-    def read(fd, *args):
-        assert os.fstat(fd).st_ino != inode, "unchanged observation reread the journal"
-        return pread(fd, *args)
+def _spy_fsync(monkeypatch) -> list[int]:
+    """The inodes `os.fsync` was called on from here on."""
+    fsync, synced = os.fsync, []
 
     def sync(fd):
         synced.append(os.fstat(fd).st_ino)
         return fsync(fd)
 
-    monkeypatch.setattr(os, "pread", read)
     monkeypatch.setattr(os, "fsync", sync)
+    return synced
+
+
+def test_unchanged_observation_skips_bytes_and_a_repeated_fsync_but_still_checks_privacy(
+    conversation, monkeypatch
+):
+    """An unchanged observation rereads no byte, and fsyncs only the first time this process
+    observes the segment in exactly this state (#2435): every byte it holds is durable by then.
+    The private-file check still runs on every observation."""
+    monkeypatch.setattr(journal, "_SYNCED_RACY_NS", 0)
+    root, sid, binding = conversation
+    journal.claim(root, request(binding))
+    journal.read(root, sid)
+    inode = path_of(conversation).stat().st_ino
+    pread = os.pread
+
+    def read(fd, *args):
+        assert os.fstat(fd).st_ino != inode, "unchanged observation reread the journal"
+        return pread(fd, *args)
+
+    monkeypatch.setattr(os, "pread", read)
+    synced = _spy_fsync(monkeypatch)
     assert journal.read(root, sid).revision == 2
-    assert inode in synced
+    assert journal.read(root, sid).revision == 2
+    assert inode not in synced  # already fsynced in exactly this state
     path_of(conversation).chmod(0o644)
     with pytest.raises(journal.JournalError):
         journal.read(root, sid)
+
+
+def test_an_appended_or_rewritten_journal_crosses_fsync_again(conversation, monkeypatch):
+    """A synced identity never covers new bytes: an append moves the size, and an in-place rewrite
+    with its mtime restored still moves the ctime."""
+    monkeypatch.setattr(journal, "_SYNCED_RACY_NS", 0)
+    root, sid, binding = conversation
+    journal.read(root, sid)
+    path = path_of(conversation)
+    synced = _spy_fsync(monkeypatch)
+    journal.claim(root, request(binding))
+    del synced[:]
+    journal.read(root, sid)
+    assert path.stat().st_ino in synced  # the append is a new state: fsynced before observed
+    del synced[:]
+    journal.read(root, sid)
+    assert path.stat().st_ino not in synced
+    st = path.stat()
+    data = path.read_bytes()
+    path.write_bytes(data)  # same bytes, same size, mtime restored: only the ctime moves
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+    journal.read(root, sid)
+    assert path.stat().st_ino in synced
+
+
+def test_a_just_written_journal_is_fsynced_on_every_observation(conversation, monkeypatch):
+    """Inside the racy window an identity is never recorded: two writes in one timestamp tick that
+    leave the size unchanged would share it."""
+    root, sid, binding = conversation
+    journal.claim(root, request(binding))
+    synced = _spy_fsync(monkeypatch)
+    journal.read(root, sid)
+    journal.read(root, sid)
+    assert synced.count(path_of(conversation).stat().st_ino) == 2
 
 
 def test_restored_mtime_cannot_hide_rewritten_claim_from_read_or_replay(conversation):

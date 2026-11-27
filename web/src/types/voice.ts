@@ -156,6 +156,22 @@ export interface VoiceDestinations {
   ai_host: string;
 }
 
+/** The API session a call is with (#2341): `null` on the call is HQ. */
+export interface CallParty {
+  key: string;
+  title: string;
+  /** The agent's label from its manifest ("Claude"), never read from the key. */
+  engine: string;
+  project: string;
+  voice: string;
+  /** The voice pool has no other voice: the session speaks in HQ's (the screen says so). */
+  voice_shared: boolean;
+  /** The session skips permission prompts: its marker stays on the call screen (#1339). */
+  bypass: boolean;
+  /** The voices the call screen offers for it: the pool, never HQ's voice on this call. */
+  voices?: string[];
+}
+
 export interface VoiceCall {
   id: string;
   conversation_id: string;
@@ -164,6 +180,7 @@ export interface VoiceCall {
   muted: boolean;
   elapsed_s: number;
   ended_reason: string;
+  party?: CallParty | null;
 }
 
 export interface VoiceCapabilities {
@@ -171,6 +188,9 @@ export interface VoiceCapabilities {
   runtime: boolean;
   available: boolean;
   reason: string;
+  /** #2341: a call to an API session can start now (speech only, no HQ endpoint needed). */
+  sessions?: boolean;
+  session_reason?: string;
   /** #1397 P4: the runtime is overridden, or its setup is stale. Empty when neither. */
   runtime_note?: string;
   destinations: VoiceDestinations;
@@ -188,7 +208,7 @@ export type CallServerMessage =
   | { t: "connected" }
   | {
       t: "caption";
-      who: "you" | "hq";
+      who: "you" | "hq" | "session";
       id: string;
       text: string;
       kind?: "greeting" | "answer" | "progress" | "error" | "readback" | "outcome" | "farewell";
@@ -200,6 +220,13 @@ export type CallServerMessage =
   /** #2102: HQ asks the browser holding this call to show something. Applied at most once. */
   | { t: "screen"; turn_id?: string | null; directive: unknown; title?: string }
   | { t: "interrupt" }
+  /** #2341: the call's party changed — `party` null is HQ; `hq` whether Back to HQ can work. */
+  /** `update` (#2341, review 9091): the same party re-described (its voice pick), no switch. */
+  | { t: "party"; party: CallParty | null; hq?: boolean; update?: boolean }
+  /** #2341: HQ is putting the call through to this session (`null`: the hand-off was dropped). */
+  | { t: "transfer"; party: CallParty | null }
+  /** #2341: the session's turn on this call settled (its working band goes). */
+  | { t: "leg_turn"; state?: string }
   | { t: "speaking"; id?: string; on: boolean }
   | { t: "user"; speaking: boolean }
   | { t: "muted"; on: boolean }

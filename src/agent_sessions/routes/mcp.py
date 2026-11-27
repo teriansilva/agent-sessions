@@ -157,6 +157,34 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         nothing; its result is the draft source, the origin and the facts, held server-side under
         its id for `create`'s ``resolution_id``."""
         payload = await _json_object(request)
+        if set(payload) == {"server_id", "request_id"}:
+            # Update from source (#2427): the link is the server's OWN recorded origin, never a
+            # client's; the review is staged under that server's id.
+            sid = payload["server_id"]
+            try:
+                rec = (
+                    await asyncio.to_thread(mcp_registry.get, sid) if isinstance(sid, str) else None
+                )
+                if rec is None:
+                    raise mcp_registry.NotFound("No such MCP server.")
+                origin = rec.get("origin") or {}
+                if not isinstance(origin.get("url"), str):
+                    raise mcp_registry.RegistryError(
+                        "this server was not added from a repository link; update it by version"
+                    )
+                inst = rec.get("installed") or {}
+                current = {
+                    "source": rec["source"],
+                    "origin": origin,
+                    "installed": inst.get("source") == rec["source"],
+                }
+                op = mcp_jobs.start_resolve(
+                    payload["request_id"], origin["url"], mcp_gitsource.run,
+                    update_of=rec["id"], current=current,
+                )  # fmt: skip
+            except mcp_registry.RegistryError as e:
+                return _error(e)
+            return _started(op)
         url = payload.get("url")
         if set(payload) != {"url", "request_id"} or not isinstance(url, str):
             raise _err(422, "send the repository link (url) and a request_id (a UUID)")
@@ -178,9 +206,24 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         _user: str = Depends(logged_in),
         _csrf: None = Depends(csrf_guard),
     ):
+        """Change a server. ``resolution_id`` (Update from source, #2427) applies a re-read of this
+        server's own link: source and origin are replaced together (409 when the resolution is
+        another server's, 404 when it is gone); the new source is installed and checked again."""
         payload = await _json_object(request)
+        if "origin" in payload:
+            raise _err(422, "origin comes only from a resolved link: send its resolution_id")
         expected = _expected(payload.pop("expected_updated_at", None))
-        result = await _run(mcp_registry.update, sid, payload, expected)
+        rid = payload.pop("resolution_id", None)
+
+        def run():
+            if rid is None:
+                return mcp_registry.update(sid, payload, expected)
+            bound = mcp_jobs.resolution(rid)
+            rec = mcp_registry.update(sid, payload, expected, resolution=bound)
+            mcp_jobs.consume(rid)
+            return rec
+
+        result = await _run(run)
         return result if isinstance(result, Response) else _json(_summary(result))
 
     @app.put("/api/mcp/servers/{sid}/projects")
@@ -234,7 +277,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
             raise _err(422, "send a request_id (a UUID)")
         try:
             rec = await asyncio.to_thread(mcp_registry.get, sid)
-            if rec["source"]["kind"] not in ("npm", "pypi"):
+            if rec["source"]["kind"] not in ("npm", "pypi", "go"):
                 raise mcp_registry.RegistryError("only a package server is reviewed")
             op = mcp_jobs.start(
                 sid, "review", payload["request_id"], lambda: mcp_install.review(rec)

@@ -582,3 +582,226 @@ def test_run_reviews_the_resolved_source_under_the_reserved_id(home, monkeypatch
     with pytest.raises(mcp_gitsource.LinkRefused, match="review failed: it has no wheel"):
         mcp_gitsource.run(op2)
     assert op2.bound is None
+
+
+# ---- Update from source (#2427) -----------------------------------------------------------------
+
+NEW_COMMIT = "4b1d2e7f" + "1" * 32
+
+
+def _register(api) -> dict:
+    rid, _ = _start(api)
+    _poll(api, rid)
+    r = _create(api, {"name": "acme", "resolution_id": rid})
+    assert r.status_code == 201, r.text
+    rec = mcp_registry.get(r.json()["id"])
+    return mcp_registry.set_installed(rec["id"], {"source": rec["source"], "command": "/bin/true"})
+
+
+def _update_start(api, sid, rid=None):
+    rid = rid or str(uuid.uuid4())
+    r = api["client"].post(
+        "/api/mcp/servers/resolve-link",
+        json={"server_id": sid, "request_id": rid},
+        headers=api["h"],
+    )
+    return rid, r
+
+
+def _newer(monkeypatch, version="1.5.0", commit=NEW_COMMIT):
+    def resolve(url, *, cancel=None, progress=mcp_gitsource._no_progress):
+        out = _resolved()
+        out["source"]["version"] = version
+        out["origin"]["commit"] = commit
+        return out
+
+    monkeypatch.setattr(mcp_gitsource, "resolve", resolve)
+
+
+def test_update_from_source_reads_the_servers_own_link_and_replaces_source_and_origin(
+    api, monkeypatch
+):
+    rec = _register(api)
+    _newer(monkeypatch)
+    rid, r = _update_start(api, rec["id"])
+    assert r.status_code == 202
+    op = _poll(api, rid)
+    assert op["state"] == "done", op
+    res = op["result"]
+    assert res["up_to_date"] is False and res["source"]["version"] == "1.5.0"
+    assert res["previous"]["source"]["version"] == "1.4.0" and res["origin"]["commit"] == NEW_COMMIT
+    assert api["reviewed"][-1] == rec["id"]  # the review is staged under the server's own id
+    patched = api["client"].patch(
+        f"/api/mcp/servers/{rec['id']}",
+        json={"resolution_id": rid, "expected_updated_at": rec["updated_at"]},
+        headers=api["h"],
+    )
+    assert patched.status_code == 200, patched.text
+    now = mcp_registry.get(rec["id"])
+    assert now["source"]["version"] == "1.5.0" and now["origin"]["commit"] == NEW_COMMIT
+    with pytest.raises(mcp_registry.RegistryError, match="not installed"):
+        mcp_install.command(now)  # the new source is installed (and checked) afresh
+    again = api["client"].patch(
+        f"/api/mcp/servers/{rec['id']}",
+        json={"resolution_id": rid, "expected_updated_at": now["updated_at"]},
+        headers=api["h"],
+    )
+    assert again.status_code == 409  # a resolution applies once
+
+
+def test_an_up_to_date_server_says_so_and_nothing_can_be_applied(api):
+    rec = _register(api)
+    rid, _ = _update_start(api, rec["id"])
+    res = _poll(api, rid)["result"]
+    assert res["up_to_date"] is True and "review" not in res
+    r = api["client"].patch(
+        f"/api/mcp/servers/{rec['id']}",
+        json={"resolution_id": rid, "expected_updated_at": rec["updated_at"]},
+        headers=api["h"],
+    )
+    assert r.status_code == 409 and "already up to date" in r.json()["detail"]
+    assert mcp_registry.get(rec["id"])["updated_at"] == rec["updated_at"]  # nothing written
+
+
+def test_an_update_resolution_is_bound_to_its_own_server(api, monkeypatch):
+    a = _register(api)
+    b = mcp_registry.create(
+        {"name": "other"},
+        resolution={
+            "id": "e" * 16,
+            "source": _resolved()["source"],
+            "origin": _resolved()["origin"],
+        },
+    )
+    _newer(monkeypatch)
+    rid, _ = _update_start(api, a["id"])
+    _poll(api, rid)
+    wrong = api["client"].patch(
+        f"/api/mcp/servers/{b['id']}",
+        json={"resolution_id": rid, "expected_updated_at": b["updated_at"]},
+        headers=api["h"],
+    )
+    assert wrong.status_code == 409
+    created = _create(api, {"name": "third", "resolution_id": rid})
+    assert created.status_code == 409  # an update's resolution never registers a new server
+
+
+def test_a_server_without_a_link_is_updated_by_version_not_from_source(api):
+    rec = mcp_registry.create(
+        {"name": "plain", "source": {"kind": "remote", "url": "https://mcp.example.test/mcp"}}
+    )
+    _, r = _update_start(api, rec["id"])
+    assert r.status_code == 422 and "not added from a repository link" in r.json()["detail"]
+    _, r = _update_start(api, "0" * 16)
+    assert r.status_code == 404
+
+
+def test_an_update_reviewed_against_an_older_server_is_refused(api, monkeypatch):
+    """Fenced to what was reviewed: a source edit after the link was read makes applying the
+    update a 409, never an older review overwriting a newer choice."""
+    rec = _register(api)
+    _newer(monkeypatch)
+    rid, _ = _update_start(api, rec["id"])
+    _poll(api, rid)
+    edited = mcp_registry.update(
+        rec["id"],
+        {"source": {"kind": "npm", "package": "@acme/mcp-server", "version": "1.4.1"}},
+        mcp_registry.get(rec["id"])["updated_at"],
+    )
+    r = api["client"].patch(
+        f"/api/mcp/servers/{rec['id']}",
+        json={"resolution_id": rid, "expected_updated_at": edited["updated_at"]},
+        headers=api["h"],
+    )
+    assert r.status_code == 409 and "changed since its link was read" in r.json()["detail"]
+    assert mcp_registry.get(rec["id"])["source"]["version"] == "1.4.1"
+
+
+def test_two_competing_update_confirmations_apply_only_once(api, monkeypatch):
+    """Two readings of the same server's link: the first applies; the second was read against
+    the server before the first, so it is refused, never an older review overwriting a newer."""
+    rec = _register(api)
+    _newer(monkeypatch, version="1.5.0")
+    first, _ = _update_start(api, rec["id"])
+    _poll(api, first)
+    _newer(monkeypatch, version="1.6.0", commit="5c2e3f80" + "2" * 32)
+    second, _ = _update_start(api, rec["id"])
+    _poll(api, second)
+    ok = api["client"].patch(
+        f"/api/mcp/servers/{rec['id']}",
+        json={"resolution_id": first, "expected_updated_at": rec["updated_at"]},
+        headers=api["h"],
+    )
+    assert ok.status_code == 200
+    late = api["client"].patch(
+        f"/api/mcp/servers/{rec['id']}",
+        json={"resolution_id": second, "expected_updated_at": ok.json()["updated_at"]},
+        headers=api["h"],
+    )
+    assert late.status_code == 409 and "changed since its link was read" in late.json()["detail"]
+    assert mcp_registry.get(rec["id"])["source"]["version"] == "1.5.0"
+
+
+def test_an_update_read_for_a_removed_server_never_applies_to_its_recreation(api, monkeypatch):
+    rec = _register(api)
+    _newer(monkeypatch)
+    rid, _ = _update_start(api, rec["id"])
+    _poll(api, rid)
+    mcp_registry.delete(rec["id"], mcp_registry.get(rec["id"])["updated_at"])
+    again = _register(api)  # the same link, registered anew: another server id
+    r = api["client"].patch(
+        f"/api/mcp/servers/{again['id']}",
+        json={"resolution_id": rid, "expected_updated_at": again["updated_at"]},
+        headers=api["h"],
+    )
+    assert r.status_code == 409
+    gone = api["client"].patch(
+        f"/api/mcp/servers/{rec['id']}",
+        json={"resolution_id": rid, "expected_updated_at": rec["updated_at"]},
+        headers=api["h"],
+    )
+    assert gone.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "old, new",
+    [
+        ({"kind": "npm", "package": "@acme/mcp-server", "version": "1.4.0"},
+         {"kind": "npm", "package": "@acme/mcp-server", "version": "1.5.0"}),
+        ({"kind": "pypi", "package": "acme-mcp", "version": "1.4.0"},
+         {"kind": "pypi", "package": "acme-mcp", "version": "1.5.0"}),
+        ({"kind": "go", "package": "example.org/acme/mcp/v2", "version": "v2.1.0"},
+         {"kind": "go", "package": "example.org/acme/mcp/v2", "version": "v2.2.0"}),
+    ],
+)  # fmt: skip
+def test_an_applied_update_runs_nothing_until_its_new_install_is_checked(home, tmp_path, old, new):
+    """After an update is applied, the old install and the old check authorize nothing, for every
+    source kind; the old install directory itself stays (a running session may be using it)."""
+    sid = "f" * 16
+    origin_old = {"url": LINK, "commit": "1" * 40}
+    rec = mcp_registry.create(
+        {"name": "srv"}, resolution={"id": sid, "source": old, "origin": origin_old}
+    )
+    binary = tmp_path / "old-install" / "bin" / "srv"
+    binary.parent.mkdir(parents=True)
+    binary.write_text("#!/bin/sh\n")
+    binary.chmod(0o755)
+    rec = mcp_registry.set_installed(sid, {"source": old, "command": str(binary), "args": []})
+    assert mcp_install.command(rec) == (str(binary), [])
+    mcp_registry.update(
+        sid,
+        {},
+        rec["updated_at"],
+        resolution={
+            "id": sid,
+            "update_of": sid,
+            "source": new,
+            "origin": {"url": LINK, "commit": "2" * 40},
+            "previous": {"source": old, "origin": origin_old},
+        },
+    )
+    now = mcp_registry.get(sid)
+    assert now["source"] == new
+    with pytest.raises(mcp_registry.RegistryError, match="not installed"):
+        mcp_install.command(now)  # nothing runs until the new source is installed
+    assert binary.exists()  # the old install is never removed under a running session

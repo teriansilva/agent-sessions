@@ -16,6 +16,10 @@ import pytest
 
 from agent_sessions import scancache
 
+pytestmark = pytest.mark.usefixtures("racy_by_mtime")
+#: The real racy rule, captured before any fixture replaces it.
+_REAL_CHANGED_AT = scancache._changed_at
+
 
 @pytest.fixture(autouse=True)
 def _clean_memo():
@@ -358,3 +362,21 @@ def test_the_guard_would_catch_a_regression():
     )
     handler = next(n for n in ast.walk(threaded) if isinstance(n, ast.AsyncFunctionDef))
     assert _direct_walk_calls(handler) == []
+
+
+def test_a_file_aged_by_restoring_its_mtime_is_still_racy_by_its_ctime(tmp_path, monkeypatch):
+    """#2435 (Hermes on #2442): a rewrite that restores an OLD mtime leaves only the ctime fresh,
+    and the ctime is in the key. The racy window runs from the later stamp, so such a file is not
+    stored until the ctime is quiet too."""
+    monkeypatch.setattr(scancache, "_changed_at", _REAL_CHANGED_AT)  # not `racy_by_mtime`
+    f = tmp_path / "a.jsonl"
+    f.write_text("aaaaa")
+    _age(f)  # mtime 5 s old, ctime now
+    assert f.stat().st_ctime_ns > f.stat().st_mtime_ns
+    build = _Counter()
+    scancache.memoized("ns", f, build)
+    scancache.memoized("ns", f, build)
+    assert build.calls == 2 and scancache.stats()["entries"] == 0
+    a, b = os.stat(f), f.stat()
+    assert scancache.identity(a) == scancache.identity(b)
+    assert len(scancache.identity(a)) == 5  # dev, ino, size, mtime_ns, ctime_ns

@@ -313,3 +313,161 @@ def test_session_pids_finds_the_process_holding_its_conversation_db(agy):
     assert os.getpid() in got.get(_UUID, [])
     assert os.getpid() not in got.get(_UUID2, [])
     assert prov.session_pids([]) == {}
+
+
+# --- the per-conversation memo (#2435) ---------------------------------------------------------
+# Every walk used to open all of agy's conversation dbs and read each transcript twice: 23k of a
+# warm walk's 43k syscalls on the operator's install. A row is now built once per identity of
+# everything it reads, and still misses whenever any of it changes.
+
+
+def _aged(*paths, seconds: float = 5.0) -> None:
+    """Backdate past the memo's racy window, so a HIT asserted below is a hit for the right
+    reason."""
+    import os
+    import time
+
+    ns = time.time_ns() - int(seconds * 1_000_000_000)
+    for p in paths:
+        os.utime(p, ns=(ns, ns))
+
+
+def _transcript_file(root, uuid):
+    return root / "brain" / uuid / ".system_generated" / "logs" / "transcript.jsonl"
+
+
+def _counted(monkeypatch):
+    from agent_sessions.engines import antigravity as ag
+
+    calls = []
+    real = ag.AntigravityProvider._row
+
+    def row(self, *a, **kw):
+        calls.append(1)
+        return real(self, *a, **kw)
+
+    monkeypatch.setattr(ag.AntigravityProvider, "_row", row)
+    return calls
+
+
+@pytest.mark.usefixtures("racy_by_mtime")
+def test_an_unchanged_conversation_is_read_once(agy, monkeypatch):
+    _make_conversation(agy, _UUID, "/home/u/proj", user="first words")
+    _aged(agy / "conversations" / f"{_UUID}.db", _transcript_file(agy, _UUID))
+    calls = _counted(monkeypatch)
+    prov = engines.AntigravityProvider()
+    first = prov.scan()
+    assert prov.scan() == first and [s.first_user_message for s in first] == ["first words"]
+    assert len(calls) == 1
+
+
+@pytest.mark.usefixtures("racy_by_mtime")
+def test_a_rewritten_transcript_a_replaced_db_and_a_new_cwd_hint_all_miss(agy, monkeypatch):
+    db = agy / "conversations" / f"{_UUID}.db"
+    _make_conversation(agy, _UUID, "/home/u/one", user="before")
+    _aged(db, _transcript_file(agy, _UUID))
+    prov = engines.AntigravityProvider()
+    assert [(s.cwd, s.first_user_message) for s in prov.scan()] == [("/home/u/one", "before")]
+
+    _make_transcript(agy, _UUID, user="after")  # rewritten in place
+    _aged(_transcript_file(agy, _UUID), seconds=3)
+    assert [s.first_user_message for s in prov.scan()] == ["after"]
+
+    db.unlink()  # deleted and recreated: a new inode, even if the size matched
+    _make_db(db, "/home/u/two")
+    _aged(db)
+    assert [s.cwd for s in prov.scan()] == ["/home/u/two"]
+
+    hint = agy / "cache" / "last_conversations.json"
+    hint.write_text(json.dumps({"/home/u/hinted": _UUID}))  # the cwd hint changes alone
+    assert [s.cwd for s in prov.scan()] == ["/home/u/hinted"]
+
+
+def test_a_conversation_not_listable_yet_appears_once_its_cwd_lands_in_the_wal(agy, monkeypatch):
+    """agy writes in WAL mode: a new conversation's cwd blob can sit in ``-wal`` while the db's
+    own identity is unchanged. A row that is not listable yet is never stored, and the ``-wal`` is
+    part of the key."""
+    db = agy / "conversations" / f"{_UUID}.db"
+    con = sqlite3.connect(db)
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("CREATE TABLE `trajectory_metadata_blob` (`id` text, `data` blob)")
+    con.commit()
+    _make_transcript(agy, _UUID)
+    _aged(db, _transcript_file(agy, _UUID))
+    prov = engines.AntigravityProvider()
+    assert prov.scan() == []
+    uri = b"file:///home/u/late"
+    blob = b"\n\x26\n" + _varint(len(uri)) + uri
+    con.execute("INSERT INTO trajectory_metadata_blob VALUES ('main', ?)", (blob,))
+    con.commit()  # into the WAL; the connection stays open, so no checkpoint
+    try:
+        assert [s.cwd for s in prov.scan()] == ["/home/u/late"]
+    finally:
+        con.close()
+
+
+@pytest.mark.usefixtures("racy_by_mtime")
+def test_the_checked_walk_still_names_a_db_the_plain_walk_cached(agy):
+    """The plain walk's entries never reach the checked walk (scancache's rule): a db that turns
+    unreadable is named by `scan_checked` even though `scan` cached its row."""
+    import os
+
+    db = agy / "conversations" / f"{_UUID}.db"
+    _make_conversation(agy, _UUID, "/home/u/proj")
+    _aged(db, _transcript_file(agy, _UUID))
+    prov = engines.AntigravityProvider()
+    assert [s.uuid for s in prov.scan()] == [_UUID]
+    os.chmod(db, 0)
+    try:
+        if os.access(db, os.R_OK):
+            pytest.skip("running as a user that reads mode-0 files")
+        rows, failed = prov.scan_checked()
+        assert rows == [] and len(failed) == 1
+    finally:
+        os.chmod(db, 0o600)
+
+
+def _rewrite_restoring_mtime(path, old: bytes, new: bytes) -> None:
+    """Replace ``old`` by ``new`` (same length) in place and restore the file's mtime: only its
+    ctime moves."""
+    import os
+
+    assert len(old) == len(new)
+    st = path.stat()
+    data = path.read_bytes()
+    assert old in data
+    with path.open("r+b") as fh:
+        fh.write(data.replace(old, new))
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+    assert path.stat().st_mtime_ns == st.st_mtime_ns and path.stat().st_size == st.st_size
+
+
+@pytest.mark.parametrize("checked", [False, True])
+def test_a_same_size_rewrite_with_its_mtime_restored_misses_in_both_walks(
+    agy, monkeypatch, checked
+):
+    """Hermes on #2442: the memo keyed size and mtime but not ctime, so a same-length correction
+    with the mtime restored kept the old first message (and the old cwd) for ever. The ctime is
+    part of every key now, and the racy window runs from the later of the two stamps."""
+    import os
+    import time
+
+    from agent_sessions import scancache
+
+    monkeypatch.setattr(scancache, "RACY_WINDOW_NS", 0)  # utime cannot backdate a ctime
+    db, transcript = agy / "conversations" / f"{_UUID}.db", _transcript_file(agy, _UUID)
+    _make_conversation(agy, _UUID, "/home/u/aaaaaa", user="before")
+    prov = engines.AntigravityProvider()
+
+    def walk():
+        rows = prov.scan_checked()[0] if checked else prov.scan()
+        return [(s.cwd, s.first_user_message) for s in rows]
+
+    assert walk() == [("/home/u/aaaaaa", "before")]
+    time.sleep(0.01)
+    _rewrite_restoring_mtime(transcript, b"before", b"behind")
+    assert walk() == [("/home/u/aaaaaa", "behind")]
+    time.sleep(0.01)
+    _rewrite_restoring_mtime(db, b"/home/u/aaaaaa", b"/home/u/bbbbbb")
+    assert walk() == [("/home/u/bbbbbb", "behind")]
+    assert os.path.exists(db)

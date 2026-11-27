@@ -95,16 +95,18 @@ def _digest(items) -> int:
     return _ops()._digest(items)
 
 
+_KIND_SAID = {"npm": "npm", "pypi": "PyPI", "go": "Go module"}
+
+
 def _source_said(source: dict) -> str:
     """A server's source in words, without a URL path or query: ``npm pkg 1.2.3`` / ``https
     host``."""
     from urllib.parse import urlsplit
 
     kind = source.get("kind")
-    if kind in ("npm", "pypi"):
-        return (
-            f"{'npm' if kind == 'npm' else 'PyPI'} {source.get('package')} {source.get('version')}"
-        )
+    if kind in ("npm", "pypi", "go"):
+        said = _KIND_SAID[kind]
+        return f"{said} {source.get('package')} {source.get('version')}"
     try:
         host = urlsplit(str(source.get("url") or "")).hostname or "?"
     except ValueError:
@@ -361,7 +363,10 @@ def _describe_create(f: dict, x: dict) -> str:
         said.append(f"credentials from the Variables secrets {creds}")
     head = parts[0] + (f" with {' and '.join(said)}" if said else "") + "."
     tail = (
-        " It installs, enables and runs nothing yet: next come install, credentials, a check, "
+        " It builds, enables and runs nothing yet: next come install (a build), credentials, a "
+        "check, then enabling it for projects."
+        if f.get("build")
+        else " It installs, enables and runs nothing yet: next come install, credentials, a check, "
         "then enabling it for projects."
         if f.get("package")
         else " It enables and runs nothing yet: next come credentials, a check, then enabling "
@@ -744,11 +749,12 @@ async def _prepare_link(op, args: dict, question: str | None, app, operator) -> 
     if not isinstance(resolved, dict) or not isinstance(origin.get("commit"), str):
         raise Refused("refused: the link's reading came back incomplete; try again", "link_refused")
     payload["source"] = resolved
-    kind = "npm package" if resolved.get("kind") == "npm" else "PyPI package"
+    kind = {"npm": "npm package", "go": "Go module"}.get(str(resolved.get("kind")), "PyPI package")
     fields = {
         "server_name": payload["name"],
         "source_said": f"{kind} {resolved.get('package')} {resolved.get('version')}",
         "package": True,
+        "build": resolved.get("kind") == "go",
         "plain": sum(1 for s in payload["settings"] if s["kind"] == "plain"),
         "credentials": ", ".join(_credentials_of(payload)),
         "origin_said": str(facts.get("repository") or ""),
@@ -775,6 +781,8 @@ def _link_view(res: dict, facts: dict, origin: dict) -> dict:
     release = facts.get("release") if isinstance(facts.get("release"), dict) else {}
     review = res.get("review") if isinstance(res.get("review"), dict) else {}
     scripts = [str(x) for x in review.get("install_scripts_declared") or []]
+    if declared.get("kind") == "go":
+        return _go_link_view(res, facts, origin, release, review)
     return {
         "repository": str(facts.get("repository") or ""),
         "commit": origin["commit"][:7],
@@ -791,6 +799,38 @@ def _link_view(res: dict, facts: dict, origin: dict) -> dict:
         "runs": str(review.get("runs") or "")[:120],
         "license": str(release.get("license") or review.get("license") or "")[:80],
         "disclaimer": str(res.get("disclaimer") or ""),
+    }
+
+
+def _go_link_view(res: dict, facts: dict, origin: dict, release: dict, review: dict) -> dict:
+    """A Go link's card (#2427): the same facts as the wizard's Review — the module at the commit,
+    its home and whether the link is a mirror of it, the command it builds, the Go it needs, the
+    module hash, the dependencies in its build and the toolchain — with the build line last."""
+    source = res.get("source") if isinstance(res.get("source"), dict) else {}
+    toolchain = review.get("toolchain") if isinstance(review.get("toolchain"), dict) else {}
+    return {
+        "repository": str(facts.get("repository") or ""),
+        "commit": origin["commit"][:7],
+        "manifest": "go.mod",
+        "kind": "go",
+        "package": str(source.get("package") or ""),
+        "version": str(source.get("version") or ""),
+        "registry": str(review.get("registry") or ""),
+        "record_field": "",
+        "names": "",
+        "integrity": _integrity_shown(str(review.get("integrity") or "")),
+        "dependencies": int(review.get("dependencies") or 0),
+        "install_scripts": "",
+        "runs": str(review.get("runs") or "")[:120],
+        "license": "",
+        "disclaimer": str(res.get("disclaimer") or ""),
+        "home": str(release.get("home") or "")[:200],
+        "mirror": bool(release.get("mirror")),
+        "ref": str(release.get("ref") or "")[:120],
+        "go": str(review.get("go") or release.get("go") or "")[:20],
+        "command": str(review.get("command") or "")[:300],
+        "entrypoint": str(review.get("entrypoint") or "")[:80],
+        "toolchain": str(toolchain.get("version") or "")[:20],
     }
 
 
@@ -866,7 +906,7 @@ async def _review(app, operator, rec: dict) -> dict:
     shown = integrity[: cut + 1 + INTEGRITY_SHOWN] if 0 < cut <= 8 else ""
     return {
         "review_id": str(rv.get("review_id") or ""),
-        "package": f"{'npm' if source.get('kind') == 'npm' else 'PyPI'} {source.get('package')}",
+        "package": f"{_KIND_SAID.get(str(source.get('kind')), 'PyPI')} {source.get('package')}",
         "version": str(source.get("version") or ""),
         "integrity": shown,
         "dependencies": int(rv.get("dependencies") or 0),

@@ -329,6 +329,24 @@ test("on the page the corner icon goes to the composer, never the sidebar; /ask 
   await expect(thread(page).getByTestId("composer-input")).toBeFocused();
 });
 
+test("a tap that lands while HQ's page is still loading still goes to the composer", async ({
+  page,
+  browserName,
+}) => {
+  // The race behind a red e2e shard (PR #2433): on a slow device the tap landed between the
+  // redirect to /hq and the shell's re-render (the panel opened beside the page), or before the
+  // lazy page listened (the focus request was lost). A 6x slower CPU reproduces both.
+  test.skip(browserName !== "chromium", "CPU throttling is a Chromium DevTools control");
+  await mockShell(page);
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Emulation.setCPUThrottlingRate", { rate: 6 });
+  await page.goto("/ask");
+  await expect(page).toHaveURL(/\/hq$/);
+  await page.locator('.hud-topbar [data-testid="ask-toggle"]').click();
+  await expect(page.getByTestId("ask-sidebar")).toHaveCount(0);
+  await expect(thread(page).getByTestId("composer-input")).toBeFocused();
+});
+
 /** WCAG contrast of an element's text against the colour its column paints. */
 async function contrast(l: Locator, ground: Locator): Promise<number> {
   const fg = await l.evaluate((el) => getComputedStyle(el).color);

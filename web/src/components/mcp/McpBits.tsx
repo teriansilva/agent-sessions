@@ -7,6 +7,7 @@ import { Check, RefreshCw, ShieldAlert, X } from "lucide-react";
 import type { McpCheckRow, McpReviewFacts } from "../../types/mcp";
 import { stepLabel, urlHost, verdict, when, type Tone } from "./mcpModel";
 import type { ProjectInfo } from "./mcpData";
+import { GoFacts } from "./RepoLink";
 import styles from "./mcp.module.css";
 
 const LED: Record<Tone, string> = { up: "up", att: "att", down: "down", idle: "idle" };
@@ -55,11 +56,20 @@ const NEXT: [string, string][] = [
   ["Enable", "pick the projects whose sessions get it."],
 ];
 
-/** `sourceNote` replaces what Source says (a repository link IS read at Source, #2353). */
-export function WhatHappensNext({ current, sourceNote }: { current: number; sourceNote?: string }) {
+/** `sourceNote` replaces what Source says (a repository link IS read at Source, #2353); `items`
+ *  replaces the whole list (Update from source's three steps, #2427). */
+export function WhatHappensNext({
+  current,
+  sourceNote,
+  items = NEXT,
+}: {
+  current: number;
+  sourceNote?: string;
+  items?: [string, string][];
+}) {
   return (
     <ol className={styles.next}>
-      {NEXT.map(([b, t], i) => (
+      {items.map(([b, t], i) => (
         <li key={b} className={i === current ? styles.cur : undefined} aria-current={i === current ? "step" : undefined}>
           <span>
             <b>{b}</b> — {i === 0 && sourceNote ? sourceNote : t}
@@ -85,6 +95,7 @@ export function Caution({ title, children }: { title: string; children: ReactNod
 /** What a package review found: everything that decides trust, in one list. */
 export function ReviewFacts({ facts }: { facts: McpReviewFacts }) {
   const s = facts.source;
+  if (s.kind === "go") return <GoFacts review={facts} />; // a Go module is built, not installed (#2427)
   const pkg = s.kind === "remote" ? null : s;
   return (
     <dl className={styles.kv} data-testid="mcp-review-facts">

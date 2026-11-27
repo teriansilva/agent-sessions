@@ -12,6 +12,9 @@ import pytest
 
 from agent_sessions import chat_store, native_events, native_ipc, native_journal, scancache
 
+# These conversations are aged with `os.utime`, which cannot backdate a ctime (see conftest).
+pytestmark = pytest.mark.usefixtures("racy_by_mtime")
+
 
 def kind(root, engine="fixture-api"):
     store = chat_store.ChatStoreKind()

@@ -740,6 +740,14 @@ of about six to twelve words that reacts to what you found or says what you try 
 pulling up the issue list in Forgejo.", "Hm, it's not in the open ones. Let me try the closed \
 issues."), never step counts or a status report."""
 
+_SESSION_CALL = """The Commander is talking to you on a voice call: what follows each \
+[on a call] mark is what they said, as speech recognition heard it, and your final message is \
+spoken aloud to them, not read. Do the work as you normally would, with your usual tools and \
+care. End with a short spoken answer: two or three plain sentences, the way you would say it on \
+the phone. No markdown, tables, lists, code or links in that answer; put code, diffs and long \
+detail in the chat and say that it is there. Say what you did or found, not how you formatted \
+it. If the words look misheard or are unclear, ask one short question instead of guessing."""
+
 _HQ_CALL_DETAILED = """The Commander is on a voice call with you: every answer is spoken aloud by \
 a speech engine and heard, not read. The Commander asked for detailed answers: give the full \
 picture in up to six spoken sentences, most important first. No markdown, no tables, no lists, no \
@@ -1345,6 +1353,20 @@ REGISTRY: tuple[Prompt, ...] = (
         field="voice_confirm_judge",
         guarded=True,
         locked=VOICE_CONFIRM_JUDGE_FORMAT,
+    ),
+    Prompt(
+        id="session_call",
+        group="Mission control",
+        label="An API session — on a call",
+        description="Sent with the first turn of a call to an API session (#2341), as a visible "
+        "[on a call] note before the Commander's words: the session's final message is spoken "
+        "aloud, so it ends with a short plain answer. How the answer sounds only — what the "
+        "session may do is unchanged. Later turns of the same call carry the mark alone.",
+        contract="free text, sent to the session in its turn",
+        default=_SESSION_CALL,
+        max_chars=2000,
+        block=BLOCK,
+        field="session_call",
     ),
     Prompt(
         id="voice_pick_judge",

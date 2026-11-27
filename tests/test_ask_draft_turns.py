@@ -35,6 +35,7 @@ GATED = {
     "end_call",
     "offer_decisions",  # #2137: puts decisions to the Commander, so it waits for the commit
     "offer_cards",  # #2389: puts open cards to the Commander again; waits for the commit too
+    "put_through",  # #2341: hands the call to a session; waits for the commit too
     "propose_library",
     "propose_message",
     "send_nudge",

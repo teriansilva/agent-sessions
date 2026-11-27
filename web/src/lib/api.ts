@@ -24,7 +24,7 @@ import type {
 } from "../types/shelf";
 import type { ShareCatalog, ShareChoice, ShareImports, SharePreview, ShareResult } from "../types/share";
 import type { GalleryIndex, GalleryInspection, GalleryOperation, GalleryKind, GalleryComparison, GalleryFiles, LocalSkill } from "../types/gallery";
-import type { McpCheckRow, McpOperation, McpResolution, McpReviewFacts, McpServerDetail, McpServerInput, McpServerSummary, McpServerUpdate } from "../types/mcp";
+import type { McpCheckRow, McpOperation, McpResolution, McpReviewFacts, McpServerDetail, McpServerInput, McpServerSummary, McpServerUpdate, McpUpdateResolution } from "../types/mcp";
 import type { CollectionInput, SecretAccessEntry, SharedVariable, SharedVariableInput, SharedVariableUpdate, SharedVariablesResponse, VariableCollection } from "../types/variables";
 import type { SessionCapacity, Resources, ResourceSettings, ResourceValues } from "../types/resources";
 import type {
@@ -1098,9 +1098,16 @@ export const api = {
   voiceCapabilities: () => getJson<VoiceCapabilities>("/api/voice/capabilities"),
   /** Admit a call into an HQ conversation (a new one unless `conversation_id`). 409 while another
    *  call runs, or when calls are not available (`detail` says why). */
-  startCall: (body: { contact?: string; conversation_id?: string | null }) =>
+  startCall: (body: { contact?: string; conversation_id?: string | null; party?: string }) =>
     mutateJson<VoiceCall>("POST", "/api/voice/calls", body),
   endCall: (id: string) => mutateJson<VoiceCall>("DELETE", `/api/voice/calls/${enc(id)}`),
+  /** The "call me back" waiting on a session (#2341 §4). */
+  voiceCallbacks: (key: string) =>
+    getJson<{ callbacks: { id: string; key: string; turn_id: string; at: number | null }[] }>(
+      `/api/voice/callbacks?key=${enc(key)}`,
+    ),
+  cancelVoiceCallback: (id: string) =>
+    mutateJson<{ cancelled: boolean }>("DELETE", `/api/voice/callbacks/${enc(id)}`),
   // Public share links (#1404 P4). `createShare` is the ONLY call whose answer carries a link's
   // URL — the server keeps its digest, so it is shown once. A `send` link needs `accept_risk`.
   shares: (session?: string) =>
@@ -2053,6 +2060,14 @@ export const api = {
    *  draft source, origin, facts and P1b's review. */
   resolveMcpLink: (url: string, requestId: string) =>
     mutateJson<McpOperation<McpResolution>>("POST", MCP_RESOLVE_LINK_API, { url, request_id: requestId }),
+  /** Update from source (#2427): read a repository-link server's OWN recorded link again (the
+   *  server takes the link from its record, never from here). Up to date, or a resolution to apply. */
+  resolveMcpServerLink: (serverId: string, requestId: string) =>
+    mutateJson<McpOperation<McpUpdateResolution>>("POST", MCP_RESOLVE_LINK_API, { server_id: serverId, request_id: requestId }),
+  /** Apply an Update from source: the server replaces source and origin together, from the
+   *  resolution it holds (409: the server changed since its link was read; 404: the reading is gone). */
+  applyMcpUpdate: (id: string, resolutionId: string, expected: number) =>
+    mutateJson<McpServerSummary>("PATCH", `/api/mcp/servers/${enc(id)}`, { resolution_id: resolutionId, expected_updated_at: expected }),
   stopMcpOperation: (requestId: string) => mutateJson<McpOperation>("POST", mcpOperationStopPath(requestId), {}),
   mcpOperation: <T>(requestId: string) => getJsonWithDetail<McpOperation<T>>(mcpOperationPath(requestId)),
   /** A project's OWN credential values for this server (write-only; only variables it names). */
