@@ -14,6 +14,8 @@ never sends one:
   2026-06-12 wedge: a HELD lock means a new master generation owns the path.
 * ``archived_scrollback`` — the persisted scrollback of archived sessions, through the same
   helper the Scrollback cache card uses (#206).
+* ``native_worker_state`` (#2415) — worker dirs of API-session generations proved ended that no
+  session record names any more. Every rule lives in :mod:`native_gc`.
 
 The ``hooks_void_dirs`` category that this increment originally carried is **deferred**; see the
 note above :func:`_prune_archived_scrollback` for why age is not proof that a peer instance is
@@ -44,12 +46,13 @@ from . import (
     metadata,
     mission_archive,
     missions,
+    native_gc,
     ptybridge,
     runtime_cleanup,
     scrollback,
 )
 
-CATEGORIES: tuple[str, ...] = ("stale_sockets", "archived_scrollback")
+CATEGORIES: tuple[str, ...] = ("stale_sockets", "archived_scrollback", "native_worker_state")
 
 #: A prune can meet thousands of items; the response names at most this many failures and
 #: carries the true total beside them.
@@ -325,6 +328,7 @@ def dry_run_caches() -> dict[str, dict]:
     measures: dict[str, Callable[[], tuple[int, int]]] = {
         "stale_sockets": _sockets_measure,
         "archived_scrollback": _scrollback_measure,
+        "native_worker_state": _native_measure,
     }
     out: dict[str, dict] = {}
     for name in CATEGORIES:
@@ -363,9 +367,38 @@ def _scrollback_measure() -> tuple[int, int]:
     return stats["items"], stats["bytes"]
 
 
+def _native_measure() -> tuple[int, int]:
+    try:
+        items, nbytes, _queries = native_gc.measure()
+    except native_gc.RecordsUnreadable as e:
+        raise DiscoveryIncomplete(e.problems) from None
+    return items, nbytes
+
+
+def _prune_native_worker_state(report: _Report) -> None:
+    category = native_gc.CATEGORY
+    try:
+        out = native_gc.prune()
+    except native_gc.RecordsUnreadable as e:
+        # ONE unreadable record skips the whole category: no dir is proved unreferenced by a
+        # subset of the records. A failure, never a clean "removed 0" (same rule as the scans).
+        report.fail(category, "the session records", f"nothing was removed — {e}")
+        return
+    except OSError as e:
+        report.fail(category, "the worker directory", _os_reason(e))
+        return
+    report.removed += out.removed
+    report.bytes_freed += out.bytes_freed
+    for reason, n in out.skipped.items():
+        report.skip(category, reason, n)
+    for item, reason in out.failed:
+        report.fail(category, item, reason)
+
+
 _PRUNERS: dict[str, Callable[[_Report], None]] = {
     "stale_sockets": _prune_sockets,
     "archived_scrollback": _prune_archived_scrollback,
+    "native_worker_state": _prune_native_worker_state,
 }
 
 

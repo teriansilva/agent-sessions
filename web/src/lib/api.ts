@@ -314,6 +314,9 @@ export class ApiError extends Error {
 // private traffic rides the blind relay instead of hitting the network directly. The
 // seam is behaviour-neutral when unset — the app can't tell it's tunneled.
 export type ApiFetch = (input: string, init?: RequestInit) => Promise<Response>;
+
+/** Settings → Maintenance → Prune categories (`maintenance.CATEGORIES` on the server). */
+export type PruneCategory = "stale_sockets" | "archived_scrollback" | "native_worker_state";
 const defaultFetch: ApiFetch = (input, init) => fetch(input, init);
 let apiFetch: ApiFetch = defaultFetch;
 /** Route every `/api` call through `fn` (Home Free tunnel), or back to same-origin fetch with `null`. */
@@ -2957,13 +2960,13 @@ export const api = {
   pruneInfo: () =>
     getJson<{
       categories: Record<
-        "stale_sockets" | "archived_scrollback",
+        PruneCategory,
         { items: number; bytes: number; error?: string }
       >;
       runner: { job: string; started_at: number | null } | null;
     }>("/api/maintenance/prune"),
   /** Remove the selected cache categories. Session history is never touched. */
-  prune: (categories: ("stale_sockets" | "archived_scrollback")[]) =>
+  prune: (categories: PruneCategory[]) =>
     mutateJson<{
       removed: number;
       bytes_freed: number;

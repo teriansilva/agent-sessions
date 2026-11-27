@@ -31,6 +31,7 @@ function info(over: Partial<Info["categories"]> = {}): Info {
     categories: {
       stale_sockets: { items: 3, bytes: 0 },
       archived_scrollback: { items: 2, bytes: 4096 },
+      native_worker_state: { items: 0, bytes: 0 },
       ...over,
     },
     runner: null,

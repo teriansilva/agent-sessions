@@ -346,6 +346,11 @@ not restarted. **Restore recommended** fills in defaults; save to apply them.
   Archived sessions are hidden from the list and can be unarchived; nothing is deleted.
 - **Scrollback cache** — how much terminal history is cached on disk, and a control to clear it.
   Clearing drops only the cache; sessions and their transcripts are untouched.
+- **Prune** — remove BattleLab's own leftovers, never session history. Each cache shows a dry-run
+  count and size, and nothing is removed until you confirm. **Ended agent worker records** are the
+  state files API-agent workers leave behind: only a worker proved stopped, that no session still
+  names, is removed. Anything BattleLab can't prove (a session record it can't read, systemd not
+  answering) is kept, and the result lists what was skipped and why.
 
 ## About · `about`
 

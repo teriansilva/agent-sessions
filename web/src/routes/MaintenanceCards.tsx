@@ -317,6 +317,13 @@ const CATEGORIES: { id: PruneCategory; label: string; hint: string }[] = [
     label: "Archived sessions’ scrollback",
     hint: "Same as Scrollback cache → Clear archived sessions’ cache.",
   },
+  {
+    // #2415: a worker dir is removed only when its worker is proved stopped and no session
+    // record names it; every check is the server's (`native_gc.py`).
+    id: "native_worker_state",
+    label: "Ended agent worker records",
+    hint: "State of API-agent workers proved stopped that no session still names. Conversations and their history stay.",
+  },
 ];
 
 const labelOf = (id: string) => CATEGORIES.find((c) => c.id === id)?.label ?? id;

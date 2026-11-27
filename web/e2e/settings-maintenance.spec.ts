@@ -13,6 +13,7 @@ const PRUNE_INFO = {
   categories: {
     stale_sockets: { items: 159, bytes: 38912 },
     archived_scrollback: { items: 312, bytes: 188743680 },
+    native_worker_state: { items: 204, bytes: 1782579 },
   },
   runner: null,
 };
@@ -195,6 +196,7 @@ test("empty states disable the actions (#993)", async ({ page }) => {
           categories: {
             stale_sockets: { items: 0, bytes: 0 },
             archived_scrollback: { items: 0, bytes: 0 },
+            native_worker_state: { items: 0, bytes: 0 },
           },
           runner: null,
         },
@@ -350,6 +352,128 @@ test("a category that could not be measured is never submitted as zero (#993)", 
   await prune.getByRole("button", { name: /confirm prune/i }).click();
   await expect(page.getByText(/removed 312 items/i)).toBeVisible();
   expect(prunedWith).toEqual({ categories: ["archived_scrollback"] });
+});
+
+// #2415 Phase 1: "Ended agent worker records" — one more cache row, every check server-side.
+test("the ended agent worker records row: labelled, keyboard-operable, ≥44 px, reflows (#2415)", async ({
+  page,
+}) => {
+  let prunedWith: unknown = null;
+  await maintenanceMocks(page, {
+    prunePost: async (route) => {
+      prunedWith = route.request().postDataJSON();
+      await route.fulfill({
+        json: {
+          removed: 201,
+          bytes_freed: 1700000,
+          skipped: [
+            {
+              category: "native_worker_state",
+              reason: "systemd could not be asked about its worker, so it was kept",
+              count: 2,
+            },
+          ],
+          failed: [
+            {
+              category: "native_worker_state",
+              item: "0f4e8c1a-3c1b-4f1e-9d47-2a8b0c6d5e71",
+              reason: "partly removed (512 bytes freed): extra: PermissionError: Permission denied",
+            },
+          ],
+          failed_total: 1,
+        },
+      });
+    },
+  });
+  await mockRoster(page);
+  await page.goto(settingsPath("maintenance"));
+  const prune = card(page, "Prune");
+  await expect(page.getByTestId("prune-count-native_worker_state")).toHaveText("204 · 1.7 MB");
+
+  // Labelled: the checkbox is found by its visible name, and it starts unselected.
+  const box = prune.getByRole("checkbox", { name: /ended agent worker records/i });
+  await expect(box).not.toBeChecked();
+  await expect(prune.getByText(/conversations and their history stay/i)).toBeVisible();
+
+  // The whole label is the hit area, at least 44 px tall.
+  const label = box.locator("xpath=ancestor::label[1]");
+  const lb = await label.boundingBox();
+  expect(lb).not.toBeNull();
+  expect(lb!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
+
+  // Keyboard: focus and Space toggle it, with a visible focus target.
+  await box.focus();
+  await expect(box).toBeFocused();
+  await page.keyboard.press("Space");
+  await expect(box).toBeChecked();
+  await expect(prune.getByRole("button", { name: /prune selected \(2\)/i })).toBeEnabled();
+
+  // Reflow: the row fits the viewport on the phone, the page never scrolls sideways.
+  const vw = page.viewportSize()!.width;
+  const rb = await box.locator("xpath=ancestor::li[1]").boundingBox();
+  expect(rb!.x).toBeGreaterThanOrEqual(0);
+  expect(rb!.x + rb!.width).toBeLessThanOrEqual(vw + 0.5);
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+  );
+  expect(overflow).toBeLessThanOrEqual(0);
+
+  await prune.getByRole("button", { name: /prune selected \(2\)/i }).click();
+  await expect(prune.getByText(/permanently remove 363 items/i)).toBeVisible();
+  await expect(prune.getByText(/ended agent worker records\. session history/i)).toBeVisible();
+  await prune.getByRole("button", { name: /confirm prune/i }).click();
+  await expect(prune.getByText(/removed 201 items/i)).toBeVisible();
+  await expect(
+    prune.getByText(
+      /skipped 2 \(ended agent worker records\): systemd could not be asked about its worker/i,
+    ),
+  ).toBeVisible();
+  await expect(
+    prune.getByText(/couldn’t remove 0f4e8c1a.*\(ended agent worker records\): partly removed/i),
+  ).toBeVisible();
+  expect(prunedWith).toEqual({ categories: ["stale_sockets", "native_worker_state"] });
+});
+
+test("ended agent worker records that could not be measured block the prune (#2415)", async ({
+  page,
+}) => {
+  await maintenanceMocks(page, {
+    pruneGet: (route) =>
+      route.fulfill({
+        json: {
+          categories: {
+            ...PRUNE_INFO.categories,
+            native_worker_state: { items: 0, bytes: 0, error: "DiscoveryIncomplete" },
+          },
+          runner: null,
+        },
+      }),
+  });
+  await mockRoster(page);
+  await page.goto(settingsPath("maintenance"));
+  const prune = card(page, "Prune");
+  await expect(page.getByTestId("prune-count-native_worker_state")).toHaveText("couldn’t measure");
+  await prune.getByRole("checkbox", { name: /ended agent worker records/i }).check();
+  await expect(prune.getByRole("button", { name: /prune selected/i })).toBeDisabled();
+  await expect(
+    prune.getByText(/ended agent worker records couldn’t be measured.*deselect it or refresh/i),
+  ).toBeVisible();
+  await expectHitArea(prune, /refresh the cache measurements/i);
+});
+
+test("a busy runner keeps the ended agent worker records row from pruning (#2415)", async ({
+  page,
+}) => {
+  await maintenanceMocks(page, {
+    pruneGet: (route) =>
+      route.fulfill({ json: { ...PRUNE_INFO, runner: { job: "prune", started_at: 1 } } }),
+  });
+  await mockRoster(page);
+  await page.goto(settingsPath("maintenance"));
+  const prune = card(page, "Prune");
+  await prune.getByRole("checkbox", { name: /ended agent worker records/i }).check();
+  await expect(prune.getByRole("button", { name: /prune selected \(2\)/i })).toBeDisabled();
+  await expect(prune.getByText(/a maintenance job is running \(prune\)/i)).toBeVisible();
 });
 
 for (const theme of ["dark", "light"]) {
