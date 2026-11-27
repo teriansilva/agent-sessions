@@ -336,8 +336,18 @@ def _batch(cards: list[dict]) -> bool:
 
 def _voice_cap(cards: list[dict]) -> list[dict]:
     """The cards one challenge may hold (#2389): `BATCH_MAX` when every card is judged, else
-    `OFFERS_MAX` (a reply to those keeps the grammar's ordinals)."""
-    return cards[: BATCH_MAX if _judged(cards) else OFFERS_MAX]
+    `OFFERS_MAX` (a reply to those keeps the grammar's ordinals).
+
+    A judged batch where only SOME cards start a session skipping permission prompts (#2351) is
+    read card by card, so each one's own line says whether it skips (`voice_text.readback`): it
+    is offered up to `OFFERS_MAX`, the ordinal read-back's size, and the rest stay on the
+    screen."""
+    if not _judged(cards):
+        return cards[:OFFERS_MAX]
+    batch = cards[:BATCH_MAX]
+    if len({c.get("bypass") is True for c in batch}) > 1:
+        return batch[:OFFERS_MAX]
+    return batch
 
 
 #: HQ cards a spoken reply may DISMISS through their own decide route (#2120): the proposal
@@ -2825,7 +2835,9 @@ class Call:
             # is what is sent.
             return "POST", f"/api/ask/proposals/{card['id']}/decide", {"decision": "send"}
         if kind == "session":
-            body = {"decision": "start", "bypass": False}
+            # The value the read-back said (#2351): the card's starting value. A default changed
+            # since is the route's own 409 (nothing started), said as "That card changed".
+            body = {"decision": "start", "bypass": card.get("bypass") is True}
             return "POST", f"/api/ask/proposals/{card['id']}/decide", body
         # operation
         return "POST", f"/api/ask/proposals/{card['id']}/decide", {"decision": "confirm"}
@@ -4065,8 +4077,15 @@ def confirmable_cards(
                 else:
                     what = call_line("what.kind", lang, noun=noun)
                 line = call_line("lead.session_long", lang, what=what, title=title)
-            out.append({"id": pid, "kind": "session", "verb": "start it",
-                        "line": _sentence(line), "announced": brief is None})  # fmt: skip
+            # The card's starting permission value (#2351): the project's default, else the
+            # global one — what the screen card's switch starts at. A confirmation starts it
+            # exactly so, and the read-back says when it skips prompts: what is heard launches.
+            bypass = p.get("bypass_default") is True and p.get("can_bypass") is True
+            line = _sentence(line)
+            if bypass:
+                line = f"{line} {call_line('lead.skips_prompts', lang)}"
+            out.append({"id": pid, "kind": "session", "verb": "start it", "line": line,
+                        "announced": brief is None, "bypass": bypass})  # fmt: skip
         elif kind == "operation" and p.get("op") in VOICE_DRAFTS and not p.get("needs"):
             # A new draft: its spoken SUMMARY of the bound draft is what is confirmed, or it stays
             # on screen (#1681).

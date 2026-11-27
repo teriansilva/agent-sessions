@@ -187,7 +187,11 @@ def test_private_socket_serves_the_real_client_mcp_and_helper(launch, monkeypatc
                 capture_output=True,
                 check=True,
                 timeout=60,
-                env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), **env},
+                env={
+                    "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                    "HOME": os.environ["HOME"],  # the sandbox, never the passwd home (#2423)
+                    **env,
+                },
             )
             replies = [json.loads(line) for line in child.stdout.splitlines()]
             assert [r["id"] for r in replies] == [1, 2]

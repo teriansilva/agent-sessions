@@ -1,7 +1,6 @@
 """Material replacement uses the editor's real lease, displacement and crash recovery."""
 
 import hashlib
-import os
 import signal
 import subprocess
 import sys
@@ -11,6 +10,7 @@ import pytest
 
 from agent_sessions import fileedit
 from agent_sessions.files import FsError
+from conftest import child_env
 from test_file_edit import root as _edit_root
 
 root = _edit_root
@@ -91,9 +91,9 @@ fileedit.save_bytes(path, b'\xfenew', before, root=os.path.dirname(path), admit=
 def test_a_real_process_death_recovers_binary_bytes_without_assuming_consent(root, step):
     path = root / "asset.bin"
     path.write_bytes(b"\xffold")
-    env = {k: v for k, v in os.environ.items() if not k.startswith("AGENT_SESSIONS_")}
-    env["AGENT_SESSIONS_FS_ROOT"] = str(root)
-    env["AGENT_SESSIONS_EDIT_RECOVERY"] = fileedit.recovery_dir()
+    env = child_env(  # the sandbox's stores, never the real home's (#2423)
+        AGENT_SESSIONS_FS_ROOT=root, AGENT_SESSIONS_EDIT_RECOVERY=fileedit.recovery_dir()
+    )
     result = subprocess.run(
         [sys.executable, "-c", CHILD, str(path), step, sha(b"\xffold")],
         env=env,

@@ -946,3 +946,90 @@ def test_the_judge_contract_and_the_call_agree_on_the_batch_cap():
 
     assert voice_judge.CARDS_MAX == voice_calls.BATCH_MAX == 20
     assert "from 1 to 20" in prompts.VOICE_CONFIRM_JUDGE_FORMAT
+
+
+# --- a batch that skips permission prompts (#2351, Hermes on #2357) ----------------------------
+
+
+def _skip_session(i: int, *, bypass: bool) -> dict:
+    return {
+        "kind": "session",
+        "action_id": _pid(950 + i),
+        "title": f"docs {i}",
+        "runtime": "api",
+        "text": f"Refresh docs page {i}.",
+        "bypass_default": bypass,
+        "can_bypass": True,
+    }
+
+
+def test_a_batch_of_sessions_that_skip_prompts_says_so_before_one_yes_starts_them(monkeypatch):
+    """Two capable API session cards on skip projects: the short read-back says they skip
+    permission prompts, and the one yes starts each exactly so."""
+    cards = [_skip_session(1, bypass=True), _skip_session(2, bypass=True)]
+    r = Rig(monkeypatch, {"proposals": cards})
+
+    async def go():
+        await offered(r, "start both docs sessions")
+        assert r.said_text()[-1] == (
+            "Two new sessions, the details are on your screen. "
+            "Both skip permission prompts. Shall I go ahead with both?"
+        )
+        await r.ask("Yes, do them all.")
+
+    run(go())
+    assert decided(r) == [c["action_id"] for c in cards]
+    assert [b for m, _, b in r.routes if m == "POST"] == [
+        {"decision": "start", "bypass": True},
+        {"decision": "start", "bypass": True},
+    ]
+
+
+def test_a_mixed_batch_is_read_card_by_card_so_each_skip_is_said(monkeypatch):
+    """Only one of two cards skips prompts: the batch is not read short, each card's own line is
+    heard (the skipping one says so, the other does not), and one yes starts each as heard."""
+    cards = [_skip_session(1, bypass=True), _skip_session(2, bypass=False)]
+    r = Rig(monkeypatch, {"proposals": cards})
+
+    async def go():
+        await offered(r, "start both docs sessions")
+        said = r.said_text()[-1]
+        assert "the details are on your screen" not in said
+        first, second = said.split("Refresh docs page 2.")
+        assert "Refresh docs page 1. It skips permission prompts." in first
+        assert "skips permission prompts" not in second
+        await r.ask("Yes, do them all.")
+
+    run(go())
+    assert decided(r) == [c["action_id"] for c in cards]
+    assert [b for m, _, b in r.routes if m == "POST"] == [
+        {"decision": "start", "bypass": True},
+        {"decision": "start", "bypass": False},
+    ]
+
+
+def test_a_mixed_batch_past_four_cards_offers_four_and_each_is_heard(monkeypatch):
+    """Hermes on #2357: six session cards, two skipping prompts. A mixed batch is read card by
+    card, which holds four, so four are offered (announced == authorised), each with its own
+    disclosure; one yes starts those four exactly as heard, and the other two stay on screen."""
+    modes = [True, False, False, False, True, False]
+    cards = [_skip_session(i, bypass=b) for i, b in enumerate(modes, 1)]
+    r = Rig(monkeypatch, {"proposals": cards})
+
+    async def go():
+        await offered(r, "start the docs sessions")
+        said = r.said_text()[-1]
+        assert said.startswith("First: ") and "Fourth: " in said and "Fifth" not in said
+        assert "Refresh docs page 1. It skips permission prompts." in said
+        for i in (2, 3, 4):
+            assert f"Refresh docs page {i}. It skips" not in said
+        assert "page 5" not in said and "page 6" not in said
+        armed = [c for c in challenges(r) if c["cards"]][-1]
+        assert armed["cards"] == [c["action_id"] for c in cards[:4]]
+        await r.ask("Yes, do them all.")
+
+    run(go())
+    assert decided(r) == [c["action_id"] for c in cards[:4]]
+    assert [b for m, _, b in r.routes if m == "POST"] == [
+        {"decision": "start", "bypass": b} for b in modes[:4]
+    ]

@@ -5,6 +5,7 @@ import {
   Bot,
   BotOff,
   Crosshair,
+  ExternalLink,
   Eye,
   EyeOff,
   FolderInput,
@@ -25,6 +26,7 @@ import {
   sessionPathFromKey,
 } from "../../lib/format";
 import { missionLink } from "../../lib/missionLink";
+import { popOutSession, useInPopout } from "../../lib/popout";
 import type { ProjectRef, Session } from "../../types/api";
 import type { RowMenuEntry } from "../sidebar/RowMenu";
 import { MoveToProjectModal } from "../sidebar/MoveToProjectModal";
@@ -148,6 +150,7 @@ export function useSessionMenu(
     returnFocus: HTMLElement | null;
   } | null>(null);
   const navigate = useNavigate();
+  const inPopout = useInPopout();
   // Which pane draws this session, asked of the roster (never an engine id): `api` is a
   // conversation, `pty` a terminal. Anything else (a chat pane, an engine the roster does not
   // know yet) is neither shareable nor adoptable from here.
@@ -247,6 +250,20 @@ export function useSessionMenu(
       onSelect: () => {
         setHandoffReturnFocus(document.activeElement as HTMLElement | null);
         setHandoffOpen(true);
+      },
+    });
+  }
+  // Pop out: the session alone in its own window or tab. Not offered inside a pop-out (it already
+  // is one) or for an unreconciled `new-<uuid>` placeholder (nothing to attach to). It runs inside
+  // the click, which is what lets the browser open the window.
+  if (!inPopout && !isNewSessionPlaceholder(s.id)) {
+    primary.push({
+      key: "popout",
+      label: "Pop out",
+      ariaLabel: "Pop out session into its own window",
+      icon: <ExternalLink size={15} />,
+      onSelect: () => {
+        popOutSession(s.id);
       },
     });
   }

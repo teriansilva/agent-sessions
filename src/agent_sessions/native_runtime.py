@@ -633,6 +633,7 @@ def _launch_locked(
     claim=None,
     shelf_mission: str | None = None,
     account=_UNRESOLVED,
+    authority: dict | None = None,
 ) -> str:
     """Mint, persist intent, lease, launch and pin one generation. Caller holds the lock.
     ``claim``: a specialist slot the caller already took for it; otherwise one is taken here when
@@ -645,7 +646,11 @@ def _launch_locked(
     stays byte-identical; a later generation asks the session's current mission instead.
 
     ``account`` (#2169): the first generation's account, resolved by its caller before ownership
-    was reserved; a later generation resolves its own here."""
+    was reserved; a later generation resolves its own here.
+
+    ``authority`` (#2351): a guarded turn's admitted tokens, held current from the generation's
+    first durable write through its spawn (`_launch_authority`); a withdrawal refuses it here
+    before anything is recorded or spawned."""
     from . import specialist_launch
 
     held = {
@@ -653,6 +658,7 @@ def _launch_locked(
         "spawning": False,
         "shelf_mission": shelf_mission,
         "account": account,
+        "authority": authority,
     }
     try:
         return _launch_generation(session_id, record, prov, binding, mode=mode, held=held)
@@ -840,36 +846,42 @@ def _launch_generation(
             "operation_id": session_id,
             "owner_token": record["owner_token"],
         }
-    native_state.write_config(worker.worker_id, config)
-    native_state.update_lifecycle(
-        worker.worker_id,
-        phase="intent",
-        unit=worker.unit,
-        release=None if release is None else str(release),
-        intent_at=time.time(),
-    )
-    record["current_worker"] = worker.worker_id
-    record["closed"] = False
-    # `workers` lists every generation not yet PROVED gone; a successor needs that list empty.
-    record.setdefault("workers", []).append(worker.worker_id)
-    record["generations"] = record.get("generations", 0) + 1
-    native_state.write_session(session_id, record)  # durable startup intent BEFORE launch
-    launchtiming.mark("config")
-    _sweep_leases(release)
-    launchtiming.mark("sweep")
-    _lease(release, worker.worker_id)
-    argv = native_containment.launch_argv(
-        worker,
-        python=python,
-        state_dir=str(state_dir),
-        home=str(Path.home()),
-        runtime_dir=runtime if re.fullmatch(r"/run/user/[0-9]{1,10}", runtime) else None,
-        tasks_max=policy["api_tasks"],
-        memory_gib=policy["api_memory_gib"],
-    )
-    launchtiming.mark("lease")
-    held["spawning"] = True  # from here a worker may exist: its slot is released only on proof
-    launched = HOST.launch(argv)
+    # A guarded turn's relaunch (#2351, Hermes on #2357): the tokens its submit was admitted under
+    # are held from the generation's first durable write through its spawn, so a withdrawal
+    # commits entirely before (refused here, nothing recorded or spawned; the slot and grant set
+    # above are released by `_launch_locked`) or after the spawn (admitted first; the worker still
+    # refuses the turn at its own claim). Unguarded launches take no lock.
+    with _launch_authority(session_id, held.get("authority")):
+        native_state.write_config(worker.worker_id, config)
+        native_state.update_lifecycle(
+            worker.worker_id,
+            phase="intent",
+            unit=worker.unit,
+            release=None if release is None else str(release),
+            intent_at=time.time(),
+        )
+        record["current_worker"] = worker.worker_id
+        record["closed"] = False
+        # `workers` lists every generation not yet PROVED gone; a successor needs that list empty.
+        record.setdefault("workers", []).append(worker.worker_id)
+        record["generations"] = record.get("generations", 0) + 1
+        native_state.write_session(session_id, record)  # durable startup intent BEFORE launch
+        launchtiming.mark("config")
+        _sweep_leases(release)
+        launchtiming.mark("sweep")
+        _lease(release, worker.worker_id)
+        argv = native_containment.launch_argv(
+            worker,
+            python=python,
+            state_dir=str(state_dir),
+            home=str(Path.home()),
+            runtime_dir=runtime if re.fullmatch(r"/run/user/[0-9]{1,10}", runtime) else None,
+            tasks_max=policy["api_tasks"],
+            memory_gib=policy["api_memory_gib"],
+        )
+        launchtiming.mark("lease")
+        held["spawning"] = True  # from here a worker may exist: its slot is released only on proof
+        launched = HOST.launch(argv)
     launchtiming.mark("spawn")
     observation = HOST.show(worker)
     if observation is None or observation.load_state != "loaded" or not observation.invocation_id:
@@ -2450,9 +2462,39 @@ def _relaunch_sync(
     session_id: str,
     permission_operation: str | None,
     no_relaunch: bool = False,
+    *,
+    authority: dict | None = None,
 ) -> str | None:
     with _archive_admission(engine_id, session_id):
-        return _relaunch_sync_admitted(engine_id, session_id, permission_operation, no_relaunch)
+        return _relaunch_sync_admitted(
+            engine_id, session_id, permission_operation, no_relaunch, authority=authority
+        )
+
+
+@contextlib.contextmanager
+def _launch_authority(session_id: str, authority: dict | None):
+    """Hold a guarded turn's admitted ``authority`` tokens current across a launch's spawn
+    (`native_authority.held`, the comparison the worker makes at its claim), else refuse with
+    nothing spawned. ``None``: an unguarded launch, no lock. The block is a few local writes and
+    the unit's start call, inside the withdrawal's own lock budget."""
+    if authority is None:
+        yield
+        return
+    from . import native_authority
+
+    entered = False
+    try:
+        with native_authority.held(session_id, authority):
+            entered = True
+            yield
+    except native_authority.AuthorityError as exc:
+        raise NativeError(409, f"not sent: {exc}", reason=native_ipc.AUTHORITY_WITHDRAWN) from None
+    except (native_state.StateError, OSError) as exc:
+        if entered:
+            raise
+        raise NativeError(
+            503, "the caller's authority could not be checked; nothing was sent", remedy="retry"
+        ) from exc
 
 
 def _relaunch_sync_admitted(
@@ -2460,6 +2502,8 @@ def _relaunch_sync_admitted(
     session_id: str,
     permission_operation: str | None,
     no_relaunch: bool = False,
+    *,
+    authority: dict | None = None,
 ) -> str | None:
     prov, _ = _session(engine_id, session_id)
     try:
@@ -2531,7 +2575,9 @@ def _relaunch_sync_admitted(
             # fails, while --session-id of one it did collides. Ask the store, not the journal.
             mode = "create"
         with _session_slot(record["session_key"]):
-            return _launch_locked(session_id, record, prov, binding, mode=mode)
+            if authority is None:
+                return _launch_locked(session_id, record, prov, binding, mode=mode)
+            return _launch_locked(session_id, record, prov, binding, mode=mode, authority=authority)
 
 
 async def _live_generation(
@@ -2539,6 +2585,8 @@ async def _live_generation(
     session_id: str,
     permission_operation: str | None,
     no_relaunch: bool = False,
+    *,
+    authority: dict | None = None,
 ) -> Generation:
     record = await asyncio.to_thread(native_state.read_session, session_id)
     if record and _permission_change(record).get("state") == "stopping":
@@ -2564,6 +2612,14 @@ async def _live_generation(
         worker_id = await asyncio.to_thread(
             _relaunch_sync, engine_id, session_id, permission_operation, True
         )
+    elif authority is not None:
+        # A guarded turn's relaunch checks its authority at the launch boundary (#2351).
+        worker_id = await asyncio.to_thread(
+            partial(_relaunch_sync, authority=authority),
+            engine_id,
+            session_id,
+            permission_operation,
+        )
     else:
         worker_id = await asyncio.to_thread(
             _relaunch_sync, engine_id, session_id, permission_operation
@@ -2584,14 +2640,25 @@ async def _effect(
     permission_operation: str | None,
     no_relaunch: bool = False,
 ) -> dict:
+    # A guarded submit's admitted tokens (#1897), so a relaunch it causes is fenced too (#2351).
+    authority = (
+        {"session": params["authority_session"], "policy": params["authority_policy"]}
+        if "authority_session" in params and "authority_policy" in params
+        else None
+    )
     for attempt in range(3):
         # The old call shape for every operator decision and operator send: only an automatic
         # turn asks the generation choice to refuse instead of relaunching (#1983).
-        gen = (
-            await _live_generation(engine_id, session_id, permission_operation, no_relaunch=True)
-            if no_relaunch
-            else await _live_generation(engine_id, session_id, permission_operation)
-        )
+        if no_relaunch:
+            gen = await _live_generation(
+                engine_id, session_id, permission_operation, no_relaunch=True
+            )
+        elif authority is not None:
+            gen = await _live_generation(
+                engine_id, session_id, permission_operation, authority=authority
+            )
+        else:
+            gen = await _live_generation(engine_id, session_id, permission_operation)
         current = await asyncio.to_thread(native_state.read_session, session_id)
         if _permission_change(current or {}).get("operation_id") != permission_operation:
             raise NativeError(

@@ -32,6 +32,7 @@ from fastapi.testclient import TestClient
 
 from agent_sessions import fileedit, files
 from agent_sessions.files import FsError
+from conftest import child_env
 
 
 def sha(b: bytes) -> str:
@@ -615,9 +616,9 @@ print("finished", flush=True)
 
 
 def _child(root, step, path, action="save", content="mine\n", expect=None):
-    env = {k: v for k, v in os.environ.items() if not k.startswith("AGENT_SESSIONS_")}
-    env["AGENT_SESSIONS_FS_ROOT"] = str(root)
-    env["AGENT_SESSIONS_EDIT_RECOVERY"] = fileedit.recovery_dir()
+    env = child_env(  # the sandbox's stores, never the real home's (#2423)
+        AGENT_SESSIONS_FS_ROOT=root, AGENT_SESSIONS_EDIT_RECOVERY=fileedit.recovery_dir()
+    )
     return subprocess.run(
         [sys.executable, "-c", CHILD, step, str(path), content, expect or "", action],
         env=env,

@@ -92,6 +92,10 @@ test.describe("row ⋯ menu: no spurious scrollbars", () => {
     page,
   }, testInfo) => {
     test.skip(testInfo.project.name !== "desktop", "the reported surface is the desktop popover");
+    // Tall enough for the FULL item set to fit (Pop out, #2429, made it one row taller than a
+    // 720px window holds). A menu that genuinely exceeds the window scrolls by design; this test
+    // is about a menu that fits painting no scrollbar.
+    await page.setViewportSize({ width: 1280, height: 800 });
     await setup(page);
     const menu = await openRowMenu(page);
 

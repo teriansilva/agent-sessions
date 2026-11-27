@@ -170,6 +170,8 @@ def test_a_source_label_or_known_bundle_bytes_never_admits_untrusted_hardlinks(
 
 def test_portable_module_preserves_an_inherited_operator_store(tmp_path):
     """Exercise the actual outside-checkout entry point, without repository conftest (#1385)."""
+    from conftest import STORE_ENV_PATHS, child_env  # here: the portable copy runs without it
+
     home = tmp_path / "operator-home"
     operator_store = home / ".config" / "agent-sessions" / "playbooks"
     operator_store.mkdir(parents=True)
@@ -185,18 +187,15 @@ def test_portable_module_preserves_an_inherited_operator_store(tmp_path):
         }
 
     before = snapshot()
-    env = {
-        key: value
-        for key, value in os.environ.items()
-        if not key.startswith("AGENT_SESSIONS_")
-        and key not in {"PYTHONPATH", "PYTEST_ADDOPTS", "PYTEST_PLUGINS"}
-    }
-    env.update(
-        HOME=str(home),
-        XDG_CONFIG_HOME=str(home / ".config"),
-        XDG_DATA_HOME=str(home / ".local" / "share"),
-        AGENT_SESSIONS_HOME=str(home / ".local" / "share" / "agent-sessions"),
-        AGENT_SESSIONS_PLAYBOOKS_DIR=str(operator_store),
+    # An operator's env: no store pins (their defaults resolve under the stand-in `home`), and none
+    # of this run's plugin / path settings (#2423: via child_env, which the tripwire checks).
+    env = child_env(
+        drop=(*STORE_ENV_PATHS, "PYTHONPATH", "PYTEST_ADDOPTS", "PYTEST_PLUGINS"),
+        HOME=home,
+        XDG_CONFIG_HOME=home / ".config",
+        XDG_DATA_HOME=home / ".local" / "share",
+        AGENT_SESSIONS_HOME=home / ".local" / "share" / "agent-sessions",
+        AGENT_SESSIONS_PLAYBOOKS_DIR=operator_store,
         AGENT_SESSIONS_NO_SERVICE="1",
         PYTEST_DISABLE_PLUGIN_AUTOLOAD="1",
     )

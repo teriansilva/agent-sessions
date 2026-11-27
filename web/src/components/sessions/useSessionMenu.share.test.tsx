@@ -132,9 +132,16 @@ test("an API session: Share once with both entries on, and Adopt to mission", ()
   expect(item("share-public")?.hint).toBeUndefined();
   expect(item("share-peer")?.ariaLabel).toBe("Share this session with a paired instance");
   expect(item("adopt-mission")?.label).toBe("Adopt to mission…");
-  // After the primary group, before the mission entry.
+  // After the primary group (brief, hand off, pop out), before the mission entry.
   const keys = seen.flatMap((e) => (typeof e !== "string" && "key" in e ? [e.key] : []));
-  expect(keys.slice(0, 5)).toEqual(["brief", "handoff", "share-public", "share-peer", "adopt-mission"]);
+  expect(keys.slice(0, 6)).toEqual([
+    "brief",
+    "handoff",
+    "popout",
+    "share-public",
+    "share-peer",
+    "adopt-mission",
+  ]);
   rulesAreClean();
 });
 

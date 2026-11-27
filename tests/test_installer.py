@@ -18,6 +18,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import child_env
+
 REPO = Path(__file__).resolve().parents[1]
 INSTALL_SH = REPO / "install.sh"
 
@@ -67,8 +69,7 @@ def test_release_retention_honours_operator_hold(tmp_path, hold):
         (prefix / "retain-releases").symlink_to(prefix / "unavailable-hold-record")
     harness = tmp_path / "retention.sh"
     harness.write_text(INSTALL_SH.read_text().replace('\nmain "$@"\n', "\nprune_releases\n"))
-    env = {k: v for k, v in os.environ.items() if not k.startswith("AGENT_SESSIONS_")}
-    env.update(AGENT_SESSIONS_HOME=str(prefix), AGENT_SESSIONS_NO_SERVICE="1")
+    env = child_env(AGENT_SESSIONS_HOME=prefix, AGENT_SESSIONS_NO_SERVICE="1")  # #2423
     result = subprocess.run(
         ["sh", str(harness)], env=env, capture_output=True, text=True, timeout=10
     )
@@ -95,8 +96,7 @@ def _prune(tmp_path, prepare=None):
             os.utime(releases / f"release-{index}", (1000 + index, 1000 + index))
     harness = tmp_path / "retention.sh"
     harness.write_text(INSTALL_SH.read_text().replace('\nmain "$@"\n', "\nprune_releases\n"))
-    env = {k: v for k, v in os.environ.items() if not k.startswith("AGENT_SESSIONS_")}
-    env.update(AGENT_SESSIONS_HOME=str(prefix), AGENT_SESSIONS_NO_SERVICE="1")
+    env = child_env(AGENT_SESSIONS_HOME=prefix, AGENT_SESSIONS_NO_SERVICE="1")  # #2423
     return prefix, releases, harness, env
 
 

@@ -363,6 +363,49 @@ test("an API session card names its kind, has no bypass switch, and starts witho
   await noSidewaysScroll(page);
 });
 
+// --- #2351: an API card whose agent can skip prompts starts from the project's default -----------
+
+test("an API session card that can skip prompts offers the switch and starts from its default", async ({
+  page,
+}) => {
+  const api = {
+    agent: "Claude — API",
+    engine: "claude-api",
+    runtime: "api",
+    can_bypass: true,
+    bypass_default: true,
+  };
+  const fake = await mockShell(page, [proposedSession()]);
+  fake.conversations[0].turns[0].proposals = [sessionProposal(api)];
+  const decided: unknown[] = [];
+  await page.route(/\/api\/ask\/proposals\/[0-9a-f]{32}\/decide$/, async (r) => {
+    decided.push(r.request().postDataJSON());
+    const t = fake.conversations[0].turns[0];
+    t.proposals = [
+      sessionProposal({
+        ...api,
+        state: "started",
+        bypass: true,
+        session_key: "claude-api:11111111-2222-4333-8444-555555555555",
+      }),
+    ];
+    await r.fulfill({ status: 202, json: { proposal: t.proposals[0] } });
+  });
+  await page.goto("/dashboard");
+  const panel = await openAsk(page);
+  await pickConversation(panel);
+  const card = panel.getByTestId("ask-session");
+  await expect(card.getByTestId("ask-session-kind")).toHaveText("API session");
+  await expect(card.getByTestId("ask-session-asks")).toHaveCount(0);
+  await expect(card.getByRole("switch")).toBeChecked();
+  await card.getByRole("button", { name: "Start API session in agent-sessions" }).click();
+  expect(decided).toEqual([{ decision: "start", bypass: true }]);
+  await expect(card.getByTestId("ask-session-bypass-used")).toContainText("On", {
+    timeout: 10_000,
+  });
+  await noSidewaysScroll(page);
+});
+
 test("a terminal session card says so and keeps its bypass switch", async ({ page }) => {
   const fake = await mockShell(page, [proposedSession()]);
   fake.conversations[0].turns[0].proposals = [sessionProposal({ runtime: "pty" })];

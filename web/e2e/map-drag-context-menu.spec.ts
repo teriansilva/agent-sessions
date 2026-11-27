@@ -259,9 +259,10 @@ test.describe("desktop", () => {
     const log = await mockApp(page);
     // Tall enough that the menu fits BELOW a mid-map pointer: with the Share group (#2173) it is
     // three rows taller, and at the default height it flipped above the pointer, which is the
-    // edge rule the second half of this test covers, not the "opens at the pointer" one.
+    // edge rule the second half of this test covers, not the "opens at the pointer" one. Pop out
+    // (#2429) made it one row taller again.
     const size = page.viewportSize()!;
-    await page.setViewportSize({ width: size.width, height: Math.max(size.height, 1000) });
+    await page.setViewportSize({ width: size.width, height: Math.max(size.height, 1100) });
     await page.goto("/overview");
     const c1 = chip(page, 1);
     await expect(c1).toBeVisible();

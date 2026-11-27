@@ -17,6 +17,7 @@ import sys
 import tempfile
 import time
 import types
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 import pytest
@@ -34,15 +35,32 @@ import pytest
 #    so an `undo()` (or a fixture that forgot one) lands in the sandbox, never `$HOME`. Done at
 #    conftest IMPORT, before `agent_sessions` is imported, because some modules capture a path at
 #    import (`scrollback._SCROLLBACK_DIR`); `pytest_configure` re-asserts it. Engine transcript
-#    stores (`~/.claude`, `~/.codex`, …) are deliberately not pinned: tests point `$HOME` at a tmp
-#    dir and rely on those following it.
+#    stores (`~/.claude`, `~/.codex`, …) are deliberately not pinned: they follow `$HOME`, which is
+#    the sandbox for the whole session (#2423) and a tmp dir in the tests that move it.
 # 2. **Tripwire.** An audit hook refuses any open / sqlite connect / mkdir / rename / unlink under
 #    the REAL app store directories, resolved from the passwd entry (never `$HOME`, which tests
 #    move). It raises at the call site AND is reported by an autouse fixture, so a leak fails the
 #    test even when the app code swallows the exception as a fail-soft read.
+#
+# Both layers live in THIS process only, so two more cover the child processes a test starts
+# (#2423, below): the session's `$HOME` is the sandbox too, and the tripwire also judges every
+# process start's environment. Build a child's `env=` with `child_env()`.
 
 # The real home, from the passwd database — `$HOME` is monkeypatched all over the suite.
 _REAL_HOME = pwd.getpwuid(os.getuid()).pw_dir
+# The `$HOME` the run was STARTED with, recorded once in the environment (#2423): `$HOME` becomes
+# the sandbox below, and an xdist worker (or any nested pytest) inherits the controller's sandbox
+# `$HOME`. Every process of the run must protect the operator's home, never a sandbox.
+_STARTED_HOME = os.environ.setdefault(
+    "BATTLELAB_TEST_STARTED_HOME", os.environ.get("HOME") or _REAL_HOME
+)
+# pip's download cache follows `$HOME`, so the sandbox `$HOME` would make every `pip install` a
+# test runs (install.sh's end-to-end tests) download from scratch. Keep the cache the run started
+# with: a download cache, not app state, and exactly what those children used before #2423.
+os.environ.setdefault(
+    "PIP_CACHE_DIR",
+    os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.join(_STARTED_HOME, ".cache"), "pip"),
+)
 
 # A suite run INSIDE a BattleLab session with shared memory on inherits that session's memory
 # variables (#1471); the app scrubs them at `create_app`, but tests that never build an app would
@@ -116,10 +134,22 @@ STORE_ENV_PATHS: dict[str, str] = {
 PROTECTED_DIRS: tuple[str, ...] = tuple(
     dict.fromkeys(
         os.path.join(home, sub)
-        for home in (_REAL_HOME, os.environ.get("HOME") or _REAL_HOME)
+        for home in (_REAL_HOME, _STARTED_HOME)
         for sub in (".config/agent-sessions", ".local/share/agent-sessions", ".agent-sessions")
     )
 )
+# The same homes, resolved: a child's `$HOME` equal to one of them would resolve the real stores.
+REAL_HOMES: frozenset[str] = frozenset(os.path.realpath(h) for h in (_REAL_HOME, _STARTED_HOME))
+
+# `$HOME` and the XDG homes (#2423) → sub-path under the sandbox. `$HOME` IS the sandbox root, so a
+# default built from `Path.home()` lands on exactly the path of its pin above. `XDG_CACHE_HOME` is
+# left alone: `scanner.py` reads it, and tests that move `$HOME` expect `~/.cache` to follow.
+SANDBOX_HOME_ENV: dict[str, str] = {
+    "HOME": "",
+    "XDG_CONFIG_HOME": ".config",
+    "XDG_DATA_HOME": ".local/share",
+    "XDG_STATE_HOME": ".local/state",
+}
 
 _STATE_MODULE = "_agent_sessions_test_isolation"  # one per process, even if conftest re-imports
 
@@ -133,17 +163,20 @@ def _state() -> types.ModuleType:
         mod.reported = 0
         mod.outside = []
         mod.hook_installed = False
+        mod.pinned = {}  # var → the sandbox value `_pin_store_env` set (#2423's fast path)
+        mod.pid = os.getpid()  # a forked child has another: it reports through `_FORKED`
         sys.modules[_STATE_MODULE] = mod
     return mod
 
 
 def _pin_store_env() -> str:
-    """Point every store env var at the process's session sandbox (idempotent)."""
+    """Point every store env var, `$HOME` and the XDG homes at the process's session sandbox
+    (idempotent)."""
     st = _state()
     if st.sandbox is None:
         st.sandbox = tempfile.mkdtemp(prefix="blsess-")
-    for var, sub in STORE_ENV_PATHS.items():
-        os.environ[var] = os.path.join(st.sandbox, sub)
+    for var, sub in {**STORE_ENV_PATHS, **SANDBOX_HOME_ENV}.items():
+        os.environ[var] = st.pinned[var] = os.path.join(st.sandbox, sub) if sub else st.sandbox
     return st.sandbox
 
 
@@ -189,7 +222,218 @@ _AUDITED: dict[str, tuple[int, ...]] = {
 }
 
 
+# --- Child processes (#2423) ---------------------------------------------------------------------
+#
+# The hook is not inherited by a child. Tests once built a child's env by dropping every
+# `AGENT_SESSIONS_*` pin while `$HOME` stayed real, so the child's defaults were the operator's LIVE
+# stores, and one migrated the live `automations.db` (2026-11-27). The sandbox `$HOME` closes the
+# inherited case; this closes the explicit one. Process starts are judged by DESTINATION: a safe
+# override (a test's own tmp `$HOME`, a pin moved to a tmp path) passes, and only an environment
+# through which a child could resolve a protected store is refused.
+#
+# Audit event → index of its environment argument (`None` there: the child inherits `os.environ`).
+# `os.exec` is the whole exec* family's event. `os.spawn*` and `pty.spawn` are fork + exec, so they
+# arrive as `os.exec` in the forked child (where the refusal makes the exec fail). A relative HOME,
+# XDG home or pin is resolved where the child runs: Popen's `cwd`, else this process's (which a
+# forked child and a posix_spawn'd one keep).
+_SPAWN_ENV_ARG: dict[str, int] = {"subprocess.Popen": 3, "os.posix_spawn": 2, "os.exec": 2}
+_SPAWN_CWD_ARG: dict[str, int] = {"subprocess.Popen": 2}
+# A forked child's memory is its own, so what it records is appended here, in the sandbox the fork
+# shares, and `_real_store_tripwire` collects it into the owning test (#2423).
+_FORKED = ".forked-violations"
+_XDG_HOMES = ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME")
+# What a child with no `$HOME` is refused for: a program that can run the app's code (an
+# interpreter, a shell, a script beside this interpreter). The app's own hardened launches give
+# fixed system tools a minimal env on purpose (`ssh-keygen -Y verify` with only PATH and LANG,
+# `systemd-run` whose program gets its env through `env -i`); those never resolve an app store.
+_SHELLS = frozenset({"sh", "bash", "dash", "zsh", "ksh"})
+_INTERPRETER = re.compile(r"(?:python|pypy)[0-9.]*")
+_OWN_BIN = os.path.dirname(os.path.abspath(sys.executable))
+_OWN_EXE = os.path.realpath(sys.executable)
+
+
+def _launch_env(env: object) -> Mapping[str, str] | None:
+    if env is None:
+        return os.environ
+    try:
+        items = env.items()
+    except AttributeError:
+        return None  # not a mapping we can judge
+    if all(type(k) is str and type(v) is str for k, v in items):
+        return env  # the usual case: judged as is, no copy
+    out: dict[str, str] = {}
+    for key, value in items:
+        try:
+            out[os.fsdecode(key)] = os.fsdecode(value)
+        except TypeError:
+            continue
+    return out
+
+
+def _home_near_protected(home: str) -> bool:
+    h = os.path.normpath(home)
+    return any(
+        r == h or r.startswith(h.rstrip(os.sep) + os.sep) or h.startswith(r + os.sep)
+        for r in PROTECTED_DIRS
+    )
+
+
+def _runs_app_code(program: object) -> bool:
+    if program is None:
+        return True  # unknown: judged as the worst case
+    try:
+        path = os.fsdecode(program)
+    except TypeError:
+        return True
+    name = os.path.basename(path)
+    if name in _SHELLS or _INTERPRETER.fullmatch(name):
+        return True
+    if os.sep not in path:
+        return False  # a bare name other than an interpreter or a shell
+    full = os.path.abspath(path)
+    return os.path.dirname(full) == _OWN_BIN or os.path.realpath(full) == _OWN_EXE
+
+
+def _child_dir(cwd: object) -> str:
+    try:
+        here = os.getcwd()
+    except OSError:
+        here = os.sep
+    if cwd is None:
+        return here
+    try:
+        return os.path.join(here, os.fsdecode(cwd))
+    except TypeError:
+        return here  # a descriptor: not resolvable without a syscall
+
+
+def spawn_breach(env: object, program: object = None, cwd: object = None) -> str | None:
+    """Why a child started with this environment could reach a protected store, or None.
+
+    `env` is what the process start was given: a mapping, or None (the child inherits
+    `os.environ`); `program` is what it runs (None: unknown); `cwd` is where it runs (None: here).
+    A relative value is resolved in the child's directory, as the child itself would. A child with
+    no `$HOME` falls back to the passwd entry, the real home, so it is refused when the program
+    can run the app's code.
+
+    It runs on every process start of the suite, so a value equal to the one `_pin_store_env`
+    set (a path in this process's own sandbox, which is never protected) is not re-judged.
+    """
+    launch = _launch_env(env)
+    if launch is None:
+        return None
+    pinned = _state().pinned
+    where: list[str] = []
+
+    def at(value: str) -> str:  # the child's own reading of a path value
+        if os.path.isabs(value):
+            return value
+        if not where:
+            where.append(_child_dir(cwd))
+        return os.path.normpath(os.path.join(where[0], value))
+
+    home = launch.get("HOME", "")
+    if not home and _runs_app_code(program):
+        return "the child has no HOME, so it falls back to the passwd entry (the real home)"
+    if home and home != pinned.get("HOME"):
+        home = at(home)
+        if os.path.realpath(home) in REAL_HOMES:
+            return f"the child's HOME {home!r} is protected (the passwd home or the started one)"
+    for var in _XDG_HOMES:
+        base = launch.get(var)
+        if not base or base == pinned.get(var):
+            continue
+        hit = _under_protected(os.path.join(at(base), "agent-sessions"))
+        if hit is not None:
+            return f"{var}={base!r} puts the app's state dir in the real store {hit!r}"
+    # A dropped pin's default (`<HOME>/<sub>`) can only be protected when HOME is above a
+    # protected root or inside one; for any other HOME the per-pin judgement is skipped.
+    near = bool(home) and _home_near_protected(home)
+    for var, sub in STORE_ENV_PATHS.items():
+        value = launch.get(var)
+        if value:
+            if value == pinned.get(var):
+                continue
+            hit = _under_protected(at(value))
+            if hit is not None:
+                return f"{var} is pinned at the real store {hit!r}"
+        elif near:
+            hit = _under_protected(os.path.join(home, sub))
+            if hit is not None:
+                return f"{var} is dropped, and its default under HOME is the real store {hit!r}"
+    return None
+
+
+# The reporter's own I/O, bound at import: a test that monkeypatches `os.rename` (or `os.open`) to
+# fail must not break the reporting of its own item.
+_IO = types.SimpleNamespace(
+    open=os.open,
+    read=os.read,
+    write=os.write,
+    close=os.close,
+    rename=os.rename,
+    remove=os.remove,
+    getpid=os.getpid,
+)
+
+
+def _record(violation: str) -> None:
+    st = _state()
+    if _IO.getpid() == st.pid:
+        st.violations.append(violation)
+        return
+    if st.sandbox is None:
+        return
+    try:  # one O_APPEND write per line: forked children never interleave a record
+        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
+        fd = _IO.open(os.path.join(st.sandbox, _FORKED), flags, 0o600)
+        try:
+            _IO.write(fd, (violation.replace("\n", " ") + "\n").encode(errors="replace"))
+        finally:
+            _IO.close(fd)
+    except OSError:
+        pass  # the refusal itself still stands in the child
+
+
+def _collect_forked() -> None:
+    """Move what forked children recorded into this process's list (#2423)."""
+    st = _state()
+    if st.sandbox is None:
+        return
+    path = os.path.join(st.sandbox, _FORKED)
+    taken = f"{path}.{_IO.getpid()}"
+    try:
+        _IO.rename(path, taken)  # atomic: a child still writing starts a new file
+    except FileNotFoundError:
+        return
+    fd = _IO.open(taken, os.O_RDONLY)
+    try:
+        chunks = []
+        while chunk := _IO.read(fd, 65536):
+            chunks.append(chunk)
+    finally:
+        _IO.close(fd)
+    _IO.remove(taken)
+    text = b"".join(chunks).decode("utf-8", errors="replace")
+    st.violations.extend(line for line in text.splitlines() if line.strip())
+
+
 def _audit(event: str, args: tuple) -> None:
+    env_at = _SPAWN_ENV_ARG.get(event)
+    if env_at is not None:
+        cwd_at = _SPAWN_CWD_ARG.get(event)
+        why = spawn_breach(
+            args[env_at] if env_at < len(args) else None,
+            args[0] if args else None,
+            args[cwd_at] if cwd_at is not None and cwd_at < len(args) else None,
+        )
+        if why is not None:
+            _record(f"{event} {why}")
+            raise RealStoreTouched(
+                f"test isolation breach: {event} refused, {why}. Build the child's env with "
+                "conftest.child_env() (#2423)"
+            )
+        return
     idx = _AUDITED.get(event)
     if idx is None:
         return
@@ -197,7 +441,7 @@ def _audit(event: str, args: tuple) -> None:
         if i < len(args):
             hit = _under_protected(args[i])
             if hit is not None:
-                _state().violations.append(f"{event} {hit}")
+                _record(f"{event} {hit}")
                 raise RealStoreTouched(
                     f"test isolation breach: {event} on the operator's real store {hit!r} — "
                     "a store path fell back to the real $HOME (a mid-test monkeypatch.undo()?)"
@@ -209,6 +453,26 @@ def _install_tripwire() -> None:
     if not st.hook_installed:  # audit hooks cannot be removed: install exactly once per process
         sys.addaudithook(_audit)
         st.hook_installed = True
+
+
+def child_env(*, drop: Iterable[str] = (), **overrides: str | os.PathLike[str]) -> dict[str, str]:
+    """The environment for a child process a test starts (#2423). Use it for every explicit `env=`.
+
+    It starts from this process's environment, the sandbox `$HOME` and every store pin
+    (`STORE_ENV_PATHS`) included, so by default a child resolves exactly what the test does.
+    `overrides` set or replace variables (`HOME=tmp_path / "home"`, `AGENT_SESSIONS_FS_ROOT=root`).
+    `drop` removes the named variables: e.g. `drop=STORE_ENV_PATHS` with a tmp `HOME`, for a child
+    that resolves its own defaults under that home instead of sharing this process's stores.
+
+    Never filter `os.environ` by hand (`not k.startswith("AGENT_SESSIONS_")`): with the real `$HOME`
+    that sent children to the operator's live stores. The spawn tripwire judges the result when the
+    child starts, so a `drop` or an override that routes a store into a protected root is refused.
+    """
+    env = dict(os.environ)
+    for key in drop:
+        env.pop(key, None)
+    env.update({key: os.fspath(value) for key, value in overrides.items()})
+    return env
 
 
 _pin_store_env()
@@ -285,9 +549,11 @@ def _no_turn_watcher_model(monkeypatch):
 def _real_store_tripwire():
     """Fail the test that touched a real store, even if the app swallowed the exception."""
     st = _state()
+    _collect_forked()
     st.outside.extend(st.violations[st.reported :])  # between tests: owned by no test
     start = st.reported = len(st.violations)
     yield
+    _collect_forked()  # a forked child's refusal belongs to the test that forked it
     hits = st.violations[start:]
     st.reported = len(st.violations)
     if hits:

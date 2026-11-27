@@ -11,6 +11,7 @@ import { isNewSessionPlaceholder } from "../app/sessionsStore";
 import { useSessionRow } from "../app/useSessionRow";
 import { api } from "../lib/api";
 import { sessionPathFromKey } from "../lib/format";
+import { popoutPathFromKey, useInPopout } from "../lib/popout";
 import { MAP_PATH, useMapWindows } from "../app/workspaceWindows";
 import { MapFullNotice } from "../components/overview/MapFullNotice";
 import {
@@ -45,6 +46,10 @@ import { startedFrom } from "../lib/federationTogether";
 export function SessionView() {
   const { engine, id } = useParams<{ engine: string; id: string }>();
   useEngineRoster();
+  // Popped out (`PopoutSession`): the same view in its own window, so every in-place URL move
+  // below stays on the pop-out route instead of growing the app shell around the session.
+  const inPopout = useInPopout();
+  const pathOf = inPopout ? popoutPathFromKey : sessionPathFromKey;
   const location = useLocation();
   const navigate = useNavigate();
   const fresh = (location.state as { fresh?: FreshSession } | null)?.fresh;
@@ -105,9 +110,12 @@ export function SessionView() {
       // history push, no reload) and drop the fresh-launch state so a subsequent reload
       // attaches by the real id rather than re-launching.
       setConverged((prev) => new Set(prev).add(`${reEngine}:${reId}`));
-      navigate(`/s/${reEngine}/${reId}`, { replace: true, state: null });
+      navigate(inPopout ? (popoutPathFromKey(sid) ?? "") : `/s/${reEngine}/${reId}`, {
+        replace: true,
+        state: null,
+      });
     },
-    [navigate],
+    [navigate, inPopout],
   );
 
   const onSaveAsTemplate = useCallback(
@@ -158,9 +166,9 @@ export function SessionView() {
     row && row.id !== liveKey && row.resolved_from === liveKey ? row.id : null;
   useEffect(() => {
     if (!aliasTarget) return;
-    const to = sessionPathFromKey(aliasTarget);
+    const to = pathOf(aliasTarget);
     if (to) navigate(to, { replace: true, state: null });
-  }, [aliasTarget, navigate]);
+  }, [aliasTarget, navigate, pathOf]);
 
   // #2097: a reload or deep link to `/s/<engine>/new-<uuid>` has no `fresh` launch state, and
   // `useSessionRow` skips placeholders to avoid 404s during `new=1` launches. Ask once when
@@ -305,8 +313,9 @@ export function SessionView() {
   const startedHere = startedFrom.get(sessionKey) !== null;
   // Only the full-screen route passes To map: a session already IN a window must not offer to
   // window itself (#936), and a phone can never host one.
+  // Nor does a pop-out: the map lives in the main window.
   const toMap =
-    workspace && !isMobile && workspace.hostable !== false && !isNewSessionPlaceholder(liveKey)
+    workspace && !inPopout && !isMobile && workspace.hostable !== false && !isNewSessionPlaceholder(liveKey)
       ? onToMap
       : undefined;
   // Always present, even before the cwd resolves: #783 pins a VISIBLE DISABLED trigger during

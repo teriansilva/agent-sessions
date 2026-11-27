@@ -204,12 +204,20 @@ def test_routes_accept_and_return_it(auth_cfg, fake_jsonl):
 
 def test_no_launch_path_reads_launch_defaults():
     """A project's defaults are a PRESELECTION (#1508): the store and its routes are the only
-    readers in the server. A mission dispatch, an automation, Ask, a handoff or a playbook flow
-    that read them would turn a form preference into a launch grant (``bypass``)."""
+    readers in the server. A mission dispatch, an automation, a handoff or a playbook flow that
+    read them would turn a form preference into a launch grant (``bypass``).
+
+    The one exception (#2351) is the bypass preselection alone, read through
+    `projects.bypass_preselection` by an ATTENDED Ask/call session card as the value it starts
+    from — the operator confirms it on the card or by voice, exactly as on the New session form."""
     src = Path(__file__).resolve().parent.parent / "src" / "agent_sessions"
-    readers = sorted(
-        str(f.relative_to(src))
-        for f in src.rglob("*.py")
-        if re.search(r"launch_defaults", f.read_text(encoding="utf-8"))
-    )
-    assert readers == ["projects.py", "routes/sessions.py"]
+
+    def readers(pattern: str) -> list[str]:
+        return sorted(
+            str(f.relative_to(src))
+            for f in src.rglob("*.py")
+            if re.search(pattern, f.read_text(encoding="utf-8"))
+        )
+
+    assert readers(r"launch_defaults") == ["projects.py", "routes/sessions.py"]
+    assert readers(r"bypass_preselection") == ["ask_proposals.py", "projects.py"]

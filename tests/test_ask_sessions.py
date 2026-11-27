@@ -39,6 +39,7 @@ from agent_sessions import (
     headless_dispatch,
     mission_targets,
     prefs,
+    projects,
     session_input,
     template_secrets,
 )
@@ -292,6 +293,46 @@ def test_the_starting_bypass_value_is_the_new_session_default_not_the_unattended
     assert got["turn"]["proposals"][0]["bypass_default"] is True
 
 
+def _project_default(monkeypatch, value):
+    """The projects store as read by the card's resolver: project p1 with its own bypass
+    preselection (`None`: it follows the global default)."""
+    ld = {} if value is None else {"bypass": value}
+    stored = {"p1": projects.Project(id="p1", name="api", launch_defaults=ld)}
+    monkeypatch.setattr(projects, "load", lambda *a, **kw: stored)
+    return stored
+
+
+@pytest.mark.parametrize("own, glob", [(True, False), (False, True)])
+def test_the_starting_bypass_value_is_the_projects_own_default_when_it_sets_one(
+    app, ai, world, monkeypatch, own, glob
+):
+    """#2351: a session card starts where the New session form would — the project's own
+    preselection wins over the global default, in both directions."""
+    prefs.set_agent_defaults({"bypass": glob})
+    _project_default(monkeypatch, own)
+    _cid, got = _propose(app, ai)
+    assert got["turn"]["proposals"][0]["bypass_default"] is own
+
+
+def test_a_project_that_follows_the_global_default_starts_from_it(app, ai, world, monkeypatch):
+    prefs.set_agent_defaults({"bypass": True})
+    _project_default(monkeypatch, None)
+    _cid, got = _propose(app, ai)
+    assert got["turn"]["proposals"][0]["bypass_default"] is True
+
+
+def test_a_project_default_changed_before_the_tap_asks_again(live, ai, world, monkeypatch):
+    stored = _project_default(monkeypatch, False)
+    cid, _ = _propose(live, ai)
+    pid = live.card(cid)["action_id"]
+    stored["p1"] = projects.Project(id="p1", name="api", launch_defaults={"bypass": True})
+    r = live.decide(pid, {"decision": "start", "bypass": False})
+    assert r.status_code == 409
+    card = r.json()["proposal"]
+    assert card["notice"] == "default_changed" and card["bypass_default"] is True
+    assert world["launches"] == []
+
+
 @pytest.mark.parametrize(
     "args, code",
     [
@@ -487,9 +528,9 @@ def test_a_default_changed_inside_the_fence_asks_again_and_spawns_nothing(live, 
     real = ask_proposals.bypass_default
     flips = {"n": 0}
 
-    def flipped():
+    def flipped(*a, **kw):
         flips["n"] += 1
-        return real() if flips["n"] == 1 else not real()
+        return real(*a, **kw) if flips["n"] == 1 else not real(*a, **kw)
 
     ask_proposals.bypass_default, saved = flipped, real
     try:

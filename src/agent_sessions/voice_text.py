@@ -705,6 +705,8 @@ CALL_LINES: dict[str, dict[str, str]] = {
         "lead.session": "A new {noun} in {title}: {brief}",
         "lead.session_long": "{what} in {title}. The brief's too long to read out; it's in the "
         "chat",
+        # A session card that starts skipping permission prompts says so (#2351).
+        "lead.skips_prompts": "It skips permission prompts.",
         "what.agent_session": "A new {agent} session",
         "what.session": "A new session",
         "what.kind_agent": "A new {noun} with {agent}",
@@ -770,6 +772,8 @@ CALL_LINES: dict[str, dict[str, str]] = {
         "batch.readback": "{kinds}, the details are on your screen. {question}",
         "batch.both": "Shall I go ahead with both?",
         "batch.all": "Shall I go ahead with all {n}?",
+        "batch.skip_both": "Both skip permission prompts.",
+        "batch.skip_all": "All of them skip permission prompts.",
         "summary.all_done": "Done, all {n}.",
         "summary.done": "Done.",
         "summary.nothing": "Nothing was done.",
@@ -808,6 +812,7 @@ CALL_LINES: dict[str, dict[str, str]] = {
         "lead.session": "Eine neue {noun} in {title}: {brief}",
         "lead.session_long": "{what} in {title}. Das Briefing ist zu lang zum Vorlesen; es "
         "steht im Chat",
+        "lead.skips_prompts": "Sie überspringt Berechtigungsabfragen.",
         "what.agent_session": "Eine neue {agent}-Session",
         "what.session": "Eine neue Session",
         "what.kind_agent": "Eine neue {noun} mit {agent}",
@@ -877,6 +882,8 @@ CALL_LINES: dict[str, dict[str, str]] = {
         "batch.readback": "{kinds}, die Details stehen am Bildschirm. {question}",
         "batch.both": "Soll ich mit beiden loslegen?",
         "batch.all": "Soll ich mit allen {n} loslegen?",
+        "batch.skip_both": "Beide überspringen Berechtigungsabfragen.",
+        "batch.skip_all": "Alle überspringen Berechtigungsabfragen.",
         "summary.all_done": "Erledigt, alle {n}.",
         "summary.done": "Erledigt.",
         "summary.nothing": "Es wurde nichts gemacht.",
@@ -1077,12 +1084,20 @@ def batch_question(n: int, lang: object = None) -> str:
 def batch_readback(cards: list[dict], lang: object = None) -> str:
     """The read-back of two or more JUDGED cards (#2389): their count and what they do, in ONE
     sentence, never each card word for word (the operator, #2070 141364). The cards' own texts are
-    on the screen, and the judge is shown each card's descriptors as data (`voice_judge`)."""
+    on the screen, and the judge is shown each card's descriptors as data (`voice_judge`).
+
+    A batch whose every card starts a session skipping permission prompts says so before its
+    question (#2351): what is heard is what launches. A MIXED batch is never read short
+    (`readback`), so each card's own line carries its disclosure."""
+    question = batch_question(len(cards), lang)
+    if all(c.get("bypass") is True for c in cards):
+        skip = call_line("batch.skip_both" if len(cards) == 2 else "batch.skip_all", lang)
+        question = f"{skip} {question}"
     return call_line(
         "batch.readback",
         lang,
         kinds=batch_kinds(cards, lang),
-        question=batch_question(len(cards), lang),
+        question=question,
     )
 
 
@@ -1093,11 +1108,14 @@ def readback(cards: list[dict], *, judged: bool = True, lang: object = None) -> 
     phrase the grammar accepts, so the answer it invites is one the call can take. That grammar is
     English, so a question that names its phrases stays English whatever ``lang`` is (on a call in
     another language such cards are read for the screen instead, `readback_screen_only`). Two or
-    more judged cards are read back SHORT (`batch_readback`, #2389)."""
+    more judged cards are read back SHORT (`batch_readback`, #2389), unless only SOME of them skip
+    permission prompts (#2351): then each card is read with its own line, which says so."""
     if not cards:
         return ""
     if judged and len(cards) > 1 and not any(c.get("ask") for c in cards):
-        return batch_readback(cards, lang)
+        skipping = {c.get("bypass") is True for c in cards}
+        if len(skipping) == 1:
+            return batch_readback(cards, lang)
     if len(cards) == 1:
         c = cards[0]
         if c.get("ask"):  # a Needs-you item decided by its own words (#1681 P2)

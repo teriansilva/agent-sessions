@@ -48,9 +48,10 @@ def test_a_default_home_install_passes_with_root_owned_ancestors():
 
     `$HOME` on an ordinary install sits under a root-owned `/` and `/home`. This runs the
     PRODUCTION policy (the harness's `/tmp` test root does not apply, because `$HOME` is not
-    inside it), reads only — `lstat`, no creation, nothing written — and must pass.
+    inside it), reads only — `lstat`, no creation, nothing written — and must pass. The session
+    `$HOME` is the suite's sandbox under the temp root (#2423), so the home is the run's own.
     """
-    home = Path.home()
+    home = Path(os.environ["BATTLELAB_TEST_STARTED_HOME"])
     euid = os.geteuid()
     st = os.lstat(home)
     # The guard matches the POLICY exactly: any foreign-write bit disqualifies, ACLs included (an

@@ -74,8 +74,9 @@ class Project:
     default_folder: str = ""
     # What a NEW session in this project starts with (#1508): any of ``engine``, ``model``,
     # ``effort``, ``bypass``; an absent key follows the global ``agent_defaults``. Only ever a
-    # PRESELECTION on the New session form — no launch path reads it (pinned by a test), and the
-    # create still sends what the operator submits.
+    # PRESELECTION — on the New session form, and (``bypass`` only, #2351) as an Ask/call session
+    # card's starting value through `bypass_preselection`. No unattended launch path reads it
+    # (pinned by a test), and every launch still sends what the operator confirmed.
     launch_defaults: dict = field(default_factory=dict)
 
     def as_dict(self) -> dict:
@@ -146,6 +147,14 @@ def _validate_color(color: object) -> str:
 
 
 LAUNCH_DEFAULT_KEYS = ("engine", "model", "effort", "bypass")
+
+
+def bypass_preselection(project: Project) -> bool | None:
+    """The project's own permission-bypass PRESELECTION (#2351), or ``None`` when it follows the
+    global default. Read only by an ATTENDED card (`ask_proposals.bypass_default`): the value a
+    session card starts from and the operator confirms. Never a launch grant on its own."""
+    value = project.launch_defaults.get("bypass")
+    return value if isinstance(value, bool) else None
 
 
 def _coerce_launch_defaults(raw: object) -> dict:

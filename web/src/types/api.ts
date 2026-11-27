@@ -1159,12 +1159,16 @@ export interface AskSessionCard {
     | "unknown"
     | "gone";
   engine: string;
-  /** The kind of session a tap starts (#2014), pinned when the card was shown: an API session
-   *  (which always asks before it acts — no bypass switch) or a terminal one. Absent from an older
-   *  server: the card then names neither and keeps its switch. */
+  /** The kind of session a tap starts (#2014), pinned when the card was shown: an API session or
+   *  a terminal one. Whether it offers the bypass switch is `can_bypass` (#2351). Absent from an
+   *  older server: the card then names neither and keeps its switch. */
   runtime?: "api" | "pty";
-  /** The new-session form's starting value for permission bypass — the card's toggle starts here. */
+  /** The card's starting value for permission bypass — the project's own default, else the
+   *  global one (#2351), as the New session form resolves it. The card's toggle starts here. */
   bypass_default: boolean;
+  /** Whether the agent can skip permission prompts at all (#2351): every terminal agent, and an
+   *  API client whose adapter maps it. Absent from an older server: only a terminal card can. */
+  can_bypass?: boolean;
   /** What the tap carried, once decided. */
   bypass: boolean | null;
   /** The session it started (or may have started), for a way in. */
@@ -1187,6 +1191,7 @@ export type AskSessionDecision = Pick<
   | "state"
   | "engine"
   | "bypass_default"
+  | "can_bypass"
   | "bypass"
   | "session_key"
   | "reason"

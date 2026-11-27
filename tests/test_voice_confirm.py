@@ -322,6 +322,44 @@ def test_everything_is_refused_where_the_grammar_decides(monkeypatch):
     assert r.routes == [("POST", "/api/pulse/actions/act-1/approve", None)]
 
 
+SKIP_SESSION = {"proposals": [
+    {"kind": "session", "action_id": "prop-9", "title": "docs refresh", "runtime": "api",
+     "text": "Refresh the install docs.", "bypass_default": True, "can_bypass": True},
+]}  # fmt: skip
+
+
+def test_a_session_on_a_skip_project_is_said_and_started_skipping_prompts(monkeypatch):
+    """#2351: the card's starting value (the project's default) is what a spoken confirmation
+    starts, and the read-back says so — a call never starts a session that stops at once for a
+    permission prompt the project said to skip."""
+    r = Rig(monkeypatch, SKIP_SESSION)
+
+    async def go():
+        await r.ask("start a docs session")
+        assert r.said_text()[-1] == (
+            "A new API session in docs refresh: Refresh the install docs. "
+            "It skips permission prompts. Shall I start it?"
+        )
+        await r.readback_played()
+        await r.ask("confirm")
+
+    run(go())
+    assert r.routes == [
+        ("POST", "/api/ask/proposals/prop-9/decide", {"decision": "start", "bypass": True})
+    ]
+
+
+@pytest.mark.parametrize(
+    "fields", [{"bypass_default": False, "can_bypass": True}, {"bypass_default": True}]
+)
+def test_a_session_card_skips_prompts_by_voice_only_when_its_default_says_and_it_can(fields):
+    view = {"proposals": [{"kind": "session", "action_id": "p", "title": "docs",
+                           "text": "Refresh the docs.", **fields}]}  # fmt: skip
+    (card,) = voice_calls.confirmable_cards(view)
+    assert card["bypass"] is False
+    assert "skips permission prompts" not in card["line"]
+
+
 def test_cancel_leaves_the_card(monkeypatch):
     r = Rig(monkeypatch, NUDGE)
 

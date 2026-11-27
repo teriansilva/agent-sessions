@@ -3168,7 +3168,11 @@ async def _propose_session(turn: _Turn, args: dict) -> tuple[dict, dict]:
         # Where it resolves NOW, as the card is shown: what a start is compared against.
         "real": os.path.realpath(project["cwd"]),
         "brief": brief,
-        "bypass_default": await asyncio.to_thread(ask_proposals.bypass_default),
+        # The project's own default, else the global one (#2351): where the New session form
+        # would start. False for an agent that can't skip prompts.
+        "bypass_default": await asyncio.to_thread(
+            lambda: ask_proposals.bypass_default(project["id"], engine=agent["id"])
+        ),
         "bypass": None,
         **({"runtime": "api"} if api else {}),
     }

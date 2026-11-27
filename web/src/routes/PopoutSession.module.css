@@ -1,0 +1,13 @@
+/* The pop-out window (`PopoutSession`): the session fills the whole viewport. It keeps the
+ * `.terminal-pane` contract (a bounded flex column whose child fills it, `overflow: hidden` so the
+ * compose bar shrinks the terminal instead of overflowing), but not the shell panel's float: no
+ * margin, no chamfer — the window edge is the frame. */
+main.popout {
+  height: 100vh;
+  height: 100dvh;
+  margin: 0;
+  clip-path: none;
+  border: 0;
+  border-top: 2px solid var(--hud);
+  background: var(--bg-1);
+}

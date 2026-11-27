@@ -12,9 +12,9 @@
  *  means the terminal accepted the text, not that the agent did anything with it.
  *
  *  **Session** (#1443 Phase 3a) — a session Ask proposed to start: the project, the agent and the
- *  brief, verbatim. Permission bypass is a control ON the card, starting from the new-session
- *  form's default; the tap carries what it shows. "Started" means the agent's own store has the
- *  session and it received the brief; anything less proved says so, and nothing is retried.
+ *  brief, verbatim. Permission bypass is a control ON the card, starting from the project's
+ *  default, else the global one (#2351); the tap carries what it shows. "Started" means the
+ *  agent's own store has the session and it received the brief; anything less proved says so, and nothing is retried.
  */
 import { Eye, FolderOpen, Play, Send } from "lucide-react";
 import { openSessionLimit } from "../../lib/sessionLimit";
@@ -399,8 +399,10 @@ export function SessionCard({
   const out = isReplaced(p) ? REPLACED : sessionOutcome(p);
   const edge = out?.tone === "warn" ? c.edgeWarn : out?.tone === "bad" ? c.edgeBad : "";
   const name = p.title || "this project";
-  // #2014: an API session HQ starts always asks before it acts, so its card has no switch.
   const api = p.runtime === "api";
+  // #2351: the switch is offered wherever the agent can skip prompts — every terminal agent, and
+  // an API client whose adapter maps it. One that can't always asks, so its card has no switch.
+  const switchable = p.can_bypass ?? !api;
   const kind = api ? "API session" : p.runtime === "pty" ? "terminal session" : "session";
   // HQ started it itself under the Commander's Authority setting (#2391).
   const byHq = p.decided_by === "hq";
@@ -431,7 +433,7 @@ export function SessionCard({
             <>
               <dt>Session</dt>
               <dd data-testid="ask-session-kind" data-runtime={p.runtime}>
-                {api ? "API session · asks before each request" : "Terminal session"}
+                {api ? (switchable ? "API session" : "API session · asks before each request") : "Terminal session"}
               </dd>
             </>
           ) : null}
@@ -454,10 +456,10 @@ export function SessionCard({
         ) : null}
         {!out ? (
           <>
-            {api ? (
+            {!switchable ? (
               <div className={c.note} data-testid="ask-session-asks">
                 <span>
-                  An API session HQ starts always asks before it runs commands or edits files.
+                  This agent always asks before it runs commands or edits files.
                 </span>
               </div>
             ) : (
@@ -519,7 +521,7 @@ export function SessionCard({
             type="button"
             className={c.cta}
             disabled={deciding || !p.can_start}
-            onClick={() => onStart(api ? false : bypass)}
+            onClick={() => onStart(switchable ? bypass : false)}
             data-testid="ask-session-start"
           >
             <Play size={15} aria-hidden="true" />

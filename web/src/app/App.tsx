@@ -41,6 +41,7 @@ import { WhatsNewCtx } from "../whatsnew/WhatsNewContext";
 import { WhatsNewDialog } from "../whatsnew/WhatsNewDialog";
 import { Settings } from "../routes/Settings";
 import { SessionView } from "../routes/SessionView";
+import { PopoutSession } from "../routes/PopoutSession";
 import { RemoteSessionView } from "../components/federation/RemoteSessionView";
 import { REMOTE_ROUTE } from "../lib/federation";
 import { ButtonGlitch } from "../components/hud/ButtonGlitch";
@@ -118,6 +119,7 @@ import {
   ARTIFACT_REPOS_PATH,
   ARTIFACT_REPO_ROUTE,
   NIGHTJAR_GALLERY_PATH,
+  POPOUT_PATH,
 } from "../lib/routes";
 import { SETTINGS_PATH } from "../routes/settingsTabs";
 import { BrandMark, BrandWordmark } from "../components/brand/Brand";
@@ -1096,6 +1098,24 @@ function MissionIdRedirect() {
   return <Navigate to={{ pathname: MISSION_PATH, search: `?${query}`, hash }} replace />;
 }
 
+/** The pop-out window's root (`/pop/:engine/:id`): the session alone, with the same chunk-error
+ *  and loading boundaries the shell gives its routes (a pane may load a lazy chunk). */
+function PopoutRoute() {
+  return (
+    <ChunkErrorBoundary>
+      <Suspense
+        fallback={
+          <div className={shellStates.state}>
+            <Loader kind="radar" label="Loading…" />
+          </div>
+        }
+      >
+        <PopoutSession />
+      </Suspense>
+    </ChunkErrorBoundary>
+  );
+}
+
 export default function App() {
   // A DATA router, not <BrowserRouter> (#905 P2 review): `useBlocker` — the only way to hold
   // Back/Forward and every in-app link on a dirty editor — needs one. The whole shell hangs off
@@ -1103,7 +1123,12 @@ export default function App() {
   const [router] = useState(() =>
     // #1735: under the relay the app lives at /connect/; the basename keeps every URL there.
     createBrowserRouter(
-      [{ path: "*", element: <Layout /> }],
+      [
+        // A popped-out session (`/pop/:engine/:id`): its own window, beside the shell — never
+        // inside it, so no session list, nav, top bar or footer is drawn around the session.
+        { path: `${POPOUT_PATH}/:engine/:id`, element: <PopoutRoute /> },
+        { path: "*", element: <Layout /> },
+      ],
       APP_BASENAME ? { basename: APP_BASENAME } : undefined,
     ),
   );

@@ -98,6 +98,21 @@ Test-suite policies worth knowing:
   parse/derive/compare path is still exercised and production code is untouched. The fixture
   *asserts the production constant is ≥ 600k before patching*: weakening the real work factor
   fails the whole suite.
+- **Tests and their child processes never reach the real stores** (#1117, #2423). `tests/conftest.py`
+  pins every store path *and* `$HOME` (plus `XDG_CONFIG/DATA/STATE_HOME`) to a per-process
+  sandbox before the app is imported, so a default built from `Path.home()` lands in the
+  sandbox, and so does any child that inherits the environment. An audit hook refuses file
+  operations under the real `~/.config/agent-sessions`, `~/.local/share/agent-sessions` and
+  `~/.agent-sessions`, and also judges every process start (`subprocess.Popen`,
+  `os.posix_spawn`, `os.exec`). It refuses a launch environment with the real `HOME`, an XDG
+  home or a store pin inside a real store, or a dropped pin whose default lands in one, and no
+  `HOME` at all when the program can run the app (an interpreter, a shell, a script beside the
+  interpreter). Relative values are judged where the child runs, and a refusal inside a forked
+  child (`os.spawn*`) still fails the test that forked it. **Build a child's `env=` with
+  `conftest.child_env(**overrides)`**, never by filtering `os.environ` by hand.
+  `child_env(drop=STORE_ENV_PATHS, HOME=tmp_path / "home")` gives a child its own defaults under
+  its own home. A test that really needs the operator's home for a
+  binary should take the binary from `PATH` or a fixture instead.
 - **Markers are strict** (`--strict-markers`): a typo'd `@pytest.mark.…` is a collection error,
   not a silent no-op. Register new markers in `pyproject.toml`.
 - **`deploy_shape` marks the tests `pr-validate`'s wheel pass re-runs** (#704). The app resolves

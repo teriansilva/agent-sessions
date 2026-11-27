@@ -2809,6 +2809,8 @@ def test_two_processes_sending_into_one_session_never_interleave(tmp_path):
     import subprocess
     import sys
 
+    from conftest import STORE_ENV_PATHS, child_env
+
     script = tmp_path / "child.py"
     script.write_text(_CHILD)
     out, go = tmp_path / "writes.log", tmp_path / "go"
@@ -2817,14 +2819,17 @@ def test_two_processes_sending_into_one_session_never_interleave(tmp_path):
 
     def child(tag: str, wait_for: str):
         home = tmp_path / f"home-{tag}"
-        env = {k: v for k, v in os.environ.items() if not k.startswith("AGENT_SESSIONS_")} | {
-            "HOME": str(home),
-            "AGENT_SESSIONS_LOCK_DIR": str(locks),  # SHARED, as across app instances
-            "AGENT_SESSIONS_TEMPLATES": str(home / "templates.json"),
-            "AGENT_SESSIONS_TEMPLATE_VARS": str(home / "vars.json"),
-            "AGENT_SESSIONS_TEMPLATE_SECRETS_KEY": str(home / "secrets.key"),
-            "AGENT_SESSIONS_PREFS": str(home / "prefs.json"),
-        }
+        # Each child its OWN home and stores (every pin dropped, so its defaults resolve under
+        # `home`), and one lock dir SHARED, as across app instances (#2423: via child_env).
+        env = child_env(
+            drop=STORE_ENV_PATHS,
+            HOME=home,
+            AGENT_SESSIONS_LOCK_DIR=locks,
+            AGENT_SESSIONS_TEMPLATES=home / "templates.json",
+            AGENT_SESSIONS_TEMPLATE_VARS=home / "vars.json",
+            AGENT_SESSIONS_TEMPLATE_SECRETS_KEY=home / "secrets.key",
+            AGENT_SESSIONS_PREFS=home / "prefs.json",
+        )
         return subprocess.Popen(
             [sys.executable, str(script), tag, str(out), str(go), wait_for],
             env=env,

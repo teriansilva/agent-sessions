@@ -13,7 +13,7 @@ import time
 import pytest
 
 from agent_sessions import resource_limits, session_capacity, sysinfo
-from conftest import _REAL_HOME, STORE_ENV_PATHS
+from conftest import _REAL_HOME
 
 GIB = 1024**3
 
@@ -27,15 +27,10 @@ def isolated(monkeypatch, tmp_path):
 
 
 def _child_env() -> dict[str, str]:
-    """A child process's environment: the run's own, with every store path the sandbox pinned
-    kept (`conftest.STORE_ENV_PATHS`), so a child can never fall back to the operator's real store.
-    #2422: this helper once kept only the lock dir and prefs; a child's census then resolved the
-    LIVE `automations.db` and migrated it."""
-    keep = {"AGENT_SESSIONS_LOCK_DIR", "AGENT_SESSIONS_PREFS", *STORE_ENV_PATHS}
-    env = {k: v for k, v in os.environ.items() if not k.startswith("AGENT_SESSIONS_") or k in keep}
-    for key in STORE_ENV_PATHS:
-        assert key in env, f"{key} is not pinned for this test"
-    return env
+    # Every pin and the sandbox HOME, so a child resolves the stores this test does (#2423).
+    from conftest import child_env
+
+    return child_env()
 
 
 def limit(monkeypatch, value, *, reserved: int = 0):

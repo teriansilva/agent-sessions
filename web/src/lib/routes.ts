@@ -194,3 +194,6 @@ export const NIGHTJAR_GALLERY_PATH = "/__nightjar";
 export function hqSeedState(text: string, mission?: string) {
   return { hqCompose: true, hqSeed: { text, ...(mission ? { mission } : {}) } };
 }
+
+/** A session popped out into its own window or tab: the session alone, no app shell around it. */
+export const POPOUT_PATH = "/pop";

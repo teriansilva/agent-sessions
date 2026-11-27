@@ -181,6 +181,7 @@ def test_a_real_process_answers_over_stdio_and_refuses_unbound_read_paths(paths)
     """Real production entrypoint: arbitrary file paths alone never mint a broker principal."""
     env = {
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": os.environ["HOME"],  # the session's sandbox, never the passwd home (#2423)
         memory.ENV_READ: str(paths[0]),
         memory.ENV_INBOX: str(paths[1]),
     }

@@ -588,6 +588,13 @@ def test_scope_reaps_a_child_the_inventory_never_saw(tmp_path, monkeypatch):
     assert not _pids_running(sleep, escaped_secs), "the cgroup did not reap the escaped child"
 
 
+def _claude_present(monkeypatch) -> None:
+    # The session `$HOME` is the suite's sandbox (#2423), so the host's `~/.claude` is not there:
+    # presence is given, the gate after it is what these tests pin.
+    claude = H.registry.get("claude")
+    monkeypatch.setattr(H.registry, "present_providers", lambda: [claude])
+
+
 def test_a_real_agent_is_refused_when_no_transient_scope_is_available(monkeypatch):
     """Without a usable scope the harness must not launch a real agent at all.
 
@@ -603,6 +610,7 @@ def test_a_real_agent_is_refused_when_no_transient_scope_is_available(monkeypatc
     measure — never a pass, never a red.
     """
     monkeypatch.setenv(H.OPT_IN_ENV, "1")
+    _claude_present(monkeypatch)
     monkeypatch.setattr(H.scopedspawn, "available", lambda: False)
     ok, reason = H.engine_available("claude")
     assert ok is False
@@ -656,6 +664,7 @@ def test_config_disabled_scopes_are_refused_too(monkeypatch):
     (review on #858).
     """
     monkeypatch.setenv(H.OPT_IN_ENV, "1")
+    _claude_present(monkeypatch)
     monkeypatch.setattr(H.scopedspawn, "available", lambda: True)
     monkeypatch.setattr(H.scopedspawn, "enabled", lambda: False)
     ok, reason = H.engine_available("claude")

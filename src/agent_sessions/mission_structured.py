@@ -29,6 +29,8 @@ No permission bypass on this path (#1613 D8): creates pass `bypass=False`, and #
 guarded work in a session that skips permissions. The one exception is an automation the operator
 approved WITH "skip permission prompts" (#2405): `automation_start` switches its session through
 the operator's own `enable_bypass` path before the brief, under a guard marked `consented_bypass`.
+The other is ATTENDED (#2351): an HQ card the operator confirmed with bypass on, switched the same
+way (`hq_start`), its create and first turn under the attended guard.
 """
 
 from __future__ import annotations
@@ -254,7 +256,8 @@ async def _create_and_brief(
     """The structured create and its ONE guarded first turn, shared by a mission's dispatch and an
     automation's start (#1901). Fills in ``out``'s facts; never raises for a refused effect.
 
-    ``bypass_op`` (#2405, an automation the operator approved to skip permission prompts only):
+    ``bypass_op`` (#2405, an automation the operator approved to skip permission prompts; #2351,
+    an HQ card the operator confirmed with bypass on):
     the session is created guarded as every other, then switched to skip prompts through the
     operator's own path (`runtime.enable_bypass`, which contains the first worker) BEFORE the
     brief, and the brief's turn may relaunch it. A switch that fails sends no brief."""
@@ -293,8 +296,9 @@ async def _create_and_brief(
     out.launched = out.started = True
     if bypass_op is not None:
         try:
-            # The automation's authority, checked in its fence right before the switch: a
-            # revoked or edited automation never leaves a session switched to skip prompts.
+            # The caller's authority, checked in its fence right before the switch: a revoked
+            # or edited automation (or a withdrawn HQ card) never leaves a session switched to
+            # skip prompts.
             await asyncio.to_thread(admission.admit)
         except Exception as exc:  # noqa: BLE001 — a refusal before the switch and the brief
             out.seed_outcome = "not_attempted"
@@ -494,6 +498,14 @@ def hq_ids(proposal_id: str) -> tuple[str, str]:
     )
 
 
+def hq_bypass_op(proposal_id: str) -> str:
+    """The permission-change operation id of one HQ card's confirmed bypass (#2351): derived from
+    the proposal, so a replayed tap is the same change."""
+    if not isinstance(proposal_id, str) or not proposal_id:
+        raise ValueError("an HQ start needs its proposal id")
+    return str(uuid.uuid5(MISSION_NAMESPACE, f"ask-proposal:{proposal_id}:bypass"))
+
+
 async def hq_start(
     *,
     proposal_id: str,
@@ -504,13 +516,17 @@ async def hq_start(
     check: Callable[[], tuple[bool, str]],
     model: str | None = None,
     specialist: tuple[str, int] | None = None,
+    bypass: bool = False,
 ) -> headless_dispatch.Dispatch:
     """The API session an HQ card starts (#2014): one structured create and one guarded first turn,
     the same facts `headless_dispatch.dispatch` returns, so `ask_proposals` settles both alike.
 
     ``check`` is the card's own fenced re-check (scope, project, folder, brief), run INSIDE the
-    write fence at the create AND at the first turn (`session_input.admit_native`). Never
-    permission-bypassed: a skip-permissions create waits for the pane's own Start (#1339).
+    write fence at the create, before a bypass switch, AND at the first turn
+    (`session_input.admit_native`). ``bypass`` (#2351): what the operator confirmed on the card
+    or the call. The create is guarded and never a skip creation; the session is then switched
+    through the operator's own `enable_bypass` path (which contains the first worker) BEFORE the
+    brief, as a consented automation's is (#2405), and the brief's turn relaunches it.
 
     Raises `DispatchError` only when nothing was attempted. A worker left without its first turn
     (a create that never became ready, a first turn refused before any claim) is CONTAINED, as an
@@ -529,6 +545,7 @@ async def hq_start(
         raise headless_dispatch.DispatchError(str(exc.detail)) from None
     try:
         session_id, brief_id = hq_ids(proposal_id)
+        bypass_op = hq_bypass_op(proposal_id) if bypass is True else None
         key = f"{engine}:{session_id}"
         fenced = _fenced(check)
         admission = ExecutionGuard(
@@ -549,6 +566,8 @@ async def hq_start(
         context={"reservation_id": proposal_id},
         model=model,
         specialist=specialist,
+        bypass_op=bypass_op,
+        bypass_actor=f"ask:{proposal_id}",
     )
     if out.launched and not out.briefed and out.seed_outcome in ("not_attempted", "zero_write"):
         from . import runtime_cleanup  # at call time, like `automation_start`

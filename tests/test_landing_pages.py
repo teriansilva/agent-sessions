@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import os
 import pathlib
 import re
 import subprocess
@@ -210,7 +211,7 @@ SWAP = REPO / ".forgejo" / "scripts" / "landing-blog-swap.sh"
 
 
 def _swap(*args):
-    env = {"PATH": "/usr/bin:/bin", "SUDO": ""}
+    env = {"PATH": "/usr/bin:/bin", "SUDO": "", "HOME": os.environ["HOME"]}  # the sandbox (#2423)
     return subprocess.run(
         ["bash", str(SWAP), *map(str, args)], capture_output=True, text=True, env=env
     )

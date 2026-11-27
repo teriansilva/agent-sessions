@@ -162,6 +162,18 @@ relaunches from history. Archive frees resources; it never destroys conversation
 
 Teardown is best-effort and never blocks the archive itself.
 
+## Pop out
+
+**Pop out** in a session's **⋯** menu (on its row in the session list, in its header, or on the
+map) opens the session alone in its own window — no session list, navigation, top bar or footer
+around it. Terminal and API sessions both pop out. On a phone it opens as a new tab.
+
+The pop-out is another view of the same session, like opening it in a second tab: it attaches to
+the running session and never starts a new one, and the main window keeps showing whatever it
+showed. Popping the same session out again brings its window back instead of opening a second
+one. The window is titled with the session's name, so several pop-outs are easy to tell apart.
+Inside a pop-out the menu offers neither **Pop out** nor **To map**.
+
 ## Opening links
 
 A BattleLab link from outside the app — a comment, a chat, a mail — opens in the BattleLab you

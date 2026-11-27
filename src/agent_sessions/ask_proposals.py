@@ -14,11 +14,14 @@ SHOWN; the entry is what a tap launches, so the client can never supply what sta
   names what may have started. The conversation's decide lock is held for the whole launch; a
   ``deciding`` entry whose lock is free is one nobody is still deciding, and it becomes
   ``interrupted`` — never replayed.
-* **Attended, and the bypass is the operator's.** The card's starting value is
-  ``agent_defaults.bypass`` (the new-session form's), never ``unattended_bypass_granted``. The tap
-  carries the value the operator saw; an absent value is ``False``. The default is compared again
-  INSIDE the launch fence, where a change to it commits either before (the card asks again) or
-  after the spawn (``session_input.launch_fence``).
+* **Attended, and the bypass is the operator's.** The card's starting value is the project's
+  own bypass preselection, else ``agent_defaults.bypass`` — the New session form's resolution
+  (#2351) — never ``unattended_bypass_granted``; ``False`` for an agent that can't skip prompts
+  (``can_bypass``). The tap (or a call's spoken confirmation, which says when it skips prompts)
+  carries the value the operator saw; an absent value is ``False``. The resolved default is
+  compared again INSIDE the launch fence, where a change to it commits either before (the card
+  asks again) or after the spawn (``session_input.launch_fence``; a project's under the project
+  store's flock, held across the spawn).
 * **Re-checked before and inside the fence:** session assistance on, the agent still startable,
   the project still the one shown with the same folder, the folder still inside the roots and
   outside the exclusions. Any of those failing is ``stale`` — "out of date", nothing started.
@@ -30,9 +33,12 @@ The launch is ``headless_dispatch.dispatch``, the one launcher every unattended 
 terminal agent. An API client (#2014: ``runtime: "api"``, pinned when the card was shown) starts
 through ``mission_structured.hq_start`` instead: a structured create and the brief as its first
 turn, both under an ATTENDED guard whose fenced check re-reads scope, project, folder and brief,
-with ids derived from the proposal so a replayed tap never makes a second session. It never skips
-permission prompts. The decision runs as a server task so a launch's evidence wait (up to minutes)
-does not hold a request.
+with ids derived from the proposal so a replayed tap never makes a second session. It skips
+permission prompts only when the operator confirmed that (#2351) and its adapter can: the create
+is guarded as every other, then the session is switched through the operator's own
+``enable_bypass`` path before the brief (`mission_structured.hq_start`). The bypass default is
+compared at the create's admission, before any record exists. The decision runs as a server
+task so a launch's evidence wait (up to minutes) does not hold a request.
 """
 
 from __future__ import annotations
@@ -136,12 +142,45 @@ def start_state(engine: str) -> tuple[bool, str]:
     return (True, "") if ok else (False, why or f"{engine} cannot be started right now")
 
 
-def bypass_default() -> bool:
-    """The new-session form's starting value for permission bypass (``agent_defaults.bypass``) —
-    never the unattended grant: an Ask launch is attended, decided on the card."""
-    from . import prefs
+def can_bypass(engine: str) -> bool:
+    """Whether a card for ``engine`` may start it skipping permission prompts: a terminal agent
+    always can; an API client only when its adapter maps skip-permissions (``API_BYPASS_KINDS``,
+    the New session form's ``can_bypass``). Asked of the manifest, never named."""
+    from . import engines, handoff
+    from .plugins import kinds
 
+    prov = engines.get(engine)
+    if prov is None or not handoff.is_api_target(prov):
+        return True
+    m = engines.manifest_of(prov)
+    return m is not None and m.api is not None and m.api.kind in kinds.API_BYPASS_KINDS
+
+
+def bypass_default(project_id: str = "", *, engine: str = "", index: dict | None = None) -> bool:
+    """A card's starting value for permission bypass (#2351): the PROJECT's own preselection
+    (`projects.bypass_preselection`) when it sets one, else ``agent_defaults.bypass`` — the New
+    session form's resolution, so a card starts where that form would. ``False`` for an agent
+    that can't skip prompts (``can_bypass``). Never the unattended grant: an Ask launch is
+    attended, decided on the card or confirmed on a call. ``index``: a project store the caller
+    already holds under its flock (the spawn fence), else it is read fresh. Blocking."""
+    from . import prefs, projects
+
+    if engine and not can_bypass(engine):
+        return False
+    if project_id:
+        try:
+            entity = (projects.load() if index is None else index).get(project_id)
+        except Exception:  # noqa: BLE001 — unreadable: the global default, as the form falls back
+            entity = None
+        own = projects.bypass_preselection(entity) if entity is not None else None
+        if own is not None:
+            return own
     return bool(prefs.get_agent_defaults()["bypass"])
+
+
+def _row_default(row: dict, index: dict | None = None) -> bool:
+    """``bypass_default`` for a stored card, read now."""
+    return bypass_default(str(row.get("project_id") or ""), engine=row["engine"], index=index)
 
 
 def _real(cwd: str) -> str:
@@ -375,6 +414,8 @@ def view(row: dict) -> dict:
         "runtime": "api" if row.get("runtime") == "api" else "pty",
         "bypass_default": bool(row.get("bypass_default")),
         "bypass": row.get("bypass"),
+        # Whether the card offers the bypass switch at all (#2351): the agent can skip prompts.
+        "can_bypass": bool(row.get("bypass_default")) or _can_bypass_safe(row.get("engine")),
         "session_key": row.get("session_key") if state in (STARTED, UNCONFIRMED) else "",
         "reason": row.get("reason") or "",
         "notice": row.get("notice") or "",
@@ -383,6 +424,13 @@ def view(row: dict) -> dict:
         # HQ started it on the Commander's Authority setting (#2391): "Started by HQ".
         **({"decided_by": "hq"} if row.get("decided_by") == "hq" and state != PENDING else {}),
     }
+
+
+def _can_bypass_safe(engine: object) -> bool:
+    try:
+        return isinstance(engine, str) and bool(engine) and can_bypass(engine)
+    except Exception:  # noqa: BLE001 — a roster that can't answer offers no switch
+        return False
 
 
 def views(cid: str) -> tuple[str, dict[str, dict]]:
@@ -556,8 +604,11 @@ async def decide(
             return 200, view(row)
         if decision == "confirm":
             raise ProposalError(422, "a session proposal is started or dismissed")
-        api = row.get("runtime") == "api"
-        if api and bypass and decision == "start":
+        if (
+            bypass
+            and decision == "start"
+            and not await asyncio.to_thread(can_bypass, row["engine"])
+        ):
             raise ProposalError(422, API_NO_BYPASS)
         if decision == "dismiss":
             row = await asyncio.to_thread(
@@ -591,8 +642,8 @@ async def _start_locked(
             _update, cid, pid, state=STALE, reason=why, notice="", settled_at=time.time()
         )
         return 200, view(row or {}), None
-    current = await asyncio.to_thread(bypass_default)
-    if not api and current != row["bypass_default"]:
+    current = await asyncio.to_thread(_row_default, row)
+    if current != row["bypass_default"]:
         if act is not None:
             raise hq_acts.Waits(DEFAULT_CHANGED)
         # Re-confirm: the card shows the new starting value and the operator taps again.
@@ -736,7 +787,11 @@ async def _launch(cid: str, row: dict, fd: int, registry) -> None:
         # under its flock and the brief under the registration fence, both kept until the
         # process exists. Outside it (an engine's preflight probe) they are read fresh.
         why = scope_refusal()
-        if not why and bypass_default() != row["bypass_default"]:
+        if (
+            not why
+            and _row_default(row, held["index"] if held["active"] else None)
+            != row["bypass_default"]
+        ):
             why = DEFAULT_CHANGED
         if not why and held["active"] and held["index"] is None:
             why = PROJECT_BUSY
@@ -807,7 +862,7 @@ async def _launch(cid: str, row: dict, fd: int, registry) -> None:
                 _update, cid, pid, state=PENDING, bypass=None, session_key="", notice=notice
             )
         elif outcome.pop("reconfirm", False):
-            current = await asyncio.to_thread(bypass_default)
+            current = await asyncio.to_thread(_row_default, row)
             await asyncio.to_thread(
                 _update,
                 cid,
@@ -844,7 +899,7 @@ async def _launch_api(cid: str, row: dict, fd: int, registry, act=None) -> None:
 
     pid = row["id"]
     recorded = {"key": ""}
-    fenced = {"why": "", "grant": ""}
+    fenced = {"why": "", "grant": "", "admitted": False}
 
     def on_key(key: str) -> None:
         if _update(cid, pid, session_key=key) is None:
@@ -855,9 +910,19 @@ async def _launch_api(cid: str, row: dict, fd: int, registry, act=None) -> None:
         # INSIDE the write fence (`session_input.admit_native`), at the create AND at the first
         # turn: a withdrawal commits entirely before this read (refused) or after the worker's
         # tokens were issued (refused at its claim). The brief is read under the registration
-        # fence (`_brief_refusal`), as at the tap.
+        # fence (`_brief_refusal`), as at the tap. The bypass default is compared at the
+        # create's admission only (#2351) — the API card's spawn boundary, before any record
+        # exists, so a card that asks again replays nothing. A change after that commits after
+        # the spawn, as on a terminal card: the operator's confirmed value stands.
         why = (
             scope_refusal()
+            or (
+                DEFAULT_CHANGED
+                if act is None
+                and not fenced["admitted"]
+                and _row_default(row) != row["bypass_default"]
+                else ""
+            )
             or _project_refusal(row)
             or _folder_refusal(row)
             or _brief_refusal(row["brief"])
@@ -866,6 +931,7 @@ async def _launch_api(cid: str, row: dict, fd: int, registry, act=None) -> None:
             # The act's grant, at this effect boundary (#2391): authority, logout, call, D4.
             why = fenced["grant"] = act.admits(row)
         fenced["why"] = why
+        fenced["admitted"] = fenced["admitted"] or not why
         return (not why), why
 
     outcome: dict
@@ -891,12 +957,15 @@ async def _launch_api(cid: str, row: dict, fd: int, registry, act=None) -> None:
                 brief=row["brief"],
                 on_key=on_key,
                 check=check,
+                bypass=bool(row["bypass"]),
                 **extra,
             )
         except headless_dispatch.DispatchError as e:
             outcome = {"state": FAILED, "reason": f"{e} — nothing was started"}
         else:
-            if not out.launched and fenced["grant"]:
+            if not out.launched and fenced["why"] == DEFAULT_CHANGED:
+                outcome = {"reconfirm": True}  # the card shows the new starting value
+            elif not out.launched and fenced["grant"]:
                 # The act's grant refused it before the create (#2391): nothing exists, and the
                 # card is the Commander's again.
                 outcome = {"state": PENDING, "reason": fenced["grant"]}
@@ -930,6 +999,21 @@ async def _launch_api(cid: str, row: dict, fd: int, registry, act=None) -> None:
     try:
         outcome.pop("retry", None)
         outcome.pop("notice", None)
+        if outcome.pop("reconfirm", False):
+            # The bypass default changed inside the launch (#2351): nothing ran, and the card
+            # asks again with the new starting value.
+            current = await asyncio.to_thread(_row_default, row)
+            await asyncio.to_thread(
+                _update,
+                cid,
+                pid,
+                state=PENDING,
+                bypass=None,
+                session_key="",
+                bypass_default=current,
+                notice="default_changed",
+            )
+            return
         if outcome.get("state") == PENDING:
             await asyncio.to_thread(_back_to_pending, cid, pid, outcome["reason"])
         else:

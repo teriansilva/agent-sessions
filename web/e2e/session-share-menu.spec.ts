@@ -299,10 +299,11 @@ test("the row ⋯ menu of an API session: the Share group once; Peer… and Publ
   let { menu, trigger } = await openRowMenu(page, TITLE);
   await expect(menu.locator('[data-menu-group="Share"]')).toHaveCount(1);
   const names = await menu.getByRole("menuitem").evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")));
-  // After the primary group (brief, hand off), Public… then Peer….
-  expect(names.slice(0, 4)).toEqual([
+  // After the primary group (brief, hand off, pop out), Public… then Peer….
+  expect(names.slice(0, 5)).toEqual([
     "Open session brief",
     "Hand off session to another engine",
+    "Pop out session into its own window",
     SHARE_PUBLIC,
     SHARE_PEER,
   ]);
