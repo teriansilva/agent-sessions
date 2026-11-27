@@ -107,6 +107,22 @@
   margin: 20px 0;
   max-width: 32rem;
 }
+/* #2422: the session limit and its reservation side by side (the `.fields` grid's shape), one
+   column at <=800px. The section is allowed the width of two fields. */
+.memory.pair {
+  max-width: 44rem;
+}
+.pairFields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+  margin: var(--sp-2) 0 0;
+}
+@media (max-width: 800px) {
+  .pairFields {
+    grid-template-columns: 1fr;
+  }
+}
 .advanced {
   margin: 20px 0;
 }

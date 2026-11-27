@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../../lib/api";
+import { reserveHelp, reserveProblem } from "../../lib/automationQueue";
 import { capacityReason, gib, openSessionLimit } from "../../lib/sessionLimit";
 import type {
   Resources,
@@ -12,6 +13,12 @@ const fields: { key: keyof ResourceValues; label: string; help: string }[] = [
   {
     key: "max_sessions",
     label: "Maximum running sessions",
+    help: "",
+  },
+  {
+    // #2422: slots only an automation may take; its hint is the reservation's consequence.
+    key: "session_reserved_automations",
+    label: "Reserved for automations",
     help: "",
   },
   {
@@ -42,7 +49,10 @@ const draftOf = (values: ResourceValues): Draft => ({
   library_threads: String(values.library_threads),
   api_memory_gib: String(values.api_memory_gib),
   max_sessions: String(values.max_sessions),
+  session_reserved_automations: String(values.session_reserved_automations),
 });
+/** The two session-limit fields, side by side; every other field lives elsewhere on the card. */
+const SESSION_KEYS: (keyof ResourceValues)[] = ["max_sessions", "session_reserved_automations"];
 
 /** What the host offers and what was picked for it: Settings and first-time setup read the same. */
 export function SessionCapacityFactsRow({
@@ -114,15 +124,28 @@ export function ResourceLimits() {
     };
   }, [reload]);
 
-  const valid =
+  const inBounds = (key: keyof ResourceValues) =>
+    !!data &&
+    !!draft &&
+    /^\d+$/.test(draft[key]) &&
+    Number(draft[key]) >= data.settings.bounds[key].min &&
+    Number(draft[key]) <= data.settings.bounds[key].max;
+  // The server refuses a reserve above the limit in force after the save (422) and stays the
+  // authority; this only keeps an obviously refused save from being sent, and says why.
+  const reserveRefusal =
     data &&
     draft &&
-    fields.every(
-      ({ key }) =>
-        /^\d+$/.test(draft[key]) &&
-        Number(draft[key]) >= data.settings.bounds[key].min &&
-        Number(draft[key]) <= data.settings.bounds[key].max,
-    );
+    (edited.max_sessions || edited.session_reserved_automations) &&
+    inBounds("max_sessions") &&
+    inBounds("session_reserved_automations")
+      ? reserveProblem(
+          Number(draft.max_sessions),
+          Number(draft.session_reserved_automations),
+          "session limit",
+        )
+      : "";
+  const valid =
+    data && draft && fields.every(({ key }) => inBounds(key)) && !reserveRefusal;
   async function save() {
     if (!valid || !data || !draft || busy) return;
     setBusy(true);
@@ -164,9 +187,25 @@ export function ResourceLimits() {
     }
   }
 
+  /** The reservation's hint: what it leaves for every other start, from the draft while it is
+   *  a valid pair, else from what is in force. */
+  function reserveHint(): string {
+    if (!data || !draft) return "";
+    const pair =
+      !reserveRefusal &&
+      inBounds("max_sessions") &&
+      inBounds("session_reserved_automations");
+    const max = pair ? Number(draft.max_sessions) : data.settings.values.max_sessions;
+    const reserved = pair
+      ? Number(draft.session_reserved_automations)
+      : (data.settings.reserved_effective ?? data.settings.values.session_reserved_automations);
+    return `${reserveHelp(max, reserved, "sessions")} At least 1.`;
+  }
+
   function renderField(field: (typeof fields)[number]) {
     if (!data || !draft) return null;
     const { key, label, help } = field;
+    const reserve = key === "session_reserved_automations";
     return (
       <label key={key}>
         <span>{label}</span>
@@ -179,20 +218,25 @@ export function ResourceLimits() {
           required
           value={draft[key]}
           disabled={busy}
+          aria-invalid={reserve && reserveRefusal ? true : undefined}
           onChange={(event) => {
             setDraft({ ...draft, [key]: event.target.value });
             setEdited((previous) => ({ ...previous, [key]: true }));
             setMessage("");
           }}
         />
-        <small>
-          {help}
-          {help ? " " : ""}Recommended
-          {key === "max_sessions" ? " for this system" : ""}:{" "}
-          {data.settings.recommended[key].toLocaleString()}. Range:{" "}
-          {data.settings.bounds[key].min.toLocaleString()}–
-          {data.settings.bounds[key].max.toLocaleString()}.
-        </small>
+        {reserve ? (
+          <small data-testid="session-reserve-help">{reserveHint()}</small>
+        ) : (
+          <small>
+            {help}
+            {help ? " " : ""}Recommended
+            {key === "max_sessions" ? " for this system" : ""}:{" "}
+            {data.settings.recommended[key].toLocaleString()}. Range:{" "}
+            {data.settings.bounds[key].min.toLocaleString()}–
+            {data.settings.bounds[key].max.toLocaleString()}.
+          </small>
+        )}
       </label>
     );
   }
@@ -223,7 +267,10 @@ export function ResourceLimits() {
               void save();
             }}
           >
-            <div className={styles.memory} data-testid="session-limit-card">
+            <div
+              className={`${styles.memory} ${styles.pair}`}
+              data-testid="session-limit-card"
+            >
               <h3>
                 Session limit
                 {data.settings.running !== null && (
@@ -233,8 +280,9 @@ export function ResourceLimits() {
               <p className={styles.hint}>
                 How many agent sessions can run at once. Subagents inside a
                 session don't count. At the limit, new sessions and missions are
-                refused until one is archived or ends, or you raise the limit.
-                Nothing running is ever stopped.
+                refused until one is archived or ends, or you raise the limit;
+                an automation step waits in a queue for the next free slot
+                instead. Nothing running is ever stopped.
               </p>
               <SessionCapacityFactsRow
                 capacity={data.settings.capacity}
@@ -243,9 +291,20 @@ export function ResourceLimits() {
               <p className={styles.hint}>
                 {capacityReason(data.settings.capacity)}
               </p>
-              {fields
-                .filter(({ key }) => key === "max_sessions")
-                .map(renderField)}
+              <div className={styles.pairFields}>
+                {fields
+                  .filter(({ key }) => SESSION_KEYS.includes(key))
+                  .map(renderField)}
+              </div>
+              {reserveRefusal && (
+                <p
+                  className={styles.notice}
+                  role="alert"
+                  data-testid="session-reserve-refusal"
+                >
+                  {reserveRefusal}
+                </p>
+              )}
               {Number(draft.max_sessions) >
                 data.settings.recommended.max_sessions && (
                 <p className={styles.notice}>
@@ -288,7 +347,7 @@ export function ResourceLimits() {
                 {fields
                   .filter(
                     ({ key }) =>
-                      key !== "api_memory_gib" && key !== "max_sessions",
+                      key !== "api_memory_gib" && !SESSION_KEYS.includes(key),
                   )
                   .map(renderField)}
               </div>
@@ -371,6 +430,7 @@ export function ResourceLimits() {
                     library_threads: true,
                     api_memory_gib: true,
                     max_sessions: true,
+                    session_reserved_automations: true,
                   });
                   setMessage(
                     "Recommended values selected. Save to apply them to new launches.",

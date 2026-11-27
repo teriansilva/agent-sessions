@@ -123,12 +123,16 @@ class NativeError(Exception):
         inventory: dict | None = None,
         *,
         remedy: str | None = None,
+        capacity: str | None = None,
     ):
         super().__init__(detail)
         self.status = status
         self.detail = detail
         # A closed refusal reason the pane acts on (#1644, `native_ipc.SEND_NOW_REFUSALS`).
         self.reason = reason
+        # A launch limit refused it BEFORE anything was created (#2422): `session_limit`, `pool`
+        # or `specialist`. Typed so the automation queue never reads the words.
+        self.capacity = capacity
         # The action this refusal names (#1725, `native_ipc.REMEDIES`), for the pane's button.
         self.remedy = remedy
         # A refused Stop (#1724): the background work running now, for the pane to confirm.
@@ -566,7 +570,7 @@ def _specialist_claim(record: dict, adapter: str):
             record["session_key"], specialist, record.get("specialist_slot")
         )
     except specialist_launch.Refused as exc:
-        raise NativeError(409, exc.detail) from None
+        raise NativeError(409, exc.detail, capacity=exc.capacity) from None
     if claim.bundle is not None and not kinds.API_MCP_KINDS.get(adapter):
         specialist_launch.abandon(claim)
         raise NativeError(422, "this agent cannot load skills")
@@ -1217,8 +1221,14 @@ def _create_admitted(
     record_launch: bool = False,
     specialist: tuple[str, int] | None = None,
     shelf_mission: str | None = None,
+    hold=None,
 ) -> str | None:
     """The worker id of a new launch (a generation to await), or None when nothing launched.
+
+    ``hold`` (#2422, the automation queue's `automation_queue.LaunchHold`): the session-limit slot
+    and specialist slot an automation step already holds for THIS session, taken before anything
+    was created. The launch uses exactly those (`take_session` / `take_claim`) instead of taking
+    new ones; what it does not take stays the hold's, which its owner releases.
 
     ``record_launch`` (#1505, the HTTP route only): the caller returns at launch, so the new
     generation's launch view (`starting`) is written in the same locked section that launched it,
@@ -1263,7 +1273,9 @@ def _create_admitted(
         # another (or none) conflicts, and every generation re-reserves THIS version.
         request["specialist"] = {"id": specialist[0], "version": specialist[1]}
     root = _journal_root(prov)
-    with native_state.session_lock(session_id):
+    # A specialist slot taken for a NEW record (#2422) is given back if anything refuses or fails
+    # before its first generation takes it over.
+    with _claim_guard() as pre, native_state.session_lock(session_id):
         launchtiming.mark("lock")
         record = native_state.read_session(session_id)
         if record is not None:
@@ -1317,7 +1329,17 @@ def _create_admitted(
                     raise NativeError(409, "the model check changed under this create; try again")
             # The session limit, before anything is written, and held through the launch: a refused
             # create leaves no row behind, and no launch can take the slot in between (#1819).
-            slots.append(_admit_session(session_key))
+            held_slot = hold.take_session() if hold is not None else None
+            slots.append(held_slot if held_slot is not None else _admit_session(session_key))
+            if specialist is not None and not bypass:
+                # The specialist's slot too, BEFORE the record (#2422): a full pool or specialist
+                # refuses with nothing written, so a refused start leaves no empty session in the
+                # list. A skip creation launches nothing here, so it reserves nothing yet.
+                pre["claim"] = hold.take_claim() if hold is not None else None
+                if pre["claim"] is None:
+                    pre["claim"] = _specialist_claim(
+                        {"request": request, "session_key": session_key}, adapter
+                    )
             record = {
                 "version": 1,
                 "session_key": session_key,
@@ -1353,8 +1375,9 @@ def _create_admitted(
             # A skip creation reserves and launches NOTHING from create — not the first call, not
             # a replay, not after an interrupted start (Hermes 5908): only `start` does (#1339).
             return None
+        claim, pre["claim"] = pre["claim"], None  # handed over: the launch settles it now
         worker_id = _reserve_and_launch_locked(
-            session_id, record, prov, binding, shelf_mission=shelf_mission
+            session_id, record, prov, binding, shelf_mission=shelf_mission, claim=claim
         )
         if record_launch:
             # Same lock, same write sequence as the launch: the route's caller sees `starting`
@@ -1362,6 +1385,21 @@ def _create_admitted(
             _write_launch(record, worker_id, STARTING)
             native_state.write_session(session_id, record)
         return worker_id
+
+
+@contextlib.contextmanager
+def _claim_guard():
+    """``{"claim": None}`` for a specialist slot a create takes before its record (#2422): on any
+    exception before the launch takes it over (``claim`` set back to None), it is released."""
+    box: dict = {"claim": None}
+    try:
+        yield box
+    except BaseException:
+        if box["claim"] is not None:
+            from . import specialist_launch
+
+            specialist_launch.abandon(box["claim"])
+        raise
 
 
 def _reserve_and_launch_locked(
@@ -1372,20 +1410,36 @@ def _reserve_and_launch_locked(
     *,
     mode: str = "create",
     shelf_mission: str | None = None,
+    claim=None,
 ) -> str:
     """Commit ownership and launch the FIRST generation of a creation (or a retried skip start's
-    successor). Caller holds the lock."""
-    with _session_slot(record["session_key"]):
+    successor). Caller holds the lock. ``claim``: a specialist slot the caller already took for
+    this session (#2422); from here it is this launch's to settle, refused or not."""
+    from . import specialist_launch
+
+    try:
+        slot = _admit_session(record["session_key"])
+    except BaseException:
+        specialist_launch.abandon(claim)
+        raise
+    try:
         return _reserve_and_launch_admitted(
-            session_id, record, prov, binding, mode=mode, shelf_mission=shelf_mission
+            session_id, record, prov, binding, mode=mode, shelf_mission=shelf_mission, claim=claim
         )
+    finally:
+        slot.release()
 
 
 def _admit_session(session_key: str) -> session_capacity.Reservation:
     try:
         return session_capacity.admit(session_key)
     except session_capacity.SessionLimitReached as exc:
-        raise NativeError(429, str(exc), reason=session_capacity.SESSION_LIMIT) from None
+        raise NativeError(
+            429,
+            str(exc),
+            reason=session_capacity.SESSION_LIMIT,
+            capacity=session_capacity.SESSION_LIMIT,
+        ) from None
 
 
 @contextlib.contextmanager
@@ -1407,21 +1461,28 @@ def _reserve_and_launch_admitted(
     *,
     mode: str = "create",
     shelf_mission: str | None = None,
+    claim=None,
 ) -> str:
     from . import specialist_launch
     from .engines import registry
 
     session_key = record["session_key"]
-    source = native_ownership.source_identity(binding.source)
-    if source is None:
-        raise NativeError(409, "the native source has no recognised history store")
-    # The account (#2169) before the specialist slot and the ownership reservation: a refusal
-    # leaves no pending creation that would refuse the source's console launches. Resolved once
-    # and handed to the generation.
-    account = _account(binding, session_key, new=False)
-    # A specialist's slot first (#1693 S4b): a refusal (at capacity, archived) must leave no
-    # pending ownership behind — an unresolved creation refuses the source's console launches.
-    claim = _specialist_claim(record, record["adapter"])
+    try:
+        source = native_ownership.source_identity(binding.source)
+        if source is None:
+            raise NativeError(409, "the native source has no recognised history store")
+        # The account (#2169) before the ownership reservation: a refusal leaves no pending
+        # creation that would refuse the source's console launches. Resolved once and handed to
+        # the generation.
+        account = _account(binding, session_key, new=False)
+        # A specialist's slot first (#1693 S4b): a refusal (at capacity, archived) must leave no
+        # pending ownership behind — an unresolved creation refuses the source's console launches.
+        # A create took it already, before its record (#2422): that one is used.
+        if claim is None:
+            claim = _specialist_claim(record, record["adapter"])
+    except BaseException:
+        specialist_launch.abandon(claim)
+        raise
     try:
         with storage.locked("launch", wait=30):
             launchtiming.mark("launch_lock")
@@ -1470,6 +1531,7 @@ async def create(
     wait_ready: bool = True,
     specialist: tuple[str, int] | None = None,
     shelf_mission: str | None = None,
+    hold=None,
 ) -> str:
     """Create (or replay) one API session. ``wait_ready=True`` (every internal caller) returns
     once the worker reports ready, as it always has. ``wait_ready=False`` (#1505, the HTTP route
@@ -1504,6 +1566,7 @@ async def create(
         record_launch=not wait_ready,
         specialist=specialist,
         shelf_mission=shelf_mission,
+        hold=hold,
     )
     try:
         try:

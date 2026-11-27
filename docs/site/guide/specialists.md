@@ -86,6 +86,12 @@ Each specialist has a capacity: how many of its sessions may run at once. The wh
 limit too, set on **Library → Specialists** (6 by default). Lowering either never stops what is
 already running: the card shows **over capacity**, and new sessions wait until some end.
 
+**Reserved for automations**, beside the pool limit (at least 1, default 1), keeps that many pool
+slots for automation steps: other starts can use the rest, an automation step any free slot. When
+an automation step finds its specialist or the pool full, it waits in the
+[automation queue](automations.md#the-automation-queue) and starts when a slot frees, instead of
+failing.
+
 ## Start a session from one
 
 On **New session**, pick a specialist under **Start from a specialist**. Its agent, model and

@@ -4,6 +4,8 @@ export type ResourceValues = {
   library_threads: number;
   api_memory_gib: number;
   max_sessions: number;
+  /** #2422: session slots only an automation may take; the rest is for every start. */
+  session_reserved_automations: number;
 };
 /** What the host offers and what the recommendation made of it (#1819). A null was unreadable. */
 export type SessionCapacityFacts = {
@@ -44,6 +46,8 @@ export type ResourceSettings = {
   running: number | null;
   library_overrides: { name: string; value: string }[];
   notice: string | null;
+  /** #2422: `min(session_reserved_automations, max_sessions)` in force. */
+  reserved_effective?: number;
 };
 export type ResourceCounter = {
   group: string;

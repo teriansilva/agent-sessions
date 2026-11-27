@@ -290,10 +290,11 @@ def test_status_shows_a_restart_and_a_reconnect():
 # ---- the app side --------------------------------------------------------------------------------
 
 
-def test_a_fresh_store_is_at_v4_with_the_relay_columns():
+def test_a_fresh_store_has_the_relay_columns():
     webhooks.list_all()
     with store._read() as con:
-        assert con.execute("PRAGMA user_version").fetchone()[0] == 4
+        # v4 added them (#2221 P1b); later versions keep them (v5: the automation queue, #2422).
+        assert con.execute("PRAGMA user_version").fetchone()[0] == store.SCHEMA_VERSION >= 4
         cols = {r[1] for r in con.execute("PRAGMA table_info(webhooks)")}
     assert {"relay_public_id", "relay_url"} <= cols
 

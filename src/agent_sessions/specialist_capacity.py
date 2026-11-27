@@ -4,6 +4,13 @@ that hold them.
 * **The pool limit** is the ``pool_max_instances`` pref (1…32, default 6): how many specialist
   instances may run at once, across the whole pool. `specialists_store.reserve` checks it in the
   same transaction as the specialist's own capacity.
+* **Reserved for automations (#2422)** is the ``pool_reserved_automations`` pref (1…32, never
+  above the pool limit at save, default 1). Effective ``min(reserved, limit)``. An automation
+  step may take any free slot; any other start only while ``other-active < limit − reserved``,
+  and every start only while ``total < limit``. Checked in `reserve`'s own transaction against
+  the origin each row records. Lowering the limit or raising the reserve stops nothing.
+* **A release wakes the automation queue** (`automation_queue.wake`, coalesced): a queued step
+  waiting for this pool starts without waiting for the next tick.
 * **A reservation is released only when its session is proven dead**, asked per session kind:
   a terminal session through the single-writer ``flock`` its dtach master holds (handed over with
   ``pass_fds``, so it outlives an app restart): held → live, acquired by the probe → dead; an API
@@ -81,6 +88,53 @@ def set_max_instances(raw: int) -> int:
     return prefs.mutate_block(POOL_KEY, lambda _old: raw)
 
 
+RESERVED_KEY = "pool_reserved_automations"
+DEFAULT_RESERVED = 1
+
+
+def reserved_automations() -> int:
+    """The stored reserve (default 1). The reserve in force is `reserved_effective`."""
+    raw = prefs.read_block(RESERVED_KEY)
+    return raw if _valid(raw) else DEFAULT_RESERVED
+
+
+def reserved_effective(limit: int | None = None) -> int:
+    """``min(reserved, limit)``: a limit lowered below the reserve reserves the whole pool."""
+    return min(reserved_automations(), max_instances() if limit is None else limit)
+
+
+def validate_reserved(raw: object, limit: int) -> str | None:
+    if not _valid(raw):
+        return (
+            f"{RESERVED_KEY} must be a whole number from {MIN_MAX_INSTANCES} to "
+            f"{MAX_MAX_INSTANCES}"
+        )
+    if raw > limit:
+        return f"{RESERVED_KEY} can't be more than the pool limit ({limit})"
+    return None
+
+
+def set_limits(*, limit: object = None, reserved: object = None) -> dict:
+    """Save the pool limit and/or its reserve, each validated against the OTHER as it will be
+    after this save: a reserve above the limit is refused (a limit lowered below a stored reserve
+    is allowed — the reserve in force is then the whole pool). Raises `ValueError`."""
+    new_limit = max_instances() if limit is None else limit
+    if limit is not None:
+        err = validate_max_instances(limit)
+        if err is not None:
+            raise ValueError(err)
+    if reserved is not None:
+        err = validate_reserved(reserved, new_limit)  # type: ignore[arg-type]
+        if err is not None:
+            raise ValueError(err)
+    out: dict = {}
+    if limit is not None:
+        out[POOL_KEY] = prefs.mutate_block(POOL_KEY, lambda _old: limit)
+    if reserved is not None:
+        out[RESERVED_KEY] = prefs.mutate_block(RESERVED_KEY, lambda _old: reserved)
+    return out
+
+
 # ---- liveness, per session kind -----------------------------------------------------------------
 
 
@@ -138,14 +192,23 @@ def _drop_bundle(reservation_id: str) -> None:
     grants.after_release(reservation_id)
 
 
-def release(reservation_id: str, *, owner: str) -> bool:
+def release(reservation_id: str, *, owner: str, wake: bool = True) -> bool:
     """A failed launch releases the slot it created, with its skill bundle. ``owner``: the token
     `reserve` gave it — an attempt that got an existing reservation has none, and releases
     nothing."""
     released = store.release(reservation_id, owner=owner)
     if released:
         _drop_bundle(reservation_id)
+        if wake:
+            _wake()
     return released
+
+
+def _wake() -> None:
+    """A slot came free: the automation queue may start a waiting step now (coalesced)."""
+    from . import automation_queue
+
+    automation_queue.wake()
 
 
 def release_held(reservation_id: str, *, seen_rev: int) -> bool:
@@ -154,6 +217,7 @@ def release_held(reservation_id: str, *, seen_rev: int) -> bool:
     released = store.release_held(reservation_id, seen_rev=seen_rev)
     if released:
         _drop_bundle(reservation_id)
+        _wake()
     return released
 
 
@@ -217,6 +281,7 @@ async def _settle(r: dict, ts: float, counts: dict) -> None:
         if await asyncio.to_thread(store.reclaim, rid, seen_rev=rev):
             await asyncio.to_thread(_drop_bundle, rid)
             counts["released"] += 1
+            _wake()
     elif verdict == LIVE:
         await asyncio.to_thread(store.mark_live, rid, seen_rev=rev)
         counts["live"] += 1

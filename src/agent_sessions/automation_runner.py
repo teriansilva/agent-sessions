@@ -49,9 +49,8 @@ import uuid
 from functools import partial
 
 from . import automation_effect_lock as effect_lock
-from . import automations as model
-from . import automations_store as store
 from . import (
+    automation_queue,
     engines,
     fsbrowse,
     handoff,
@@ -66,6 +65,8 @@ from . import (
     template_send,
     template_vars,
 )
+from . import automations as model
+from . import automations_store as store
 from . import templates as tstore
 from .plugins import kinds
 
@@ -606,64 +607,139 @@ async def _start_session(run: dict, config: dict, pins: dict, *, registry) -> tu
             if not structured or spec.get("engine") != action["engine"]:
                 return "refused", SPECIALIST_API_ONLY
 
-        def on_key(key: str) -> None:
-            # BEFORE anything is spawned: a record naming a session that never came to be is
-            # honest, one missing a session that did is not.
-            store.link(rid, session_key=key)
-
-        def authorize(_epoch) -> str | None:
-            # INSIDE the launch fence, immediately before the spawn: still authorized, and the
-            # approved directory is still exactly itself and inside the boundary. The launch uses
-            # the pinned REAL path, so a repointed symlink cannot redirect it.
-            ok, why = _still_authorized(run)
-            if not ok:
-                return why
-            moved = _real_still_pinned(pinned)
-            if moved:
-                return moved
-            if spec is not None:
-                # The specialist as it is NOW, not as admitted (#2222 review): an edit, archive
-                # or delete between the drift check and this launch refuses it, so a version the
-                # operator never approved never starts.
-                drift = _specialist_still_pinned(action, spec)
-                if drift:
-                    return drift
-            ok, why = folder_ok(real)
-            return None if ok else why
-
-        def fenced() -> tuple[bool, str]:
-            why = authorize(None)
-            return why is None, why or ""
-
+        # THE AUTOMATION QUEUE'S GATE (#2422), the last thing before anything is created: hold
+        # every launch slot this step needs (origin automation), or wait in the queue. A run the
+        # drain started brings the slots it already holds; a new one never jumps a waiter.
+        from_queue = rid in _FROM_QUEUE
+        hold = _FROM_QUEUE.pop(rid, None)
+        if hold is None:
+            if not from_queue and await asyncio.to_thread(store.queue_waiting, run):
+                return await asyncio.to_thread(_queue_behind, rid)
+            try:
+                got = await automation_queue.acquire(run)
+            except specialist_launch_refused() as e:
+                return "refused", f"the specialist can't be used: {e.detail}"
+            if isinstance(got, automation_queue.Blocked):
+                return _queue(rid, got.capacity, got.detail)
+            hold = got
         try:
-            if structured:
-                # AN API CLIENT STARTS STRUCTURED (#1901): one create and one guarded first turn,
-                # ids derived from this run. Bypassed only when the stored, consented action
-                # asks for it (#2405) and the client can skip prompts (`client_settings_state`).
-                out = await _structured().automation_start(
-                    binding=binding(run),
-                    run_id=rid,
-                    engine=action["engine"],
-                    cwd=real,
-                    brief=text,
-                    on_key=on_key,
-                    check=fenced,
-                    # The STORED, consented action's choice (#2405), never a delivery's.
-                    bypass=action.get("bypass") is True,
-                    **(_specialist_launch(spec) if spec is not None else {}),
-                )
-            else:
-                out = await headless_dispatch.dispatch(
-                    engine=action["engine"],
-                    cwd=real,
-                    brief=text,
-                    registry=registry,
-                    bypass=bool(action["bypass"]),
-                    on_key=on_key,
-                    authorize=authorize,
-                )
-        except headless_dispatch.DispatchError as e:
-            return "refused", str(e)
+            return await _start_held(
+                run, rid, action, real, pinned, text, structured, spec, hold, registry=registry
+            )
+        finally:
+            hold.release()
+
+
+def specialist_launch_refused() -> type[Exception]:
+    from . import specialist_launch
+
+    return specialist_launch.Refused
+
+
+#: A run the queue's drain started, with the launch slots it already holds (#2422). Popped by
+#: `_start_session`; anything left when the run ends is released by `execute`.
+_FROM_QUEUE: dict[str, automation_queue.LaunchHold | None] = {}
+#: A run whose launch a limit refused before anything existed: ``{run_id: (capacity, detail)}``.
+_QUEUED: dict[str, tuple[str, str]] = {}
+#: The launch limits a typed refusal may name (the queue's `capacity`).
+LAUNCH_CAPACITIES = frozenset({"session_limit", "pool", "specialist"})
+
+
+def _queue(rid: str, capacity: str, detail: str) -> tuple[str, str]:
+    _QUEUED[rid] = (capacity, detail)
+    return "queued", detail
+
+
+def _queue_behind(rid: str) -> tuple[str, str]:
+    """Older runs already wait: this run queues BEHIND them, so it never takes a slot an older
+    waiter is owed (#2422 rule 4). The drain, woken at once, decides in line order."""
+    head = store.queued_page(None, 1)
+    capacity = (head[0].get("queue_capacity") if head else "") or "session_limit"
+    if capacity == "concurrency":
+        capacity = "session_limit"
+    return _queue(rid, capacity, "waiting behind earlier steps in the automation queue")
+
+
+async def _start_held(
+    run: dict,
+    rid: str,
+    action: dict,
+    real: str,
+    pinned: dict,
+    text: str,
+    structured: bool,
+    spec: dict | None,
+    hold: automation_queue.LaunchHold,
+    *,
+    registry,
+) -> tuple[str, str]:
+    """`_start_session` from the moment its launch slots are held: the create uses exactly
+    those, and a launch a limit still refused before anything existed goes back to the queue."""
+
+    def on_key(key: str) -> None:
+        # BEFORE anything is spawned: a record naming a session that never came to be is
+        # honest, one missing a session that did is not.
+        store.link(rid, session_key=key)
+
+    def authorize(_epoch) -> str | None:
+        # INSIDE the launch fence, immediately before the spawn: still authorized, and the
+        # approved directory is still exactly itself and inside the boundary. The launch uses
+        # the pinned REAL path, so a repointed symlink cannot redirect it.
+        ok, why = _still_authorized(run)
+        if not ok:
+            return why
+        moved = _real_still_pinned(pinned)
+        if moved:
+            return moved
+        if spec is not None:
+            # The specialist as it is NOW, not as admitted (#2222 review): an edit, archive
+            # or delete between the drift check and this launch refuses it, so a version the
+            # operator never approved never starts.
+            drift = _specialist_still_pinned(action, spec)
+            if drift:
+                return drift
+        ok, why = folder_ok(real)
+        return None if ok else why
+
+    def fenced() -> tuple[bool, str]:
+        why = authorize(None)
+        return why is None, why or ""
+
+    try:
+        if structured:
+            # AN API CLIENT STARTS STRUCTURED (#1901): one create and one guarded first turn,
+            # ids derived from this run. Bypassed only when the stored, consented action
+            # asks for it (#2405) and the client can skip prompts (`client_settings_state`).
+            out = await _structured().automation_start(
+                binding=binding(run),
+                run_id=rid,
+                engine=action["engine"],
+                cwd=real,
+                brief=text,
+                on_key=on_key,
+                check=fenced,
+                # The STORED, consented action's choice (#2405), never a delivery's.
+                bypass=action.get("bypass") is True,
+                hold=hold,
+                **(_specialist_launch(spec) if spec is not None else {}),
+            )
+        else:
+            out = await headless_dispatch.dispatch(
+                engine=action["engine"],
+                cwd=real,
+                brief=text,
+                registry=registry,
+                bypass=bool(action["bypass"]),
+                on_key=on_key,
+                authorize=authorize,
+                capacity_hold=hold.take_session(),
+            )
+    except headless_dispatch.DispatchError as e:
+        return "refused", str(e)
+    if not out.launched and out.capacity in LAUNCH_CAPACITIES:
+        # A launch limit refused it BEFORE anything was created (typed, never read from the
+        # words): back to the queue, never a failure (#2422 rule 2).
+        return _queue(rid, out.capacity, out.reason or "a launch limit is full")
     if out.ok:
         _delivered(rid, "ok", "session started and briefed")
     for fact in ("launched", "started", "briefed"):
@@ -1087,11 +1163,16 @@ def with_delivered(config: dict, run: dict) -> dict:
 
 
 async def execute(run: dict, *, registry) -> dict:
-    """Run a claimed ``dispatching`` run to an outcome. Never raises for an ordinary failure."""
+    """Run a claimed ``dispatching`` run to an outcome. Never raises for an ordinary failure.
+
+    A run whose launch a limit refused before anything was created goes back to the automation
+    queue (``queued``, #2422): not an outcome, nothing counted, nothing announced."""
     rid = run["id"]
     try:
         outcome, reason = await _execute(run, registry=registry)
     except asyncio.CancelledError:
+        _release_left(rid)
+        _QUEUED.pop(rid, None)
         # Shutdown reached a run mid-effect: whatever it started keeps running on its own, and the
         # record says honestly that the outcome is unknown. Never retried.
         done = _DELIVERED.pop(rid, None)
@@ -1111,6 +1192,10 @@ async def execute(run: dict, *, registry) -> dict:
         else:
             log.warning("automation run %s failed", rid, exc_info=True)
             outcome, reason = "failed", f"the run failed ({type(e).__name__})"
+    _release_left(rid)
+    waiting = _QUEUED.pop(rid, None)
+    if outcome == "queued":
+        return await _back_to_queue(run, *(waiting or ("session_limit", reason)))
     if outcome in ("refused", "failed") and rid not in _DELIVERED and rid not in _FLAGGED:
         # THE OPERATOR STOPPED IT: a refusal caused by their own disable/pause/edit is `stopped`,
         # never a failure that counts toward pausing or raises "Automation failed".
@@ -1123,7 +1208,41 @@ async def execute(run: dict, *, registry) -> dict:
     res = await finish(rid, outcome, reason)
     if res is not None:
         await asyncio.to_thread(notify, res)
+    # A run that ends frees its automation's `max_concurrent` (and maybe a launch slot): a step
+    # waiting for either may start now.
+    automation_queue.wake()
     return res or {"run": {"id": rid, "outcome": outcome, "reason": reason}}
+
+
+def _release_left(rid: str) -> None:
+    """Launch slots a dequeued run still holds once it ends (it stopped before its launch)."""
+    hold = _FROM_QUEUE.pop(rid, None)
+    if hold is not None:
+        hold.release()
+
+
+async def _back_to_queue(run: dict, capacity: str, detail: str) -> dict:
+    """``dispatching`` → ``queued`` (#2422), retried like an outcome: a store that refuses now
+    is asked again each tick, so the run never stays `dispatching` under a live owner."""
+    rid = run["id"]
+    for delay in (*FINISH_BACKOFF_S, None):
+        try:
+            await asyncio.to_thread(store.requeue, rid, capacity, detail)
+        except Exception:  # noqa: BLE001 — retried, then parked for the next tick
+            if delay is None:
+                log.warning("automation run %s: not queued yet", rid, exc_info=True)
+                _UNQUEUED[rid] = (capacity, detail)
+                break
+            await asyncio.sleep(delay)
+            continue
+        break
+    automation_queue.queued()
+    automation_queue.wake()
+    return {"run": {"id": rid, "state": "queued", "outcome": "", "reason": detail}}
+
+
+#: Runs to put back in the queue whose write the store refused: ``{run_id: (capacity, detail)}``.
+_UNQUEUED: dict[str, tuple[str, str]] = {}
 
 
 #: Retry schedule for recording an outcome (a busy or locked store is transient).
@@ -1154,6 +1273,13 @@ async def finish(rid: str, outcome: str, reason: str) -> dict | None:
 
 
 async def retry_unsettled() -> None:
+    for rid, (capacity, detail) in list(_UNQUEUED.items()):
+        try:
+            await asyncio.to_thread(store.requeue, rid, capacity, detail)
+        except Exception:  # noqa: BLE001 — next tick
+            log.debug("automation run %s: still not queued", rid, exc_info=True)
+            continue
+        _UNQUEUED.pop(rid, None)
     for rid, (outcome, reason) in list(_UNSETTLED.items()):
         try:
             res = await asyncio.to_thread(store.finish_run, rid, outcome, reason)
@@ -1166,7 +1292,14 @@ async def retry_unsettled() -> None:
         await asyncio.to_thread(notify, res)
 
 
-def spawn(run: dict, *, registry) -> asyncio.Task:
+_NOT_FROM_QUEUE = object()
+
+
+def spawn(run: dict, *, registry, hold=_NOT_FROM_QUEUE) -> asyncio.Task:
+    """Start ``run``. ``hold``: the queue's drain started it (#2422), with the launch slots it
+    already holds (None when its gate could not be asked; the run asks again)."""
+    if hold is not _NOT_FROM_QUEUE:
+        _FROM_QUEUE[run["id"]] = hold
     task = asyncio.get_running_loop().create_task(
         execute(run, registry=registry), name=f"automation-run:{run['id']}"
     )
@@ -1329,6 +1462,29 @@ def notify(result: dict) -> None:
         else:
             notifications.dismiss_for_action(key)
     except Exception:  # noqa: BLE001 — the run is recorded; the bell must not undo that
+        log.warning("automation notification for %s failed", key, exc_info=True)
+
+
+def announce_no_slot(group: dict) -> None:
+    """ONE bell row per automation and "no free slot" episode (#2422 rule 7): its queued steps
+    waited `QUEUE_MAX_WAIT_S` and failed. Not a failure episode: it pauses nothing."""
+    name = group.get("name") or "automation"
+    n = len(group.get("runs") or [])
+    key = group["episode"]
+    try:
+        _announce(
+            f"Automation waited too long: {name}",
+            f"{n} step{'s' if n != 1 else ''} found no free slot for 6 h and failed; "
+            "the automation keeps running",
+            key,
+            dispatch_tag=key,
+            facts={
+                "class": hq_dispatch.CLASS_AUTOMATION,
+                "automation": str(name),
+                "outcome": "failed",
+            },
+        )
+    except Exception:  # noqa: BLE001 — the runs are recorded; the bell must not undo that
         log.warning("automation notification for %s failed", key, exc_info=True)
 
 

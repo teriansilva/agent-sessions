@@ -59,6 +59,10 @@ export interface SpecialistList {
   /** `pool.max_instances` and how many instances hold a reservation now (S4; absent before). */
   max_instances?: number;
   live_total?: number;
+  /** #2422: the pool slots kept for automations (the stored pref), and what is in force
+   *  (`min(reserved, max_instances)`). */
+  reserved_automations?: number;
+  reserved_effective?: number;
 }
 
 export interface SpecialistDetail extends Specialist {

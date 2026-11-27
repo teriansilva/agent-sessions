@@ -112,6 +112,7 @@ def _list() -> dict:
     from .. import specialist_capacity
 
     grades, library = model_grades.get(), _library()
+    limit = specialist_capacity.max_instances()
     counts, total = store.active_counts()
     held = _held_by_specialist()
     return {
@@ -121,7 +122,10 @@ def _list() -> dict:
         ],
         "templates": list(specialists.TEMPLATES),
         # The pool's limit and how many instances hold a reservation now (#1693 S4).
-        "max_instances": specialist_capacity.max_instances(),
+        "max_instances": limit,
+        # Kept for automation steps (#2422): stored, and in force (never above the limit).
+        "reserved_automations": specialist_capacity.reserved_automations(),
+        "reserved_effective": specialist_capacity.reserved_effective(limit),
         "live_total": total,
     }
 

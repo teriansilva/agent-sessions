@@ -982,6 +982,14 @@ textarea.control {
   text-transform: uppercase;
   text-align: right;
 }
+/* A queued run's outcome carries the idle LED beside its word (#2422): waiting, not failed. */
+.runOutcome .stateWord {
+  justify-content: flex-end;
+}
+/* The list header's queue line (#2422): the idle LED + word, only while something waits. */
+.queuedLine {
+  align-self: flex-start;
+}
 .timeline {
   list-style: none;
   margin: 12px 0 0;

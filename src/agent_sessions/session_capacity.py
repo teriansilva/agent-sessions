@@ -13,6 +13,17 @@ single-writer lock is: it lasts as long as the launch however slow that is, and 
 if the holder dies. There is no clock to outlive and no pid to be reused. A file nobody holds is
 left over from a crash, and the next count removes it.
 
+**Reserved for automations (#2422).** ``session_reserved_automations`` of the limit (at least 1,
+default 1; ``min(reserved, limit)`` in force) is kept for automation steps. Every start needs
+``total < limit``; a start that is not an automation's also needs ``other < limit − reserved``.
+The origin is server-derived: only the automation runner's launch gate passes ``automation``.
+A RUNNING session's origin is the automation store's launch provenance — ``automation_origins``
+has a ``session`` row for its key exactly when an automation LAUNCHED it (written before the spawn,
+never pruned or deleted), so it survives the launch slot's release and an app restart. A session
+an automation only messages, a legacy one, an anonymous slot, an unprobed socket and a census whose
+provenance can't be read all count as ``other``: that can only make an interactive start wait
+sooner, never let it eat the reserve. While a launch is under way its slot file carries its origin.
+
 **Unknown is not free.** A socket whose probe timed out counts as running. Two things read as
 nothing instead, and both are logged: an unreadable API record (a corrupt old file must not hold a
 slot for ever), and a count that can't run at all (an unlistable runtime directory, a lock that
@@ -48,16 +59,32 @@ _LOCK_NAME = "session-capacity.lock"
 _SLOTS_DIR = "session-slots"
 
 
-class SessionLimitReached(Exception):
-    """The limit is reached: nothing was started. The message is written for the operator."""
+AUTOMATION, OTHER = "automation", "other"
+ORIGINS = (AUTOMATION, OTHER)
 
-    def __init__(self, running: int, limit: int):
+
+class SessionLimitReached(Exception):
+    """The limit is reached: nothing was started. The message is written for the operator.
+
+    ``reserved``: non-zero when the refusal is the reserve's (an ``other`` start while every slot
+    left is kept for automations), with ``running`` the other starts' count."""
+
+    def __init__(self, running: int, limit: int, *, reserved: int = 0):
         self.running = running
         self.limit = limit
-        super().__init__(
-            f"Session limit reached: {running} of {limit} running. "
-            "Archive a session or raise the limit to start another. Nothing was started."
-        )
+        self.reserved = reserved
+        if reserved:
+            msg = (
+                f"Session limit reached: {running} of {limit - reserved} running, with "
+                f"{reserved} of {limit} kept for automations. Archive a session or raise the "
+                "limit to start another. Nothing was started."
+            )
+        else:
+            msg = (
+                f"Session limit reached: {running} of {limit} running. "
+                "Archive a session or raise the limit to start another. Nothing was started."
+            )
+        super().__init__(msg)
 
 
 class Reservation:
@@ -107,10 +134,12 @@ def _slots_dir() -> Path:
     return path
 
 
-def _held_slots() -> tuple[set[str], int]:
-    """``(keys, anonymous)`` of the launches under way. Removes what a dead launch left."""
-    keys: set[str] = set()
-    anonymous = 0
+def _held_slots() -> tuple[dict[str, str], dict[str, int]]:
+    """``({key: origin}, {origin: anonymous count})`` of the launches under way. Removes what a
+    dead launch left. A slot file holds ``{"key", "origin"}``; an older build's (a bare key or
+    null) reads as ``other``."""
+    keys: dict[str, str] = {}
+    anonymous = {AUTOMATION: 0, OTHER: 0}
     for path in _slots_dir().iterdir():
         try:
             fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
@@ -121,13 +150,17 @@ def _held_slots() -> tuple[set[str], int]:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError:
                 try:
-                    key = json.loads(os.read(fd, 4096) or b"null")
+                    raw = json.loads(os.read(fd, 4096) or b"null")
                 except ValueError:
-                    key = None
+                    raw = None
+                key, origin = raw, OTHER
+                if isinstance(raw, dict):
+                    key = raw.get("key")
+                    origin = AUTOMATION if raw.get("origin") == AUTOMATION else OTHER
                 if isinstance(key, str):
-                    keys.add(key)
+                    keys[key] = origin
                 else:
-                    anonymous += 1
+                    anonymous[origin] += 1
                 continue
             with contextlib.suppress(OSError):
                 path.unlink()  # nobody holds it: its launch is over
@@ -136,13 +169,13 @@ def _held_slots() -> tuple[set[str], int]:
     return keys, anonymous
 
 
-def _take_slot(key: str | None) -> Reservation:
+def _take_slot(key: str | None, origin: str = OTHER) -> Reservation:
     path = _slots_dir() / secrets.token_hex(8)
     fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
     try:
         # Under the gate's lock: a counter can't see this file before it is held.
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        os.write(fd, json.dumps(key).encode())
+        os.write(fd, json.dumps({"key": key, "origin": origin}).encode())
     except BaseException:
         os.close(fd)
         with contextlib.suppress(OSError):
@@ -176,39 +209,86 @@ def count() -> int:
     return len(keys) + unknown
 
 
-def admit(key: str | None) -> Reservation:
+def _launched_by_automations() -> set[str]:
+    """Stems of the sessions an automation LAUNCHED (the store's launch provenance). Unreadable →
+    empty: every running session then counts as ``other``, the conservative side."""
+    from . import automations_store  # lazy: the store's import graph is wide
+
+    try:
+        return {stem(k) for k in automations_store.launched_session_keys()}
+    except Exception:  # noqa: BLE001 — unknown provenance is `other`, never `automation`
+        log.warning("session limit: automation provenance unreadable", exc_info=True)
+        return set()
+
+
+def census() -> dict:
+    """``{"total", "other", "keys"}`` under no lock, for a read-only view: what `admit` counts."""
+    keys, unknown = running()
+    reserved, anonymous = _held_slots()
+    return _count(keys, unknown, reserved, anonymous)
+
+
+def _count(
+    keys: set[str], unknown: int, reserved: dict[str, str], anonymous: dict[str, int]
+) -> dict:
+    held = {stem(k) for k in keys} | {stem(k) for k in reserved}
+    launched = _launched_by_automations()
+    automated = {stem(k) for k, o in reserved.items() if o == AUTOMATION}
+    automated |= held & launched
+    total = len(held) + sum(anonymous.values()) + unknown
+    other = total - len(automated & held) - anonymous[AUTOMATION]
+    return {"total": total, "other": other, "held": held, "launched": launched}
+
+
+def admit(key: str | None, *, origin: str = OTHER) -> Reservation:
     """Take a slot for a launch of `key` (None: its id isn't known yet) or raise.
 
     A key that already runs takes no second slot: a generation replacing itself, or a reservation
     still held while its master comes up, is one session.
+
+    ``origin`` (#2422): ``automation`` only from the automation runner's launch gate, or for a
+    relaunch of a session an automation launched (its stored provenance). Every start needs
+    ``total < limit``; any other start also ``other < limit − reserved``.
     """
+    if origin not in ORIGINS:
+        raise ValueError("unknown session origin")
     limit = resource_limits.max_sessions()
+    keep = resource_limits.reserved_effective(limit)
     try:
         with _locked():
             keys, unknown = running()
             reserved, anonymous = _held_slots()
-            held = {stem(k) for k in keys | reserved}
-            taken = len(held) + anonymous + unknown
-            if taken >= limit and (key is None or stem(key) not in held):
-                raise SessionLimitReached(taken, limit)
-            return _take_slot(key)
+            seen = _count(keys, unknown, reserved, anonymous)
+            if key is not None and stem(key) in seen["launched"]:
+                # A relaunch keeps its stored origin: an automation launched this session.
+                origin = AUTOMATION
+            if key is not None and stem(key) in seen["held"]:
+                return _take_slot(key, origin)
+            if seen["total"] >= limit:
+                raise SessionLimitReached(seen["total"], limit)
+            if origin != AUTOMATION and seen["other"] >= limit - keep:
+                raise SessionLimitReached(seen["other"], limit, reserved=keep)
+            return _take_slot(key, origin)
     except (OSError, TimeoutError):
         log.warning("session limit: could not count, admitting this launch", exc_info=True)
         return Reservation()
 
 
-def check() -> None:
+def check(*, origin: str = OTHER) -> None:
     """Raise if a launch would be refused now. For work that comes BEFORE a launch and costs
     something (an automation's planner call): advisory, the launch's own `admit` still decides."""
-    admit(None).release()
+    admit(None, origin=origin).release()
 
 
 __all__ = [
+    "AUTOMATION",
     "CLOSE_CODE",
+    "OTHER",
     "SESSION_LIMIT",
     "Reservation",
     "SessionLimitReached",
     "admit",
+    "census",
     "check",
     "count",
     "running",

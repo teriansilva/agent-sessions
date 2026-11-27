@@ -37,7 +37,9 @@ import {
   whenWords,
   type Tone,
 } from "../lib/automations";
+import { queueLine, queueNoticeBody, queueOutcome } from "../lib/automationQueue";
 import { sessionPathFromKey } from "../lib/format";
+import { openSessionLimit } from "../lib/sessionLimit";
 import { missionLink } from "../lib/missionLink";
 import { AUTOMATIONS_PATH, automationEditPath, automationPath } from "../lib/routes";
 import type { Automation, AutomationRun, RunStep } from "../types/automations";
@@ -137,7 +139,13 @@ function RunsPage({ id }: { id: string }) {
         if (!live) return;
         setDetail(r);
         setDetailError(null);
-        if (r.state === "dispatching" || r.outcome === "started" || r.outcome === "review") {
+        // A queued run (#2422) is in progress too: it starts on its own when a slot frees.
+        if (
+          r.state === "dispatching" ||
+          r.state === "queued" ||
+          r.outcome === "started" ||
+          r.outcome === "review"
+        ) {
           wasPending = true;
           schedule();
         } else if (wasPending) void loadRunsQuiet();
@@ -375,7 +383,9 @@ function RunsPage({ id }: { id: string }) {
                           <span>
                             {whenWords(r.created_at, nowS)} · {runTriggerWords(r)}
                           </span>
-                          <span className={styles.sub}>{r.reason || "—"}</span>
+                          <span className={styles.sub}>
+                            {r.queue ? queueLine(r.queue) : r.reason || "—"}
+                          </span>
                         </span>
                         <span className={styles.runOutcome}>
                           <OutcomeWord outcome={r.outcome} state={r.state} />
@@ -397,8 +407,8 @@ function RunsPage({ id }: { id: string }) {
                 </button>
               )}
               <p className={styles.footnote}>
-                Skipped, refused and interrupted slots are runs too, so “why didn’t it run?” always
-                has an answer.
+                Skipped, refused, queued and interrupted slots are runs too, so “why didn’t it run?”
+                always has an answer.
               </p>
             </div>
 
@@ -475,10 +485,10 @@ function RunDetail({
         </dd>
         <dt>Started</dt>
         <dd>{new Date(run.created_at * 1000).toLocaleString("en-GB")}</dd>
-        {run.reason && (
+        {(run.queue || run.reason) && (
           <>
             <dt>Outcome</dt>
-            <dd>{run.reason}</dd>
+            <dd>{run.queue ? queueOutcome(run.queue) : run.reason}</dd>
           </>
         )}
         {inputs && (
@@ -503,6 +513,17 @@ function RunDetail({
               </Link>
             </div>
           )}
+        </div>
+      )}
+      {run.queue && (
+        <div className={`${styles.notice} ${styles.more}`} role="status" data-testid="run-queued">
+          <strong>Waiting for a free slot</strong>
+          <span>{queueNoticeBody(run.queue)}</span>
+          <div className={styles.noticeRow}>
+            <button type="button" className={styles.ghost} onClick={() => openSessionLimit()}>
+              See what’s running
+            </button>
+          </div>
         </div>
       )}
       {run.outcome === "interrupted" && (

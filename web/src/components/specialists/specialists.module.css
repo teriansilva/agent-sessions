@@ -29,6 +29,11 @@
 .poolLine b {
   color: var(--text-1);
 }
+/* #2422: the reservation's one-line consequence, under the controls. */
+.poolHelp {
+  flex: 1 0 100%;
+  color: var(--text-2);
+}
 .grade,
 .ungraded {
   display: inline-block;

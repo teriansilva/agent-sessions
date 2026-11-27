@@ -16,6 +16,10 @@ Follows #1042's discipline:
 * **Interrupted is never replayed.** Each tick, every ``dispatching`` run whose owner PROCESS is
   gone becomes ``interrupted: outcome unknown``; its claim stands, so the slot never fires again. A
   live owner's run is never touched, and an outcome the store refused is retried until it lands.
+* **The automation queue** (#2422, `automation_queue`): each tick, BEFORE new slots fire, the
+  owner expires queued runs that waited too long and starts waiting ones, oldest eligible first.
+  A queued run has no effect yet, so recovery never touches it and a restart or a peer finds it
+  still queued.
 * **Shutdown** stops firing first, then drains the runs already started.
 """
 
@@ -30,10 +34,10 @@ import threading
 import time
 from pathlib import Path
 
+from . import automation_queue, missions
 from . import automation_runner as runner
 from . import automations as model
 from . import automations_store as store
-from . import missions
 
 log = logging.getLogger(__name__)
 
@@ -127,6 +131,10 @@ class Scheduler:
     def owner(self) -> bool:
         return self._fd is not None
 
+    @property
+    def stopping(self) -> bool:
+        return self._stopping
+
     # ---- the due check --------------------------------------------------------------------------
 
     def _before_claim(self, aid: str) -> None:
@@ -150,6 +158,12 @@ class Scheduler:
         await runner.retry_unsettled()
         await self._sync_missions()
         await self._close_finished(now)
+        # The automation queue (#2422) BEFORE new slots fire: older waiters go first, and expiry
+        # runs every tick whatever the line looks like.
+        try:
+            await automation_queue.drain(registry=self.registry, now=now)
+        except Exception:  # noqa: BLE001 — the due checks below still run
+            log.warning("automations: the queue's drain failed", exc_info=True)
         fired: list[dict] = []
         for row in await asyncio.to_thread(store.list_all):
             try:
@@ -315,6 +329,7 @@ class Scheduler:
         from . import grants
 
         await grants.wait_until_swept()
+        automation_queue.bind(asyncio.get_running_loop())
         try:
             while not self._stopping:
                 try:
@@ -343,6 +358,7 @@ class Scheduler:
                 await task
         if self._acquiring is not None:
             await _join(self._acquiring)
+        await automation_queue.stop()
         await runner.drain()
         self.release()
 

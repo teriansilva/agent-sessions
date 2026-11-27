@@ -302,7 +302,7 @@ def _run_summary(r: dict) -> dict:
             "created_at",
             "finished_at",
         )
-    }
+    } | {"queue": r.get("queue")}  # #2422: a queued run's place in line, derived at read
 
 
 def public_run(r: dict) -> dict:
@@ -521,6 +521,8 @@ def _list() -> dict:
     sched = automation_loop.SCHEDULER
     return {
         "automations": [public(r) for r in store.list_all()],
+        # The automation queue (#2422): steps waiting for a free launch slot, across all of them.
+        "queue": {"length": store.queue_length()},
         "engines": _unattended_engines(),
         "loop": {
             "enabled": automation_runner.loop_enabled(),

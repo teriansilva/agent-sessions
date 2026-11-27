@@ -296,6 +296,8 @@ export interface FakeOptions {
   templates?: Json[];
   /** What `engine_state` admits for unattended use (`GET /api/automations` → `engines`). */
   engines?: Json[];
+  /** The automation queue (#2422): `GET /api/automations` → `queue.length`. Absent = not sent. */
+  queueLength?: number;
 }
 
 export interface Fake {
@@ -398,6 +400,7 @@ export async function mockAutomations(page: Page, opts: FakeOptions = {}): Promi
         automations: fake.state.automations,
         engines: opts.engines ?? ENGINES,
         loop: { enabled: fake.state.loopEnabled, owner: true },
+        ...(opts.queueLength === undefined ? {} : { queue: { length: opts.queueLength } }),
         limits: LIMITS,
       });
     }

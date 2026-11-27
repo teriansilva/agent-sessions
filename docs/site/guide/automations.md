@@ -103,6 +103,26 @@ If you later change something that widens what it may do (a new target, bypass o
 new value from the delivery, a different schedule, a higher limit), saving asks for your consent
 again. Until then it keeps the scope you approved.
 
+## The automation queue
+
+A step that starts a session never fails because the machine is busy. When the session limit, the
+specialist pool or the specialist's own capacity is full, the run is **Queued for a free slot**,
+shown in grey with its place in line ("since 21:14 · 2nd in line"), and starts on its own as soon as
+a slot frees, oldest first across all your automations. The Automations page shows how many steps
+are waiting. A queued step:
+
+- counts once toward its automation's runs per day, and never toward the failures that pause it;
+- is skipped if you turn the automation off, pause it, change it or it needs your approval again
+  while it waits;
+- fails with "no free slot for 6 h" if it waits that long (one notification, and the automation
+  keeps running).
+
+A webhook delivery that arrives while its automation is already running as many sessions as it may
+waits in the same queue instead of being skipped. A schedule that is still running skips its next
+slot as before. Messages to a session, messages to HQ and plugin actions start nothing, so they never
+wait. Part of each limit is reserved for automations: see **Reserved for automations** in
+[Settings](settings.md) and on [Specialists](specialists.md).
+
 ## Moving between steps
 
 **Next** waits until the step is complete and says what is missing. **Back** keeps your answers. On

@@ -170,6 +170,7 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Agent session defaults (model, effort) | POST /api/prefs `agent_defaults.session_defaults` | P2 W |
 | Model grades per agent (#1693): which grade each model is | POST /api/prefs `model_grades` | P2 W |
 | Specialist pool limit (#1693): instances at once | POST /api/prefs `pool_max_instances` | P2 W |
+| Specialist pool: slots reserved for automations (#2422) | POST /api/prefs `pool_reserved_automations` | P2 W |
 | Default agent for new sessions | POST /api/prefs `agent_defaults.default_engine` | P2 W |
 | Permission-bypass default **on** | POST /api/prefs `agent_defaults.bypass=true` | **never** (widens permission); off is P2 W |
 | Chat-agent endpoint URL / key / model / tools | PATCH /api/agents/{engine}/endpoint | **never** (credential + where requests go) |
@@ -928,6 +929,7 @@ onboarded                       n/a  # onboarding flag
 operator_name                   n/a  # a name the operator types in Settings › Profile (#1942)
 overview_expanded               n/a  # map cluster layout state
 pool_max_instances              P2  # how many specialist instances may run at once
+pool_reserved_automations       P2  # pool slots kept for automation steps (#2422), 1…the limit
 project_names                   P2
 project_roots                   P2  # folders on the card
 projects_hidden                 P2

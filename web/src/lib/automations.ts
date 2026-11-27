@@ -112,7 +112,8 @@ export function outcomeWord(
 ): { word: string; tone: Tone } {
   if (!outcome)
     return {
-      word: state === "dispatching" ? "Starting" : "Pending",
+      // `queued` (#2422) waits for a free slot: grey like any wait, never red or amber.
+      word: state === "dispatching" ? "Starting" : state === "queued" ? "Queued" : "Pending",
       tone: "idle",
     };
   switch (outcome) {
@@ -502,6 +503,7 @@ export function runNowBlock(a: Automation, loopEnabled: boolean): string {
 
 const STEP_WORDS: Record<string, string> = {
   claimed: "Slot claimed",
+  queued: "Queued for a free slot",
   skipped: "Skipped",
   creating_mission: "Creating the mission",
   mission_created: "Mission created",

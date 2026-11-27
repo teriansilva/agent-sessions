@@ -58,6 +58,7 @@ import {
   automationPath,
 } from "../lib/routes";
 import type { Automation, AutomationRun, UnattendedEngine } from "../types/automations";
+import { queueHeader, queueLine } from "../lib/automationQueue";
 import styles from "../components/automations/automations.module.css";
 
 type Filter = "all" | "enabled" | "needs_you" | "off";
@@ -124,6 +125,7 @@ export default function Automations() {
 
   const rows = useMemo(() => data?.automations ?? [], [data]);
   const loopOn = data?.loop.enabled ?? true;
+  const queued = data?.queue?.length ?? 0;
   const shown = useMemo(() => {
     const needle = q.trim().toLowerCase();
     return rows.filter((a) => {
@@ -274,6 +276,17 @@ export default function Automations() {
                 Missions and sessions that run while you are away: once, on a schedule, or when you
                 press Run now. Nothing runs until you enable it.
               </p>
+              {/* An empty queue shows nothing at all. */}
+              {queued > 0 && (
+                <span
+                  className={`${styles.stateWord} ${styles.wordIdle} ${styles.queuedLine}`}
+                  title={`${queued} automation ${queued === 1 ? "step is" : "steps are"} waiting for a free slot`}
+                  data-testid="automations-queued"
+                >
+                  <span className={`${styles.led} ${styles.idle}`} aria-hidden="true" />
+                  {queueHeader(queued)}
+                </span>
+              )}
             </div>
             <div className={styles.headActions}>
               <Link to={AUTOMATION_NEW_PATH} className={styles.primary} data-testid="automation-new">
@@ -606,7 +619,11 @@ function Row({
             <OutcomeWord outcome={a.last_run.outcome} state={a.last_run.state} />{" "}
             <span className={styles.faint}>
               {whenWords(a.last_run.created_at, nowS)}
-              {a.last_run.reason ? ` · ${a.last_run.reason}` : ""}
+              {a.last_run.queue
+                ? ` · ${queueLine(a.last_run.queue)}`
+                : a.last_run.reason
+                  ? ` · ${a.last_run.reason}`
+                  : ""}
             </span>
           </span>
         ) : (

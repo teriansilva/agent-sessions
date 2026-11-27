@@ -54,6 +54,14 @@ export function StateWord({ state }: { state: string }) {
 
 export function OutcomeWord({ outcome, state }: { outcome: string; state?: string }) {
   const { word, tone } = outcomeWord(outcome, state);
+  // A queued run (#2422) carries the idle LED beside its word: waiting, not failed.
+  if (!outcome && state === "queued")
+    return (
+      <span className={`${styles.stateWord} ${WORD[tone]}`} data-testid="run-outcome">
+        <Led tone={tone} />
+        {word}
+      </span>
+    );
   return (
     <span className={WORD[tone]} data-testid="run-outcome">
       {word}

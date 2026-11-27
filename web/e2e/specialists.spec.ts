@@ -93,6 +93,7 @@ async function backend(
   let gradePosts = 0;
   const over = structuredClone(OVER);  // this test's own copy: a release never leaks into the next
   let poolLimit = 6;
+  let poolReserve = 1;
   let gradesRev = 1;
   await page.route("**/api/config", (r) =>
     opts.configFailsAfterFirst && configReads++ > 0
@@ -125,6 +126,8 @@ async function backend(
         templates: TEMPLATES,
         max_instances: poolLimit,
         live_total: list === "empty" ? 0 : 3,
+        reserved_automations: poolReserve,
+        reserved_effective: Math.min(poolReserve, poolLimit),
       },
     });
   });
@@ -159,9 +162,15 @@ async function backend(
     if (r.request().method() !== "POST") return r.fulfill({ json: {} });
     const body = r.request().postDataJSON();
     opts.prefs?.push(body);
-    if (body.pool_max_instances !== undefined) {
-      poolLimit = body.pool_max_instances;
-      return r.fulfill({ json: { pool_max_instances: poolLimit } });
+    if (body.pool_max_instances !== undefined || body.pool_reserved_automations !== undefined) {
+      // The server's check (#2422): a reserve above the limit in force after the save is a 422.
+      const limit = body.pool_max_instances ?? poolLimit;
+      const reserve = body.pool_reserved_automations ?? poolReserve;
+      if (reserve > limit)
+        return r.fulfill({ status: 422, json: { detail: "pool.reserved_automations must not exceed pool.max_instances" } });
+      poolLimit = limit;
+      poolReserve = reserve;
+      return r.fulfill({ json: { pool_max_instances: poolLimit, pool_reserved_automations: poolReserve } });
     }
     const first = gradePosts++ === 0;
     if (first && opts.firstGradeCommitGate) await opts.firstGradeCommitGate;
@@ -513,7 +522,7 @@ test("same row saved twice: an older commit's late answer never replaces a newer
   await expect(page.getByTestId("specialist-grade-line")).toContainText("Intern");
 });
 
-test("the pool limit is saved on its own and the line follows it", async ({ page }) => {
+test("the pool limit is saved with its reserve and the line follows it", async ({ page }) => {
   const prefs: unknown[] = [];
   await backend(page, { prefs });
   await page.goto(SPECIALISTS_PATH);
@@ -522,12 +531,13 @@ test("the pool limit is saved on its own and the line follows it", async ({ page
   const limit = line.getByRole("spinbutton", { name: "Pool limit" });
   expect((await limit.boundingBox())!.height).toBeGreaterThanOrEqual(TOUCH_FLOOR);
   await limit.fill("0");
-  await expect(line.getByRole("button", { name: "Save limit" })).toBeDisabled();
+  await expect(line.getByRole("button", { name: "Save limits" })).toBeDisabled();
   await limit.fill("2");
-  await line.getByRole("button", { name: "Save limit" }).click();
+  await line.getByRole("button", { name: "Save limits" }).click();
   await expect(line).toContainText("3 of 2");
   await expect(line).toContainText("over the limit");
-  expect(prefs).toEqual([{ pool_max_instances: 2 }]);
+  // ONE request carries both (#2422); the reserve is resent unchanged.
+  expect(prefs).toEqual([{ pool_max_instances: 2, pool_reserved_automations: 1 }]);
 });
 
 test("a held slot shows why and the operator can release it", async ({ page }) => {

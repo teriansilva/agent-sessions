@@ -22,10 +22,10 @@ import hashlib
 import json
 import logging
 
+from . import automation_queue, forge_hook, webhook_events
 from . import automation_runner as runner
 from . import automations as model
 from . import automations_store as store
-from . import forge_hook, webhook_events
 
 log = logging.getLogger("agent_sessions.webhook_actions")
 
@@ -106,6 +106,10 @@ async def _handle_once(aid: str, body: bytes, headers: dict, *, registry, source
     run = res.get("run")
     if run is not None and run["state"] == "dispatching":
         runner.spawn(run, registry=registry)
+    elif run is not None and run["state"] == "queued":
+        # Over its `max_concurrent` (#2422): it waits in the automation queue, not skipped.
+        automation_queue.queued()
+        automation_queue.wake()
     return False
 
 

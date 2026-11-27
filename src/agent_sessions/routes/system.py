@@ -9,6 +9,7 @@ import contextlib
 import json
 import os
 import socket
+from functools import partial
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
@@ -132,12 +133,22 @@ def _preflight_prefs(payload: dict) -> None:
         raise bad("unknown projects_mode")
     # Grades can be refused LATE (the size caps are re-checked on the merged map under the prefs
     # lock), so they are saved on their own: that refusal then leaves nothing else half-written.
-    if "pool_max_instances" in payload:
+    if "pool_max_instances" in payload or "pool_reserved_automations" in payload:
         from .. import specialist_capacity
 
-        err = specialist_capacity.validate_max_instances(payload["pool_max_instances"])
-        if err is not None:
-            raise bad(err)
+        limit = payload.get("pool_max_instances")
+        if limit is not None:
+            err = specialist_capacity.validate_max_instances(limit)
+            if err is not None:
+                raise bad(err)
+        if "pool_reserved_automations" in payload:
+            # Against the pool limit as it will be after this save (#2422).
+            err = specialist_capacity.validate_reserved(
+                payload["pool_reserved_automations"],
+                limit if limit is not None else specialist_capacity.max_instances(),
+            )
+            if err is not None:
+                raise bad(err)
     if "model_grades" in payload and len(payload) != 1:
         raise bad("save model grades separately from other preferences")
     if "model_grades" in payload:
@@ -1039,17 +1050,25 @@ def register(
             out["hq_contact"], out["hq_contact_rev"] = prefs.set_hq_contact_versioned(
                 payload["hq_contact"]
             )
-        if "pool_max_instances" in payload:
-            # The pool's limit (#1693 S4): how many specialist instances may run at once. Lowering
-            # it stops nothing that runs; new launches wait until the pool is under it.
+        if "pool_max_instances" in payload or "pool_reserved_automations" in payload:
+            # The pool's limit (#1693 S4): how many specialist instances may run at once, and how
+            # many of them are reserved for automation steps (#2422), each validated against the
+            # other as it will be after this save. Lowering the limit or raising the reserve
+            # stops nothing that runs; new launches wait until the pool is under it.
             from .. import specialist_capacity
 
-            err = specialist_capacity.validate_max_instances(payload["pool_max_instances"])
-            if err is not None:
-                raise HTTPException(status_code=422, detail=err)
-            out["pool_max_instances"] = await asyncio.to_thread(
-                specialist_capacity.set_max_instances, payload["pool_max_instances"]
-            )
+            try:
+                out.update(
+                    await asyncio.to_thread(
+                        partial(
+                            specialist_capacity.set_limits,
+                            limit=payload.get("pool_max_instances"),
+                            reserved=payload.get("pool_reserved_automations"),
+                        )
+                    )
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from None
         if "model_grades" in payload:
             # The model → grade map (#1693): a PATCH of rows, merged under the prefs lock, `null`
             # clearing one. Specialists' grades are derived from it at read.

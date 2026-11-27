@@ -12,7 +12,13 @@ import asyncio
 
 import pytest
 
-from agent_sessions import automation_runner, mission_structured, webhook_events, webhooks
+from agent_sessions import (
+    automation_queue,
+    automation_runner,
+    mission_structured,
+    webhook_events,
+    webhooks,
+)
 from agent_sessions import automations as model
 from agent_sessions import automations_store as store
 from agent_sessions import templates as tstore
@@ -51,6 +57,11 @@ def _world(monkeypatch, tmp_path):
     monkeypatch.setattr(automation_runner, "client_settings_state", lambda _a: (True, ""))
     monkeypatch.setattr(automation_runner, "target_state", lambda _e: (True, ""))
     monkeypatch.setattr(automation_runner, "folder_ok", lambda _f: (True, ""))
+    # The automation queue's gate (#2422) holds the launch slots before the (faked) launch; this
+    # world has no specialist store row behind `SPEC`, so it holds nothing here.
+    monkeypatch.setattr(
+        automation_queue, "launch_slot", lambda _run: automation_queue.LaunchHold(key=None)
+    )
     automation_runner._TASKS.clear()
     yield folder
     automation_runner._TASKS.clear()
@@ -59,7 +70,9 @@ def _world(monkeypatch, tmp_path):
 @pytest.fixture
 def spawned(monkeypatch):
     out: list[dict] = []
-    monkeypatch.setattr(automation_runner, "spawn", lambda run, registry=None: out.append(run))
+    monkeypatch.setattr(
+        automation_runner, "spawn", lambda run, registry=None, **_kw: out.append(run)
+    )
     return out
 
 
@@ -394,7 +407,11 @@ def test_simultaneous_deliveries_of_one_head_admit_once(_world, spawned):
     assert len(spawned) == 1
 
 
-def test_a_busy_skip_claims_nothing_so_a_redelivery_runs(_world, spawned, monkeypatch):
+def test_a_busy_delivery_waits_in_the_queue_and_starts_after_the_previous_run(
+    _world, spawned, monkeypatch
+):
+    """#2422: a delivery over `max_concurrent` is no longer skipped (it used to wait for a CI
+    re-send): it is QUEUED, claimed once, and the drain starts it when the previous run ends."""
     wid = webhooks.create("ci")[0]["id"]
     cfg = _config(_world, wid)
     cfg["policy"] = {"concurrency": "skip"}
@@ -402,11 +419,15 @@ def test_a_busy_skip_claims_nothing_so_a_redelivery_runs(_world, spawned, monkey
     _deliver(aid, wid, _pr(sha=SHA_A))
     _deliver(aid, wid, _pr(sha=SHA_B))  # busy: head A's run is still dispatching
     assert len(spawned) == 1
-    assert any(r["outcome"] == "skipped" for r in _runs(aid))
+    waiting = [r for r in _runs(aid) if r["state"] == "queued"]
+    assert len(waiting) == 1 and waiting[0]["queue"]["capacity"] == "concurrency"
+    _deliver(aid, wid, _pr(sha=SHA_B, updated="t2"))  # the CI re-send of head B: claimed already
+    assert len([r for r in _runs(aid) if r["state"] == "queued"]) == 1
     _launch(monkeypatch)
     res = asyncio.run(automation_runner.execute(spawned[0], registry=None))
     assert res["run"]["outcome"] == "ok", res["run"]["reason"]
-    _deliver(aid, wid, _pr(sha=SHA_B, updated="t2"))  # the CI re-send of head B
+    stats = asyncio.run(automation_queue.drain(registry=None))
+    assert stats.started == 1
     assert len(spawned) == 2 and spawned[1]["inputs"]["delivered"]["head_sha"] == SHA_B
 
 
@@ -482,7 +503,7 @@ def test_a_specialist_edited_after_admission_is_refused_inside_the_launch_fence(
     class Refused:
         ok, launched, started, briefed = False, False, False, False
         key, teardown, state, seed_outcome = "", "", "", "not_attempted"
-        reason = ""
+        reason, capacity = "", ""
         bound, bound_key = None, None
 
     async def start(**kw):

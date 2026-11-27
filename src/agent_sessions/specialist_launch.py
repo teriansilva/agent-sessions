@@ -38,11 +38,16 @@ _LIVE_POLL_S = 0.25
 
 
 class Refused(Exception):
-    """The launch can't start from this specialist; nothing runs. ``detail`` is for the operator."""
+    """The launch can't start from this specialist; nothing runs. ``detail`` is for the operator.
 
-    def __init__(self, detail: str) -> None:
+    ``capacity`` (#2422) is the TYPED reason when a limit refused it — ``pool`` or ``specialist``
+    (`specialists_store.CapacityRefused.limit`) — and None for every other refusal, so a caller
+    that queues on capacity never reads the words."""
+
+    def __init__(self, detail: str, *, capacity: str | None = None) -> None:
         super().__init__(detail)
         self.detail = detail
+        self.capacity = capacity
 
 
 @dataclass(frozen=True)
@@ -149,7 +154,9 @@ def check_api(
     return {"id": sid, "version": n}
 
 
-def for_generation(session_key: str, binding: dict, slot: object = None) -> Claim:
+def for_generation(
+    session_key: str, binding: dict, slot: object = None, *, origin: str = store.ORIGIN_OTHER
+) -> Claim:
     """A slot for ONE agent process of an API session recorded with ``binding`` (a create's first
     worker, or any later one), or `Refused`. ``slot``: the one its record names. Still this
     session's (its owner token), it is RENEWED — kept, with a fresh grace — so a Stop can still
@@ -173,7 +180,7 @@ def for_generation(session_key: str, binding: dict, slot: object = None) -> Clai
                 abandon(claim)
                 raise
             return Claim(rid, session_key, sid, n, owner, bundle, rev)
-    return _take(binding["id"], binding["version"], session_key, v)
+    return _take(binding["id"], binding["version"], session_key, v, origin=origin)
 
 
 def release_slot(slot: object) -> None:
@@ -206,11 +213,21 @@ def _drop_superseded_copies(reservation_id: str) -> None:
     grants.after_release(reservation_id)  # idempotent, never raises
 
 
-def _take(sid: str, n: int, session_key: str, v: dict) -> Claim:
+def _take(
+    sid: str, n: int, session_key: str, v: dict, *, origin: str = store.ORIGIN_OTHER
+) -> Claim:
+    limit = specialist_capacity.max_instances()
     try:
-        r = store.reserve(sid, n, session_key, max_instances=specialist_capacity.max_instances())
+        r = store.reserve(
+            sid,
+            n,
+            session_key,
+            max_instances=limit,
+            reserved=specialist_capacity.reserved_effective(limit),
+            origin=origin,
+        )
     except store.CapacityRefused as exc:
-        raise Refused(str(exc)) from None
+        raise Refused(str(exc), capacity=exc.limit) from None
     except store.StoreError as exc:
         raise Refused(str(exc)) from None
     owner = r.get("owner") if r["created"] else None
@@ -247,13 +264,14 @@ def _bundle(rid: str, skills: list[dict]) -> str | None:
         return path
 
 
-def abandon(claim: Claim | None) -> None:
+def abandon(claim: Claim | None, *, wake: bool = True) -> None:
     """Nothing was launched for ``claim``: release the slot this attempt created, with its bundle.
-    A re-take holds no token and frees nothing (reconcile settles it on proof)."""
+    A re-take holds no token and frees nothing (reconcile settles it on proof). ``wake=False``:
+    the automation queue giving back its own speculative hold, which must not wake itself."""
     if claim is None or claim.owner is None:
         return
     try:
-        specialist_capacity.release(claim.reservation_id, owner=claim.owner)
+        specialist_capacity.release(claim.reservation_id, owner=claim.owner, wake=wake)
     except Exception:  # noqa: BLE001 — reconcile releases it once its session is proven dead
         log.warning("specialist slot %s not released", claim.reservation_id, exc_info=True)
 

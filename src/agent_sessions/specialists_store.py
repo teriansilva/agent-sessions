@@ -28,9 +28,9 @@ from . import model_grades
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 #: The schemas `rollback_schema` can take the store back to (each newer one is additive).
-ROLLBACK_TARGETS = (2,)
+ROLLBACK_TARGETS = (2, 3)
 BUSY_TIMEOUT_MS = 5000
 SPECIALISTS_MAX = 100
 VERSIONS_MAX = 500
@@ -58,7 +58,8 @@ CREATE TABLE specialist_reservations (
     rev INTEGER NOT NULL,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL,
-    held_reason TEXT NOT NULL DEFAULT ''
+    held_reason TEXT NOT NULL DEFAULT '',
+    origin TEXT NOT NULL DEFAULT 'other'
 );
 CREATE UNIQUE INDEX specialist_reservations_one_per_session
     ON specialist_reservations (session_key) WHERE state != 'released'
@@ -216,6 +217,14 @@ def _ensure_schema(p: Path) -> None:
                     for stmt in _GRANTS.split(";"):
                         if stmt.strip():
                             con.execute(stmt)
+                # v3 → v4 (#2422): who took each slot, `automation` or `other`; every existing
+                # row is `other`. Idempotent like the step above: a store rolled back to 3 keeps
+                # the column and converges here.
+                if not _has_column(con, "specialist_reservations", "origin"):
+                    con.execute(
+                        "ALTER TABLE specialist_reservations"
+                        " ADD COLUMN origin TEXT NOT NULL DEFAULT 'other'"
+                    )
             con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             con.execute("COMMIT")
         except BaseException:
@@ -232,13 +241,19 @@ def _has_table(con: sqlite3.Connection, name: str) -> bool:
     return row.fetchone() is not None
 
 
+def _has_column(con: sqlite3.Connection, table: str, column: str) -> bool:
+    return any(r["name"] == column for r in con.execute(f"PRAGMA table_info({table})"))  # noqa: S608
+
+
 def rollback_schema(to: int) -> dict:
     """Take the store back to schema ``to`` for the previous build, deleting nothing (#1951).
 
     v3 only ADDS the grant ledger, which a v2 build never reads, so the way back is
     ``user_version`` set to ``to`` in one transaction. Opening the store with this build again
     re-runs the idempotent v2 → v3 step and converges, and the boot sweep then revokes every grant
-    set whose reservation the older build released meanwhile."""
+    set whose reservation the older build released meanwhile. v4 (#2422) only ADDS the
+    reservations' ``origin`` column (default ``other``), which a v3 build never reads; its rows
+    read back as ``other``, the conservative side of the reserve."""
     if to not in ROLLBACK_TARGETS:
         raise StoreError(f"cannot roll the specialists store back to schema {to}", status=422)
     p = db_path()
@@ -634,6 +649,7 @@ def _reservation(r: sqlite3.Row, *, owner: bool = False) -> dict:
         "created_at": float(r["created_at"]),
         "updated_at": float(r["updated_at"]),
         "held_reason": r["held_reason"],
+        "origin": r["origin"] if "origin" in r.keys() else ORIGIN_OTHER,
     }
     if owner:
         out["owner"] = r["owner"]
@@ -725,15 +741,35 @@ def process_state(token: str) -> str:
     return ALIVE if seen == start else GONE  # another start time: the pid was reused
 
 
+#: Who took a slot (#2422): an automation step, or anything else (interactive, HQ, a mission).
+ORIGIN_AUTOMATION, ORIGIN_OTHER = "automation", "other"
+ORIGINS = (ORIGIN_AUTOMATION, ORIGIN_OTHER)
+
+
 def reserve(
-    sid: str, n: int, session_key: str, *, max_instances: int, now: float | None = None
+    sid: str,
+    n: int,
+    session_key: str,
+    *,
+    max_instances: int,
+    reserved: int = 0,
+    origin: str = ORIGIN_OTHER,
+    now: float | None = None,
 ) -> dict:
     """A slot for one session of ``sid`` version ``n``, or `CapacityRefused`.
 
     ONE transaction counts the specialist's active reservations (EVERY version) against its
     CURRENT capacity and every active reservation against ``max_instances``, and inserts only if
-    both hold. The result carries ``created``: True with an ``owner`` token for the attempt that
-    took the slot — only it may release on failure (`release(..., owner=)`) — and False for a
+    both hold.
+
+    **Reserved for automations (#2422).** ``reserved`` slots of the pool are kept for automation
+    steps (effective ``min(reserved, max_instances)``). EVERY start needs ``total < max``; an
+    ``other`` start also needs ``other-active < max − reserved``. ``origin`` is server-derived
+    (only the automation runner's launch gate passes ``automation``), stored on the row, and kept
+    by a re-take, so a relaunch never changes which side of the reserve a session counts on.
+
+    The result carries ``created``: True with an ``owner`` token for the attempt that took the
+    slot — only it may release on failure (`release(..., owner=)`) — and False for a
     second call on the same session (a double tap, a retry, a resume), which gets the slot that
     session already holds, re-marked ``starting`` so reconcile gives this launch its grace. A
     session holding another specialist's slot is refused."""
@@ -779,6 +815,8 @@ def reserve(
             is None
         ):
             raise NotFound("specialist version")
+        if origin not in ORIGINS:
+            raise StoreError("unknown reservation origin", status=422)
         capacity = spec["current"]["capacity"]
         (mine,) = con.execute(
             "SELECT COUNT(*) FROM specialist_reservations"
@@ -797,12 +835,25 @@ def reserve(
             raise CapacityRefused(
                 f"the pool is at its limit ({total} of {max_instances} instances running)", "pool"
             )
+        keep = min(max(int(reserved), 0), max_instances)
+        if origin != ORIGIN_AUTOMATION and keep:
+            (others,) = con.execute(
+                "SELECT COUNT(*) FROM specialist_reservations"
+                " WHERE state != 'released' AND origin != ?",
+                (ORIGIN_AUTOMATION,),
+            ).fetchone()
+            if others >= max_instances - keep:
+                raise CapacityRefused(
+                    f"the pool is at its limit for starts other than automations ({others} of "
+                    f"{max_instances - keep}; {keep} reserved for automations)",
+                    "pool",
+                )
         rid = "r" + secrets.token_hex(12)
         con.execute(
             "INSERT INTO specialist_reservations (reservation_id, specialist_id, version, "
-            "session_key, state, owner, process, attempt, rev, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, 'starting', ?, ?, 1, 1, ?, ?)",
-            (rid, sid, n, key, secrets.token_hex(16), _process(), ts, ts),
+            "session_key, state, owner, process, attempt, rev, created_at, updated_at, origin)"
+            " VALUES (?, ?, ?, ?, 'starting', ?, ?, 1, 1, ?, ?, ?)",
+            (rid, sid, n, key, secrets.token_hex(16), _process(), ts, ts, origin),
         )
         row = con.execute(
             "SELECT * FROM specialist_reservations WHERE reservation_id = ?", (rid,)

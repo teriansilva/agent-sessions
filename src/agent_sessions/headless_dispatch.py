@@ -141,6 +141,9 @@ class Dispatch:
     briefed: bool = False
     reason: str = ""
     refusal: str = ""
+    #: A launch limit refused it before anything was created (#2422): ``session_limit``,
+    #: ``pool`` or ``specialist``. Typed, so the automation queue never matches `reason`'s words.
+    capacity: str = ""
     events: list[str] = field(default_factory=list)
     #: WHAT WAS TYPED (#966), from the seed store's claim/ack record once the launch is over:
     #: `not_attempted`, `zero_write`, `partial`, `delivered` or `unknown` (see
@@ -526,8 +529,12 @@ async def dispatch(
     guard_secrets: bool = False,
     specialist: tuple[str, int] | None = None,
     shelf_mission: str | None = None,
+    capacity_hold: session_capacity.Reservation | None = None,
 ) -> Dispatch:
     """Launch `engine` in `cwd` with nobody watching, and deliver `brief`.
+
+    ``capacity_hold`` (#2422): a session-limit slot the automation queue's gate already took for
+    this launch; used instead of a new one and released with it, like the dispatch's own.
 
     Never raises for an ordinary failure — every outcome is a `Dispatch` whose `state` and `reason`
     say what happened. `DispatchError` is reserved for a request that could not be attempted at
@@ -732,11 +739,15 @@ async def dispatch(
     try:
         # THE SESSION LIMIT (#1819), first of all: the auth probe below launches a real agent, and a
         # refused dispatch spends nothing.
-        try:
-            capacity_slot = await asyncio.to_thread(session_capacity.admit, key)
-        except session_capacity.SessionLimitReached as e:
-            out.reason, out.refusal = str(e), session_capacity.SESSION_LIMIT
-            return out
+        if capacity_hold is not None:
+            capacity_slot, capacity_hold = capacity_hold, None
+        else:
+            try:
+                capacity_slot = await asyncio.to_thread(session_capacity.admit, key)
+            except session_capacity.SessionLimitReached as e:
+                out.reason, out.refusal = str(e), session_capacity.SESSION_LIMIT
+                out.capacity = session_capacity.SESSION_LIMIT
+                return out
         # FROM A SPECIALIST (#1910): its slot and skill bundle, keyed by this session, taken under
         # its single-writer lock after the session limit and before any probe or spawn. Refused →
         # nothing launches.

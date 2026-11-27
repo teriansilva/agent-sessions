@@ -48,11 +48,15 @@ class StructuredError(Exception):
         inventory: dict | None = None,
         *,
         remedy: str | None = None,
+        capacity: str | None = None,
     ):
         super().__init__(detail)
         self.status = status
         self.detail = detail
         self.reason = reason  # closed (#1644): `native_ipc.SEND_NOW_REFUSALS`
+        # A launch limit refused it before anything was created (#2422): `session_limit`, `pool`
+        # or `specialist`; None for every other refusal. Never derived from `detail`.
+        self.capacity = capacity
         self.inventory = inventory  # a refused Stop's current background work (#1724)
         self.remedy = remedy  # the action a refusal names (#1725): `native_ipc.REMEDIES`
 
@@ -172,6 +176,7 @@ class _NativeAdapter:
         wait_ready=True,
         specialist=None,
         shelf_mission=None,
+        hold=None,
     ):
         return await _native(
             native_runtime.create,
@@ -185,6 +190,7 @@ class _NativeAdapter:
             wait_ready=wait_ready,
             specialist=specialist,
             shelf_mission=shelf_mission,
+            hold=hold,
         )
 
     async def snapshot(self, engine, native, *, live_text=False):
@@ -239,7 +245,12 @@ async def _native(fn, *args, **kwargs):
         return await fn(*args, **kwargs)
     except native_runtime.NativeError as exc:
         raise StructuredError(
-            exc.status, exc.detail, exc.reason, exc.inventory, remedy=exc.remedy
+            exc.status,
+            exc.detail,
+            exc.reason,
+            exc.inventory,
+            remedy=exc.remedy,
+            capacity=exc.capacity,
         ) from None
     except native_journal.JournalError as exc:
         raise StructuredError(
@@ -779,6 +790,7 @@ async def create_session(
     wait_ready: bool = True,
     specialist: tuple[str, int] | None = None,
     shelf_mission: str | None = None,
+    hold=None,
 ) -> dict:
     """``wait_ready`` (#1505): True — every internal caller — returns once the session is ready,
     as it always has. Only the HTTP route passes False: it returns as soon as the session is
@@ -793,6 +805,8 @@ async def create_session(
         extra["specialist"] = specialist
     if shelf_mission is not None:
         extra["shelf_mission"] = shelf_mission
+    if hold is not None:  # #2422: an automation step's pre-held launch slots, sent only when held
+        extra["hold"] = hold
     sid = await adapter.create(
         engine,
         cwd,

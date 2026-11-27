@@ -2344,10 +2344,15 @@ async def test_a_reviewed_api_session_without_a_recap_gets_one_and_no_work_is_as
 
 
 def _session_limit_of(monkeypatch, limit, others=frozenset()):
-    """The limit, with the real walk of the API records plus `others` as terminal sessions."""
+    """The limit, with the real walk of the API records plus `others` as terminal sessions.
+
+    These tests pin the TOTAL guard for an interactive start; the reserve for automations
+    (#2422, at least 1 in a real install) is pinned by its own tests in
+    `test_automation_queue.py`, so it is held at 0 here."""
     from agent_sessions import ptybridge, resource_limits
 
     monkeypatch.setattr(resource_limits, "max_sessions", lambda: limit)
+    monkeypatch.setattr(resource_limits, "reserved_effective", lambda limit=None: 0)
     monkeypatch.setattr(
         ptybridge, "master_census", lambda: ([tuple(k.split(":", 1)) for k in others], 0)
     )

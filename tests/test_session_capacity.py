@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gc
+import json
 import os
 import subprocess
 import sys
@@ -12,6 +13,7 @@ import time
 import pytest
 
 from agent_sessions import resource_limits, session_capacity, sysinfo
+from conftest import _REAL_HOME, STORE_ENV_PATHS
 
 GIB = 1024**3
 
@@ -25,12 +27,25 @@ def isolated(monkeypatch, tmp_path):
 
 
 def _child_env() -> dict[str, str]:
-    keep = {"AGENT_SESSIONS_LOCK_DIR", "AGENT_SESSIONS_PREFS"}
-    return {k: v for k, v in os.environ.items() if not k.startswith("AGENT_SESSIONS_") or k in keep}
+    """A child process's environment: the run's own, with every store path the sandbox pinned
+    kept (`conftest.STORE_ENV_PATHS`), so a child can never fall back to the operator's real store.
+    #2422: this helper once kept only the lock dir and prefs; a child's census then resolved the
+    LIVE `automations.db` and migrated it."""
+    keep = {"AGENT_SESSIONS_LOCK_DIR", "AGENT_SESSIONS_PREFS", *STORE_ENV_PATHS}
+    env = {k: v for k, v in os.environ.items() if not k.startswith("AGENT_SESSIONS_") or k in keep}
+    for key in STORE_ENV_PATHS:
+        assert key in env, f"{key} is not pinned for this test"
+    return env
 
 
-def limit(monkeypatch, value):
+def limit(monkeypatch, value, *, reserved: int = 0):
+    """The limit for these tests of the gate's MECHANICS (locks, races, slot files), whose
+    arithmetic is the total guard alone. The reserve for automations (#2422, never below 1 in a
+    real install) is pinned by its own tests in `test_automation_queue.py`."""
     monkeypatch.setattr(resource_limits, "max_sessions", lambda: value)
+    monkeypatch.setattr(
+        resource_limits, "reserved_effective", lambda limit=None: min(reserved, value)
+    )
 
 
 # ---- the recommendation -------------------------------------------------------------------------
@@ -291,6 +306,7 @@ from agent_sessions import resource_limits, session_capacity as c
 c.ptybridge.master_census = lambda: ([], 0)
 c._api_running = set
 resource_limits.max_sessions = lambda: 1
+resource_limits.reserved_effective = lambda limit=None: 0  # mechanics only: see `limit`
 while not os.path.exists(sys.argv[1]):
     time.sleep(0.001)
 try:
@@ -326,6 +342,7 @@ from agent_sessions import resource_limits, session_capacity as c
 c.ptybridge.master_census = lambda: ([], 0)
 c._api_running = set
 resource_limits.max_sessions = lambda: 1
+resource_limits.reserved_effective = lambda limit=None: 0  # mechanics only: see `limit`
 slot = c.admit("claude:crashed")
 print("held", flush=True)
 sys.stdin.read()
@@ -432,3 +449,56 @@ def test_the_capacity_route_says_when_it_cant_read(fake_jsonl, auth_cfg, monkeyp
     got = c.get("/api/sessions/capacity", headers=_login_headers(c, auth_cfg)).json()
     assert got["readable"] is False
     assert got["running"] is None  # never a healthy zero
+
+
+# ---- the live store (#2422) --------------------------------------------------------------------
+
+
+def test_a_child_process_never_resolves_a_live_store():
+    """A child started the way these tests start one resolves every store under the sandbox,
+    never the operator's real home (#2422: one migrated the live `automations.db`)."""
+    script = """
+import json
+from agent_sessions import automations_store, specialists_store
+print(json.dumps([str(automations_store.db_path()), str(specialists_store.db_path())]))
+"""
+    out = subprocess.run(
+        [sys.executable, "-c", script], env=_child_env(), capture_output=True, text=True, timeout=60
+    )
+    assert out.returncode == 0, out.stderr
+    live = os.path.join(_REAL_HOME, ".config", "agent-sessions")
+    for path in json.loads(out.stdout):
+        assert not os.path.realpath(path).startswith(live + os.sep), path
+
+
+def test_the_census_reads_the_automations_store_without_writing_it(monkeypatch, tmp_path):
+    """The census's provenance read never creates, migrates or backs up the store: an OLDER
+    schema stays at its version, byte for byte (#2422)."""
+    import sqlite3
+
+    from agent_sessions import automations_store
+
+    db = tmp_path / "old-automations.db"
+    con = sqlite3.connect(db)
+    con.execute(
+        "CREATE TABLE automation_origins (key TEXT PRIMARY KEY, kind TEXT NOT NULL, "
+        "automation_id TEXT NOT NULL, automation_name TEXT NOT NULL, run_id TEXT NOT NULL, "
+        "created_at REAL NOT NULL)"
+    )
+    con.execute("INSERT INTO automation_origins VALUES ('codex:a', 'session', 'x', 'x', 'r', 1)")
+    con.execute("PRAGMA user_version=4")
+    con.commit()
+    con.close()
+    before = (db.read_bytes(), db.stat().st_mtime_ns)
+    monkeypatch.setenv("AGENT_SESSIONS_AUTOMATIONS_DB", str(db))
+    automations_store.reset_schema_cache_for_test()
+    limit(monkeypatch, 2, reserved=1)
+    monkeypatch.setattr(session_capacity, "_api_running", lambda: {"codex:a"})
+    seen = session_capacity.census()
+    assert (seen["total"], seen["other"]) == (1, 0), "read as the automation's own session"
+    assert (db.read_bytes(), db.stat().st_mtime_ns) == before
+    assert [p.name for p in tmp_path.iterdir() if p.name.startswith("old-")] == [db.name]
+    # Missing: answers empty and creates nothing.
+    monkeypatch.setenv("AGENT_SESSIONS_AUTOMATIONS_DB", str(tmp_path / "none.db"))
+    assert automations_store.launched_session_keys() == set()
+    assert not (tmp_path / "none.db").exists()

@@ -35,6 +35,7 @@ const fixture = (): Resources => ({
       library_threads: 8,
       api_memory_gib: 8,
       max_sessions: 28,
+      session_reserved_automations: 1,
     },
     recommended: {
       console_tasks: 4096,
@@ -42,6 +43,7 @@ const fixture = (): Resources => ({
       library_threads: 8,
       api_memory_gib: 8,
       max_sessions: 28,
+      session_reserved_automations: 1,
     },
     bounds: {
       console_tasks: { min: 256, max: 16384 },
@@ -49,6 +51,7 @@ const fixture = (): Resources => ({
       library_threads: { min: 1, max: 64 },
       api_memory_gib: { min: 1, max: 1024 },
       max_sessions: { min: 1, max: 256 },
+      session_reserved_automations: { min: 1, max: 256 },
     },
     sources: {
       console_tasks: "recommended",
@@ -56,6 +59,7 @@ const fixture = (): Resources => ({
       library_threads: "recommended",
       api_memory_gib: "recommended",
       max_sessions: "recommended",
+      session_reserved_automations: "recommended",
     },
     console_tasks_max: "4096",
     capacity: {
@@ -172,6 +176,7 @@ test("save, reload and restore recommended values", async ({ page }) => {
     library_threads: 8,
     api_memory_gib: 8,
     max_sessions: 28,
+    session_reserved_automations: 1,
   });
 });
 
@@ -251,6 +256,7 @@ for (const legacy of ["50%", "infinity", "2048"])
       library_threads: 8,
       api_memory_gib: 8,
       max_sessions: 28,
+      session_reserved_automations: 1,
     });
   });
 

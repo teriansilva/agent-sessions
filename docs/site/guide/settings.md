@@ -325,9 +325,15 @@ follows the recommendation.
 
 A session counts while its agent runs, whichever way it was started: terminal or API, by you, a
 mission, an automation or HQ. An agent's own subagents don't count, and neither does a session that
-has ended. At the limit a new start is refused and nothing is queued. Archive a running session,
-wait for one to end, or raise the limit. Nothing that's running is ever stopped by this limit,
-including when you lower it.
+has ended. At the limit a new start is refused. Archive a running session, wait for one to end, or
+raise the limit. An automation step that would start a session waits in the automation queue
+instead and starts on its own when a slot frees (see [Automations](automations.md#the-automation-queue)).
+Nothing that's running is ever stopped by this limit, including when you lower it.
+
+**Reserved for automations** (beside the limit; at least 1, default 1) keeps that many of the slots
+for automation steps. Other starts (yours, a mission's, HQ's) can use the rest, "Other starts can use
+5 of 6"; an automation step can use any free slot. If the reserve equals the limit, only
+automations can start sessions. A reserve above a limit you later lower reserves the whole limit.
 
 **API session memory limit** sets the combined memory allowance for an agent and its tools,
 in GiB (default **8**, range **1–1024**). Reaching the limit kills one of that session's

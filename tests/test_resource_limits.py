@@ -34,6 +34,7 @@ def test_bad_settings_are_atomic(value):
         "library_threads": 4,
         "api_memory_gib": 8,
         "max_sessions": resource_limits.sysinfo.session_capacity()["recommended"],
+        "session_reserved_automations": 1,
     }
 
 

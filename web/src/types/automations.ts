@@ -206,7 +206,8 @@ export interface RunSummary {
   slot: string;
   catch_up: boolean;
   covered: number;
-  state: "dispatching" | "done" | string;
+  /** `queued` (#2422): a step that launches a session is waiting for a free slot; `outcome` is "". */
+  state: "dispatching" | "queued" | "done" | string;
   outcome: RunOutcome | string;
   result_class: ResultClass;
   reason: string;
@@ -214,6 +215,22 @@ export interface RunSummary {
   session_key: string | null;
   created_at: number;
   finished_at: number | null;
+  /** Only on a `queued` run (#2422): where it stands in the one queue, and what it waits for. */
+  queue?: RunQueue | null;
+}
+
+/** What is full: the session limit, the specialist pool, one specialist's capacity, or this
+ *  automation's own concurrency (its previous run is still working). */
+export type QueueCapacity = "session_limit" | "pool" | "specialist" | "concurrency";
+
+export interface RunQueue {
+  /** 1-based, across ALL automations, oldest first. */
+  position: number;
+  /** Epoch seconds the run entered the queue. */
+  since: number;
+  capacity: QueueCapacity | string;
+  /** The server's words for what is full, e.g. "the session limit is full (6 of 6 running)". */
+  detail: string;
 }
 
 export interface RunStep {
@@ -326,6 +343,8 @@ export interface AutomationList {
   /** Absent from a server that predates the editor's engine offer. */
   engines?: UnattendedEngine[];
   loop: { enabled: boolean; owner: boolean };
+  /** The automation queue (#2422): runs waiting for a free slot. Absent from an older server. */
+  queue?: { length: number };
   limits: {
     interval_min_minutes: number;
     max_runs_per_day_max: number;

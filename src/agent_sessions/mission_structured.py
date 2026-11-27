@@ -249,6 +249,7 @@ async def _create_and_brief(
     specialist: tuple[str, int] | None = None,
     bypass_op: str | None = None,
     bypass_actor: str | None = None,
+    hold=None,
 ) -> headless_dispatch.Dispatch:
     """The structured create and its ONE guarded first turn, shared by a mission's dispatch and an
     automation's start (#1901). Fills in ``out``'s facts; never raises for a refused effect.
@@ -267,6 +268,7 @@ async def _create_and_brief(
             # Sent only when chosen, so every other create is the call it always was.
             **({"effort": effort} if effort is not None else {}),
             **({"specialist": specialist} if specialist is not None else {}),
+            **({"hold": hold} if hold is not None else {}),
             bypass=False,
             execution_admission=admission,
             wait_ready=True,
@@ -279,6 +281,8 @@ async def _create_and_brief(
             # input), or nothing was left running: a refusal the operator can act on and press
             # again, never a failure that keeps a record of a worker that does not exist.
             out.reason = exc.detail
+            # A launch limit's typed refusal (#2422), carried up for the automation queue.
+            out.capacity = exc.capacity or ""
             return out
         # A create that may have launched a worker and never became ready: a failed dispatch,
         # its record kept until a teardown proves the worker gone (#898's "alive is not started").
@@ -406,9 +410,14 @@ async def automation_start(
     effort: str | None = None,
     specialist: tuple[str, int] | None = None,
     bypass: bool = False,
+    hold=None,
 ) -> headless_dispatch.Dispatch:
     """An automation's new API session: one structured create and one guarded first turn, the
     same facts `headless_dispatch.dispatch` returns.
+
+    ``hold`` (#2422): the launch slots the automation queue's gate already took for THIS session
+    (`automation_queue.launch_slot`); the create uses exactly those. A create refused by a launch
+    limit before anything existed says so in ``out.capacity``.
 
     A caller that names a ``specialist`` ``(id, version)`` passes that version's
     ``model`` and ``effort``: the create reserves the specialist's capacity and bundles its skills
@@ -452,6 +461,7 @@ async def automation_start(
         specialist=specialist,
         bypass_op=bypass_op,
         bypass_actor=binding,
+        hold=hold,
     )
     if out.launched and not out.briefed and out.seed_outcome in ("not_attempted", "zero_write"):
         from . import runtime_cleanup  # at call time, like `mission_fence`

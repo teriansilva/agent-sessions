@@ -14,6 +14,7 @@ import type { Grade } from "../types/specialists";
 import lib from "../components/library/library.module.css";
 import { useShareImports } from "../components/share/useShareImports";
 import { api } from "../lib/api";
+import { reserveHelp, reserveProblem } from "../lib/automationQueue";
 import { SPECIALIST_NEW_PATH } from "../lib/routes";
 import buttons from "../components/ui/actionButton.module.css";
 import pb from "../components/playbooks/playbooks.module.css";
@@ -36,25 +37,51 @@ export default function Specialists() {
 }
 
 /** The pool's line (#1693 S4): instances running against the limit, and the limit itself, saved
- *  on its own. Lowering it stops nothing that runs: new launches wait until the pool is under it. */
-function PoolLimit({ live, limit, onSaved }: { live: number; limit: number; onSaved: () => void }) {
+ *  on its own. Lowering it stops nothing that runs: new launches wait until the pool is under it.
+ *  #2422: part of the pool is reserved for automations, saved with the limit in ONE request; the
+ *  help line says what that leaves for every other start. The server refuses a reserve above the
+ *  limit (422) and stays the authority; the form only keeps an obviously refused save unsent. */
+function PoolLimit({
+  live,
+  limit,
+  reserved,
+  onSaved,
+}: {
+  live: number;
+  limit: number;
+  reserved: number;
+  onSaved: () => void;
+}) {
   const [text, setText] = useState(String(limit));
+  const [reserveText, setReserveText] = useState(String(reserved));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const value = Number(text);
+  const reserve = Number(reserveText);
   const valid = Number.isInteger(value) && value >= 1 && value <= 32;
+  const reserveValid = Number.isInteger(reserve) && reserve >= 1 && reserve <= 32;
+  const changed = value !== limit || reserve !== reserved;
+  // A stored reserve above the limit is only in force up to it (`reserved_effective`): it is said
+  // in the help line, and refused only when the operator tries to save it.
+  const tooMany =
+    changed && valid && reserveValid ? reserveProblem(value, reserve, "pool limit") : "";
   const save = async () => {
     setBusy(true);
     setError("");
     try {
-      await api.setPrefs({ pool_max_instances: value });
+      await api.setPrefs({ pool_max_instances: value, pool_reserved_automations: reserve });
       onSaved();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Couldn’t save the limit.");
+      setError(e instanceof Error ? e.message : "Couldn’t save the limits.");
     } finally {
       setBusy(false);
     }
   };
+  const hint = !valid
+    ? "A whole number from 1 to 32."
+    : !reserveValid
+      ? "Reserve a whole number from 1 to 32."
+      : tooMany;
   return (
     <div className={styles.poolLine} data-testid="pool-capacity">
       <span className={live > limit ? styles.overCapacity : undefined}>
@@ -73,22 +100,39 @@ function PoolLimit({ live, limit, onSaved }: { live: number; limit: number; onSa
           onChange={(e) => setText(e.target.value)}
         />
       </label>
-      {!valid && (
-        <span id="pool-limit-hint" className={styles.refused}>
-          A whole number from 1 to 32.
-        </span>
-      )}
+      <label className={styles.poolLimit}>
+        Reserved for automations
+        <input
+          type="number"
+          min={1}
+          max={32}
+          value={reserveText}
+          aria-invalid={!reserveValid || !!tooMany}
+          aria-describedby={valid && !hint ? "pool-reserve-help" : "pool-limit-hint"}
+          onChange={(e) => setReserveText(e.target.value)}
+        />
+      </label>
       <button
         type="button"
         className={buttons.ghost}
-        disabled={busy || !valid || value === limit}
+        disabled={busy || !!hint || !changed}
         onClick={() => void save()}
       >
-        Save limit
+        Save limits
       </button>
+      {hint && (
+        <span id="pool-limit-hint" className={styles.refused}>
+          {hint}
+        </span>
+      )}
       {error && (
         <span role="alert" className={styles.refused}>
           {error}
+        </span>
+      )}
+      {!hint && (
+        <span id="pool-reserve-help" className={styles.poolHelp} data-testid="pool-reserve-help">
+          {reserveHelp(value, reserve, "pool")}
         </span>
       )}
     </div>
@@ -165,9 +209,10 @@ function Pool() {
       </p>
       {data?.max_instances !== undefined && (
         <PoolLimit
-          key={data.max_instances}
+          key={`${data.max_instances}:${data.reserved_automations ?? 1}`}
           live={data.live_total ?? 0}
           limit={data.max_instances}
+          reserved={data.reserved_automations ?? 1}
           onSaved={() => void reload()}
         />
       )}

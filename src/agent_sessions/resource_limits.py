@@ -13,13 +13,22 @@ from collections.abc import Mapping
 
 from . import prefs, sysinfo
 
-DEFAULTS = {"console_tasks": 4096, "api_tasks": 4096, "library_threads": 8, "api_memory_gib": 8}
+DEFAULTS = {
+    "console_tasks": 4096,
+    "api_tasks": 4096,
+    "library_threads": 8,
+    "api_memory_gib": 8,
+    # Of the session limit, kept for automation steps (#2422). At least 1; never above the limit
+    # at save, and min(reserved, limit) in force, so a lowered limit reserves the whole of it.
+    "session_reserved_automations": 1,
+}
 BOUNDS = {
     "console_tasks": (256, 16384),
     "api_tasks": (256, 16384),
     "library_threads": (1, 64),
     "api_memory_gib": (1, 1024),
     "max_sessions": (sysinfo.MIN_SESSIONS, sysinfo.MAX_SESSIONS),
+    "session_reserved_automations": (1, sysinfo.MAX_SESSIONS),
 }
 THREAD_VARIABLES = (
     "OPENBLAS_NUM_THREADS",
@@ -59,15 +68,34 @@ def max_sessions() -> int:
     return stored if stored is not None else sysinfo.session_capacity()["recommended"]
 
 
+def reserved_automations() -> int:
+    """The stored reserve for automation steps (default 1); in force: `reserved_effective`."""
+    return saved().get("session_reserved_automations", DEFAULTS["session_reserved_automations"])
+
+
+def reserved_effective(limit: int | None = None) -> int:
+    """``min(reserved, limit)``: a limit lowered below the reserve reserves all of it (#2422)."""
+    return min(reserved_automations(), max_sessions() if limit is None else limit)
+
+
 def save(patch: object) -> None:
     if not isinstance(patch, dict) or not patch or patch.keys() - BOUNDS.keys():
         raise ValueError(
-            "expected console_tasks, api_tasks, library_threads, api_memory_gib or max_sessions"
+            "expected console_tasks, api_tasks, library_threads, api_memory_gib, max_sessions "
+            "or session_reserved_automations"
         )
     for key, value in patch.items():
         if not valid(key, value):
             low, high = BOUNDS[key]
             raise ValueError(f"{key} must be an integer from {low} to {high}")
+    if "session_reserved_automations" in patch:
+        # Against the limit as it will be after this save (#2422). A limit saved below a stored
+        # reserve later is allowed: the reserve in force is then the whole limit.
+        limit = patch.get("max_sessions", max_sessions())
+        if patch["session_reserved_automations"] > limit:
+            raise ValueError(
+                f"session_reserved_automations can't be more than the session limit ({limit})"
+            )
 
     def merge(old):
         clean = {
@@ -152,6 +180,10 @@ def settings() -> dict:
     )
     return {
         "values": configured,
+        # The reserve in force (#2422): never above the limit in force.
+        "reserved_effective": min(
+            configured["session_reserved_automations"], configured["max_sessions"]
+        ),
         "recommended": suggested,
         "bounds": {k: {"min": lo, "max": hi} for k, (lo, hi) in BOUNDS.items()},
         "sources": {k: "settings" if k in stored else "recommended" for k in BOUNDS}

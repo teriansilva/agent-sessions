@@ -1238,7 +1238,7 @@ def test_a_sweep_that_could_not_read_is_tried_again(monkeypatch):
 
 def test_rollback_to_2_deletes_nothing_and_this_build_converges(equipment):
     claim, g = _issued(_spec(), "a")
-    assert store.rollback_schema(2) == {"from": 3, "to": 2}
+    assert store.rollback_schema(2) == {"from": store.SCHEMA_VERSION, "to": 2}
     con = sqlite3.connect(store.db_path())
     assert con.execute("PRAGMA user_version").fetchone()[0] == 2
     con.close()

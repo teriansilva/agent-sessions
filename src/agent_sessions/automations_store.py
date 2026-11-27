@@ -32,7 +32,7 @@ from pathlib import Path
 
 from . import automations as model
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 #: The claim's refusal when the consent receipt no longer equals the config's scope (a receipt from
 #: before a scope field existed, or a hand edit). Never run; the due check and Run now both flag it
@@ -86,6 +86,17 @@ MISSION_MAY_EXIST = (
     " A mission may have been created before the stop; it is not linked here because that "
     "could not be recorded."
 )
+
+#: The automation queue (#2422). A run that would launch a session while a launch limit is full
+#: (or a webhook delivery over its automation's `max_concurrent`) is ``queued``: no effect yet, its
+#: claim and its one count toward the daily cap stand, and the owner's drain starts it when a slot
+#: frees. It never counts toward `max_concurrent` or `pause_after_failures`.
+QUEUE_MAX_WAIT_S = 6 * 3600.0
+QUEUE_EXPIRED_REASON = "failed: no free slot for 6 h"
+#: Which limit a queued run waits for (`queue_capacity`). ``concurrency``: its own automation's
+#: previous run (a webhook delivery over `max_concurrent`).
+QUEUE_CAPACITIES = ("session_limit", "pool", "specialist", "concurrency")
+QUEUE_CONCURRENCY_DETAIL = "this automation's previous run is still active"
 
 INTERRUPTED_REASON = (
     "interrupted: outcome unknown — the app stopped while this run was starting, so it may or "
@@ -313,8 +324,21 @@ def _to_v4(con: sqlite3.Connection) -> None:
     con.execute("ALTER TABLE webhooks ADD COLUMN relay_url TEXT")
 
 
+def _to_v5(con: sqlite3.Connection) -> None:
+    """The automation queue (#2422): which launch limit a ``queued`` run waits for, the
+    automation's open "no free slot" episode, and the index the drain and expiry walk."""
+    con.execute("ALTER TABLE automation_runs ADD COLUMN queue_capacity TEXT NOT NULL DEFAULT ''")
+    con.execute("ALTER TABLE automations ADD COLUMN queue_episode TEXT NOT NULL DEFAULT ''")
+    con.execute("CREATE INDEX automation_runs_by_state ON automation_runs(state, created_at, id)")
+
+
 #: ``{from_version: step}`` — each step brings a file from that version to the next.
-_MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {1: _to_v2, 2: _to_v3, 3: _to_v4}
+_MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
+    1: _to_v2,
+    2: _to_v3,
+    3: _to_v4,
+    4: _to_v5,
+}
 
 
 class StoreError(RuntimeError):
@@ -596,6 +620,7 @@ def _run(r: sqlite3.Row) -> dict:
         "counts": bool(r["counts"]),
         "created_at": r["created_at"],
         "finished_at": r["finished_at"],
+        "queue_capacity": r["queue_capacity"] if "queue_capacity" in r.keys() else "",
     }
 
 
@@ -741,9 +766,13 @@ def watermark(aid: str) -> dict | None:
 # ---- the claim ----------------------------------------------------------------------------------
 
 
-def _eligibility(con, row: dict, *, manual: bool, now: float) -> tuple[str, str]:
+def _eligibility(
+    con, row: dict, *, manual: bool, now: float, queue_concurrency: bool = False
+) -> tuple[str, str]:
     """``(verdict, reason)``, read INSIDE the claim transaction. ``verdict`` is ``run``,
-    ``skip`` (claim the slot, record a skipped run) or ``no`` (no claim, no record)."""
+    ``skip`` (claim the slot, record a skipped run) or ``no`` (no claim, no record).
+    ``queue_concurrency`` (#2422, a webhook delivery that launches a session): over
+    ``max_concurrent`` is ``queue`` instead of ``skip``."""
     config = row["config"]
     if config is None:
         return "no", "this automation's stored configuration can't be read"
@@ -778,6 +807,8 @@ def _eligibility(con, row: dict, *, manual: bool, now: float) -> tuple[str, str]
         (row["id"],),
     ).fetchone()[0]
     if active >= policy["max_concurrent"]:
+        if queue_concurrency:
+            return "queue", QUEUE_CONCURRENCY_DETAIL
         return "skip", "skipped: previous run still active"
     return "run", ""
 
@@ -1200,7 +1231,7 @@ def list_runs(aid: str, *, limit: int = 50, offset: int = 0) -> dict:
             "ORDER BY created_at DESC, id LIMIT ? OFFSET ?",
             (aid, limit, offset),
         ).fetchall()
-        return {"runs": [_run(r) for r in rows], "total": int(total)}
+        return {"runs": [with_queue(con, _run(r)) for r in rows], "total": int(total)}
 
 
 def runs_since(aid: str, since: float) -> list[dict]:
@@ -1221,7 +1252,7 @@ def last_run(aid: str) -> dict | None:
             "SELECT * FROM automation_runs WHERE automation_id=? ORDER BY created_at DESC LIMIT 1",
             (aid,),
         ).fetchone()
-        return _run(r) if r else None
+        return with_queue(con, _run(r)) if r else None
 
 
 def get_run(run_id: str) -> dict:
@@ -1229,7 +1260,7 @@ def get_run(run_id: str) -> dict:
         r = con.execute("SELECT * FROM automation_runs WHERE id=?", (run_id,)).fetchone()
         if r is None:
             raise NotFound("run")
-        out = _run(r)
+        out = with_queue(con, _run(r))
         out["steps"] = [
             {"seq": s["seq"], "at": s["at"], "step": s["step"], "detail": s["detail"]}
             for s in con.execute(
@@ -1258,13 +1289,347 @@ def origins() -> dict[str, dict]:
         }
 
 
+# ---- the automation queue (#2422) ---------------------------------------------------------------
+#
+# A queued run has NO effect yet: it was claimed (dedupe, daily cap) and admitted, and stopped at
+# the step that would launch a session because a launch limit was full. It keeps its claim and
+# its inputs; nothing but this section moves it. Its place in line is derived at read time
+# (`(created_at, id)` among queued runs, across every automation), never stored.
+
+
+def requeue(run_id: str, capacity: str, detail: str, *, now: float | None = None) -> bool:
+    """``dispatching`` → ``queued``: the run's launch was refused by a limit BEFORE anything was
+    created (the caller holds that proof). Only this process's own run, and only once: a run a
+    recovery already recorded ``interrupted`` stays so. Counts nothing toward the pause."""
+    if capacity not in QUEUE_CAPACITIES:
+        raise ValueError(f"unknown queue capacity {capacity!r}")
+    with _tx() as con:
+        cur = con.execute(
+            "UPDATE automation_runs SET state='queued', owner='', reason=?, queue_capacity=? "
+            "WHERE id=? AND state='dispatching' AND owner=?",
+            (detail[:1000], capacity, run_id, owner_token()),
+        )
+        if cur.rowcount != 1:
+            return False
+        _step(con, run_id, "queued", detail)
+        return True
+
+
+def note_waiting_many(notes: list[tuple[str, str, str]]) -> None:
+    """``[(run_id, capacity, detail)]``: the limit each still-queued run waits for NOW, as one
+    drain pass found it. ONE write transaction; a row already saying so is left untouched."""
+    with _tx() as con:
+        con.executemany(
+            "UPDATE automation_runs SET reason=?, queue_capacity=? WHERE id=? AND state='queued' "
+            "AND (reason!=? OR queue_capacity!=?)",
+            [(d[:1000], c, rid, d[:1000], c) for rid, c, d in notes],
+        )
+
+
+def queue_length() -> int:
+    with _read() as con:
+        return int(
+            con.execute("SELECT COUNT(*) FROM automation_runs WHERE state='queued'").fetchone()[0]
+        )
+
+
+def queue_waiting(run: dict) -> bool:
+    """Whether a run OLDER than ``run`` waits in the queue: ``run`` then queues behind it and
+    never takes a slot that waiter is owed (#2422 rule 4). A newer waiter (a delivery queued
+    behind this run's own `max_concurrent`) never holds it back."""
+    with _read() as con:
+        return (
+            con.execute(
+                "SELECT 1 FROM automation_runs WHERE state='queued' AND "
+                "(created_at < ? OR (created_at = ? AND id < ?)) LIMIT 1",
+                (run["created_at"], run["created_at"], run["id"]),
+            ).fetchone()
+            is not None
+        )
+
+
+def queued_page(after: tuple[float, str] | None = None, limit: int = 50) -> list[dict]:
+    """The next ``limit`` queued runs in line order ``(created_at, id)``, after ``after`` (keyset
+    paging through the ``(state, created_at, id)`` index)."""
+    with _read() as con:
+        if after is None:
+            rows = con.execute(
+                "SELECT * FROM automation_runs WHERE state='queued' "
+                "ORDER BY created_at, id LIMIT ?",
+                (limit,),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT * FROM automation_runs WHERE state='queued' AND "
+                "(created_at > ? OR (created_at = ? AND id > ?)) ORDER BY created_at, id LIMIT ?",
+                (after[0], after[0], after[1], limit),
+            ).fetchall()
+        return [_run(r) for r in rows]
+
+
+def _position(con, created_at: float, run_id: str) -> int:
+    (ahead,) = con.execute(
+        "SELECT COUNT(*) FROM automation_runs WHERE state='queued' AND "
+        "(created_at < ? OR (created_at = ? AND id < ?))",
+        (created_at, created_at, run_id),
+    ).fetchone()
+    return int(ahead) + 1
+
+
+def with_queue(con, run: dict) -> dict:
+    """``run`` with ``queue`` — its place in line (derived now), since when, and what it waits
+    for — when it is queued; ``queue: None`` otherwise."""
+    if run["state"] != "queued":
+        return {**run, "queue": None}
+    return {
+        **run,
+        "queue": {
+            "position": _position(con, run["created_at"], run["id"]),
+            "since": run["created_at"],
+            "capacity": run.get("queue_capacity") or "",
+            "detail": run.get("reason") or "",
+        },
+    }
+
+
+#: `claim_queued` verdicts.
+CLAIM_RUN, CLAIM_GONE, CLAIM_NOT_FIRST, CLAIM_CONCURRENCY, CLAIM_SETTLED = (
+    "run",
+    "gone",
+    "not_first",
+    "concurrency",
+    "settled",
+)
+
+
+def _queued_consent(
+    row: dict | None, run: sqlite3.Row, now: float, receipt_ok: bool | None = None
+) -> str:
+    """Why a queued run may no longer start (its automation as it is NOW), or ``""``.
+    ``receipt_ok``: whether the row's receipt equals its config's scope, when the caller already
+    knows (one answer per automation, not per run)."""
+    if row is None:
+        return "skipped: the automation was deleted while it waited"
+    scope = _loads(run["scope"], {})
+    if row["config"] is None:
+        return "skipped: the automation can't be read any more"
+    if not row["enabled"]:
+        return "skipped: you turned it off while it waited"
+    if row["needs_reapproval"]:
+        return "skipped: it needs your approval again"
+    if run["trigger"] != "manual" and row["paused"]:
+        return "skipped: it was paused while it waited"
+    if row["consented_scope"] != scope.get("consented_scope") or row["revision"] != scope.get(
+        "revision"
+    ):
+        return "skipped: you changed it while it waited"
+    if receipt_ok is None:
+        receipt_ok = row["consented_scope"] == model.scope_of(row["config"], row["pins"])
+    if not receipt_ok:
+        return "skipped: " + RECEIPT_MISMATCH
+    expires = (row["config"].get("policy") or {}).get("expires_at")
+    if expires is not None and now >= expires:
+        return "skipped: it expired while it waited"
+    return ""
+
+
+def settle_invalid_queued(*, now: float | None = None) -> list[str]:
+    """Every queued run whose automation may no longer start it (turned off, deleted, paused,
+    edited, needing re-approval, expired) → ``skipped`` with that reason, in ONE transaction,
+    WHATEVER the launch limits say (Hermes on #2425): consent is reconciled before the drain
+    asks any limit and before expiry, so a run the operator withdrew is never left waiting behind
+    a full gate nor later recorded as a capacity failure. Counts nothing toward the pause. The
+    walk is bounded by the queued rows (the daily caps bound them); each automation is read once.
+    Returns the settled run ids."""
+    ts = time.time() if now is None else now
+    with _tx() as con:
+        rows = con.execute(
+            "SELECT * FROM automation_runs WHERE state='queued' ORDER BY created_at, id"
+        ).fetchall()
+        autos: dict[str, tuple[dict | None, bool]] = {}
+        settled = []
+        for r in rows:
+            aid = r["automation_id"]
+            if aid not in autos:
+                a = con.execute("SELECT * FROM automations WHERE id=?", (aid,)).fetchone()
+                row = _row(a) if a is not None else None
+                ok = (
+                    row is not None
+                    and row["config"] is not None
+                    and row["consented_scope"] == model.scope_of(row["config"], row["pins"])
+                )
+                autos[aid] = (row, ok)
+            row, ok = autos[aid]
+            why = _queued_consent(row, r, ts, receipt_ok=ok)
+            if not why:
+                continue
+            con.execute(
+                "UPDATE automation_runs SET state='done', outcome='skipped', reason=?, "
+                "finished_at=? WHERE id=? AND state='queued'",
+                (why, ts, r["id"]),
+            )
+            _step(con, r["id"], "skipped", why)
+            settled.append(r["id"])
+        return settled
+
+
+def concurrency_full(aid: str) -> bool:
+    """Whether automation ``aid`` already runs as many as its ``max_concurrent`` (an advisory
+    read for the drain, so it takes no launch slot for a run that can't start; `claim_queued`
+    decides in its own transaction)."""
+    with _read() as con:
+        a = con.execute("SELECT config FROM automations WHERE id=?", (aid,)).fetchone()
+        if a is None:
+            return False
+        config = model.coerce_config(_loads(a["config"], None))
+        if config is None:
+            return False
+        (active,) = con.execute(
+            "SELECT COUNT(*) FROM automation_runs WHERE automation_id=? AND "
+            "(state='dispatching' OR outcome='started')",
+            (aid,),
+        ).fetchone()
+        return active >= config["policy"]["max_concurrent"]
+
+
+def claim_queued(run_id: str, *, passed: frozenset[str] | set[str] = frozenset(), now=None) -> dict:
+    """``queued`` → ``dispatching`` — ONE transaction (#2422 admission rule 3).
+
+    Inside it: the run must still be queued (another drainer did not take it); every OLDER queued
+    run must be one the caller's walk found blocked (``passed``), so the run is the oldest
+    ELIGIBLE one; consent is re-read (turned off, deleted, paused, edited, needing re-approval or
+    expired → ``skipped`` with that reason, which counts toward nothing); and the automation's
+    ``max_concurrent`` must have room. Only then is the run ``dispatching`` under this process,
+    from where a crash is ``interrupted: outcome unknown`` and never retried. Takes no new claim
+    and counts nothing toward the daily cap again: its original claim stands.
+
+    Returns ``{"verdict", "run"}``."""
+    ts = time.time() if now is None else now
+    with _tx() as con:
+        r = con.execute("SELECT * FROM automation_runs WHERE id=?", (run_id,)).fetchone()
+        if r is None or r["state"] != "queued":
+            return {"verdict": CLAIM_GONE, "run": None}
+        older = con.execute(
+            "SELECT id FROM automation_runs WHERE state='queued' AND "
+            "(created_at < ? OR (created_at = ? AND id < ?))",
+            (r["created_at"], r["created_at"], run_id),
+        ).fetchall()
+        if any(o["id"] not in passed for o in older):
+            return {"verdict": CLAIM_NOT_FIRST, "run": None}
+        a = con.execute("SELECT * FROM automations WHERE id=?", (r["automation_id"],)).fetchone()
+        row = _row(a) if a is not None else None
+        why = _queued_consent(row, r, ts)
+        if why:
+            con.execute(
+                "UPDATE automation_runs SET state='done', outcome='skipped', reason=?, "
+                "finished_at=? WHERE id=? AND state='queued'",
+                (why, ts, run_id),
+            )
+            _step(con, run_id, "skipped", why)
+            got = con.execute("SELECT * FROM automation_runs WHERE id=?", (run_id,)).fetchone()
+            return {"verdict": CLAIM_SETTLED, "run": _run(got)}
+        (active,) = con.execute(
+            "SELECT COUNT(*) FROM automation_runs WHERE automation_id=? AND "
+            "(state='dispatching' OR outcome='started')",
+            (r["automation_id"],),
+        ).fetchone()
+        if active >= row["config"]["policy"]["max_concurrent"]:
+            return {"verdict": CLAIM_CONCURRENCY, "run": None}
+        con.execute(
+            "UPDATE automation_runs SET state='dispatching', owner=? WHERE id=? AND state='queued'",
+            (owner_token(), run_id),
+        )
+        _step(con, run_id, "dequeued", f"waited {max(0.0, ts - float(r['created_at'])):.0f} s")
+        if a is not None and a["queue_episode"]:
+            # A run of this automation starts again: its "no free slot" episode is over.
+            con.execute("UPDATE automations SET queue_episode='' WHERE id=?", (r["automation_id"],))
+        got = con.execute("SELECT * FROM automation_runs WHERE id=?", (run_id,)).fetchone()
+        return {"verdict": CLAIM_RUN, "run": _run(got)}
+
+
+def expire_queued(*, now: float | None = None, max_wait_s: float | None = None) -> list[dict]:
+    """Every queued run older than `QUEUE_MAX_WAIT_S` → ``failed: no free slot for 6 h`` (#2422
+    rule 7). A separate indexed update, never bounded by the drain, so a long blocked line can't
+    stop it. It counts NOTHING toward `pause_after_failures` (a full limit is not the
+    automation's fault), and opens at most ONE "no free slot" episode per automation until one of
+    its runs starts again. Returns ``[{"automation_id", "name", "runs", "episode"}]`` — ``episode``
+    is the bell key to announce, or ``""`` when that automation's episode is already open."""
+    ts = time.time() if now is None else now
+    cutoff = ts - (QUEUE_MAX_WAIT_S if max_wait_s is None else max_wait_s)
+    with _tx() as con:
+        rows = con.execute(
+            "SELECT id, automation_id FROM automation_runs WHERE state='queued' AND created_at < ? "
+            "ORDER BY created_at, id",
+            (cutoff,),
+        ).fetchall()
+        if not rows:
+            return []
+        by_aid: dict[str, list[str]] = {}
+        for r in rows:
+            con.execute(
+                "UPDATE automation_runs SET state='done', outcome='failed', reason=?, "
+                "finished_at=? WHERE id=? AND state='queued'",
+                (QUEUE_EXPIRED_REASON, ts, r["id"]),
+            )
+            _step(con, r["id"], "failed", QUEUE_EXPIRED_REASON)
+            by_aid.setdefault(r["automation_id"], []).append(r["id"])
+        out = []
+        for aid, ids in by_aid.items():
+            a = con.execute(
+                "SELECT name, queue_episode FROM automations WHERE id=?", (aid,)
+            ).fetchone()
+            episode = ""
+            if a is not None and not a["queue_episode"]:
+                episode = f"automation:{aid}:noslot:{ids[0]}"
+                con.execute("UPDATE automations SET queue_episode=? WHERE id=?", (episode, aid))
+            out.append(
+                {
+                    "automation_id": aid,
+                    "name": a["name"] if a is not None else "automation",
+                    "runs": ids,
+                    "episode": episode,
+                }
+            )
+        return out
+
+
+def launched_session_keys() -> set[str]:
+    """Every session key an automation LAUNCHED (#2422): ``automation_origins`` rows of kind
+    ``session``. Written only by a launch (`link(..., origin=True)`, before anything is spawned)
+    and never deleted — not by pruning, not by deleting the automation — so the session-limit
+    census can tell an automation's running session from any other after its launch slot is gone
+    and across restarts. A session an automation only messaged has no such row.
+
+    **A read that never writes.** The session-limit census asks this from every process that
+    launches (a peer instance, a helper process), so it opens the file READ-ONLY and never through
+    `_connect`: it never creates, migrates or backs up the store, whatever schema it is at (#2422:
+    a process holding a store path it did not mean to have must not upgrade a live store). A file
+    that is missing or unreadable, or lacks the table, answers empty (every session then counts as
+    ``other``, the conservative side)."""
+    p = db_path()
+    if not p.exists():
+        return set()
+    try:
+        con = sqlite3.connect(f"{p.resolve().as_uri()}?mode=ro", uri=True, timeout=1.0)
+    except sqlite3.Error:
+        return set()
+    try:
+        rows = con.execute("SELECT key FROM automation_origins WHERE kind='session'").fetchall()
+    except sqlite3.Error:
+        return set()
+    finally:
+        con.close()
+    return {r[0] for r in rows}
+
+
 # ---- retention ----------------------------------------------------------------------------------
 
 
 def prune_runs(
     *, now: float | None = None, keep: int | None = None, max_age_s: float | None = None
 ) -> int:
-    """Drop run HISTORY past its bounds. Claims and watermarks are never touched here."""
+    """Drop run HISTORY past its bounds. Claims and watermarks are never touched here, and
+    neither is a run still waiting in the automation queue (#2422): it has not happened yet."""
     ts = time.time() if now is None else now
     # Floors, not defaults: whatever a caller asks, the daily cap's evidence is never pruned.
     keep = max(RUNS_KEEP_PER_AUTOMATION if keep is None else keep, model.MAX_RUNS_PER_DAY_MAX)
@@ -1277,7 +1642,8 @@ def prune_runs(
                 "  SELECT id, created_at, state, outcome, ROW_NUMBER() OVER ("
                 "    PARTITION BY automation_id ORDER BY created_at DESC) AS rn"
                 "  FROM automation_runs)"
-                " WHERE state!='dispatching' AND outcome NOT IN ('started','review')"
+                " WHERE state NOT IN ('dispatching','queued')"
+                " AND outcome NOT IN ('started','review')"
                 " AND (rn>? OR created_at<?) AND created_at<?",
                 (keep, ts - max_age, ts - RUNS_PROTECTED_S),
             )
@@ -1448,7 +1814,10 @@ def begin_delivery(
             "SELECT 1 FROM automation_claims WHERE automation_id=? AND slot=?", (aid, slot)
         ).fetchone():
             return {"run": None, "claimed": False, "reason": "this delivery was already handled"}
-        verdict, reason = _eligibility(con, row, manual=False, now=ts)
+        # A delivery that would launch a session over `max_concurrent` waits in the automation
+        # queue instead of being skipped (#2422); every other action keeps its skip.
+        launches = (config.get("action") or {}).get("kind") == "start_session"
+        verdict, reason = _eligibility(con, row, manual=False, now=ts, queue_concurrency=launches)
         if verdict == "no":
             return {"run": None, "claimed": False, "reason": reason}
         run_id = uuid.uuid4().hex
@@ -1459,8 +1828,9 @@ def begin_delivery(
             "consented_at": row["consented_at"],
             "revision": row["revision"],
         }
+        queued = verdict == "queue"
         run = verdict == "run"
-        if run:
+        if run or queued:
             con.execute(
                 "INSERT INTO automation_claims (automation_id, slot, fire_at, claimed_at, run_id) "
                 "VALUES (?,?,?,?,?)",
@@ -1469,7 +1839,7 @@ def begin_delivery(
         con.execute(
             "INSERT INTO automation_runs (id, automation_id, trigger, slot, fire_at, catch_up, "
             "covered, state, outcome, reason, scope, inputs, counts, owner, created_at, "
-            "finished_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "finished_at, queue_capacity) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 run_id,
                 aid,
@@ -1478,18 +1848,24 @@ def begin_delivery(
                 None,
                 0,
                 1,
-                "dispatching" if run else "done",
-                "" if run else "skipped",
+                "dispatching" if run else "queued" if queued else "done",
+                "" if run or queued else "skipped",
                 reason,
                 json.dumps(scope),
                 json.dumps(inputs),
-                1 if run else 0,
+                1 if run or queued else 0,
                 owner_token() if run else "",
                 ts,
-                None if run else ts,
+                None if run or queued else ts,
+                "concurrency" if queued else "",
             ),
         )
         # Recorded, NOT claimed when skipped: the delivery may come again (redeliver) and then run.
-        _step(con, run_id, "claimed" if run else "skipped", reason or "a webhook delivery")
+        # A queued one IS claimed and counted once: it runs when its turn comes.
+        _step(
+            con, run_id, "claimed" if run or queued else "skipped", reason or "a webhook delivery"
+        )
+        if queued:
+            _step(con, run_id, "queued", reason)
         got = con.execute("SELECT * FROM automation_runs WHERE id=?", (run_id,)).fetchone()
-        return {"run": _run(got), "claimed": run, "reason": reason}
+        return {"run": _run(got), "claimed": run or queued, "reason": reason}
