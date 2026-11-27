@@ -239,10 +239,11 @@ _RECIPIENT_ID_RE = re.compile(r"^[!A-Za-z0-9:._=+/-]{1,255}$")
 _RECIPIENT_KINDS = frozenset({"private chat", "group", "supergroup", "channel", "room"})
 # Follows (#1443 Phase 4): what a followed session's update says, as a kind — the words are the
 # client's, authored, so no model text is ever shown as an update.
-UPDATE_KINDS = frozenset({"finished", "needs_you", "ended", "not_followed"})
+#: ``taken_over`` (#2397): the Commander typed in a session HQ drove from this conversation.
+UPDATE_KINDS = frozenset({"finished", "needs_you", "ended", "not_followed", "taken_over"})
 #: Why a conversation follows a session: Ask STARTED it, or a nudge Ask proposed was DELIVERED to it
 #: (#1517).
-FOLLOW_VIAS = frozenset({"start", "nudge"})
+FOLLOW_VIAS = frozenset({"start", "nudge", "adopt"})  # adopt: HQ took over driving it (#2397)
 #: Sessions one conversation follows at once, and entries kept (an unfollowed one is remembered so
 #: the same delivered nudge never re-follows it).
 MAX_FOLLOWS = 10

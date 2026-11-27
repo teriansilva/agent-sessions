@@ -229,7 +229,15 @@ GATES: dict[str, Callable[[object], object]] = {
     "description": _description,
     "instruction": _instruction,
     "text": _relay_text,
+    "message": lambda v: _drive_gate("message", v),
+    "turn_id": lambda v: _drive_gate("turn_id", v),
 }
+
+
+def _drive_gate(name: str, v: object) -> object:
+    from . import ask_drive
+
+    return ask_drive.GATES[name](v)
 
 
 # ---- facts: what the card shows, read the way the UI reads it ----------------------------------
@@ -425,6 +433,10 @@ class Operation:
     #: Why a card whose facts moved before the tap is out of date, as the card says it (#1938):
     #: ``(why, row) → the reason``. The catalog's generic sentence otherwise.
     stale: Callable[[str, dict], str] | None = None
+    #: An HQ drive request (#2397, `ask_drive`): ``(target, fields, facts) → binding``, carried to
+    #: the route in its in-process scope (`asgi_call.DRIVE`), never in its body. Its ``fields``
+    #: hold the proposal and conversation ids (``_pid``, ``_cid``), from which its ids derive.
+    drive: Callable[[str, dict, dict], dict] | None = None
 
 
 class _Moved(Exception):
@@ -889,6 +901,7 @@ def _ops() -> tuple[Operation, ...]:
 
 
 def _all_ops() -> tuple[Operation, ...]:
+    from .ask_drive import drive_ops
     from .ask_library import library_ops
     from .ask_mcp import mcp_ops
     from .ask_memory import operations as memory_ops
@@ -899,6 +912,7 @@ def _all_ops() -> tuple[Operation, ...]:
 
     return (
         *_ops(),
+        *drive_ops(),
         *library_ops(),
         *specialist_ops(),
         *secret_ops(),
@@ -928,6 +942,10 @@ async def facts_for(
 ) -> dict | None:
     """The target's facts as the card shows them, or None when the target is gone. ``cid`` is the
     conversation the card is in (a shared file's facts, #1786)."""
+    if op.drive is not None:  # an HQ drive request (#2397): the session and who drives it
+        from . import ask_drive
+
+        return await ask_drive.facts(op, target, fields, app, operator, cid=cid)
     if op.target == "session":
         facts = await _session_facts(app, operator, target)
         if facts is not None and op.id == "session.move" and fields.get("project_id"):
@@ -1068,6 +1086,21 @@ def changed(before: dict, now: dict | None) -> str:
         return "the mission no longer holds that session"
     if "reach" in before and before["reach"] != now.get("reach"):
         return "what it would do changed"  # run now's class moved (#2391)
+    # An HQ drive request (#2397): who drives the session, its permission mode, its newest turn.
+    if "driver" in before and before["driver"] != now.get("driver"):
+        from .ask_drive import moved
+
+        return moved(now.get("driver"))
+    if "generation" in before and before["generation"] != now.get("generation"):
+        return "who drives it changed"
+    if "bypass" in before and before["bypass"] != now.get("bypass"):
+        return "its permission prompts were switched " + ("off" if now.get("bypass") else "on")
+    if "last_turn" in before and before["last_turn"] != now.get("last_turn"):
+        return "it has a newer turn than the one HQ read"
+    if "active" in before and before["active"] != now.get("active"):
+        return "the turn it was to stop has ended"
+    if "queued" in before and before["queued"] != now.get("queued"):
+        return "that message already left the queue"
     return ""
 
 
@@ -1636,9 +1669,12 @@ async def _prepare(cid: str, row: dict, inputs: object = None):
         tapped = ask_orchestrator.tap_state(cid, row.get("turn_id"))
     else:
         tapped = None
-    if op.run is not None:
-        # A runner notes its progress on its own entry as it goes (#1786: what it committed).
+    if op.run is not None or op.drive is not None:
+        # A runner notes its progress on its own entry as it goes (#1786: what it committed); a
+        # drive request derives its ids from the card's (#2397).
         extras["_pid"] = row["id"]
+    if op.drive is not None:
+        extras["_cid"] = cid
     if content is not None:
         extras["_content"] = content
     return op, extras, tapped
@@ -1801,7 +1837,7 @@ async def act(
 
 
 #: Operations whose class their facts decide (#2391): re-read at the claim, not only at the route.
-_DYNAMIC_CLASS = frozenset({"automation.run_now"})
+_DYNAMIC_CLASS = frozenset({"automation.run_now", "session.send", "session.adopt"})
 
 
 def card_only(row: dict, facts: dict | None = None) -> str:
@@ -1901,7 +1937,8 @@ async def _route_once(
             # asks the grant again at that effect's final fence (the relay's delivery).
             return admit(now)
 
-    resp = await asgi_call.call(app, operator, method, path, body, act_admit=carried)
+    drive = op.drive(row["target"], fields, row["facts"]) if op.drive is not None else None
+    resp = await asgi_call.call(app, operator, method, path, body, act_admit=carried, drive=drive)
     if admit is not None and isinstance(resp.body, dict) and resp.body.get("act_refused") is True:
         # The route's own effect boundary refused the act's grant before any effect: nothing
         # ran, and the card is the Commander's again.

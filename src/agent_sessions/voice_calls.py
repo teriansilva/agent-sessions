@@ -296,6 +296,21 @@ def _pick_alone(cards: list[dict]) -> bool:
     return len(cards) == 1 and cards[0].get("kind") == "pick"
 
 
+#: Needs-you items a voice may decide (#1681 P2): each is offered alone, and since #1715 P2 (the
+#: operator's comment 141855 on #1715) a reply the English grammar does not decide is judged
+#: (`voice_judge.judge_decision`), in any language.
+NEEDS_YOU_KINDS = frozenset({"permission", "menu", "needs_you"})
+
+
+def _needs_you_alone(cards: list[dict]) -> bool:
+    return len(cards) == 1 and cards[0].get("kind") in NEEDS_YOU_KINDS
+
+
+def _answered_alone(cards: list[dict]) -> bool:
+    """One card answered on its own by its own judge: a folder pick or a Needs-you item."""
+    return _pick_alone(cards) or _needs_you_alone(cards)
+
+
 def _option_key(label: object) -> str:
     return str(label or "").rstrip("/").rsplit("/", 1)[-1].casefold()
 
@@ -338,6 +353,7 @@ def _dismissable(cards: list[dict]) -> bool:
 from .voice_text import (  # noqa: E402,F401
     CHUNK_WORDS,
     batch_summary,
+    broader_grant,
     call_language,
     call_line,
     card_sentences,
@@ -832,7 +848,7 @@ class Call:
         """The language the FIXED lines about ``cards`` are said in (#2342): the call's own for
         cards the judge hears (#1715), English for a Needs-you item or a connector message, whose
         English grammar decides them and whose questions name its English phrases."""
-        return self.language if _judged(cards) or _pick_alone(cards) else None
+        return self.language if _judged(cards) or _answered_alone(cards) else None
 
     def _not_the_operator(self, ev: dict) -> str | None:
         """Why an utterance is not the operator speaking to HQ, or ``None`` (#1667, #1807). Every
@@ -2193,14 +2209,14 @@ class Call:
         challenge, which keeps that generation: a slower, older offer can never displace a newer
         one, and a challenge outlived by its generation never arms or confirms (#1631 reviews).
 
-        On a call in another language, HQ cards (`JUDGED_KINDS`) still arm: a reply the English
-        phrases don't cover is judged (#1715 P1). Anything else — a Needs-you decision, a pick —
-        keeps the English grammar and is read back for the SCREEN with no challenge armed, so a
-        translated or misdetected command can never settle it.
+        On a call in another language, HQ cards (`JUDGED_KINDS`), a lone folder pick (#2342 H1)
+        and a lone Needs-you item (#1715 P2) still arm: a reply the English phrases don't cover is
+        judged. A connector message keeps the English grammar and is read back for the SCREEN
+        with no challenge armed, so a translated or misdetected command can never settle it.
 
         An offer for a generation never displaces a challenge whose reply is still being judged
-        (`judging`, a folder pick): the reply came after whatever started that offer, so the
-        older offer is dropped, as a superseded one always is."""
+        (`judging`, a pick or a Needs-you item): the reply came after whatever started that offer,
+        so the older offer is dropped, as a superseded one always is."""
         cur = self.challenge
         if gen is not None and cur is not None and cur.get("judging"):
             return
@@ -2208,9 +2224,9 @@ class Call:
         cards = _voice_cap(cards)
         if gen is not None and gen != self.generation:
             return
-        if self.language not in (None, "en") and not _judged(cards) and not _pick_alone(cards):
-            # Needs-you decisions keep the English grammar (#1715 P2 is held): screen only. A
-            # lone folder pick is judged in any language (#2342 H1).
+        if self.language not in (None, "en") and not _judged(cards) and not _answered_alone(cards):
+            # A connector message keeps the English grammar: screen only. A lone folder pick
+            # (#2342 H1) and a lone Needs-you item (#1715 P2) are judged in any language.
             await self.say(readback_screen_only(cards, self.language), kind="readback",
                            turn_id=turn_id)  # fmt: skip
             return
@@ -2291,18 +2307,44 @@ class Call:
             return await self._apply_verdict(
                 ch, first, text, verdict, idx, snap=snap, heard_id=heard_id
             )
+        if _needs_you_alone(ch["cards"]):
+            # A Needs-you decision (#1681 P2): the reply names WHICH answer, of this row only. A
+            # broader grant is refused FIRST, in any language, before the grammar and the judge:
+            # it is never allow-once (#1715 P2). The English grammar decides at once; anything
+            # else — any wording, any language — goes to ONE decision judgement.
+            if first["kind"] == "permission" and broader_grant(text):
+                verdict, idx = "broader", None
+            elif first["kind"] == "needs_you":
+                verdict, idx = (
+                    ("skip", None)
+                    if english and is_skip(text)
+                    else classify_confirmation(text, 1)
+                    if english
+                    else ("other", None)
+                )
+            else:
+                verdict, choice = classify_decision(text, first) if english else ("other", None)
+                idx = 0 if verdict == "choose" else None
+                if choice is not None:
+                    first = {**first, "choice": choice}
+            if verdict == "other":
+                await self.client(
+                    {"t": "caption", "who": "you", "id": uuid.uuid4().hex[:12], "text": text}
+                )
+                ch["judging"] = ch.get("judging", 0) + 1
+                self._side(
+                    self._judge_decision_reply(
+                        ch, text, snap, late=late, turn=turn, heard_id=heard_id
+                    )
+                )
+                return True
+            return await self._apply_verdict(
+                ch, first, text, verdict, idx, snap=snap, heard_id=heard_id
+            )
         if not english and not judged:
-            # Fail closed: a Needs-you decision is matched by the English grammar only, so a turn
+            # Fail closed: a connector message is matched by the English grammar only, so a turn
             # not known to be English never decides one. The caller voids it.
             return False
-        if len(ch["cards"]) == 1 and first["kind"] in ("permission", "menu"):
-            # A Needs-you decision (#1681 P2): the reply names WHICH answer, of this row only.
-            verdict, choice = classify_decision(text, first)
-            idx = 0 if verdict == "choose" else None
-            if choice is not None:
-                first = {**first, "choice": choice}
-        elif len(ch["cards"]) == 1 and first["kind"] == "needs_you" and is_skip(text):
-            verdict, idx = "skip", None
         else:
             # The fixed English phrases decide at once (the fast path); anything they don't cover
             # — any wording, any language — goes to ONE focused judgement (#1715 P1).
@@ -2394,6 +2436,81 @@ class Call:
         # Not an answer: the words go on as a new question, as an unmatched reply always did. The
         # challenge is retired WITHOUT an await, so nothing newer can be asked before these words
         # take their generation (`on_utterance` takes it before its first await).
+        cleared = self.challenge is ch
+        if cleared:
+            self.challenge = None
+        await self.on_utterance(text, late=late, turn=turn, captioned=True, heard_id=heard_id)
+        if cleared and self.challenge is None:
+            await self.client({"t": "challenge", "cards": []})
+
+    async def _judge_decision_reply(
+        self,
+        ch: dict,
+        text: str,
+        snap: dict,
+        *,
+        late: bool = False,
+        turn: int | None = None,
+        heard_id: str | None = None,
+    ) -> None:
+        """Ask the decision judge what `text` decides for the Needs-you item of `ch` (#1715 P2).
+        A verdict acts only while `_judge_still_holds`, mapped onto the grammar's own outcomes:
+        ``allow_once`` is the item's recorded single-use allow (none offered: "I can't allow this
+        one by voice"), ``refuse`` its recorded refusal, ``pick N`` the menu's recorded option N
+        (one whose label another option shares: "Which one do you mean?"), ``send`` the
+        question's answer; ``broader`` is refused and said back. ``other`` passes the words on as
+        a new question and no verdict says it couldn't tell, exactly as for HQ's cards
+        (`_judge_reply`). The screen's own route re-checks the recorded dialog either way."""
+        from . import voice_judge
+
+        first = ch["cards"][0]
+        try:
+            got = await voice_judge.judge_decision(first, ch.get("readback") or "", text)
+        finally:
+            ch["judging"] = ch.get("judging", 1) - 1
+        if got is not None and got[0] != "other":
+            if not self._judge_still_holds(ch, snap):
+                return
+            verdict, i = got
+            idx: int | None = None
+            if verdict == "allow_once":
+                allow = first.get("allow")
+                verdict = "choose" if isinstance(allow, dict) else "no_allow"
+                if isinstance(allow, dict):
+                    first, idx = {**first, "choice": allow}, 0
+            elif verdict == "refuse":
+                deny = first.get("deny")
+                verdict = "choose" if isinstance(deny, dict) else "pick_none"
+                if isinstance(deny, dict):
+                    first, idx = {**first, "choice": deny}, 0
+            elif verdict == "pick":
+                options = first.get("options") or []
+                labels = [str(o.get("label") or "").casefold() for o in options]
+                if i is None or i >= len(options) or labels.count(labels[i]) > 1:
+                    verdict = "pick_none"
+                else:
+                    verdict, first, idx = "choose", {**first, "choice": options[i]}, 0
+            elif verdict == "send":
+                verdict, idx = "confirm", 0
+            elif verdict == "unclear":
+                verdict = "pick_none"
+            await self._apply_verdict(
+                ch, first, text, verdict, idx, captioned=True, snap=snap, heard_id=heard_id
+            )
+            return
+        if (
+            self.state == "ended"
+            or turn is None
+            or self.taken_turn > turn
+            or self.typed_turns != snap["typed"]
+        ):
+            return
+        if got is None:
+            if self.challenge is ch:
+                await self.void_challenge()
+                await self.say(call_line("reply.not_caught", self._line_lang(ch["cards"])),
+                               kind="outcome")  # fmt: skip
+            return
         cleared = self.challenge is ch
         if cleared:
             self.challenge = None
@@ -2563,7 +2680,7 @@ class Call:
         # for a confirmation.
         lang = self._line_lang(ch["cards"])
         which = which_of(len(ch["cards"]), lang)  # a person's question, never a command (#2342)
-        if _judged(ch["cards"]) or _pick_alone(ch["cards"]):
+        if _judged(ch["cards"]) or _answered_alone(ch["cards"]):
             # No ordinal menu for HQ's own cards (#2389): the judge takes a card by what it is,
             # and a folder by its name (#2342 H1).
             pick = call_line("reply.which_mean", lang)
@@ -2573,9 +2690,8 @@ class Call:
         line = {
             "all": call_line("reply.one_at_a_time", lang, pick=pick),
             "dismiss_all": call_line("reply.drop_one_at_a_time", lang, drop=drop),
-            "broader": "By voice I can only allow it once. For anything more, you'll need to"
-            " tap it.",
-            "no_allow": "I can't allow this one by voice. Refuse it, or skip it?",
+            "broader": call_line("reply.broader", lang),
+            "no_allow": call_line("reply.no_allow", lang),
             "ambiguous_dismiss": drop,
             "pick_again": call_line("reply.which_again", lang),
         }.get(verdict, pick)
@@ -3097,7 +3213,7 @@ class Call:
         if resp.status != 200 or not isinstance(resp.body, dict):
             return []
         rows = [r for r in resp.body.get("rows") or [] if isinstance(r, dict)]
-        by_id = {c["id"]: c for c in needs_you_cards(rows)}
+        by_id = {c["id"]: c for c in needs_you_cards(rows, self.language)}
         out: list[dict] = []
         for i in ids:
             if isinstance(i, str) and i in by_id and by_id[i] not in out:
@@ -4130,7 +4246,7 @@ def _menu_words(menu: object) -> tuple[str, list[str]] | None:
     return question, labels  # type: ignore[return-value]
 
 
-def _question_card(row: dict) -> dict | None:
+def _question_card(row: dict, lang: object = None) -> dict | None:
     """A QUESTION row whose pending action answers it with text a voice may send."""
     a = row.get("action") if isinstance(row.get("action"), dict) else None
     if not a or row.get("kind") != "question" or not a.get("can_approve"):
@@ -4142,7 +4258,7 @@ def _question_card(row: dict) -> dict | None:
         return None  # the answer that would be sent can't be read back in full: screen only
     line = _sentence(f"{_who(row)} asks a question. The suggested answer is: {answer}")
     return {"id": a["id"], "kind": "needs_you", "verb": "send it", "line": line,
-            "ask": "Send it, skip it, or cancel?"}  # fmt: skip
+            "ask": call_line("ask.send_answer", lang)}  # fmt: skip
 
 
 def _escalation(row: dict) -> dict | None:
@@ -4164,7 +4280,7 @@ def _recorded_option(options: list, n: object, as_: str) -> dict | None:
     return {"option": n, "label": hits[0]["label"], "as": as_}
 
 
-def _permission_card(row: dict) -> dict | None:
+def _permission_card(row: dict, lang: object = None) -> dict | None:
     """A permission dialog a voice may decide (#1681 P2): ONLY one readable as a whole, with its
     refusal identified (`_permission_words`). Refuse is always offered then; allow only with an
     identified single-use option — never an option that grants more than this one call."""
@@ -4184,12 +4300,13 @@ def _permission_card(row: dict) -> dict | None:
         o.get("n") == allow["option"] and o.get("persistent") is not False for o in options
     ):
         allow = None  # only a single-use allow, and only when the dialog SAYS it is one
-    ask = "Allow it once, refuse it, or skip it?" if allow else "Refuse it, or skip it?"
+    # A plain question (#1715 P2): the reply is judged, so a natural "yes" allows it once.
+    ask = call_line("ask.allow_once" if allow else "ask.refuse_only", lang)
     return {"id": a["id"], "kind": "permission", "verb": "decide", "line": f"{_who(row)} {words}",
             "allow": allow, "deny": deny, "ask": ask}  # fmt: skip
 
 
-def _menu_card(row: dict) -> dict | None:
+def _menu_card(row: dict, lang: object = None) -> dict | None:
     """A menu a voice may answer (#1681 P2): the menu the escalation RECORDED (the one `/choose`
     checks a reply against), every option read verbatim."""
     a = _escalation(row)
@@ -4203,9 +4320,12 @@ def _menu_card(row: dict) -> dict | None:
     options = [_recorded_option(menu["options"], o.get("n"), "pick") for o in menu["options"]]  # type: ignore[index]
     if any(o is None for o in options):
         return None
-    line = f"{_sentence(f'{_who(row)} asks: {_sentence(question)}')} {ordinal_list(labels)}"
+    line = _sentence(f"{_who(row)} asks: {_sentence(question)}")
+    # Offered as a person offers them (#1715 P2): "Which one: X or Y?", picked by name, place
+    # or number.
+    ask = call_line("ask.menu", lang, options=or_list(labels, lang))
     return {"id": a["id"], "kind": "menu", "verb": "decide", "line": line, "options": options,
-            "ask": "Which one, or skip it?"}  # fmt: skip
+            "ask": ask}  # fmt: skip
 
 
 def needs_you_sentence(row: dict) -> str:
@@ -4239,14 +4359,14 @@ def needs_you_sentence(row: dict) -> str:
     return f"{who}'s screen needs a look — I couldn't read it."
 
 
-def needs_you_cards(rows: list[dict]) -> list[dict]:
+def needs_you_cards(rows: list[dict], lang: object = None) -> list[dict]:
     """The Needs-you rows a voice may settle, as cards (#1681 P2): a QUESTION whose pending action
     answers it with text, a permission dialog readable as a whole, a menu read in full. The rest
     are settled on the screen. A card's id is its row's pending action id: what HQ names when it
     offers the decision (`offer_decisions`, #2137)."""
     cards: list[dict] = []
     for r in rows:
-        card = _question_card(r) or _permission_card(r) or _menu_card(r)
+        card = _question_card(r, lang) or _permission_card(r, lang) or _menu_card(r, lang)
         if card is not None:
             cards.append(card)
     return cards

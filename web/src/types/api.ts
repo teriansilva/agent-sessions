@@ -1074,7 +1074,8 @@ export interface AskConversationSummary {
 export interface AskUpdate {
   key: string;
   /** `not_followed` (#1517): a delivered nudge that could not be followed (the cap was full). */
-  kind: "finished" | "needs_you" | "ended" | "not_followed";
+  /** `taken_over` (#2397): the Commander typed in a session HQ drove from this conversation. */
+  kind: "finished" | "needs_you" | "ended" | "not_followed" | "taken_over";
   title: string;
   ts: number;
   /** Still followed — Unfollow is offered. */
@@ -2328,6 +2329,8 @@ export interface StructuredTurn {
   /** An operator submission; absent on older servers (#1438). */
   kind?: "operator";
   turn_id: string;
+  /** HQ sent this turn (#2397): a drive send, or the first message of a session HQ started. */
+  from_hq?: boolean;
   operation_id: string;
   state: StructuredTurnState | string;
   text: string | null;
@@ -2702,6 +2705,22 @@ export interface StructuredSnapshot {
   files?: boolean;
   /** #1931: present on `GET /api/structured/sessions/{key}` only, not on action answers. */
   presence?: StructuredPresence;
+  /** #2397: who drives this API session. Present on the snapshot READ only, like `presence`. */
+  driver?: StructuredDriver;
+}
+
+/** Who drives an API session (#2397): HQ (from one of its conversations), the Commander, or a
+ *  mission (derived, never stored). `generation` is what Hand back compares. */
+export interface StructuredDriver {
+  who: "hq" | "commander" | "mission" | "unknown";
+  generation: number | null;
+  since?: number | null;
+  /** The HQ conversation that drives it (or last drove it). */
+  conversation?: { id: string; title: string };
+  mission?: { id: string; title: string };
+  /** Hand back to HQ is offered: the Commander drives it and HQ drove it from a conversation
+   *  that still exists. False on a session HQ never drove ("Ask HQ to take it over"). */
+  can_hand_back: boolean;
 }
 
 /** The turns just older than a cursor (#1504), chronological, shaped as the snapshot's. */

@@ -118,6 +118,7 @@ import type {
   StructuredEventPage,
   StructuredHistoryPage,
   StructuredModelList,
+  StructuredDriver,
   StructuredSnapshot,
   ChatTurn,
   DashboardSessions,
@@ -1559,6 +1560,13 @@ export const api = {
     }),
   structuredSnapshot: (key: string) =>
     getJsonWithDetail<StructuredSnapshot>(structuredPath(key)),
+  /** Hand an API session back to HQ (#2397): compare-and-set on the driver's generation, so a
+   *  stale view gets a 409 and reloads. Answers the new driver. */
+  handBackDriver: (key: string, generation: number) =>
+    mutateJson<StructuredDriver>("POST", `/api/sessions/${encodeURIComponent(key)}/driver`, {
+      who: "hq",
+      generation,
+    }),
   /** Older turns for scrolling up (#1504): the page just before `before`, a turn id. */
   structuredHistory: (key: string, before: string, limit = 50) =>
     getJsonWithDetail<StructuredHistoryPage>(

@@ -1,0 +1,549 @@
+{
+ "about": "#1715 P2: spoken Needs-you decisions, what the decision judge must answer. expect: a verdict token, a 0-based menu option, or a list of acceptable verdicts (never allow_once or send). Run against the live HQ model with scripts/voice-decision-corpus (the broader veto runs first, as on a call); CI checks the veto against it.",
+ "cases": [
+  {
+   "lang": "en",
+   "kind": "permission",
+   "reply": "yes",
+   "expect": "allow_once",
+   "can_allow_once": true
+  },
+  {
+   "lang": "en",
+   "kind": "permission",
+   "reply": "yeah go ahead",
+   "expect": "allow_once",
+   "can_allow_once": true
+  },
+  {
+   "lang": "en",
+   "kind": "permission",
+   "reply": "sure, allow it",
+   "expect": "allow_once",
+   "can_allow_once": true
+  },
+  {
+   "lang": "en",
+   "kind": "permission",
+   "reply": "ok do it",
+   "expect": "allow_once",
+   "can_allow_once": true
+  },
+  {
+   "lang": "en",
+   "kind": "permission",
+   "reply": "refuse it",
+   "expect": "refuse",
+   "can_allow_once": true
+  },
+  {
+   "lang": "en",
+   "kind": "permission",
+   "reply": "deny that",
+   "expect": "refuse",
+   "can_allow_once": true
+  },
+  {
+   "lang": "en",
+   "kind": "permission",
+   "reply": "no, don't let it do that, refuse",
+   "expect": [
+    "refuse"
+   ],
+   "can_allow_once": true
+  },
+  {
+   "lang": "en",
+   "kind": "permission",
+   "reply": "allow always",
+   "expect": "broader",
+   "can_allow_once": true
+  },
+  {
+   "lang": "en",
+   "kind": "permission",
+   "reply": "yes and don't ask again",
+   "expect": "broader",
+   "can_allow_once": true
+  },
+  {
+   "lang": "en",
+   "kind": "permission",
+   "reply": "for this session yes",
+   "expect": "broader",
+   "can_allow_once": true
+  },
+  {
+   "lang": "en",
+   "kind": "permission",
+   "reply": "no",
+   "expect": "cancel",
+   "can_allow_once": true
+  },
+  {
+   "lang": "en",
+   "kind": "permission",
+   "reply": "not now",
+   "expect": [
+    "cancel",
+    "skip"
+   ],
+   "can_allow_once": true
+  },
+  {
+   "lang": "en",
+   "kind": "permission",
+   "reply": "leave it",
+   "expect": "cancel",
+   "can_allow_once": true
+  },
+  {
+   "lang": "en",
+   "kind": "permission",
+   "reply": "skip",
+   "expect": "skip",
+   "can_allow_once": true
+  },
+  {
+   "lang": "en",
+   "kind": "permission",
+   "reply": "next one",
+   "expect": "skip",
+   "can_allow_once": true
+  },
+  {
+   "lang": "en",
+   "kind": "permission",
+   "reply": "what does that command do?",
+   "expect": "other",
+   "can_allow_once": true
+  },
+  {
+   "lang": "en",
+   "kind": "permission",
+   "reply": "yes... no, wait",
+   "expect": [
+    "other",
+    "cancel"
+   ],
+   "can_allow_once": true
+  },
+  {
+   "lang": "en",
+   "kind": "permission",
+   "reply": "only tomorrow",
+   "expect": [
+    "other",
+    "cancel",
+    "skip"
+   ],
+   "can_allow_once": true
+  },
+  {
+   "lang": "en",
+   "kind": "permission",
+   "reply": "maybe",
+   "expect": [
+    "other",
+    "cancel"
+   ],
+   "can_allow_once": true
+  },
+  {
+   "lang": "de",
+   "kind": "permission",
+   "reply": "ja",
+   "expect": "allow_once",
+   "can_allow_once": true
+  },
+  {
+   "lang": "de",
+   "kind": "permission",
+   "reply": "ja, einmal",
+   "expect": "allow_once",
+   "can_allow_once": true
+  },
+  {
+   "lang": "de",
+   "kind": "permission",
+   "reply": "passt, mach",
+   "expect": "allow_once",
+   "can_allow_once": true
+  },
+  {
+   "lang": "de",
+   "kind": "permission",
+   "reply": "ja bitte erlauben",
+   "expect": "allow_once",
+   "can_allow_once": true
+  },
+  {
+   "lang": "de",
+   "kind": "permission",
+   "reply": "lehn das ab",
+   "expect": "refuse",
+   "can_allow_once": true
+  },
+  {
+   "lang": "de",
+   "kind": "permission",
+   "reply": "nicht erlauben, ablehnen",
+   "expect": "refuse",
+   "can_allow_once": true
+  },
+  {
+   "lang": "de",
+   "kind": "permission",
+   "reply": "ablehnen",
+   "expect": "refuse",
+   "can_allow_once": true
+  },
+  {
+   "lang": "de",
+   "kind": "permission",
+   "reply": "ja, immer",
+   "expect": "broader",
+   "can_allow_once": true
+  },
+  {
+   "lang": "de",
+   "kind": "permission",
+   "reply": "für immer erlauben",
+   "expect": "broader",
+   "can_allow_once": true
+  },
+  {
+   "lang": "de",
+   "kind": "permission",
+   "reply": "fur immer",
+   "expect": "broader",
+   "can_allow_once": true
+  },
+  {
+   "lang": "de",
+   "kind": "permission",
+   "reply": "ja und nicht mehr fragen",
+   "expect": "broader",
+   "can_allow_once": true
+  },
+  {
+   "lang": "de",
+   "kind": "permission",
+   "reply": "nein",
+   "expect": "cancel",
+   "can_allow_once": true
+  },
+  {
+   "lang": "de",
+   "kind": "permission",
+   "reply": "nee, lass mal",
+   "expect": "cancel",
+   "can_allow_once": true
+  },
+  {
+   "lang": "de",
+   "kind": "permission",
+   "reply": "jetzt nicht",
+   "expect": [
+    "cancel",
+    "skip"
+   ],
+   "can_allow_once": true
+  },
+  {
+   "lang": "de",
+   "kind": "permission",
+   "reply": "überspringen",
+   "expect": "skip",
+   "can_allow_once": true
+  },
+  {
+   "lang": "de",
+   "kind": "permission",
+   "reply": "später",
+   "expect": [
+    "skip",
+    "cancel"
+   ],
+   "can_allow_once": true
+  },
+  {
+   "lang": "de",
+   "kind": "permission",
+   "reply": "nächste",
+   "expect": "skip",
+   "can_allow_once": true
+  },
+  {
+   "lang": "de",
+   "kind": "permission",
+   "reply": "was macht das?",
+   "expect": "other",
+   "can_allow_once": true
+  },
+  {
+   "lang": "de",
+   "kind": "permission",
+   "reply": "ja... nein, warte",
+   "expect": [
+    "other",
+    "cancel"
+   ],
+   "can_allow_once": true
+  },
+  {
+   "lang": "de",
+   "kind": "permission",
+   "reply": "erst morgen",
+   "expect": [
+    "other",
+    "cancel",
+    "skip"
+   ],
+   "can_allow_once": true
+  },
+  {
+   "lang": "de",
+   "kind": "permission",
+   "reply": "bestätige nicht",
+   "expect": [
+    "other",
+    "cancel",
+    "refuse"
+   ],
+   "can_allow_once": true
+  },
+  {
+   "lang": "en",
+   "kind": "menu",
+   "reply": "release 2.0",
+   "expect": 1,
+   "options": [
+    "main",
+    "release 2.0",
+    "the dev branch"
+   ]
+  },
+  {
+   "lang": "en",
+   "kind": "menu",
+   "reply": "the dev one",
+   "expect": 2,
+   "options": [
+    "main",
+    "release 2.0",
+    "the dev branch"
+   ]
+  },
+  {
+   "lang": "en",
+   "kind": "menu",
+   "reply": "main please",
+   "expect": 0,
+   "options": [
+    "main",
+    "release 2.0",
+    "the dev branch"
+   ]
+  },
+  {
+   "lang": "en",
+   "kind": "menu",
+   "reply": "the second one",
+   "expect": 1,
+   "options": [
+    "main",
+    "release 2.0",
+    "the dev branch"
+   ]
+  },
+  {
+   "lang": "en",
+   "kind": "menu",
+   "reply": "the release one",
+   "expect": 1,
+   "options": [
+    "main",
+    "release 2.0",
+    "the dev branch"
+   ]
+  },
+  {
+   "lang": "en",
+   "kind": "menu",
+   "reply": "either of the first two",
+   "expect": "unclear",
+   "options": [
+    "main",
+    "release 2.0",
+    "the dev branch"
+   ]
+  },
+  {
+   "lang": "en",
+   "kind": "menu",
+   "reply": "the staging one",
+   "expect": "unclear",
+   "options": [
+    "main",
+    "release 2.0",
+    "the dev branch"
+   ]
+  },
+  {
+   "lang": "en",
+   "kind": "menu",
+   "reply": "skip it",
+   "expect": "skip",
+   "options": [
+    "main",
+    "release 2.0",
+    "the dev branch"
+   ]
+  },
+  {
+   "lang": "en",
+   "kind": "menu",
+   "reply": "not now",
+   "expect": [
+    "cancel",
+    "skip"
+   ],
+   "options": [
+    "main",
+    "release 2.0",
+    "the dev branch"
+   ]
+  },
+  {
+   "lang": "de",
+   "kind": "menu",
+   "reply": "den release Branch",
+   "expect": 1,
+   "options": [
+    "main",
+    "release 2.0",
+    "the dev branch"
+   ]
+  },
+  {
+   "lang": "de",
+   "kind": "menu",
+   "reply": "main bitte",
+   "expect": 0,
+   "options": [
+    "main",
+    "release 2.0",
+    "the dev branch"
+   ]
+  },
+  {
+   "lang": "de",
+   "kind": "menu",
+   "reply": "die letzte",
+   "expect": 2,
+   "options": [
+    "main",
+    "release 2.0",
+    "the dev branch"
+   ]
+  },
+  {
+   "lang": "de",
+   "kind": "menu",
+   "reply": "den staging Branch",
+   "expect": "unclear",
+   "options": [
+    "main",
+    "release 2.0",
+    "the dev branch"
+   ]
+  },
+  {
+   "lang": "de",
+   "kind": "menu",
+   "reply": "lass mal",
+   "expect": "cancel",
+   "options": [
+    "main",
+    "release 2.0",
+    "the dev branch"
+   ]
+  },
+  {
+   "lang": "en",
+   "kind": "needs_you",
+   "reply": "yes, send it",
+   "expect": "send"
+  },
+  {
+   "lang": "en",
+   "kind": "needs_you",
+   "reply": "sure",
+   "expect": "send"
+  },
+  {
+   "lang": "en",
+   "kind": "needs_you",
+   "reply": "go ahead",
+   "expect": "send"
+  },
+  {
+   "lang": "de",
+   "kind": "needs_you",
+   "reply": "ja, schick",
+   "expect": "send"
+  },
+  {
+   "lang": "de",
+   "kind": "needs_you",
+   "reply": "passt, abschicken",
+   "expect": "send"
+  },
+  {
+   "lang": "en",
+   "kind": "needs_you",
+   "reply": "no",
+   "expect": "cancel"
+  },
+  {
+   "lang": "de",
+   "kind": "needs_you",
+   "reply": "nicht jetzt",
+   "expect": [
+    "cancel",
+    "skip"
+   ]
+  },
+  {
+   "lang": "en",
+   "kind": "needs_you",
+   "reply": "skip",
+   "expect": "skip"
+  },
+  {
+   "lang": "de",
+   "kind": "needs_you",
+   "reply": "später",
+   "expect": [
+    "skip",
+    "cancel"
+   ]
+  },
+  {
+   "lang": "en",
+   "kind": "needs_you",
+   "reply": "why main?",
+   "expect": "other"
+  },
+  {
+   "lang": "de",
+   "kind": "needs_you",
+   "reply": "schick das nicht",
+   "expect": [
+    "cancel",
+    "other"
+   ]
+  }
+ ]
+}

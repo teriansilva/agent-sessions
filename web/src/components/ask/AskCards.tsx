@@ -559,6 +559,12 @@ const UPDATE_WORDS: Record<AskUpdate["kind"], { word: string; tone: Tone; detail
     tone: "neutral",
     detail: "Already following 10 sessions",
   },
+  // #2397: the Commander typed in a session HQ drove from this conversation.
+  taken_over: {
+    word: "You took over",
+    tone: "warn",
+    detail: "You typed in it, so HQ stopped steering it. Hand it back from the session, or ask me",
+  },
 };
 
 /** Every session the conversation follows, as ONE block at the thread's end (#1755): a row per
@@ -704,6 +710,11 @@ const OPERATION_GROUP: Record<string, string> = {
 const BY_HQ_VERB: Record<string, string> = {
   "automation.run_now": "Ran by HQ",
   "mission.relay": "Sent by HQ",
+  // Driving an API session (#2397).
+  "session.send": "Sent by HQ",
+  "session.interrupt": "Interrupted by HQ",
+  "session.withdraw": "Withdrawn by HQ",
+  "session.adopt": "Driven by HQ",
   // The destructive class (#2396): said by what it did.
   "session.archive": "Archived by HQ",
   "session.close": "Closed by HQ",

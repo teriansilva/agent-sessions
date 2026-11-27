@@ -144,6 +144,7 @@ the same list.
 | `components/structured/BackgroundWork.module.css` | css | 6 | todo |  |  |
 | `components/structured/ApiRail.module.css` | css | 6 | todo |  |  |
 | `components/structured/BackgroundStrip.module.css` | css | 6 | todo |  |  |
+| `components/structured/DriverBanner.module.css` | css | 6 | todo |  |  |
 | `components/structured/Markdown.module.css` | css | 6 | todo |  |  |
 | `components/structured/NotSent.module.css` | css | 6 | todo |  |  |
 | `components/structured/Outbox.module.css` | css | 6 | todo |  |  |

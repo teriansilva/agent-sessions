@@ -230,6 +230,108 @@ async def judge_pick(
     return parse_pick_verdict(content, len(options))
 
 
+# ---- a Needs-you decision, judged (#1715 P2, #2342 H2) -----------------------------------------
+
+#: What a verdict may be, by the Needs-you item's kind: a permission dialog, an agent's menu, or a
+#: question with a suggested answer. A verdict outside its kind's set is no verdict.
+DECISION_VERDICTS = {
+    "permission": frozenset({"allow_once", "refuse", "broader", "skip", "cancel", "other"}),
+    "menu": frozenset({"pick", "unclear", "skip", "cancel", "other"}),
+    "needs_you": frozenset({"send", "skip", "cancel", "other"}),
+}
+#: The most options a judged menu may hold (`voice_calls.MENU_OPTIONS_TOLD`).
+MENU_OPTIONS_MAX = 5
+_DECISION_VERDICT = re.compile(
+    r"(allow_once|refuse|broader|pick|unclear|send|skip|cancel|other)(?: ([1-9]))?"
+)
+
+
+def parse_decision_verdict(
+    content: object, kind: str, options: int
+) -> tuple[str, int | None] | None:
+    """The Needs-you judge's answer (#1715 P2): ``(verdict, i)`` with ``i`` the 0-based menu
+    option of a ``pick``, else ``None`` — or ``None``: no verdict. Strict, like the card judge: the
+    whole answer, trimmed of whitespace only, is one token valid for THIS kind; a number only on
+    ``pick``, and only within the options read."""
+    if not isinstance(content, str) or kind not in DECISION_VERDICTS:
+        return None
+    m = _DECISION_VERDICT.fullmatch(content.strip())
+    if m is None or m.group(1) not in DECISION_VERDICTS[kind]:
+        return None
+    word, n = m.group(1), m.group(2)
+    if word != "pick":
+        return (word, None) if n is None else None
+    if n is None or not 1 <= int(n) <= min(options, MENU_OPTIONS_MAX):
+        return None
+    return "pick", int(n) - 1
+
+
+def _decision_message(item: dict, readback: str, reply: str) -> str:
+    # JSON-quoted: the texts are data, never instructions (the guard clause says so as well).
+    return "\n".join(
+        [
+            f"The item (quoted): {json.dumps(item, ensure_ascii=False)}",
+            f"HQ read and asked (quoted): {json.dumps(readback, ensure_ascii=False)}",
+            f"The Commander replied (quoted): {json.dumps(reply, ensure_ascii=False)}",
+        ]
+    )
+
+
+def decision_item(card: dict) -> dict:
+    """What the judge is told about a Needs-you card, server-built from the card the call offered:
+    its kind, and for a menu its options as read, for a permission whether allowing it once is on
+    offer at all. Nothing else of the row."""
+    kind = str(card.get("kind") or "")
+    item: dict = {"kind": kind}
+    if kind == "menu":
+        item["options"] = [
+            {"n": i + 1, "option": str(o.get("label") or "")}
+            for i, o in enumerate((card.get("options") or [])[:MENU_OPTIONS_MAX])
+        ]
+    if kind == "permission":
+        item["can_allow_once"] = isinstance(card.get("allow"), dict)
+    return item
+
+
+async def judge_decision(card: dict, readback: str, reply: str) -> tuple[str, int | None] | None:
+    """Ask the HQ model what `reply` decides about ONE Needs-you item (#1715 P2, approved by the
+    operator in comment 141855 on #1715). The registered, guarded `voice_decision_judge` prompt
+    with its locked format, `temperature: 0`, the single transport and `JUDGE_TIMEOUT_S`, as
+    `judge_cards`. `None`: no verdict, and the caller decides nothing."""
+    from . import ai_providers, hq_calls_settings, hq_usage, prompts, review
+
+    item = decision_item(card)
+    if item["kind"] not in DECISION_VERDICTS:
+        return None
+    try:
+        cfg = review._require_config()
+        body = {
+            "model": cfg["model"],
+            "messages": [
+                {"role": "system", "content": prompts.effective("voice_decision_judge")},
+                {"role": "user", "content": _decision_message(item, readback, reply)},
+            ],
+            "temperature": 0,
+            "stream": False,
+            "max_tokens": JUDGE_MAX_TOKENS,
+        }
+        with hq_usage.hq_call(), ai_providers.spoken_turn(**hq_calls_settings.spoken()):
+            r = await asyncio.wait_for(review.post_chat_response(cfg, body), JUDGE_TIMEOUT_S)
+        if r.status_code != 200:
+            return None
+        choice = r.json()["choices"][0]
+        message = choice["message"]
+        if choice.get("finish_reason") != "stop" or message.get("refusal"):
+            return None
+        content = message.get("content")
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 — no verdict: nothing is decided
+        log.info("voice decision judge gave no verdict", exc_info=True)
+        return None
+    return parse_decision_verdict(content, item["kind"], len(item.get("options") or []))
+
+
 # ---- a likely goodbye while HQ is idle (2026-11-25) ----------------------------------------------
 
 #: The call-end judgement's budget for a likely goodbye: past it, HQ answers the words as usual.

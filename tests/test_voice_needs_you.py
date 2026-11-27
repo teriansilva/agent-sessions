@@ -213,7 +213,7 @@ def _one(card, pending, screen, monkeypatch) -> str:
     return row["what"]
 
 
-OFFER_PERMISSION = "Allow it once, refuse it, or skip it?"
+OFFER_PERMISSION = "Should I allow it, just this once?"
 #: The WHOLE claude Bash capture as said (Hermes 7021): request, note, question, every option.
 BASH_SAID = (
     "asks permission for Bash command: mkdir -p probe-dir-1213 && touch probe-dir-1213/f.txt."
@@ -327,8 +327,7 @@ def test_a_menu_reads_its_question_and_every_option(monkeypatch):
     esc["observed_prompt"]["prompt_class"] = "choice"
     said = _one(_card(sid, "docs"), [esc], {"prompt_class": "choice", "menu": MENU}, monkeypatch)
     assert said == (
-        "docs in web asks: Which branch should I rebase onto? The first is main and the"
-        " second is release 2.0. Which one, or skip it?"
+        "docs in web asks: Which branch should I rebase onto? Which one: main or release 2.0?"
     )
 
 
@@ -378,7 +377,7 @@ def test_a_question_with_a_readable_answer_is_offered_and_read_back(monkeypatch)
     assert said[-2] == "Here is what waits on you."
     assert said[-1] == (
         "api-rebase in web asks a question. The suggested answer is: Use main."
-        " Send it, skip it, or cancel?"
+        " Want me to send that answer?"
     )
 
 
@@ -443,8 +442,8 @@ def test_mixed_rows_describe_in_order_and_offer_only_what_a_voice_may_settle(mon
         {"what": f"deploy in infra {BASH_SAID}", "decision": f"act-{p}"},
         {"what": "api-rebase in web asks a question. The suggested answer is: Use main.",
          "decision": f"ans-{q}"},
-        {"what": "docs in web asks: Which branch should I rebase onto? The first is main and the"
-                 " second is release 2.0.", "decision": "act-menu"},
+        {"what": "docs in web asks: Which branch should I rebase onto? Which one: main or"
+                 " release 2.0?", "decision": "act-menu"},
         {"what": "nightly in web's screen needs a look — I couldn't read it."},
     ]  # fmt: skip
     r = Rig(monkeypatch, {"answer": "Three wait on you.", "offers": [f"act-{p}", f"ans-{q}"]})

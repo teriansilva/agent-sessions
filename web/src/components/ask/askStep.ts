@@ -24,6 +24,9 @@ export const TOOL_LABELS: Record<string, { label: string; noun?: [string, string
   session_status: { label: "Reading a session's status", noun: ["session", "sessions"] },
   session_report: { label: "Reading a session's report", noun: ["report", "reports"] },
   session_brief: { label: "Reading a session's brief", noun: ["session", "sessions"] },
+  // #2397: driving an API session. Each is one "Reply read" step in the list.
+  session_turns: { label: "Reply read: a session's turns", noun: ["turn", "turns"] },
+  wait_session: { label: "Waiting for a session's reply", noun: ["turn", "turns"] },
   list_sessions: { label: "Listing your sessions", noun: ["session", "sessions"] },
   list_missions: { label: "Reading your missions", noun: ["mission", "missions"] },
   mission_status: { label: "Reading a mission's status", noun: ["objective", "objectives"] },

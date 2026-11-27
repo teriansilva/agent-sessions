@@ -161,15 +161,16 @@ it **reads the card back** and asks you, the way a person would:
 > "A new session in api: rerun the tests. Shall I start it?"
 
 Answer in your own words ("yeah, go", "sure", "do it"). HQ never reads you a numbered menu: it
-offers choices as "Claude or Codex?". A question from one of your sessions (a permission, a menu)
-names the words that answer it ("Allow it once, refuse it, or skip it?", "The first is main and
-the second is release. Which one?"). So does a message HQ would send through a messenger
-connector, alone or with other cards: "Send it, or cancel?" there wants "send it", not a bare
-"yes".
+offers choices as "Claude or Codex?". A question from one of your sessions is asked the same way
+("Should I allow it, just this once?", "Which one: main or release?", "Want me to send that
+answer?") and answered in your own words, in any language: "yes", "ja, einmal", "the release
+one", "später". Allowing more than this once ("always", "immer", "don't ask again") is never done
+by voice: HQ says so, and you tap it on the screen. Only a message HQ would send through a
+messenger connector, alone or with other cards, still names its words: "Send it, or cancel?"
+there wants "send it", not a bare "yes".
 
 On a call in German, HQ reads its cards, asks its questions and says what happened in German
-too ("Soll ich das abschicken?"). A question from one of your sessions, and a messenger message,
-still use the English words above.
+too ("Soll ich das abschicken?"). A messenger message still uses the English words above.
 
 Ask for a new session without naming an agent or a project and HQ takes the ones you used for
 your most recent session, and tells you which it took.
@@ -199,9 +200,10 @@ and tells you whether it arrived.
   number ("the second one") picks and confirms at once. If two folders fit, HQ asks which one.
 - Some operations need input on screen. Those are never offered by voice.
 
-Spoken confirmation is **English-only**. On a call in another language, HQ reads the card and asks
-you to confirm it on screen. If your speech server can tell languages apart, a "confirm" it heard
-as another language is ignored, even on an English call.
+Your answers are understood in any language. Only a messenger message's "send it" is
+English-only: on a call in another language, HQ reads that card and asks you to confirm it on
+screen. If your speech server can tell languages apart, a "send it" it heard as another language
+is ignored, even on an English call.
 
 ## Voices and languages
 

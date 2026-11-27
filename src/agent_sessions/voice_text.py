@@ -584,6 +584,25 @@ def _words(said: str) -> tuple[str, list[str]]:
     return raw, " ".join(re.sub(r"[^a-z0-9' ]", " ", raw).split()).split()
 
 
+#: A broader grant than this one call, in English and German, matched on the folded reply
+#: (`broader_grant`, #1715 P2): "always", "for this session", "don't ask again", "immer", "nicht
+#: mehr fragen", "jedes Mal". Deliberately wide: a reply that merely sounds broader is refused and
+#: said back, never taken as allow-once.
+_BROADER_ANY = re.compile(
+    r"\b(always|again|forever|session|everything|all|every|immer|dauerhaft|stets|alle|alles"
+    r"|jedes ?mal|nicht mehr fragen|nie mehr fragen|nicht wieder fragen|fur die session)\b"
+)
+_FOLD = str.maketrans({"ä": "a", "ö": "o", "ü": "u", "ß": "ss", "é": "e"})
+
+
+def broader_grant(said: str) -> bool:
+    """A reply that asks for MORE than allowing this one call (#1715 P2), in English or German,
+    with STT's spellings ("fur immer", "nicht mehr fragen"). Checked on a permission card BEFORE
+    both the English grammar and the judge: such a reply is never allow-once."""
+    folded = " ".join(re.sub(r"[^a-z0-9 ]", " ", said.lower().translate(_FOLD)).split())
+    return bool(_BROADER_ANY.search(folded))
+
+
 def is_skip(said: str) -> bool:
     """ "Skip" / "next": move on to the next item, leaving this one on the screen."""
     raw, words = _words(said)
@@ -705,6 +724,13 @@ CALL_LINES: dict[str, dict[str, str]] = {
         "reply.which_again": "Sorry, which one?",
         "ask.folder": "Which folder: {options}",
         "lead.picked": "In {folder}.",
+        "ask.allow_once": "Should I allow it, just this once?",
+        "ask.refuse_only": "I can only refuse that one by voice. Should I?",
+        "ask.send_answer": "Want me to send that answer?",
+        "ask.menu": "Which one: {options}",
+        "reply.broader": "By voice I can only allow it once. For anything more, you'll need to "
+        "tap it.",
+        "reply.no_allow": "I can't allow this one by voice. Should I refuse it?",
         "reply.which_drop": "Which one should I drop?",
         "reply.drop_one_at_a_time": "I can only drop one at a time. {drop}",
         "reply.changed_left": "That one changed in the meantime, so I left it alone.",
@@ -801,6 +827,13 @@ CALL_LINES: dict[str, dict[str, str]] = {
         "reply.which_again": "Sorry, welcher?",
         "ask.folder": "Welcher Ordner: {options}",
         "lead.picked": "In {folder}.",
+        "ask.allow_once": "Soll ich das erlauben, nur dieses eine Mal?",
+        "ask.refuse_only": "Das kann ich per Stimme nur ablehnen. Soll ich?",
+        "ask.send_answer": "Soll ich die Antwort abschicken?",
+        "ask.menu": "Welche: {options}",
+        "reply.broader": "Per Stimme kann ich das nur einmal erlauben. Für mehr musst du es selbst "
+        "antippen.",
+        "reply.no_allow": "Das kann ich per Stimme nicht erlauben. Soll ich es ablehnen?",
         "reply.which_drop": "Welche soll ich verwerfen?",
         "reply.drop_one_at_a_time": "Ich kann nur eine nach der anderen verwerfen. {drop}",
         "reply.changed_left": "Das hat sich inzwischen geändert, also hab ich es gelassen.",

@@ -122,6 +122,10 @@ def test_every_catalog_operation_names_a_route_the_app_registers(app, monkeypatc
 
     monkeypatch.setattr(ask_mcp, "_current", lambda target, facts: 1.0)
     fields.update(server_name="docs", review_id="a1b2c3d4e5f60718", scope="shared")
+    # HQ's drive entries (#2397): the card's ids, the step it sends, the turn it withdraws.
+    fields.update(_pid="a" * 32, _cid="ask_" + "a" * 32, message="next step",
+                  turn_id="00000000-0000-4000-8000-0000000000a3")  # fmt: skip
+    facts.update(generation=1, active="00000000-0000-4000-8000-0000000000a4")
     fields.update(projects="all", project_ids="p1", named="P", server_id="0123456789abcdef")
     # A library save (#1611) builds its body from its bound draft, injected at the tap.
     fields["_content"] = {

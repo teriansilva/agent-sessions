@@ -47,12 +47,14 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Archive / unarchive | POST …/archive, …/unarchive | P1 W |
 | Archive sessions older than N | POST /api/sessions/archive-older | P1 W (partly done when `skipped`) |
 | Close an API session (stop worker); discard a pending start | POST /api/structured/sessions/{key}/stop | P1 W |
-| Start a pending API session | POST /api/structured/sessions/{key}/start | P7 W (starts agents) |
+| Start a pending API session | POST /api/structured/sessions/{key}/start | P7 W (starts agents; a skip-permissions launch is *widens*: A1c-widens, #2397) |
 | Adopt into / detach from a mission | POST /api/missions/{id}/adopt, …/detach | P5 W |
 | Hand off to another agent (prepare preview, edit seed, archive source) | POST /api/handoff/prepare, POST /api/handoff | P7 W (starts agents; seed shown verbatim on the card) |
 | Draft: read / save / clear | GET/PUT …/draft | P7 R/W |
 | Type into a terminal session (text) | WS input | have (`send_nudge`, sent on HQ's authority, sessions no mission holds, #1960) → P7 widens to keys (Esc, arrows, Tab, Return) |
-| API session: send a message, send now, withdraw a queued message, interrupt | POST /api/structured/sessions/{key}/turns, …/send-now, …/withdraw, …/interrupt | message: have (`send_nudge`, one guarded structured turn, sessions no mission holds, #1960); the rest P7 W |
+| API session: send a message, send now, withdraw a queued message, interrupt | POST /api/structured/sessions/{key}/turns, …/send-now, …/withdraw, …/interrupt | message: have (`send_nudge`, one guarded structured turn, sessions no mission holds, #1960); into a session HQ drives: have (`session.send`, *starts*, *external* when it skips permission prompts, #2397); interrupt, withdraw HQ's queued message: have (`session.interrupt`, `session.withdraw`, *starts*, #2397); send now: P7 W (no admission seam, #2397) |
+| API session: who drives it (HQ, you, a mission); hand it back to HQ; HQ takes it over | GET /api/structured/sessions/{key} `driver`, POST /api/sessions/{key}/driver, POST …/driver/adopt | have (`list_sessions.driver`, `session_status`; `session.adopt`, *starts*, #2397); hand back: **never** (the Commander's own, refused in-process) |
+| API session: read the turns and replies, wait for a turn | GET /api/structured/sessions/{key}, …/events?wait= | have (`session_turns`, `wait_session`, untrusted: they taint, #2397) |
 | API session: answer the agent's question / reply async / skip question | POST …/decisions (answer / cancel / reject) | P7 W |
 | API session: approve / reject a tool request | POST …/decisions | **never** (permission prompts are operator-only, `permission-prompts.md`) |
 | API session: approve always (standing grant) | POST …/decisions (always + grant) | **never** (grants permission) |
@@ -686,6 +688,8 @@ GET    /api/sessions/{sid}/attention                                            
 GET    /api/sessions/{sid}/children                                               P1  # a main session's subagents, lazily (#2325)
 PUT    /api/sessions/{sid}/cluster                                                P2  # move to a cluster / back to HQ's choice, on a card (#1997 P5)
 POST   /api/sessions/{sid}/color                                                  P1
+POST   /api/sessions/{sid}/driver                                                 never  # hand back to HQ: the Commander's own, refused in-process (#2397)
+POST   /api/sessions/{sid}/driver/adopt                                           have  # session.adopt, in-process only (#2397)
 GET    /api/sessions/{sid}/draft                                                  P7  # drafts
 PUT    /api/sessions/{sid}/draft                                                  P7  # drafts
 POST   /api/sessions/{sid}/favorite                                               P1
@@ -710,13 +714,13 @@ GET    /api/structured/sessions/{key}/containment                               
 POST   /api/structured/sessions/{key}/decisions                                   P7  # answers only; approve/always never (see ledger)
 GET    /api/structured/sessions/{key}/events                                      P7
 GET    /api/structured/sessions/{key}/history                                     P7
-POST   /api/structured/sessions/{key}/interrupt                                   P7
+POST   /api/structured/sessions/{key}/interrupt                                   have  # session.interrupt (#2397)
 POST   /api/structured/sessions/{key}/send-now                                    P7
 POST   /api/structured/sessions/{key}/skip-permissions                            never  # widens permission
 POST   /api/structured/sessions/{key}/start                                       P7
 POST   /api/structured/sessions/{key}/stop                                        P1  # close
-POST   /api/structured/sessions/{key}/turns                                       P7
-POST   /api/structured/sessions/{key}/withdraw                                    P7
+POST   /api/structured/sessions/{key}/turns                                       have  # session.send into a session HQ drives (#2397)
+POST   /api/structured/sessions/{key}/withdraw                                    have  # session.withdraw (#2397)
 GET    /api/telemetry                                                             P2  # read: CPU, RAM, HQ tokens (footer)
 GET    /api/system                                                                P6
 GET    /api/system/resources                                                      P6

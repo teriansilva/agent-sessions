@@ -871,6 +871,9 @@ async def _launch_api(cid: str, row: dict, fd: int, registry, act=None) -> None:
     outcome: dict
     try:
         try:
+            # HQ drives what it started (#2397): the record is ahead of the session, never behind
+            # it, and is written inside the write fence like every driver change.
+            await asyncio.to_thread(_record_driver, cid, row)
             try:
                 extra = (
                     await asyncio.to_thread(specialist_launch_args, row)
@@ -944,6 +947,23 @@ async def _launch_api(cid: str, row: dict, fd: int, registry, act=None) -> None:
     finally:
         os.close(fd)
         _TASKS.pop(pid, None)
+
+
+def _record_driver(cid: str, row: dict) -> None:
+    """The session this API card starts is HQ's to drive, from this conversation (#2397). Its key
+    is derived from the proposal id (`mission_structured.hq_ids`), the one `hq_start` creates.
+    Raises ``DispatchError`` when it cannot be recorded: nothing is started."""
+    from . import headless_dispatch, mission_structured, session_driver
+
+    try:
+        session_id, _brief = mission_structured.hq_ids(row["id"])
+        session_driver.record_start(
+            f"{row['engine']}:{session_id}", cid, str(row.get("project") or "")
+        )
+    except Exception as e:  # noqa: BLE001 — unrecorded: never a session HQ can't account for
+        raise headless_dispatch.DispatchError(
+            f"who drives it could not be recorded ({type(e).__name__})"
+        ) from None
 
 
 def _follow_started(cid: str, key: str, row: dict) -> None:

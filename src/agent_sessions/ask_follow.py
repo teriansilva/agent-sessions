@@ -134,6 +134,30 @@ def _take(doc: dict, key: str, *, title: str, via: str, since: float | None) -> 
     return True
 
 
+def notice(cid: str, key: str, *, kind: str, title: str) -> bool:
+    """Say one authored change about ``key`` in conversation ``cid`` now (#2397: the Commander took
+    a session HQ drove over), counted against the same `ask_store.MAX_UPDATES` budget and stamped
+    for the unread dot, like the follower's own updates. Returns whether it was written. Blocking.
+    """
+    if kind not in ask_store.UPDATE_KINDS or not ask_store.exists(cid):
+        return False
+    with ask_store.follows_lock(cid):
+        if not ask_store.exists(cid):
+            return False
+        doc = ask_store.read_follows(cid)
+        if doc["updates"] >= ask_store.MAX_UPDATES:
+            return False
+        now = time.time()
+        doc["outbox"] = [
+            *doc["outbox"],
+            {"key": key, "kind": kind, "title": title, "ts": now, "event_id": uuid.uuid4().hex},
+        ]
+        doc["updates"] += 1
+        doc["last_update_at"] = now
+        _flush(cid, doc)
+    return True
+
+
 #: Ledger outcomes after which a nudge's session is followed (#1517): the PTY accepted the bytes,
 #: or it may have. Dismissed, expired, refused or failed-before-the-first-byte never follow.
 NUDGE_FOLLOWS = frozenset({"delivered", "indeterminate"})

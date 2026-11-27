@@ -410,6 +410,8 @@ PUT	/api/sessions/{sid}/cluster	clusters	session	edit_metadata	login	mutate	warm
 POST	/api/sessions/{sid}/color	sessions	session	edit_metadata	login	mutate	warm	unscoped	session metadata and per-session settings
 GET	/api/sessions/{sid}/draft	sessions	session	view	login	read	warm	unscoped	session metadata and per-session settings
 PUT	/api/sessions/{sid}/draft	sessions	session	edit_metadata	login	mutate	warm	unscoped	session metadata and per-session settings
+POST	/api/sessions/{sid}/driver	structured	session	send	login	mutate	cold	unscoped	hand an API session back to HQ (#2397); a CAS on the driver generation, refused in-process
+POST	/api/sessions/{sid}/driver/adopt	structured	session	send	login	mutate	cold	unscoped	HQ takes over driving an API session (#2397); in-process only, with its card binding
 POST	/api/sessions/{sid}/favorite	sessions	session	edit_metadata	login	mutate	warm	unscoped	session metadata and per-session settings
 GET	/api/sessions/{sid}/history	history	session	view	login	read	warm	unscoped	session read
 PATCH	/api/sessions/{sid}/metadata	sessions	session	edit_metadata	login	mutate	warm	unscoped	session metadata and per-session settings

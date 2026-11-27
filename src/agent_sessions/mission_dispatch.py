@@ -192,9 +192,12 @@ def fenced_adopt(mission_id: str, key: str, *, role: str = "primary") -> dict:
     Synchronous, and callers run it off the loop — holding `_lock` across an await is the #888
     deadlock, and the attach path calls `bump_epoch()` from the loop.
     """
-    from . import mission_fence, session_input
+    from . import mission_fence, session_driver, session_input
 
     with session_input.sessions_transaction(mission_fence.adoption_keys(mission_id, key)):
+        # HQ stops driving it, inside the same fence (#2397): an HQ send admitted before this
+        # ran; one after it is refused (its generation moved, the mission holds the session).
+        session_driver.mission_takes(key)
         return missions.adopt(mission_id, key, role=role)
 
 

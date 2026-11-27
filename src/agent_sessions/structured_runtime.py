@@ -1164,6 +1164,16 @@ async def wait_events(
             _EVENTS_READS.pop(key, None)
 
 
+async def journal_stamp(session_key: str) -> Callable[[], tuple | None] | None:
+    """A cheap wake hint for a session's journal (#2397, `ask_drive.watch`): a callable returning
+    the active segment's identity and size (a file stat, no IPC), or None when its client has no
+    journal to stamp. Resolved off the loop; the page itself is always read through `events` or
+    `snapshot`."""
+    engine, native, adapter, _ = await asyncio.to_thread(_observation_target, session_key, "events")
+    stamp_of = getattr(adapter, "events_stamp", None)
+    return None if stamp_of is None else await stamp_of(engine, native)
+
+
 # One history page render per session at a time (#1504): a page projects the whole journal.
 _HISTORY_IN_FLIGHT: set[str] = set()
 

@@ -69,7 +69,7 @@ def test_a_card_is_read_back_in_german():
         "Soll ich mit beiden loslegen?"
     )
     # a menu the judge hears but a Needs-you item is part of: by place, in German
-    ask = {**cards[1], "ask": "Allow it once, refuse it, or skip it?"}
+    ask = {**cards[1], "ask": "Should I allow it, just this once?"}
     assert readback([cards[0], ask], lang="de").startswith("Erstens: Eine Nachricht")
     assert readback([cards[0], ask], lang="de").endswith(
         "Welche soll ich machen, die erste oder die zweite?"

@@ -91,6 +91,7 @@ STORE_ENV_PATHS: dict[str, str] = {
     "AGENT_SESSIONS_WORK_RECAP": ".config/agent-sessions/work-recap.json",  # #1086
     "AGENT_SESSIONS_NEEDS_YOU_DISMISSED": ".config/agent-sessions/needs-you-dismissed.json",
     "AGENT_SESSIONS_AGENT_REPORTS": ".config/agent-sessions/agent-reports.json",  # #1882
+    "AGENT_SESSIONS_SESSION_DRIVER": ".config/agent-sessions/session-driver.json",  # #2397
     "AGENT_SESSIONS_CLUSTERS": ".config/agent-sessions/clusters.json",  # #1997
     "AGENT_SESSIONS_LINEAGE": ".config/agent-sessions/lineage.json",  # #2325
     "AGENT_SESSIONS_SESSION_INDEX": ".config/agent-sessions/session-index.db",  # #2373
@@ -487,6 +488,7 @@ def _isolate_prefs(tmp_path, monkeypatch) -> None:
         ("AGENT_SESSIONS_CONNECTORS_STORE", "connectors.json"),
         # #1882: agents' HQ reports, and the report broker's capability DB beside them.
         ("AGENT_SESSIONS_AGENT_REPORTS", "agent-reports.json"),
+        ("AGENT_SESSIONS_SESSION_DRIVER", "session-driver.json"),  # #2397: who drives a session
         ("AGENT_SESSIONS_CLUSTERS", "clusters.json"),  # #1997
         ("AGENT_SESSIONS_LINEAGE", "lineage.json"),  # #2325
         ("AGENT_SESSIONS_SESSION_INDEX", "session-index.db"),  # #2373

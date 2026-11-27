@@ -139,6 +139,7 @@ import { consumeStart, peekStart, type StartOutcome } from "./startHandoff";
 import { HistoryTop } from "./HistoryTop";
 import { useApiHistory } from "./useApiHistory";
 import styles from "./StructuredPane.module.css";
+import { DriverBar, DriverChip } from "./DriverBanner";
 import {
   answerText,
   answerWire,
@@ -1375,7 +1376,10 @@ function TurnView({
             attribution can't be read, no turn claims to be the operator's. */}
         <MessageHeader
           speaker={
-            turn.author?.via === "peer"
+            turn.from_hq
+              // HQ sent it (#2397): a drive send, or the first message of a session HQ started.
+              ? <span data-testid="structured-from-hq">From HQ</span>
+              : turn.author?.via === "peer"
               // A paired instance's turn (#2061): the SAME label the public viewer and the remote
               // pane draw (`share/Turns.tsx`), so it never passes for the operator's.
               ? <PeerAttribution author={{ name: turn.author.name ?? "", edited: turn.author.edited }} owner />
@@ -1386,7 +1390,9 @@ function TurnView({
                 : "you"
           }
           title={
-            turn.author?.via === "peer"
+            turn.from_hq
+              ? "HQ sent this, on your instruction in one of its conversations"
+              : turn.author?.via === "peer"
               ? "Sent by a paired instance"
               : turn.author?.via === "public_link"
               ? "Sent through a public link — a name the visitor chose"
@@ -1949,6 +1955,9 @@ export function StructuredPane({
     // Only the snapshot READ carries presence (#1931): an action's own snapshot keeps the last.
     if (s.presence === undefined && held.current?.presence)
       s = { ...s, presence: held.current.presence };
+    // …and so does who drives it (#2397).
+    if (s.driver === undefined && held.current?.driver)
+      s = { ...s, driver: held.current.driver };
     floorSeq.current = sent;
     cursor.current = s.event_cursor;
     // A recorded turn replaces its pending entry, whatever that entry's POST says or will say.
@@ -3539,6 +3548,8 @@ export function StructuredPane({
             <span className="sr-only">{presentLabel(presence.count)}</span>
           </span>
         )}
+        {/* Who drives this session (#2397): HQ, you, or a mission. */}
+        <DriverChip driver={snap?.driver} />
         {/* Show the effective mode, including an explicit change after starting. */}
         {snap?.bypass && (
           <span
@@ -4274,6 +4285,10 @@ export function StructuredPane({
       {/* What a paired instance suggests (#2061): above the composer, each one the operator's own
           decision. Not part of the conversation and not shown to the agent until approved. */}
       {!readOnly && <PeerSuggestions sessionKey={actionKey} sharesOpen={sharePeer.open} />}
+      {/* Who drives it (#2397): what typing does, and Hand back to HQ. */}
+      {!readOnly && !archived && (
+        <DriverBar sessionKey={actionKey} driver={snap?.driver} onChanged={() => void load()} />
+      )}
       {/* The terminal session's composer (#1348): Compose.module.css itself, so the two cannot
           drift — pills, the text box, then ONE row of chips, the push-to-talk chip and Send.
           Archived (#2064): the ARCHIVED strip takes its place; the draft is kept for the composer
@@ -4334,7 +4349,9 @@ export function StructuredPane({
                       ? "This session was discarded"
                       : notStarted
                         ? "Start this session first"
-                        : active &&
+                        : snap?.driver?.who === "hq"
+                          ? `Message ${agent}… (sending takes over from HQ)`
+                          : active &&
                             alwaysSendNow &&
                             sendNowTarget(snap) &&
                             snap?.native?.send_now_state ===

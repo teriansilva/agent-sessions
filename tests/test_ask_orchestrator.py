@@ -278,6 +278,9 @@ def test_the_tool_list_and_each_tools_kind_are_pinned():
         # #1932: the artifacts the agents published, with provenance and links — read-only.
         "artifacts_find": "read",
         "session_status": "read",
+        # #2397: an API session's settled turns, and waiting on one (agent text: they taint).
+        "session_turns": "read",
+        "wait_session": "read",
         # #1882: what a session's agent last reported to HQ — agent text, read-only.
         "session_report": "read",
         "list_missions": "read",

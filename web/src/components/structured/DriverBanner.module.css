@@ -1,0 +1,60 @@
+/* Who drives an API session (#2397): the header chip and the bar above the composer. Tokens only
+ * (design.md §3); the button is the shared action plate (44px, inset focus ring). */
+.chip {
+  composes: chip from "../chat/ChatPane.module.css";
+  flex: none;
+  gap: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  text-decoration: none;
+}
+.chip:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
+.hq {
+  border-color: var(--accent-soft);
+  color: var(--accent-text);
+}
+.mission {
+  border-color: var(--status-draft);
+}
+.led {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  background: var(--text-3);
+}
+.hq .led {
+  background: var(--accent);
+}
+.mission .led {
+  background: var(--status-draft);
+}
+.bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border-top: 1px solid var(--line);
+  color: var(--text-2);
+  font-size: var(--fs-meta);
+  min-width: 0;
+}
+.bar > span {
+  flex: 1 1 220px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.handBack {
+  composes: primary from "../ui/actionButton.module.css";
+}
+.handBack:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.error {
+  flex-basis: 100%;
+  color: var(--warn-text);
+}

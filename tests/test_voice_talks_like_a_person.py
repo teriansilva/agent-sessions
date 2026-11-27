@@ -98,35 +98,33 @@ def test_no_rendered_call_line_tells_the_commander_which_words_to_say():
         assert not BANNED.search(line), line
 
 
-# --- pre-H2: every Needs-you question names words its grammar accepts -------------------------
+# --- H2: Needs-you questions are plain questions, answered in any words (#1715 P2) -------------
 
 
-def test_a_permission_prompt_is_answered_by_the_words_it_names():
+def test_a_permission_prompt_is_a_plain_question():
     card = voice_calls._permission_card(_hand_row())
     said = readback([card])
-    assert said.endswith("Allow it once, refuse it, or skip it?")
+    assert said.endswith("Should I allow it, just this once?")
+    # the English words still decide at once; anything else (a plain "yes") goes to the judge
     assert classify_decision("allow it once", card) == ("choose", card["allow"])
     assert classify_decision("refuse it", card) == ("choose", card["deny"])
     assert is_skip("skip it")
-    # a plain yes decides nothing before H2: it is not a word the question offered
     assert classify_decision("yes", card)[0] == "other"
 
 
-def test_a_menu_is_read_by_place_and_answered_by_place_until_h2():
+def test_a_menu_offers_its_options_by_name():
     card = voice_calls._menu_card(_menu_row())
     said = readback([card])
-    assert "The first is main and the second is release 2.0." in said
-    assert said.endswith("Which one, or skip it?")
+    assert said.endswith("Which one: main or release 2.0?")
+    assert "The first is" not in said
+    # a place is still the instant path; a name goes to the judge
     assert classify_decision("the second one", card) == ("choose", card["options"][1])
-    assert classify_decision("the first", card) == ("choose", card["options"][0])
-    assert is_skip("skip it")
-    # name-only answers wait for H2 (#1715 P2): the gate is pinned here
     assert classify_decision("release 2.0", card)[0] == "other"
 
 
-def test_a_suggested_answer_is_sent_skipped_or_cancelled_by_the_words_it_names():
+def test_a_suggested_answer_is_offered_as_a_plain_question():
     card = voice_calls._question_card(_question_row())
-    assert readback([card]).endswith("Send it, skip it, or cancel?")
+    assert readback([card]).endswith("Want me to send that answer?")
     assert classify_confirmation("send it", 1) == ("confirm", 0)
     assert is_skip("skip it")
     assert classify_confirmation("cancel", 1) == ("cancel", None)

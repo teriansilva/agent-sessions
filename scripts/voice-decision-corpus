@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+"""Run the spoken Needs-you decision corpus (#1715 P2) through the REAL decision judge.
+
+Each case of `tests/fixtures/voice_decision_corpus.json` is a reply to one Needs-you item read
+back the way a call reads it ("… Should I allow it, just this once?", "… Which one: X or Y?",
+"… Want me to send that answer?"). As on a call, a permission reply that `voice_text.broader_grant`
+catches is refused before any model call; every other reply is judged by
+`voice_judge.judge_decision` on the HQ model this install is configured with, and the verdict is
+checked against the case's `expect` (a list: any of those; a broader grant or a yes the case
+forbids is always a miss). It prints one line per case and a summary, and exits non-zero on any
+miss.
+
+It needs the AI endpoint, so it is never run by CI. Point --prefs at a COPY of the install's
+prefs file (the judge's transport may refresh a cached model list there); its usage counter goes
+to a throwaway file.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+CORPUS = ROOT / "tests" / "fixtures" / "voice_decision_corpus.json"
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--prefs", required=True, type=Path, help="a COPY of the prefs file")
+    ap.add_argument("--runs", type=int, default=1, help="judge every case this many times")
+    args = ap.parse_args()
+    scratch = Path(tempfile.mkdtemp(prefix="voice-decision-corpus-"))
+    os.environ["AGENT_SESSIONS_PREFS"] = str(args.prefs)
+    os.environ["AGENT_SESSIONS_HOME"] = str(scratch)
+    os.environ["AGENT_SESSIONS_HQ_USAGE"] = str(scratch / "hq-usage.json")
+    sys.path.insert(0, str(ROOT / "src"))
+    from agent_sessions import voice_judge, voice_text
+
+    def card(case: dict) -> tuple[dict, str]:
+        lang = case["lang"]
+        if case["kind"] == "permission":
+            allow = {"option": 1, "label": "Yes", "as": "allow"} if case["can_allow_once"] else None
+            ask = voice_text.call_line("ask.allow_once" if allow else "ask.refuse_only", lang)
+            line = "deploy in infra asks permission for Bash command: rm -rf build. It asks: Do "
+            line += "you want to proceed? The choices are Yes, Yes, and don't ask again or No."
+            c = {"kind": "permission", "allow": allow, "deny": {"option": 3, "label": "No"}}
+            return c, f"{line} {ask}"
+        if case["kind"] == "menu":
+            options = [{"option": i + 1, "label": o} for i, o in enumerate(case["options"])]
+            ask = voice_text.call_line(
+                "ask.menu", lang, options=voice_text.or_list(case["options"], lang)
+            )
+            line = "docs in web asks: Which branch should I rebase onto?"
+            return {"kind": "menu", "options": options}, f"{line} {ask}"
+        ask = voice_text.call_line("ask.send_answer", lang)
+        line = "api-rebase in web asks a question. The suggested answer is: Use main."
+        return {"kind": "needs_you"}, f"{line} {ask}"
+
+    async def judge(case: dict) -> tuple[object, object]:
+        if case["kind"] == "permission" and voice_text.broader_grant(case["reply"]):
+            return "broader", "veto"
+        c, readback = card(case)
+        got = await voice_judge.judge_decision(c, readback, case["reply"])
+        if got is None:
+            return "no verdict", None
+        return (got[1] if got[0] == "pick" else got[0]), got
+
+    cases = json.loads(CORPUS.read_text())["cases"]
+    misses = 0
+    for case in cases:
+        want = case["expect"] if isinstance(case["expect"], list) else [case["expect"]]
+        for _ in range(args.runs):
+            got, raw = asyncio.run(judge(case))
+            ok = got in want
+            misses += not ok
+            print(
+                f'{"ok  " if ok else "MISS"} {case["lang"]} {case["kind"]:<10} '
+                f'{case["reply"]!r}: expected {want!r}, got {got!r} (judge: {raw!r})'
+            )
+    total = len(cases) * args.runs
+    print(f"{total - misses}/{total} as expected")
+    return 1 if misses else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

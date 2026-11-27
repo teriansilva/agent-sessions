@@ -74,7 +74,8 @@ def test_registry_covers_every_system_prompt():
     # #2059 handoff_remote_brief (Continue here: a record another instance shares is DATA;
     # unguarded, with that rule locked onto it).
     # #2342 H1 voice_pick_judge (on a call: which option did the reply pick? guarded).
-    assert len(prompts.REGISTRY) == 52
+    # #1715 P2 voice_decision_judge (on a call: what did the reply decide for an agent? guarded).
+    assert len(prompts.REGISTRY) == 53
     assert len(prompts.IDS) == len(set(prompts.IDS))
     # PINNED BY NAME, not by count — adding a guarded prompt should have to say so here.
     # `mission_objectives` earns it without emitting a verb: an objective list is what the
@@ -113,6 +114,9 @@ def test_registry_covers_every_system_prompt():
         # `voice_pick_judge` (#2342 H1) decides which option a spoken reply FILLS a card with,
         # and the line it is shown carries the card's own words.
         "voice_pick_judge",
+        # `voice_decision_judge` (#1715 P2) decides how an agent's permission dialog, menu or
+        # question is ANSWERED, and the read-back it is shown carries the agent's own words.
+        "voice_decision_judge",
         # `hq_call_interject` (#2113) decides whether the Commander's words STEER or STOP the
         # running turn, and what HQ is doing (its own aside) can echo what tools returned.
         "hq_call_interject",
@@ -193,7 +197,8 @@ EXPECTED_DEFAULT_SHA = {
     # The capable-assistant rewrite: facts from tools, inference (links, defaults) its own,
     # memory consulted unprompted, ask_operator only when the choice matters; shorter.
     # #2390: a change HQ ran itself under the Commander's Authority setting is reported as ran.
-    "ask_orchestrator": "33c3492e4287db70",
+    # #2397: the "driving a session" paragraph.
+    "ask_orchestrator": "3da42fcca351afd2",
     # #2028: HQ's question router; #2249 adds the `manual` route.
     "ask_route": "323bd1e25e69c20c",
     "ask_manual": "ecdacbff7fc45ebe",  # #2249: a no-tool answer from the installed manual
@@ -217,6 +222,7 @@ EXPECTED_DEFAULT_SHA = {
     "hq_turn_notes": "7ac37f5362f515f9",  # #2136: what HQ read becomes its notes
     "hq_turn_watch": "0ab073da385b1843",  # #2136: is this HQ turn getting anywhere?
     "voice_pick_judge": "d1cdbab2d8ff3017",  # #2342 H1: which option a spoken reply picks
+    "voice_decision_judge": "e02cd81e21ee408b",  # #1715 P2: what a reply decides for an agent
     "voice_confirm_judge": "7d166766d9e1df5c",  # #1715; #2389: the cards as data, all, N to 20
     "hq_call_interject": "7e47474a9554c821",  # #2113: the Commander speaks while HQ works
     "hq_conversation_compact": "c7fe648ee4b538ff",  # #2137 P2: the background summary
@@ -385,9 +391,11 @@ def test_a_stored_retired_default_follows_the_new_default_and_an_edit_stays(tmp_
 
 
 def test_the_hq_prompts_retired_default_is_the_pre_rewrite_text():
-    """The digest kept is the pre-rewrite default's (pinned above it as 23fadca396f14b5f)."""
+    """The digests kept are the pre-rewrite default's (pinned above it as 23fadca396f14b5f) and
+    the default before the driving paragraph (#2397)."""
     assert {d[:16] for d in prompts.get("ask_orchestrator").retired_defaults} == {
-        "23fadca396f14b5f"
+        "23fadca396f14b5f",
+        "33c3492e4287db70",
     }
 
 

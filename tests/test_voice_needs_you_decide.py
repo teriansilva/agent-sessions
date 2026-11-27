@@ -184,7 +184,7 @@ def test_a_permission_is_read_back_and_allowed_once_through_choose(monkeypatch):
         # it" can settle (Hermes 7021): in the read-back that arms, after HQ's answer (#2137)
         assert r.said_text()[-2] == NEEDS_YOU_ANSWER
         assert r.said_text()[-1] == (
-            f"deploy in infra {BASH_SAID} Allow it once, refuse it, or skip it?"
+            f"deploy in infra {BASH_SAID} Should I allow it, just this once?"
         )
         assert "Yes, Yes, and don't ask again for mkdir" in r.said_text()[-1]
         await r.readback_played()
@@ -222,10 +222,10 @@ def test_without_a_single_use_allow_only_refuse_is_offered(monkeypatch):
 
     async def go():
         await r.ask("What needs me?")
-        assert r.said_text()[-1].endswith("Refuse it, or skip it?")
+        assert r.said_text()[-1].endswith("I can only refuse that one by voice. Should I?")
         await r.readback_played()
         await r.ask("Allow it.")  # not on offer: HQ says so, and nothing is chosen
-        assert r.said_text()[-1] == ("I can't allow this one by voice. Refuse it, or skip it?")
+        assert r.said_text()[-1] == "I can't allow this one by voice. Should I refuse it?"
         assert r.call.challenge["armed_at"] is None  # re-arms only once that line has played
         await r.readback_played()
         await r.ask("Refuse it.")
@@ -306,8 +306,7 @@ def test_a_menu_option_is_chosen_by_its_number(monkeypatch):
     async def go():
         await r.ask("What needs me?")
         assert r.said_text()[-1] == (
-            "docs in web asks: Which branch should I rebase onto? The first is main and the"
-            " second is release 2.0. Which one, or skip it?"
+            "docs in web asks: Which branch should I rebase onto? Which one: main or release 2.0?"
         )
         await r.readback_played()
         await r.ask("The second one.")
@@ -351,6 +350,7 @@ def _three() -> dict:
 
 def test_rows_are_offered_one_at_a_time_and_an_ordinal_only_names_the_current_row(monkeypatch):
     r = _rig(monkeypatch, _three())
+    r.decision_verdict = ("other", None)  # the judge (#1715 P2): not an answer to THIS row
 
     async def go():
         await r.ask("What needs me?")
@@ -381,7 +381,7 @@ def test_skip_moves_on_and_a_settled_row_moves_on(monkeypatch):
         assert [c["id"] for c in r.call.challenge["cards"]] == ["ans-q"]
         assert r.said_text()[-1] == (
             "api-rebase in web asks a question. The suggested answer is: Use main."
-            " Send it, skip it, or cancel?"
+            " Want me to send that answer?"
         )
         await r.readback_played()
         await r.ask("Skip.")
@@ -738,7 +738,7 @@ def test_every_item_was_told_in_full_however_the_first_offer_ends(how, monkeypat
     for content in (
         "mkdir -p probe-dir-1213 && touch probe-dir-1213/f.txt",
         "The choices are Yes, Yes, and don't ask again",
-        "Which branch should I rebase onto? The first is main and the second is release 2.0.",
+        "Which branch should I rebase onto? Which one: main or release 2.0?",
         "The suggested answer is: Use main.",
     ):
         assert content in told

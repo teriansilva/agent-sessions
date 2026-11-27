@@ -22,7 +22,8 @@ adds its class here ships.
 table for an operation, except where the action's own facts decide it (an automation run now is
 *external* when its approved scope reaches outside, *widens* when it starts a bypass session, and
 *external* when its scope can't be read); a session start is *starts*, or *widens* when the tap
-would turn permission bypass on; a connector message is *starts*. It is derived at staging, at the
+would turn permission bypass on; a connector message is *starts*; a drive send or adopt (#2397) is
+*starts*, or *external* in a session that skips permission prompts. It is derived at staging, at the
 claim and at the effect boundary, so a change in between can only make the act ask.
 
 **D4, after untrusted text** (#2391): once a turn or its conversation read agent- or
@@ -87,6 +88,13 @@ CLASS_OF: dict[str, str] = {
     "session.review": "external",  # its transcript goes to the AI endpoint
     "session.review_include": "external",  # …and keeps going there
     "session.orchestration_include": "widens",  # mission control may act on it again
+    # driving an API session HQ drives (#2397): a turn, a stop, a queued turn taken back, and
+    # taking over driving. A send or an adopt into a session that skips permission prompts is
+    # *external* (`effective_class`: classed with what that session may do).
+    "session.send": "starts",
+    "session.interrupt": "starts",
+    "session.withdraw": "starts",
+    "session.adopt": "starts",
     # projects
     "project.rename": "reversible",
     "project.color": "reversible",
@@ -157,6 +165,10 @@ KIND_CLASS: dict[str, str | None] = {
 #: else (a plugin action: a webhook call, a push, a share), an unknown kind, or a scope that can't
 #: be read is external.
 _INSIDE_ACTIONS = frozenset({"start_session", "start_mission", "send_to_session", "tell_hq"})
+#: Drive entries whose class the session's permission mode decides (#2397): *starts*, or
+#: *external* in a session that skips permission prompts (the card's `bypass` fact, re-read at the
+#: claim and at the boundary); a missing fact reads as the stronger class.
+BYPASS_EXTERNAL = frozenset({"session.send", "session.adopt"})
 
 
 def automation_reach(scope: object) -> str:
@@ -184,6 +196,10 @@ def effective_class(row: dict, facts: dict | None = None) -> str:
             basis = facts if facts is not None else row.get("facts")
             reach = basis.get("reach") if isinstance(basis, dict) else None
             return reach if reach in ("starts", "external", "widens") else "external"
+        if op_id in BYPASS_EXTERNAL:
+            basis = facts if facts is not None else row.get("facts")
+            bypass = basis.get("bypass") if isinstance(basis, dict) else None
+            return class_of(op_id) if bypass is False else "external"
         return class_of(op_id)
     if kind == "session":
         # A start the tap would make with permission bypass on (the card's starting value) is

@@ -108,6 +108,17 @@ class Rig:
             return await v() if callable(v) else v
 
         monkeypatch.setattr(voice_judge, "judge_pick", fake_pick)
+        # The Needs-you decision judge (#1715 P2): by default NO verdict, so nothing is decided.
+        # A test sets `self.decision_verdict` (or a callable); `self.decided` records what it saw.
+        self.decision_verdict: object = None
+        self.decided: list[tuple[dict, str, str]] = []
+
+        async def fake_decision(card, readback, reply):
+            self.decided.append((card, readback, reply))
+            v = self.decision_verdict
+            return await v() if callable(v) else v
+
+        monkeypatch.setattr(voice_judge, "judge_decision", fake_decision)
         self.call = voice_calls.Call(
             id="c", cid="conv", contact="asia-woman", voice="aria", operator=object(),
             app=object(), registry=None, state="listening",
@@ -937,6 +948,9 @@ def test_a_new_question_whose_clear_is_paused_never_arms_an_older_card(monkeypat
     OLDER Needs-you read finishes during that pause and offers its card. However the awaits
     resolve, that card must never arm — a later "confirm" must not settle it."""
     r = Rig(monkeypatch)  # a typed question answers with no card
+    # #1715 P2: a reply to a Needs-you item is judged; this one is a question, so `other`, and
+    # it supersedes as a new question always did.
+    r.decision_verdict = ("other", None)
 
     def row(name):
         return {"title": name, "kind": "question",
@@ -1101,9 +1115,9 @@ def test_a_call_in_another_language_arms_hq_cards_for_the_judge(monkeypatch):
     assert r.asked == ["Starte die Tests neu"]
 
 
-def test_a_needs_you_decision_on_another_language_call_stays_on_screen(monkeypatch):
-    """P2 is held for its own approval: a Needs-you item keeps the English grammar, so on a German
-    call it is read for the screen and arms nothing."""
+def test_a_needs_you_decision_on_another_language_call_arms_and_is_judged(monkeypatch):
+    """#1715 P2 (the operator's comment 141855): a Needs-you item arms on a German call, and a
+    reply the English grammar can't take goes to the decision judge, never the card judge."""
     r = Rig(monkeypatch)
     r.call.language = "de"
     (card,) = voice_calls.confirmable_cards(NUDGE)
@@ -1111,12 +1125,42 @@ def test_a_needs_you_decision_on_another_language_call_stays_on_screen(monkeypat
 
     async def go():
         await r.call.offer([card])
+        await r.readback_played()
+        await r.ev(t="user_started")
+        await r.ev(t="utterance", text="Ja, schick", heard_language="de")
+        await r.side()
 
     run(go())
-    assert r.call.challenge is None
-    # #2342: the closing is said in the call's language; the item's own line stays English
-    assert r.said_text()[-1].endswith("Das musst du selbst antippen.")
-    assert r.judged == []
+    assert r.judged == [] and [d[2] for d in r.decided] == ["Ja, schick"]
+
+
+def test_an_older_offer_never_displaces_a_reply_being_judged(monkeypatch):
+    """While a Needs-you reply is judged, an offer started before it (same generation) is
+    dropped: a later "confirm" can never settle the older read's card."""
+    r = Rig(monkeypatch)
+    (card,) = voice_calls.confirmable_cards(NUDGE)
+    card = {**card, "kind": "needs_you"}
+    stale = {**card, "id": "stale-action"}
+    gate = asyncio.Event()
+
+    async def held():
+        await gate.wait()
+        return None
+
+    r.decision_verdict = held
+
+    async def go():
+        await r.call.offer([card], gen=r.call.generation)
+        await r.readback_played()
+        await r.ev(t="user_started")
+        await r.ev(t="utterance", text="How is the docs refresh?")
+        await r.call.offer([stale], gen=r.call.generation)  # the older read lands meanwhile
+        assert r.call.challenge["cards"][0]["id"] == card["id"]
+        gate.set()
+        await r.side()
+
+    run(go())
+    assert all(c is None or c["cards"][0]["id"] != "stale-action" for c in [r.call.challenge])
 
 
 @pytest.mark.parametrize(

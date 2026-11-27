@@ -95,6 +95,7 @@ from .. import (
     ptybridge,
     review,
     scopedspawn,
+    session_driver,
     session_input,
     shelf_broker,
 )
@@ -1188,6 +1189,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                         with session_input.sessions_transaction(
                             mission_fence.adoption_keys(mission_id, key)
                         ):
+                            # HQ stops driving it in the same fence (#2397).
+                            session_driver.mission_takes(key)
                             # THE TOKEN, not just the lock (#896 review 21). The heartbeat above
                             # keeps the claim fresh; this proves it was never lost — the store
                             # refuses unless the reservation is still the exact one taken here.

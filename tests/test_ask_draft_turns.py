@@ -22,6 +22,8 @@ from test_ask_orchestrator import Script, ai, answer, app, call, calls, found  #
 #: it is on — never by default.
 GATED = {
     "remember_hq_memory",
+    # #2397: a wait of up to two minutes on an API session's turn starts once the call committed.
+    "wait_session",
     # #2145: a network fetch of a repository the Commander typed; typed turns only, never a draft.
     "inspect_skill_repo",
     "propose_hq_memory_change",
