@@ -20,6 +20,7 @@ from agent_sessions import (
     mission_structured,
     missions,
     native_state,
+    resource_limits,
 )
 from agent_sessions import automations_store as store
 from agent_sessions import specialists_store as sstore
@@ -44,6 +45,9 @@ def env(host, tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_SESSIONS_MISSIONS_DB", str(tmp_path / "m.db"))
     monkeypatch.setenv("AGENT_SESSIONS_LOCK_DIR", str(tmp_path / "locks"))
     monkeypatch.setitem(kinds.API_MISSION_READY, KINDS["claude"], True)
+    # A generous session limit, so the specialist / pool refusals these tests expect never meet the
+    # host-derived session limit first (Hermes on #2425: it depends on the runner's capacity).
+    monkeypatch.setattr(resource_limits, "max_sessions", lambda: 128)
     missions.reset_schema_cache_for_test()
     automation_runner._TASKS.clear()
     automation_runner._FROM_QUEUE.clear()
