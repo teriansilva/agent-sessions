@@ -33,16 +33,16 @@
       "id": "kimi",
       "label": "Kimi Code",
       "publisher": "battlelab",
-      "version": "2.7.2"
+      "version": "2.7.3"
     },
     "install": {
       "authority": "registry.npmjs.org",
-      "digest": "sha256:cc36a5e213a0647420853c0e0c9c7ea00e7edfa1986185bb84e4169ac6faf114",
+      "digest": "sha256:e634c9d67f29406c24bd90fc406a56c9b2001df390d7c5fb5dff1c78a696c354",
       "entrypoint": "node_modules/@moonshot-ai/kimi-code/dist/main.mjs",
       "kind": "npm-prefix",
       "package": "@moonshot-ai/kimi-code",
       "platform": "linux-x64",
-      "version": "2.7.2"
+      "version": "2.7.3"
     },
     "instructions": {
       "files": [
@@ -105,8 +105,8 @@
     "artifacts": [
       {
         "destination": "node_modules/@moonshot-ai/kimi-code",
-        "sha256": "cc36a5e213a0647420853c0e0c9c7ea00e7edfa1986185bb84e4169ac6faf114",
-        "url": "https://registry.npmjs.org/@moonshot-ai/kimi-code/-/kimi-code-2.7.2.tgz"
+        "sha256": "e634c9d67f29406c24bd90fc406a56c9b2001df390d7c5fb5dff1c78a696c354",
+        "url": "https://registry.npmjs.org/@moonshot-ai/kimi-code/-/kimi-code-2.7.3.tgz"
       },
       {
         "destination": "node_modules/ansi-regex",
