@@ -465,6 +465,88 @@ def test_a_message_too_long_to_guard_is_withheld_not_cut(c, monkeypatch):
     assert page["sessions"][0]["match"].get("withheld") is True
 
 
+def _traced(monkeypatch) -> list[str]:
+    """Every SQL statement the index runs in this process from here on, casefolded."""
+    seen: list[str] = []
+    real = session_index._open
+
+    def traced(path=None):
+        con = real(path)
+        con.set_trace_callback(lambda sql: seen.append(sql.casefold()))
+        return con
+
+    monkeypatch.setattr(session_index, "_open", traced)
+    return seen
+
+
+def test_a_page_asks_bm25_once_and_reads_only_the_chosen_messages(c, monkeypatch):
+    """HQ's `find_sessions` paid seconds here: every shown row ran its own `ORDER BY bm25()` —
+    and every such statement first counts each word over the WHOLE index — then read the text of
+    every message it matched; each word was also counted (`count(*)`) before being listed again.
+    A page now asks bm25 once (only where messages tie), lists each word in one capped pass and
+    reads the text of each chosen message alone. The answer is unchanged."""
+    for key in (K1, K2, K3):
+        _say(
+            _file(c, key),
+            ("user", "the capybara met a wombat"),
+            ("assistant", "a capybara and a wombat, again"),
+            ("user", "only a capybara here"),
+        )
+    _build()
+    seen = _traced(monkeypatch)
+    page = _q(c, "capybara%20wombat")
+    assert sorted(_ids(page)) == sorted([K1, K2, K3])
+    for s in page["sessions"]:
+        m = s["match"]
+        assert m["tier"] == "conversation" and m["field"] in ("you", "agent")
+        assert m.get("more", 0) == 0 and "wombat" in m["snippet"]  # a message holding both
+    assert sum("bm25(" in sql for sql in seen) == 1
+    assert not any("count(*)" in sql for sql in seen)
+    assert sum(sql.lstrip().startswith("select text from msg") for sql in seen) == 3
+    # Every read that may return many rows returns ONE aggregated row: Python's sqlite3 retakes
+    # the GIL per row, and with the app's other threads busy that alone cost seconds.
+    many = [
+        sql
+        for sql in seen
+        if ("msg match" in sql or "from sess" in sql or "from span" in sql)
+        and "where key in" not in sql
+    ]
+    assert many and all(
+        "group_concat(" in sql or "limit 1" in sql or "select min(s)" in sql for sql in many
+    ), many
+
+
+@pytest.mark.parametrize(("rows_max", "common"), [(2, False), (1, True)])
+def test_the_common_word_row_cap_boundary(c, monkeypatch, rows_max, common):
+    """The capped listing keeps the row count's rule: a word in exactly `ROWS_COMMON_MAX`
+    messages is listed, one more makes it too common."""
+    monkeypatch.setattr(session_index, "ROWS_COMMON_MAX", rows_max)
+    _say(_file(c, K1), ("user", "lemur"), ("user", "lemur again"))
+    _build()
+    page = _q(c, "lemur")
+    if common:
+        assert page["search"] == {"mode": "titles", "degraded": "common"}
+    else:
+        assert _ids(page) == [K1] and page["search"]["mode"] == "index"
+
+
+def test_snippets_are_the_same_sought_per_session_or_listed_once(c, monkeypatch):
+    """Past `SNIPPET_SEEK_KEYS_MAX` shown sessions a word's rows are listed once and mapped
+    through the spans instead of sought per session: the snippets are the same."""
+    _say(_file(c, K1), ("user", "an okapi alone"), ("assistant", "the okapi met a zebu"))
+    _say(_file(c, K2), ("user", "zebu and okapi"))
+    _say(_file(c, K3), ("user", "neither of them"))  # rows between the two spans
+    _build()
+    sought = _q(c, "okapi%20zebu")["sessions"]
+    monkeypatch.setattr(session_index, "SNIPPET_SEEK_KEYS_MAX", 0)
+    listed = _q(c, "okapi%20zebu")["sessions"]
+    assert sorted(s["id"] for s in sought) == sorted([K1, K2])
+    assert [(s["id"], s["match"]) for s in listed] == [(s["id"], s["match"]) for s in sought]
+    by_id = {s["id"]: s["match"] for s in sought}
+    assert by_id[K1]["field"] == "agent" and by_id[K1].get("more", 0) == 0
+    assert by_id[K2]["field"] == "you"
+
+
 def _unreadable(monkeypatch, key):
     real = transcript.full_turns
 

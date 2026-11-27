@@ -1,0 +1,261 @@
+#!/usr/bin/env python3
+"""Time HQ's `find_sessions` end to end on this install, phase by phase, reproducibly.
+
+`bench-session-search` times the index's `search()` alone. This one times what HQ waits for:
+`find_sessions` → `GET /api/sessions?q=…&candidates=true` (the list build, the index lookups, the
+snippets) → missions → which path answered. It reports, per query and run:
+
+* ``total``: `find_sessions`, request to result;
+* ``list walk``: the engine scan the list build waits on (`engines.scan_all_cached`);
+* ``sqlite``: every statement the session index ran (word lookups, progress, handoffs, snippets);
+* ``snippets``: the page's snippets (their SQLite time is also in ``sqlite``);
+* ``source``: ``index`` (no model), ``model`` / ``index+model`` (the model path would run).
+
+``--busy N`` runs N CPU-busy Python threads beside the search. The running app always has other
+threads working, and Python's sqlite3 retakes the GIL for every row it steps, so a read that
+returns many rows is far slower there than in an idle process.
+
+Nothing live is written or called:
+
+* The index is a COPY of the live one (SQLite's backup API) in a temp dir, deleted afterwards.
+* The stores are read, never written.
+* The model call is stubbed (it records that it would have run).
+
+Run 0 is cold: the copy's pages are dropped from the OS cache first. The scan is warmed once
+before, as in a running app. Later runs are repeats, spaced ``--gap`` seconds apart. The scan
+snapshot lives 10 s (`engines` TTL), so a gap over 10 s makes every repeat re-walk, as an HQ
+search on the running app usually does.
+
+Usage (the install's Python, so it reads the same stores):
+  PYTHONPATH=src ~/.local/share/agent-sessions/current/venv/bin/python scripts/bench-hq-search \\
+      [--query "find the session that improved search by indexing with SQLite"] [--reps 6] \\
+      [--gap 11] [--index ~/.config/agent-sessions/session-index.db]
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import functools
+import json
+import os
+import shutil
+import sqlite3
+import statistics
+import tempfile
+import threading
+import time
+from pathlib import Path
+
+QUERIES = [
+    "find the session that improved search by indexing with SQLite",
+    "BattleLab SQLite search index full-text search indexing",
+    "improve session search",
+    "FTS5",
+]
+
+
+def _load_env() -> None:
+    env = Path.home() / ".local/share/agent-sessions/env"
+    if env.exists():
+        for line in env.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k, v.strip('"'))
+
+
+def _evict(path: Path) -> None:
+    """Drop the copy's pages from the OS cache: a cold read. Synced first — dirty pages (the
+    fresh copy is still being written back) can't be dropped, and their writeback would race the
+    cold reads."""
+    for p in (path, path.with_name(path.name + "-wal")):
+        if p.exists():
+            fd = os.open(p, os.O_RDONLY)
+            try:
+                os.fsync(fd)
+                os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+            finally:
+                os.close(fd)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--query", action="append", help="repeatable; default: a fixed set")
+    ap.add_argument("--reps", type=int, default=6)
+    ap.add_argument("--gap", type=float, default=11.0)
+    ap.add_argument("--index", default=str(Path.home() / ".config/agent-sessions/session-index.db"))
+    ap.add_argument("--json", action="store_true", help="one JSON line per run")
+    ap.add_argument(
+        "--busy",
+        type=int,
+        default=0,
+        help="CPU-busy Python threads beside the search, as the running app always has",
+    )
+    ap.add_argument("--slowest", type=int, default=0, help="print each run's N slowest statements")
+    args = ap.parse_args()
+    queries = args.query or QUERIES
+
+    _load_env()
+    tmp = Path(tempfile.mkdtemp(prefix="bench-hq-search-"))
+    copy = tmp / "session-index.db"
+    src = sqlite3.connect(f"file:{args.index}?mode=ro", uri=True)
+    dst = sqlite3.connect(copy)
+    src.backup(dst)
+    dst.close()
+    src.close()
+    os.environ["AGENT_SESSIONS_SESSION_INDEX"] = str(copy)
+    try:
+        return asyncio.run(_run(queries, args, copy))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+async def _run(queries: list[str], args, copy: Path) -> int:
+    from fastapi import FastAPI
+
+    from agent_sessions import asgi_call, ask_orchestrator, engines, pulse_chat, session_index
+    from agent_sessions.routes import sessions as sessions_routes
+
+    spent: dict[str, float] = {}
+
+    def timed(mod, name: str, label: str) -> None:
+        real = getattr(mod, name)
+
+        @functools.wraps(real)
+        def wrapper(*a, **k):
+            t = time.perf_counter()
+            try:
+                return real(*a, **k)
+            finally:
+                spent[label] = spent.get(label, 0.0) + time.perf_counter() - t
+
+        setattr(mod, name, wrapper)
+
+    timed(engines, "scan_all_cached", "list walk")
+    # `snippets` (one read per page); older trees fill them per row (`snippet`).
+    timed(
+        session_index, "snippets" if hasattr(session_index, "snippets") else "snippet", "snippets"
+    )
+    real_open = session_index._open
+
+    def traced_open(path=None):
+        return _TimedConnection(real_open(path), spent)
+
+    session_index._open = traced_open
+    model: list = []
+
+    async def no_model(query, **kw):
+        model.append(kw.get("candidates"))
+        return {"answer": "", "matches": [], "mission_matches": []}
+
+    pulse_chat.ask = no_model
+    app = FastAPI()
+    sessions_routes.register(app, logged_in=lambda: "admin", csrf_guard=lambda: None)
+    op = asgi_call.Operator(
+        headers=((b"host", b"bench"),), scheme="http", server=("bench", 80), client=("::1", 1)
+    )
+    await asgi_call.call(app, op, "GET", "/api/sessions", None, query="limit=20")  # warm scan
+    stop = threading.Event()
+
+    def busy() -> None:
+        n = 0
+        while not stop.is_set():
+            n += 1
+
+    for _ in range(args.busy):
+        threading.Thread(target=busy, daemon=True).start()
+    summary: dict[str, dict[str, list[float]]] = {}
+    for q in queries:
+        _evict(copy)
+        for i in range(args.reps):
+            if i:
+                await asyncio.sleep(args.gap)
+            spent.clear()
+            model.clear()
+            _TimedConnection.log.clear()
+            turn = ask_orchestrator._Turn(
+                cid="bench", turn_id=f"t{i}", question=q, working_keys=set(),
+                progress=lambda e: None, operator=op, app=app,
+            )  # fmt: skip
+            t = time.perf_counter()
+            out, meta = await ask_orchestrator._find_sessions(turn, {"query": q})
+            total = time.perf_counter() - t
+            row = {
+                "query": q,
+                "run": "cold" if i == 0 else "repeat",
+                "total_ms": round(total * 1000),
+                **{f"{k.replace(' ', '_')}_ms": round(v * 1000) for k, v in spent.items()},
+                "source": meta.get("source"),
+                "model_would_run": bool(model),
+                "sessions": [s["title"][:60] for s in out["sessions"]][:3],
+            }
+            if args.json:
+                print(json.dumps(row), flush=True)
+            else:
+                print(
+                    f"{row['run']:6s} {row['total_ms']:6d} ms"
+                    f"  list walk {row.get('list_walk_ms', 0):5d}"
+                    f"  sqlite {row.get('sqlite_ms', 0):5d}"
+                    f"  snippets {row.get('snippets_ms', 0):5d}"
+                    f"  source={row['source']} model={row['model_would_run']}  {q[:50]}",
+                    flush=True,
+                )
+            for ms, sql in sorted(_TimedConnection.log, reverse=True)[: args.slowest]:
+                print(f"         {ms:7.1f} ms  {sql}", flush=True)
+            if i:
+                for k in ("total_ms", "list_walk_ms", "sqlite_ms", "snippets_ms"):
+                    summary.setdefault(q, {}).setdefault(k, []).append(row.get(k, 0))
+    stop.set()
+    print("\nrepeat medians (ms):")
+    for q, cols in summary.items():
+        print(
+            "  "
+            + "  ".join(f"{k[:-3]} {statistics.median(v):.0f}" for k, v in cols.items())
+            + f"  | {q[:50]}"
+        )
+    return 0
+
+
+class _TimedConnection:
+    """A `sqlite3.Connection` whose statements' wall time is summed into ``spent["sqlite"]``,
+    including the rows' fetch (cursors are drained into lists here)."""
+
+    def __init__(self, con: sqlite3.Connection, spent: dict[str, float]):
+        self._con, self._spent = con, spent
+
+    log: list[tuple[float, str]] = []
+
+    def execute(self, sql, params=()):
+        t = time.perf_counter()
+        try:
+            return _Rows(self._con.execute(sql, params).fetchall())
+        finally:
+            dt = time.perf_counter() - t
+            self._spent["sqlite"] = self._spent.get("sqlite", 0.0) + dt
+            shown = " ".join(sql.split())[:90] + " " + repr(params)[:60]
+            _TimedConnection.log.append((dt * 1000, shown))
+
+    def executemany(self, *a):
+        return self._con.executemany(*a)
+
+    def __getattr__(self, name):
+        return getattr(self._con, name)
+
+    def __enter__(self):
+        return self._con.__enter__()
+
+    def __exit__(self, *exc):
+        return self._con.__exit__(*exc)
+
+
+class _Rows(list):
+    def fetchall(self):
+        return list(self)
+
+    def fetchone(self):
+        return self[0] if self else None
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

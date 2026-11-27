@@ -1316,17 +1316,14 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             from .. import session_index
 
             # Only the rows shown get a snippet: the full message goes through the store's
-            # boundary first, then the window is cut (`session_index.snippet`).
-            window = [
-                {
-                    **r,
-                    "match": session_index.snippet(
-                        q or "", r, found.matches[r["id"]], kids.get(r["id"]),
-                        reports=reports, titles=titles, handoffs=found.handoffs,
-                    ).as_dict(),
-                }
-                for r in window
-            ]  # fmt: skip
+            # boundary first, then the window is cut. The whole page's snippets are ONE read of
+            # the index (`session_index.snippets`), never one per row.
+            shown = session_index.snippets(
+                q or "",
+                [(r, found.matches[r["id"]], kids.get(r["id"])) for r in window],
+                reports=reports, titles=titles, handoffs=found.handoffs,
+            )  # fmt: skip
+            window = [{**r, "match": m.as_dict()} for r, m in zip(window, shown, strict=True)]
             search = {"mode": found.mode}
             if candidates and not found.matches:
                 # HQ's fallback (#2373): no literal hit, so the scoped main sessions holding at

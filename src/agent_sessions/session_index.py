@@ -36,6 +36,7 @@ conversations are not searched and the result says so (`degraded`).
 
 from __future__ import annotations
 
+import bisect
 import contextlib
 import logging
 import os
@@ -88,6 +89,31 @@ _WORD = re.compile(r"[\w'’-]+", re.UNICODE)
 _HANDOFF_SOURCE = re.compile(r"session:\s*([\w.-]+:[\w.-]+)")
 
 _WRITE_LOCK = threading.Lock()
+
+#: Every read on a search's path that may return many rows returns ONE aggregated row instead,
+#: parsed here. Python's sqlite3 releases and retakes the GIL for every row it steps, and the app
+#: always has other threads running: with one busy thread a 16k-row listing measured 30 ms idle
+#: and 2.3-3.8 s, while the same rows as one `group_concat` row stayed at 35-47 ms.
+_US, _RS = "\x1f", "\x1e"  # unit / record separators: never in a key, a number or `who`
+
+
+def _records(con: sqlite3.Connection, cols: str, sql: str, params=()) -> list[list[str]]:
+    """``sql``'s rows as fields (text), read as ONE row: ``cols`` is the SQL expression list
+    ``sql`` selects, each field of which is joined with `_US`, each row with `_RS`."""
+    fields = " || char(31) || ".join(f"ifnull({c}, '')" for c in cols.split("|"))
+    if " LIMIT " not in sql:
+        sql += " LIMIT -1"  # never flattened into the aggregate: bm25() needs its own query
+    agg = con.execute(
+        f"SELECT group_concat({fields}, char(30)) FROM ({sql})",  # noqa: S608 — fixed text
+        params,
+    ).fetchone()[0]
+    return [r.split(_US) for r in agg.split(_RS)] if agg else []
+
+
+def _float(text: str) -> float:
+    return float(text) if text else 0.0
+
+
 _FTS_OK: bool | None = None
 
 
@@ -241,7 +267,10 @@ def progress(total_keys: set[str] | None = None) -> Progress:
         return Progress(0, len(total_keys or ()))
     con = _open()
     try:
-        rows = con.execute("SELECT key, ok, truncated FROM sess").fetchall()
+        rows = [
+            (k, int(ok or 0), int(t or 0))
+            for k, ok, t in _records(con, "key|ok|truncated", "SELECT key, ok, truncated FROM sess")
+        ]
     finally:
         con.close()
     done = {k for k, ok, _t in rows if ok == 1}
@@ -449,13 +478,14 @@ def _drop_rows(con: sqlite3.Connection, key: str) -> None:
 
 def _spans(con: sqlite3.Connection) -> tuple[list[int], list[int], list[str]]:
     """Every session's rowid span, sorted: ``(los, his, keys)`` for `bisect` lookups."""
-    rows = con.execute("SELECT lo, hi, key FROM span ORDER BY lo").fetchall()
+    rows = sorted(
+        (int(lo), int(hi), key)
+        for lo, hi, key in _records(con, "lo|hi|key", "SELECT lo, hi, key FROM span")
+    )
     return [r[0] for r in rows], [r[1] for r in rows], [r[2] for r in rows]
 
 
 def _key_of(rowid: int, spans: tuple[list[int], list[int], list[str]]) -> str | None:
-    import bisect
-
     los, his, keys = spans
     i = bisect.bisect_right(los, rowid) - 1
     if i >= 0 and rowid <= his[i]:
@@ -695,9 +725,12 @@ def _term_keys(
 ) -> dict[str, float] | None:
     """The sessions whose messages hold ``term`` (``key → best bm25`` when ``scores``, else 0.0).
 
-    Listing (no ``within``): None when the term is in more than `ROWS_COMMON_MAX` messages (a fast
-    row count) or more than ``limit`` sessions — too common to list. The index's own rowids are
-    mapped to sessions through their spans, so no content row is read per match.
+    Listing (no ``within``): None when the term is in more than `ROWS_COMMON_MAX` messages or more
+    than ``limit`` sessions — too common to list. ONE pass over the word's rowids, capped at
+    `ROWS_COMMON_MAX` + 1: a common word stops early, and a listed one is never walked twice (a
+    `count(*)` first read its whole doclist, then the listing read it again). bm25 is asked only of
+    a listed word, by a second statement (``scores``). The index's own rowids are mapped to
+    sessions through their spans, so no content row is read per match.
 
     ``within``: only those sessions, each checked by a `rowid BETWEEN` seek; None (degraded, never
     a silently partial answer) past `WITHIN_KEYS_MAX` sessions or `WITHIN_SECONDS_MAX`."""
@@ -715,22 +748,33 @@ def _term_keys(
                 continue
             if time.monotonic() - started > WITHIN_SECONDS_MAX:
                 return None
-            col = "bm25(msg)" if scores else "0.0"
-            sql = f"SELECT {col} FROM msg WHERE msg MATCH ? AND rowid BETWEEN ? AND ?"  # noqa: S608 — fixed text
-            if not scores:
-                sql += " LIMIT 1"
-            row = con.execute(sql, (q, *rng)).fetchall()
-            if row:
-                out[key] = min(r[0] for r in row)
+            if scores:  # one aggregated row, never one per message
+                sql = (
+                    "SELECT min(s) FROM (SELECT bm25(msg) AS s FROM msg"
+                    " WHERE msg MATCH ? AND rowid BETWEEN ? AND ? LIMIT -1)"
+                )
+            else:
+                sql = "SELECT 0.0 FROM msg WHERE msg MATCH ? AND rowid BETWEEN ? AND ? LIMIT 1"
+            row = con.execute(sql, (q, *rng)).fetchone()
+            if row is not None and row[0] is not None:
+                out[key] = row[0]
         return out
-    count = con.execute("SELECT count(*) FROM msg WHERE msg MATCH ?", (q,)).fetchone()[0]
-    if count > ROWS_COMMON_MAX:
+    ids = _records(
+        con, "r", "SELECT rowid AS r FROM msg WHERE msg MATCH ? LIMIT ?", (q, ROWS_COMMON_MAX + 1)
+    )
+    if len(ids) > ROWS_COMMON_MAX:
         return None
-    col = "rowid, bm25(msg)" if scores else "rowid, 0.0"
-    rows = con.execute(
-        f"SELECT {col} FROM msg WHERE msg MATCH ? ORDER BY rowid",  # noqa: S608 — fixed text
-        (q,),
-    ).fetchall()
+    if scores and ids:
+        # %.17g: the score round-trips exactly, so ties rank as bm25 ranked them.
+        recs = _records(
+            con,
+            "r|s",
+            "SELECT rowid AS r, printf('%.17g', bm25(msg)) AS s FROM msg WHERE msg MATCH ?",
+            (q,),
+        )
+        rows = sorted((int(r), _float(sc)) for r, sc in recs)
+    else:
+        rows = sorted((int(r[0]), 0.0) for r in ids)
     # Both lists ascend by rowid: one merge walk maps every match to its session's span.
     los, his, keys = spans
     j, n = 0, len(los)
@@ -919,35 +963,57 @@ def snippet(
     titles: dict | None = None,
     handoffs: dict | None = None,
 ) -> Match:
-    """Fill ``match``'s snippet for ``row`` (only for rows actually shown). The COMPLETE message or
-    field goes through the store's boundary first (known secrets redacted, credential-shaped text
-    withheld whole), and only then is the window cut — a cut never splits a secret."""
+    """`snippets` for one row."""
+    return snippets(
+        query, [(row, match, children)], reports=reports, titles=titles, handoffs=handoffs
+    )[0]
+
+
+def snippets(
+    query: str,
+    shown: list[tuple[dict, Match, list[dict] | None]],
+    *,
+    reports: dict | None = None,
+    titles: dict | None = None,
+    handoffs: dict | None = None,
+) -> list[Match]:
+    """Fill each ``(row, match, children)``'s snippet (only for rows actually shown). The
+    COMPLETE message or field goes through the store's boundary first (known secrets redacted,
+    credential-shaped text withheld whole), and only then is the window cut — a cut never splits a
+    secret. Every conversation snippet of the page comes from ONE read of the index
+    (`_best_messages`), not one per row."""
     from . import ask_store
 
     ts = terms(query)
-    if match.tier == "title":
-        text, marks = _window(row.get("title") or "", ts)
-        match.marks = marks if len(text) == len(row.get("title") or "") else []
-        return match
-    if match.tier == "details":
-        text = dict(details(row, reports=reports, titles=titles, handoffs=handoffs)).get(
-            match.field, ""
-        )
-        return _guarded(match, text, ts, ask_store)
-    keys = [row["id"], *[c["id"] for c in children or []]]
-    names = {c["id"]: c.get("title") or "" for c in children or []}
-    best = _best_message(keys, ts)
-    if best is None:
-        return match
-    key, who, text, held = best
-    match.field = "subagent" if key != row["id"] else who
-    match.child = names.get(key) if key != row["id"] else None
-    match.more = len([t for t in ts if t not in held])
-    if text is None:  # too long to guard whole: withheld, never a cut-first window
-        match.withheld = True
-        match.snippet, match.marks = "", []
-        return match
-    return _guarded(match, text, ts, ask_store)
+    groups = {
+        row["id"]: [row["id"], *[c["id"] for c in kids or []]]
+        for row, match, kids in shown
+        if match.tier == "conversation"
+    }
+    best = _best_messages(groups, ts) if groups else {}
+    out: list[Match] = []
+    for row, match, kids in shown:
+        if match.tier == "title":
+            text, marks = _window(row.get("title") or "", ts)
+            match.marks = marks if len(text) == len(row.get("title") or "") else []
+        elif match.tier == "details":
+            text = dict(details(row, reports=reports, titles=titles, handoffs=handoffs)).get(
+                match.field, ""
+            )
+            match = _guarded(match, text, ts, ask_store)
+        elif row["id"] in best:
+            key, who, text, held = best[row["id"]]
+            names = {c["id"]: c.get("title") or "" for c in kids or []}
+            match.field = "subagent" if key != row["id"] else who
+            match.child = names.get(key) if key != row["id"] else None
+            match.more = len([t for t in ts if t not in held])
+            if text is None:  # too long to guard whole: withheld, never a cut-first window
+                match.withheld = True
+                match.snippet, match.marks = "", []
+            else:
+                match = _guarded(match, text, ts, ask_store)
+        out.append(match)
+    return out
 
 
 def _guarded(match: Match, text: str, ts: list[str], ask_store) -> Match:
@@ -963,57 +1029,144 @@ def _guarded(match: Match, text: str, ts: list[str], ask_store) -> Match:
     return match
 
 
-def _best_message(keys: list[str], ts: list[str]) -> tuple[str, str, str | None, set[str]] | None:
-    """The message (of these keys) holding the most distinct terms across its parts; ties: the
-    lowest bm25 (the best match), then the newest message. Its text is the WHOLE message, its
-    parts joined (None when longer than `SNIPPET_MESSAGE_CHARS_MAX`: withheld, never cut first).
-    One read snapshot: the spans, the matches and the parts are of the same rows."""
+#: Above this many sessions, a word's rows are listed once over the whole range the sessions span
+#: rather than sought per session (`_held_rows`).
+SNIPPET_SEEK_KEYS_MAX = 64
+
+
+def _held_rows(con, spans: dict[str, tuple[int, int]], longs: list[str]) -> dict[int, set[str]]:
+    """Rowid → the terms that row holds, for the rows of these ``spans`` only, from the index's own
+    rowids (an FTS5 phrase per term: no content row and no bm25 is read). One seek per session and
+    term; past `SNIPPET_SEEK_KEYS_MAX` sessions, one listing per term mapped through the spans."""
+    out: dict[int, set[str]] = {}
+    if len(spans) <= SNIPPET_SEEK_KEYS_MAX:
+        for lo, hi in spans.values():
+            for t in longs:
+                for (rowid,) in _records(
+                    con,
+                    "r",
+                    "SELECT rowid AS r FROM msg WHERE msg MATCH ? AND rowid BETWEEN ? AND ?",
+                    (_quote(t), lo, hi),
+                ):
+                    out.setdefault(int(rowid), set()).add(t)
+        return out
+    ranges = sorted(spans.values())
+    los = [r[0] for r in ranges]
+    lo, hi = ranges[0][0], max(r[1] for r in ranges)
+    for t in longs:
+        for (text,) in _records(
+            con,
+            "r",
+            "SELECT rowid AS r FROM msg WHERE msg MATCH ? AND rowid BETWEEN ? AND ?",
+            (_quote(t), lo, hi),
+        ):
+            rowid = int(text)
+            i = bisect.bisect_right(los, rowid) - 1
+            if i >= 0 and rowid <= ranges[i][1]:
+                out.setdefault(rowid, set()).add(t)
+    return out
+
+
+def _best_messages(
+    groups: dict[str, list[str]], ts: list[str]
+) -> dict[str, tuple[str, str, str | None, set[str]]]:
+    """For each group of keys (a main row and its in-scope children), the message holding the
+    most distinct terms across its parts; ties: the lowest bm25 (the best match), then the newest
+    message. Its text is the WHOLE message, its parts joined (None when longer than
+    `SNIPPET_MESSAGE_CHARS_MAX`: withheld, never cut first).
+
+    Built for a whole page at once, in ONE read snapshot (the spans, the matches and the parts are
+    of the same rows). Which rows hold which term comes from the index alone (`_held_rows`); the
+    matched rows' small columns group their parts into messages; bm25 — whose every statement
+    first counts each term over the WHOLE index — is asked once for the page, and only of the
+    messages that tie; and only each chosen message's text is read."""
     longs = [t for t in ts if len(t) >= SHORT_TERM]
     if not longs or not fts_available() or not index_path().exists():
-        return None
+        return {}
     con = _open()
+    out: dict[str, tuple[str, str, str | None, set[str]]] = {}
     try:
         con.execute("BEGIN")
-        expr = " OR ".join(_quote(t) for t in longs)
+        keys = sorted({k for ks in groups.values() for k in ks})
+        spans: dict[str, tuple[int, int]] = {}
+        for i in range(0, len(keys), 900):
+            chunk = keys[i : i + 900]
+            marks = ",".join("?" * len(chunk))
+            for key, lo, hi in con.execute(
+                f"SELECT key, lo, hi FROM span WHERE key IN ({marks})",  # noqa: S608 — placeholders only
+                chunk,
+            ):
+                spans[key] = (int(lo), int(hi))
+        held = _held_rows(con, spans, longs)
+        if not held:
+            return {}
+        # The matched rows' messages: (key, seq) → who, the terms its parts hold, its rows.
         msgs: dict[tuple[str, int], dict] = {}
-        for key in keys:
-            span = con.execute("SELECT lo, hi FROM span WHERE key=?", (key,)).fetchone()
-            if span is None:
-                continue
-            for rowid, k, who, seq, part, parts, text, score in con.execute(
-                "SELECT rowid, key, who, seq, part, parts, text, bm25(msg) FROM msg"
-                " WHERE msg MATCH ? AND rowid BETWEEN ? AND ? ORDER BY bm25(msg) LIMIT 200",
-                (expr, *span),
-            ).fetchall():
-                nt = normalize(text)
+        ids = sorted(held)
+        for i in range(0, len(ids), 900):
+            chunk = ids[i : i + 900]
+            marks = ",".join("?" * len(chunk))
+            for rid, k, who, seq, part, parts in _records(
+                con,
+                "r|key|who|seq|part|parts",
+                f"SELECT rowid AS r, key, who, seq, part, parts FROM msg WHERE rowid IN ({marks})",  # noqa: S608 — placeholders only
+                chunk,
+            ):
+                rowid = int(rid)
                 m = msgs.setdefault(
                     (k, int(seq)),
-                    {"who": who, "held": set(), "score": score, "first": rowid - int(part),
+                    {"who": who, "held": set(), "rows": [], "first": rowid - int(part),
                      "parts": int(parts)},
                 )  # fmt: skip
-                m["held"] |= {t for t in longs if t in nt}
-                m["score"] = min(m["score"], score)
-        if not msgs:
-            return None
-        (key, _seq), best = min(
-            msgs.items(), key=lambda kv: (-len(kv[1]["held"]), kv[1]["score"], -kv[0][1])
-        )
-        if best["parts"] * CHUNK_CHARS > SNIPPET_MESSAGE_CHARS_MAX * 2:
-            text = None  # far too long to guard: withheld without reading it
-        else:
-            text = "".join(
-                r[0]
-                for r in con.execute(
-                    "SELECT text FROM msg WHERE rowid BETWEEN ? AND ? ORDER BY rowid",
-                    (best["first"], best["first"] + best["parts"] - 1),
-                ).fetchall()
+                m["held"] |= held[rowid]
+                m["rows"].append(rowid)
+        by_key: dict[str, list] = {}
+        for (k, seq), m in msgs.items():
+            by_key.setdefault(k, []).append(((k, seq), m))
+        tops: dict[str, list] = {}
+        tied: set[int] = set()
+        for main, ks in groups.items():
+            cand = [x for k in ks for x in by_key.get(k, ())]
+            if not cand:
+                continue
+            most = max(len(m["held"]) for _id, m in cand)
+            tops[main] = [x for x in cand if len(x[1]["held"]) == most]
+            if len(tops[main]) > 1:
+                tied.update(r for _id, m in tops[main] for r in m["rows"])
+        score: dict[int, float] = {}
+        if tied:
+            expr = " OR ".join(_quote(t) for t in longs)
+            for rid, s in _records(
+                con,
+                "r|s",
+                "SELECT rowid AS r, printf('%.17g', bm25(msg)) AS s FROM msg"
+                " WHERE msg MATCH ? AND rowid BETWEEN ? AND ?",
+                (expr, min(tied), max(tied)),
+            ):
+                if int(rid) in tied:
+                    score[int(rid)] = _float(s)
+        for main, top in tops.items():
+            (key, _seq), best = min(
+                top,
+                key=lambda kv: (min(score.get(r, 0.0) for r in kv[1]["rows"]), -kv[0][1]),
             )
-            if len(text) > SNIPPET_MESSAGE_CHARS_MAX:
-                text = None
+            if best["parts"] * CHUNK_CHARS > SNIPPET_MESSAGE_CHARS_MAX * 2:
+                text = None  # far too long to guard: withheld without reading it
+            else:
+                text = "".join(
+                    r[0]
+                    for r in con.execute(
+                        "SELECT text FROM msg WHERE rowid BETWEEN ? AND ? ORDER BY rowid",
+                        (best["first"], best["first"] + best["parts"] - 1),
+                    ).fetchall()
+                )
+                if len(text) > SNIPPET_MESSAGE_CHARS_MAX:
+                    text = None
+            out[main] = (key, best["who"], text, best["held"])
     finally:
         con.rollback()
         con.close()
-    return key, best["who"], text, best["held"]
+    return out
 
 
 # ---- HQ's fallback candidates -----------------------------------------------------------------
