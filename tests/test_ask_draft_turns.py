@@ -41,6 +41,8 @@ GATED = {
     "propose_project_change",
     "propose_mission",
     "propose_relay",  # #2391
+    "shell_run",  # #2404: a command, and a file write, wait for the commit
+    "file_write",
     "propose_secret",
     "propose_mcp",
     "propose_session",

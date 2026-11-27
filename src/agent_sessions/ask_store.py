@@ -227,7 +227,19 @@ OPERATION_INPUTS = frozenset({"folder", "value", "file"})
 OP_SUMMARY_MAX = 400
 _OP_FIELD_RE = re.compile(r"^[a-z_]{1,40}$")
 OP_FIELDS_MAX = 8
-PROPOSAL_KINDS = frozenset({"nudge", "session", "operation", "message"})
+PROPOSAL_KINDS = frozenset({"nudge", "session", "operation", "message", "command"})
+#: HQ's own command or file write (#2404, `hq_shell`): the command HQ wrote is shown and stored
+#: verbatim (a command a secret would change is refused at staging, never redacted into another
+#: one), and the output is stored already guarded line by line.
+COMMAND_MAX = 8_000
+COMMAND_OUTPUT_MAX = 8_000
+COMMAND_CONTENT_MAX = 64_000
+COMMAND_TIMEOUT_MAX = 600
+COMMAND_ACTIONS = frozenset({"run", "write"})
+COMMAND_STATES = frozenset(
+    {"pending", "deciding", "done", "failed", "timed_out", "stopped", "stale", "dismissed",
+     "interrupted"}
+)  # fmt: skip
 #: A message HQ proposes through a messenger connector (#1833): its text is the EXACT bytes a tap
 #: sends, so it is bounded by the largest provider limit and never re-rendered.
 MESSAGE_MAX = 32_000
@@ -532,6 +544,28 @@ def _admit(rec: dict, secrets: list[str]) -> dict:
                 for k, cap in (("sender", 254), ("address", 254), ("subject", 100)):
                     out[k] = text(rec.get(k), cap)
                 out["body"] = text(rec.get("body"), MESSAGE_MAX)
+        elif pkind == "command":
+            # HQ's command or file write (#2404): the card's action, folder, timeout and the
+            # command verbatim (or the file it writes). What a tap runs is the sidecar's entry,
+            # bound to this card by `binding` (`hq_shell`).
+            bind = rec.get("binding")
+            if not (isinstance(bind, str) and _DIGEST_RE.match(bind)):
+                raise ValueError("a command card needs its binding")
+            action = rec.get("action")
+            if action not in COMMAND_ACTIONS:
+                raise ValueError("unknown command action")
+            timeout = rec.get("timeout")
+            if type(timeout) is not int or not 0 <= timeout <= COMMAND_TIMEOUT_MAX:
+                raise ValueError("malformed command timeout")
+            out.update(action_id=aid, kind=pkind, binding=bind, action=action, timeout=timeout)
+            # Server-resolved real paths, validated like a session card's folder (never through
+            # the credential guard: a path is not a secret, and a withheld one breaks binding).
+            for k in ("cwd", "path") if action == "write" else ("cwd",):
+                v = rec.get(k)
+                if not _is_path(v):
+                    raise ValueError(f"malformed command {k}")
+                out[k] = v
+            out["text"] = text(rec.get("text"), COMMAND_MAX)
         elif pkind == "operation":
             # An operation HQ proposed (#1559): the card's server-authored wording. What a tap
             # runs is the sidecar's entry, bound to this card by `binding` (`ask_operations`).
@@ -713,6 +747,10 @@ def _admit(rec: dict, secrets: list[str]) -> dict:
             v = meta_in.get(k)
             if isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= STEP_NUMBER_MAX:
                 meta[k] = v
+        # #2404: the exit code of a command HQ ran itself. A number.
+        code = meta_in.get("exit")
+        if isinstance(code, int) and not isinstance(code, bool) and -(2**31) <= code < 2**31:
+            meta["exit"] = code
         # …whether it had, or may have had, an effect (always stored, whatever its position),
         # and what became of a send's message: "nothing was sent" is read from these records.
         if meta_in.get("effect") is True:
@@ -1326,6 +1364,8 @@ def _admit_kind(e: dict, secrets: list[str], *, fresh: bool) -> dict:
         return _admit_operation(e, pid, tid, secrets, fresh=fresh)
     if e.get("kind") == "message":
         return _admit_message(e, pid, tid, secrets)
+    if e.get("kind") == "command":
+        return _admit_command(e, pid, tid, secrets)
     if e.get("kind") != "session":
         raise ValueError("unknown proposal kind")
     state = e.get("state")
@@ -1521,6 +1561,81 @@ def _admit_message(e: dict, pid: str, tid: str, secrets: list[str]) -> dict:
         "message_id": e["message_id"][:255] if isinstance(e.get("message_id"), str) else "",
         "reason": guard_text(e.get("reason") or "", DETAIL_MAX, secrets=secrets),
     }
+    for k in ("ts", "decided_at", "settled_at"):
+        v = e.get(k)
+        if isinstance(v, int | float) and not isinstance(v, bool):
+            out[k] = float(v)
+    _admit_by_hq(e, out)
+    return out
+
+
+def _is_path(v: object) -> bool:
+    """An absolute, server-resolved path as a command card stores it (#2404)."""
+    return (
+        isinstance(v, str)
+        and v.startswith("/")
+        and len(v) <= PATH_MAX
+        and not any(ord(c) < 32 or ord(c) == 127 for c in v)
+    )
+
+
+def _admit_command(e: dict, pid: str, tid: str, secrets: list[str]) -> dict:
+    """One command entry (#2404, `hq_shell`). Every text is guarded like every stored text: a
+    secret registered after staging changes the command, which breaks the card's binding, so the
+    tap finds it `stale` and runs nothing. The output arrives guarded line by line and passes the
+    whole-field guard again here (fail closed: a field that still looks like a credential is
+    withheld whole)."""
+    state, bind, action = e.get("state"), e.get("binding"), e.get("action")
+    if state not in COMMAND_STATES:
+        raise ValueError("unknown command state")
+    if not (isinstance(bind, str) and _DIGEST_RE.match(bind)):
+        raise ValueError("a command needs its binding")
+    if action not in COMMAND_ACTIONS:
+        raise ValueError("unknown command action")
+    timeout = e.get("timeout")
+    if type(timeout) is not int or not 0 <= timeout <= COMMAND_TIMEOUT_MAX:
+        raise ValueError("malformed command timeout")
+    cwd = e.get("cwd")
+    if not _is_path(cwd):
+        raise ValueError("malformed command folder")
+    out: dict = {
+        "id": pid,
+        "turn_id": tid,
+        "kind": "command",
+        "state": state,
+        "binding": bind,
+        "action": action,
+        "cwd": cwd,
+        "timeout": timeout,
+        "reason": guard_text(e.get("reason") or "", DETAIL_MAX, secrets=secrets),
+    }
+    if action == "write":
+        path, content, base = e.get("path"), e.get("content"), e.get("base_sha")
+        if not _is_path(path):
+            raise ValueError("malformed command path")
+        if not (isinstance(content, str) and len(content) <= COMMAND_CONTENT_MAX):
+            raise ValueError("malformed file content")
+        if not (base == "" or (isinstance(base, str) and _DIGEST_RE.match(base))):
+            raise ValueError("malformed base digest")
+        out["path"] = path
+        out["content"] = guard_text(content, COMMAND_CONTENT_MAX, secrets=secrets)
+        out["base_sha"] = base
+    else:
+        cmd = e.get("command")
+        if not (isinstance(cmd, str) and cmd and len(cmd) <= COMMAND_MAX):
+            raise ValueError("malformed command")
+        out["command"] = guard_text(cmd, COMMAND_MAX, secrets=secrets)
+    if "output" in e:
+        out["output"] = guard_text(e.get("output") or "", COMMAND_OUTPUT_MAX, secrets=secrets)
+    code = e.get("exit_code")
+    if type(code) is int and -(2**31) <= code < 2**31:
+        out["exit_code"] = code
+    for k in ("ms", "bytes"):
+        v = e.get(k)
+        if type(v) is int and 0 <= v < 10**15:
+            out[k] = v
+    if type(e.get("truncated")) is bool:
+        out["truncated"] = e["truncated"]
     for k in ("ts", "decided_at", "settled_at"):
         v = e.get(k)
         if isinstance(v, int | float) and not isinstance(v, bool):

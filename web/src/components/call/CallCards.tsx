@@ -14,7 +14,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { announceActionResolved } from "../../lib/actionEvents";
 import { api, ApiError } from "../../lib/api";
 import type { AskConversationTurn, AskProposalCard, NeedsYouRow } from "../../types/api";
-import { MessageCard, NudgeCard, OperationCard, SessionCard } from "../ask/AskCards";
+import { CommandCard, MessageCard, NudgeCard, OperationCard, SessionCard } from "../ask/AskCards";
 import b from "../ui/actionButton.module.css";
 import { BATCH_NOTE, BATCH_PHRASE, confirmPhrase, listeningFor, settledWord } from "./cardVoice";
 import { useCall } from "./callContext";
@@ -358,6 +358,16 @@ export function CallCards({ cid, seq }: { cid: string | null; seq: number }) {
               error={errors.get(p.action_id) ?? null}
               onSend={() => void run(p.action_id, () => api.decideAskMessage(p.action_id, "send"))}
               onDismiss={() => void run(p.action_id, () => api.decideAskMessage(p.action_id, "dismiss"))}
+            />
+          ) : p.kind === "command" ? (
+            // HQ's command card (#2404): on a call it is confirmed on this screen, never by voice.
+            <CommandCard
+              p={p}
+              deciding={deciding.has(p.action_id)}
+              error={errors.get(p.action_id) ?? null}
+              onRun={() => void run(p.action_id, () => api.decideAskCommand(p.action_id, "confirm"))}
+              onDismiss={() => void run(p.action_id, () => api.decideAskCommand(p.action_id, "dismiss"))}
+              onStop={() => void run(p.action_id, () => api.decideAskCommand(p.action_id, "stop"))}
             />
           ) : p.kind === "operation" ? (
             <OperationCard

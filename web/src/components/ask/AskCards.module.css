@@ -1182,3 +1182,23 @@
     padding-inline: var(--sp-2);
   }
 }
+
+/* A command's output (#2404): mono, bounded height, scrolls inside the card. */
+.commandOut {
+  margin: 0;
+  max-height: 240px;
+  overflow: auto;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line);
+  background: var(--surface-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  line-height: 1.5;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.commandOut:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -2px;
+}

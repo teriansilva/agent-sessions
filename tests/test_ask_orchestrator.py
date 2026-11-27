@@ -300,6 +300,14 @@ def test_the_tool_list_and_each_tools_kind_are_pinned():
         # #2102: asks the asking device to show something. No platform state changes, no route
         # is called, and the target comes from a closed catalog — a kind of its own.
         "show": "screen",
+        # #2404: HQ's own shell and files. Reads of a folder, a file and a command card's output;
+        # a command and a file write stage a `command` card that acts only on the Authority
+        # setting (runs commands, or reversible inside HQ's workspace).
+        "file_list": "read",
+        "file_read": "read",
+        "read_command_output": "read",
+        "shell_run": "proposal",
+        "file_write": "proposal",
         "list_agents": "read",
         # #1938: an agent's models and effort levels by index, and one specialist in full —
         # the reads a specialist card's indexes and an edit start from. Read-only.

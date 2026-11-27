@@ -66,7 +66,7 @@ def _act(a, cid, pid, grant=None, **kw):
 def test_the_class_table_is_pinned_against_every_proposal_kind():
     assert set(hq_authority.KIND_CLASS) == set(ask_store.PROPOSAL_KINDS)
     assert set(hq_authority.CLASS_OF) == set(ask_operations.CATALOG)
-    assert hq_authority.ACTABLE == {"reversible", "starts", "destructive"}  # + A1c (#2396)
+    assert hq_authority.ACTABLE == {"reversible", "starts", "destructive", "runs_commands"}
     # The four journeys and the two already-classed starts.
     for op in ("automation.run_now", "mission.relay", "automation.edit", "memory.edit"):
         assert hq_authority.CLASS_OF[op] == "starts", op
@@ -125,10 +125,11 @@ def test_an_automations_reach_is_read_off_its_approved_scope(scope, reach):
 
 def test_the_untrusted_switch_is_off_by_default_cas_written_and_never_set_by_a_preset():
     v = hq_authority.view()
-    assert v["untrusted"] == {"starts": False, "destructive": False}
-    assert v["untrusted_classes"] == ["starts", "destructive"]
+    assert v["untrusted"] == {"starts": False, "destructive": False, "runs_commands": False}
+    assert v["untrusted_classes"] == ["starts", "destructive", "runs_commands"]
     v = hq_authority.update({"revision": 0, "untrusted": {"starts": True}})
-    assert v["untrusted"] == {"starts": True, "destructive": False} and v["revision"] == 1
+    assert v["untrusted"] == {"starts": True, "destructive": False, "runs_commands": False}
+    assert v["revision"] == 1
     with pytest.raises(hq_authority.AuthorityError) as e:
         hq_authority.update({"revision": 0, "untrusted": {"starts": False}})
     assert e.value.status == 409
@@ -162,7 +163,9 @@ def test_a_missing_or_malformed_switch_reads_off(stored):
     assert hq_authority.taint_blocks(snap, "starts", True)
     assert not hq_authority.taint_blocks(snap, "starts", False)
     assert not hq_authority.taint_blocks(snap, "reversible", True)  # epic §1
-    assert hq_authority.view()["untrusted"] == {"starts": False, "destructive": False}
+    assert hq_authority.view()["untrusted"] == {
+        "starts": False, "destructive": False, "runs_commands": False
+    }  # fmt: skip
 
 
 def test_the_route_writes_the_switch_against_the_revision(live):

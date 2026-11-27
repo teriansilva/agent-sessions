@@ -51,6 +51,12 @@ const CLASSES: { id: HqAuthorityClass; label: string; examples: string }[] = [
     label: "Widens access",
     examples: "Permission bypass, autonomy up, automations on, secret agent access, MCP servers on.",
   },
+  {
+    id: "runs_commands",
+    label: "Runs commands",
+    examples:
+      "Run a command or a script, write a file in a project folder. As your user, with your whole access.",
+  },
 ];
 
 const LOCKED = [
@@ -96,10 +102,12 @@ function isAuthority(v: unknown): v is HqAuthority {
   );
 }
 
-/** What an "also after untrusted text" switch lets a hostile report do, per class (#2391, #2396). */
+/** What an "also after untrusted text" switch lets a hostile report do, per class (#2391, #2396,
+ *  #2404). */
 const UNTRUSTED_ALLOWS: Partial<Record<HqAuthorityClass, string>> = {
   starts: "start or send",
   destructive: "archive or delete",
+  runs_commands: "run commands as you",
 };
 
 /** D4 (#2391): "also after HQ read untrusted text" for one class. Off by default; on is RISKY and
@@ -124,7 +132,8 @@ function UntrustedSwitch({
       data-testid={`hq-authority-untrusted-${id}`}
     >
       <span className={styles.authorityUntrustedText} id={hint}>
-        Also after HQ read text from a session, connector or file in this conversation
+        Also after HQ read text from a session, connector, file or command output in this
+        conversation
         {on ? (
           <>
             : <b>on</b>. A hostile report can now get HQ to {UNTRUSTED_ALLOWS[id] ?? "act"}.
@@ -303,6 +312,11 @@ export function HqAuthoritySettings() {
                       {risky ? <Stamp tone="down">RISKY</Stamp> : null}
                     </span>
                     <span className={styles.authorityExamples}>{c.examples}</span>
+                    {c.id === "runs_commands" && state.shell_host && !state.shell_host.available && (
+                      <span className={styles.authorityUnavailable} data-testid="hq-authority-shell-unavailable">
+                        Unavailable on this host: {state.shell_host.reason}. HQ does not run commands here.
+                      </span>
+                    )}
                     {later && (
                       <span className={styles.authorityLater} data-testid={`hq-authority-later-${c.id}`}>
                         {value === "act"
@@ -340,8 +354,8 @@ export function HqAuthoritySettings() {
           </ul>
           <p className={styles.hint}>
             Screen and reversible changes act even after HQ has read text an agent or a website
-            wrote (a session&rsquo;s screen, a report, a file). Starts and sends ask first after
-            that, unless you switch them on above. HQ starts API sessions itself, never with
+            wrote (a session&rsquo;s screen, a report, a file, a command&rsquo;s output). Starts,
+            sends and commands ask first after that, unless you switch them on above. HQ starts API sessions itself, never with
             permission bypass; a terminal session is always started on its card. Messages HQ
             types into sessions follow Autonomy below.
           </p>

@@ -95,6 +95,12 @@ export const TOOL_LABELS: Record<string, { label: string; noun?: [string, string
   propose_project_change: { label: "Preparing the change for you to confirm" },
   propose_mission: { label: "Preparing the draft mission for you to confirm" },
   propose_relay: { label: "Preparing the relay to the mission" },
+  // #2404: HQ's own shell, files and scripts.
+  file_list: { label: "Listing a folder", noun: ["entry", "entries"] },
+  file_read: { label: "Reading a file", noun: ["line", "lines"] },
+  shell_run: { label: "Running a command" },
+  file_write: { label: "Writing a file" },
+  read_command_output: { label: "Reading a command's output" },
   // What HQ does itself, and how a turn ends.
   send_nudge: { label: "Sending a message", noun: ["session", "sessions"] },
   // #2102: HQ asks this screen to show something; what the screen did is the line under the answer.

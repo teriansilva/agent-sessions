@@ -1934,6 +1934,11 @@
   font: var(--fs-label) / 1.4 var(--font-mono);
   color: var(--text-3);
 }
+/* HQ's shell can't be contained on this host (#2404): said on its row, in the warn ink. */
+.authorityUnavailable {
+  font: var(--fs-label) / 1.4 var(--font-mono);
+  color: var(--warn-text);
+}
 .authorityFixed {
   flex: none;
   font: 500 var(--fs-label) / 1 var(--font-mono);

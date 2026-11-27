@@ -48,21 +48,26 @@ from . import prefs
 KEY = "hq_authority"
 ASK, ACT = "ask", "act"
 #: The stored classes, in the order the Settings page shows them. Screen is not stored.
-CLASSES = ("reversible", "starts", "destructive", "external", "widens")
+#: B3 (#2404) adds *runs commands*: HQ's shell, and a file write outside its workspace.
+CLASSES = ("reversible", "starts", "destructive", "external", "widens", "runs_commands")
 #: The classes labelled RISKY in Settings (D2): they may be set to act, with that label.
-RISKY = frozenset({"destructive", "external", "widens"})
-#: The classes HQ can act on in this version (#2070 A1, A1b #2391, A1c-destructive #2396). The
-#: other RISKY classes (external, widens) follow in their own children.
-ACTABLE = frozenset({"reversible", "starts", "destructive"})
+RISKY = frozenset({"destructive", "external", "widens", "runs_commands"})
+#: The classes HQ can act on in this version (#2070 A1, A1b #2391, A1c-destructive #2396, B3
+#: #2404). The other RISKY classes (external, widens) follow in their own children.
+ACTABLE = frozenset({"reversible", "starts", "destructive", "runs_commands"})
 #: The classes that ask first after HQ read untrusted text unless their switch is on (D4, #2391).
 #: Screen and reversible act in a tainted turn (epic §1); every later class is gated.
 TAINT_GATED = frozenset(CLASSES) - {"reversible"}
 #: The classes whose "also after untrusted text" switch exists in this version: every gated class
-#: that can act (#2391 starts, #2396 destructive); external and widens add theirs with their acting.
-UNTRUSTED_SWITCHES = ("starts", "destructive")
+#: that can act (#2391 starts, #2396 destructive, #2404 runs commands); external and widens add
+#: theirs with their acting.
+UNTRUSTED_SWITCHES = ("starts", "destructive", "runs_commands")
 #: Why a gated class asks first in a tainted conversation (D4), said on the card and to HQ.
 TAINT_REASON = "HQ read text from a session or connector in this conversation, so this asks first"
-#: Presets set the classes together; any other mix reads as "custom".
+#: Presets set the classes together; any other mix reads as "custom". D10 (#2404): runs commands
+#: asks under Ask first and Standard and acts under Full control. A block stored before B3 has no
+#: runs_commands value, which reads ask: an upgraded Full control reads Custom until the Commander
+#: picks Full control again, so an upgrade never grants HQ a shell.
 PRESETS: dict[str, dict[str, str]] = {
     "ask_first": {c: ASK for c in CLASSES},
     "standard": {c: (ACT if c == "reversible" else ASK) for c in CLASSES},
@@ -160,6 +165,9 @@ KIND_CLASS: dict[str, str | None] = {
     "message": "starts",  # a connector message the Commander allowed the recipient of
     "operation": None,  # the catalog entry's class
     "nudge": None,  # its own authority (#1960), not this setting
+    # HQ's shell (#2404): runs commands; a file write inside HQ's own workspace is reversible
+    # (`hq_shell.command_class`, re-derived at every boundary).
+    "command": "runs_commands",
 }
 #: An automation's approved action kinds that stay inside BattleLab when run now (#2391). Anything
 #: else (a plugin action: a webhook call, a push, a share), an unknown kind, or a scope that can't
@@ -209,6 +217,10 @@ def effective_class(row: dict, facts: dict | None = None) -> str:
         return "starts"
     if kind == "message":
         return "starts"
+    if kind == "command":
+        from . import hq_shell
+
+        return hq_shell.command_class(row)
     return "widens"
 
 
@@ -306,7 +318,19 @@ def view(path: Path | None = None) -> dict:
         # D4 (#2391): the "also after untrusted text" switches, and which classes have one.
         "untrusted": dict(snap.untrusted),
         "untrusted_classes": list(UNTRUSTED_SWITCHES),
+        # B3 (#2404): whether HQ's shell can be contained on this host, and why not.
+        "shell_host": _shell_state(),
     }
+
+
+def _shell_state() -> dict:
+    from . import hq_shell
+
+    try:
+        ok, why = hq_shell.available()
+    except Exception:  # noqa: BLE001 — unknown reads unavailable
+        ok, why = False, "it could not be checked"
+    return {"available": ok, "reason": why}
 
 
 def update(body: object, path: Path | None = None) -> dict:

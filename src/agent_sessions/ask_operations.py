@@ -1740,9 +1740,14 @@ ACT_ROUTE_WAIT_S = 30.0
 
 def running_any(pid: str) -> bool:
     """Whether a task of this process still runs proposal ``pid``, of any kind."""
-    from . import ask_messages, ask_proposals
+    from . import ask_messages, ask_proposals, hq_shell
 
-    return pid in _TASKS or ask_proposals.running(pid) or pid in ask_messages._TASKS
+    return (
+        pid in _TASKS
+        or ask_proposals.running(pid)
+        or pid in ask_messages._TASKS
+        or pid in hq_shell._TASKS
+    )
 
 
 async def _act_lock(cid: str, wait: float) -> int | None:
@@ -1809,6 +1814,10 @@ async def act(
                 task = await ask_proposals.act_start(cid, row, fd, carried)
             elif kind == "message":
                 task = await ask_messages.act_send(cid, row, fd, carried)
+            elif kind == "command":
+                from . import hq_shell
+
+                task = await hq_shell.act_run(cid, row, fd, carried)
             elif kind == KIND:
                 task = await _act_operation(cid, row, fd, carried, operator, app)
             else:

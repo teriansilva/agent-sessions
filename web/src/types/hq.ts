@@ -4,7 +4,13 @@ export interface HqModelChoice { model: string; thinking: HqThinking }
 export interface HqModelSettings { typed: HqModelChoice; mission: HqModelChoice }
 
 /** Settings → AI → HQ → Authority (#2390, epic #2070 §1). */
-export type HqAuthorityClass = "reversible" | "starts" | "destructive" | "external" | "widens";
+export type HqAuthorityClass =
+  | "reversible"
+  | "starts"
+  | "destructive"
+  | "external"
+  | "widens"
+  | "runs_commands";
 export type HqAuthorityValue = "ask" | "act";
 export type HqAuthorityPreset = "ask_first" | "standard" | "full" | "custom";
 export interface HqAuthority {
@@ -20,6 +26,8 @@ export interface HqAuthority {
   untrusted?: Partial<Record<HqAuthorityClass, boolean>>;
   /** The classes that have that switch in this version. */
   untrusted_classes?: HqAuthorityClass[];
+  /** B3 (#2404): whether HQ's shell can be contained on this host, and why not. */
+  shell_host?: { available: boolean; reason: string };
 }
 export type HqAuthorityPatch =
   | { revision: number; preset: Exclude<HqAuthorityPreset, "custom"> }

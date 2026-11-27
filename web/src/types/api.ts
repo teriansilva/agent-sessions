@@ -1475,7 +1475,49 @@ export type AskMessageCard = {
   decided_by?: "hq";
 };
 export type AskMessageDecision = Omit<AskMessageCard, "action_id" | "kind">;
-export type AskProposalCard = AskNudgeCard | AskSessionCard | AskOperationCard | AskMessageCard;
+
+/** HQ's own command or file write (#2404): the command (or the file) verbatim, its folder and
+ *  timeout. Its live fields come from the proposal sidecar (`hq_shell.view`). */
+export type AskCommandCard = {
+  replaced_by?: string;
+  replaces?: string;
+  changes?: AskCardChange[];
+  action_id: string;
+  kind: "command";
+  action: "run" | "write";
+  /** The command, exactly as it runs (a run). */
+  command?: string;
+  cwd: string;
+  timeout: number;
+  /** A write: the file, whether it is new, its size and the start of its new text. */
+  path?: string;
+  new?: boolean;
+  size?: number;
+  lines?: number;
+  preview?: string;
+  preview_cut?: boolean;
+  /** The write lands in HQ's own workspace (a reversible change). */
+  workspace?: boolean;
+  state: string;
+  reason?: string;
+  exit_code?: number;
+  /** The output as stored: secrets redacted, credential-looking lines withheld, bounded. */
+  output?: string;
+  truncated?: boolean;
+  ms?: number;
+  can_run?: boolean;
+  can_dismiss?: boolean;
+  can_stop?: boolean;
+  /** HQ ran it itself under the Commander's Authority setting: "Ran by HQ". */
+  decided_by?: "hq";
+};
+export type AskCommandDecision = Omit<AskCommandCard, "action_id" | "kind">;
+export type AskProposalCard =
+  | AskNudgeCard
+  | AskSessionCard
+  | AskOperationCard
+  | AskMessageCard
+  | AskCommandCard;
 
 /** One step of an HQ turn as the process view shows it (#2076): a stored tool record. The tool's
  *  name, its guarded string arguments, and numbers — never model text, never tool output. */
@@ -1486,6 +1528,8 @@ export interface AskToolStep {
   n?: number;
   /** How long it took, in milliseconds. */
   ms?: number;
+  /** A command HQ ran itself: its exit code (#2404). */
+  exit?: number;
   count?: number;
   length?: number;
   /** The refusal's code, when refused. */

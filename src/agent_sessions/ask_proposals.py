@@ -382,6 +382,10 @@ def recover(cid: str) -> None:
                         from . import ask_messages
 
                         reason = ask_messages.interrupted_reason(r)
+                    if r.get("kind") == "command":
+                        from . import hq_shell
+
+                        reason = hq_shell.interrupted_reason(r)
                     if r.get("kind") == "operation":
                         from . import ask_operations
 
@@ -486,6 +490,12 @@ def changes(old: dict, new: dict) -> list[dict]:
         add("recipient", (old.get("recipient") or {}).get("label"),
             (new.get("recipient") or {}).get("label"))  # fmt: skip
         add("text", old.get("text"), new.get("text"), quote=False)
+    elif kind == "command":
+        add("command", old.get("command"), new.get("command"))
+        add("folder", old.get("cwd"), new.get("cwd"))
+        add("file", old.get("path"), new.get("path"))
+        add("timeout", old.get("timeout"), new.get("timeout"))
+        add("content", old.get("content"), new.get("content"), quote=False)
     else:
         add("action", old.get("op"), new.get("op"))
         add("target", old.get("title"), new.get("title"))
@@ -507,6 +517,10 @@ def _any_view(row: dict) -> dict:
         out = ask_operations.view(row)
     elif row.get("kind") == "message":
         out = ask_messages.view(row)
+    elif row.get("kind") == "command":
+        from . import hq_shell
+
+        out = hq_shell.view(row)
     else:
         out = view(row)
     for key in ("replaced_by", "replaces"):  # the card that replaced it, or it replaced (#2120)
@@ -521,6 +535,8 @@ def _any_view(row: dict) -> dict:
 #: How long a tap waits for the conversation's decide lock before answering 409: a launch that
 #: just returned its card to `pending` writes that state a moment before it lets the lock go.
 DECIDE_LOCK_WAIT_S = 2.0
+#: How long a command's Stop waits for its card to settle (#2404).
+STOP_WAIT_S = 15.0
 
 
 async def _decide_lock(cid: str) -> int | None:
@@ -552,6 +568,7 @@ async def decide(
     app=None,
     inputs=None,
     bare: bool = True,
+    in_process: bool = False,
 ) -> tuple[int, dict]:
     """Decide one proposal. Returns ``(HTTP status, view)``; raises ProposalError.
 
@@ -559,11 +576,28 @@ async def decide(
     lock, the tapping ``operator`` (``asgi_call.Operator``) and the ``app`` it runs through."""
     from . import ask_operations
 
-    if decision not in ("start", "dismiss", "confirm", "send"):
-        raise ProposalError(422, "decision must be start, confirm, send or dismiss")
+    if decision not in ("start", "dismiss", "confirm", "send", "stop"):
+        raise ProposalError(422, "decision must be start, confirm, send, stop or dismiss")
     cid = await asyncio.to_thread(locate, pid)
     if cid is None:
         raise ProposalError(404, "no such proposal")
+    if decision == "stop":
+        # A running command's own Stop (#2404): it never takes the decide lock (the run holds
+        # it); the run's unit is stopped and the card settles `stopped`.
+        from . import hq_shell
+
+        row = await asyncio.to_thread(_row, cid, pid)
+        if row is None:
+            raise ProposalError(404, "no such proposal")
+        if row.get("kind") != "command" or not bare:
+            raise ProposalError(422, 'only a running command takes {"decision": "stop"}')
+        hq_shell.stop_card(pid)
+        t = hq_shell._TASKS.get(pid)
+        if t is not None:
+            with contextlib.suppress(Exception):
+                await asyncio.wait({t}, timeout=STOP_WAIT_S)
+        row = await asyncio.to_thread(_row, cid, pid)
+        return 200, hq_shell.view(row or {})
     fd = await _decide_lock(cid)
     if fd is None:
         row = await asyncio.to_thread(_row, cid, pid)
@@ -589,6 +623,21 @@ async def decide(
 
             handed = True  # `decide_locked` owns the lock from here, whatever happens
             return await ask_messages.decide_locked(cid, row, fd, decision)
+        if row.get("kind") == "command":
+            # HQ's command or file write (#2404): exactly `{"decision": "confirm" | "dismiss"}`;
+            # the stored entry is what runs.
+            if not bare or decision not in ("confirm", "dismiss"):
+                raise ProposalError(
+                    422, 'a command takes exactly {"decision": "confirm" | "dismiss"}'
+                )
+            if decision == "confirm" and in_process:
+                # Never by HQ's own in-process calls (a call's voice included): a command is
+                # confirmed on the Commander's screen, or run under their Authority setting.
+                raise ProposalError(403, "a command is confirmed on the Commander's screen")
+            from . import hq_shell
+
+            handed = True  # `decide_locked` owns the lock from here, whatever happens
+            return await hq_shell.decide_locked(cid, row, fd, decision)
         if decision == "send":
             raise ProposalError(422, "only a message is sent")
         if row.get("kind") == "operation":

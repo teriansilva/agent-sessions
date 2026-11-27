@@ -315,6 +315,12 @@ secret's value or file), a `follow_up` continuation, a terminal start or relay, 
 open step list stays a card under every setting. `screen` rows always act. The locked rows (the Authority setting, HQ's
 guarded prompt, the login identity) and the operator-only rows below are never reachable.
 
+**Runs commands** (#2404, B3, `docs/invariants/hq-shell.md`) is HQ's own shell, not a UI route:
+`shell_run` (a command or a script, in its own contained systemd unit) and `file_write` outside HQ's
+workspace (inside it, a write is `reversible`). Proposal kind `command`; RISKY; acts only under
+Full control (D10); asks first after untrusted text unless its own D4 switch is on. Never confirmed
+by voice. `file_list`, `file_read` and `read_command_output` are untrusted reads.
+
 ## Never through HQ (recorded decision, §3b)
 
 Each row is a credential, a grant of more permission or autonomy, or a tap that would approve another tap. A prompt-injected screen could turn any of them against the operator. **Turning a permission or an autonomy down is always allowed; turning it up is never.** Each row can be moved by a later operator-approved issue with its own security review.

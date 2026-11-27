@@ -134,6 +134,9 @@ export function stepResult(step: AskToolStep): { text: string; tone: StepTone } 
   if (step.error) return { text: `refused: ${step.error.replace(/_/g, " ")}`, tone: "refused" };
   if (step.sent === "yes") return { text: "sent", tone: "ok" };
   if (step.sent === "no") return { text: "not sent", tone: "refused" };
+  // A command HQ ran itself (#2404): its exit code, the one fact that says how it went.
+  if (typeof step.exit === "number")
+    return { text: `exit ${step.exit}`, tone: step.exit === 0 ? "ok" : "refused" };
   if (typeof step.count === "number") {
     const [one, many] = TOOL_LABELS[step.name]?.noun ?? ["result", "results"];
     return { text: `${count(step.count)} ${step.count === 1 ? one : many}`, tone: "ok" };

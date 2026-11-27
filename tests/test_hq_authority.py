@@ -96,10 +96,10 @@ def _act(a, cid, aid, grant=None):
 def test_every_catalog_entry_has_exactly_one_class():
     assert set(hq_authority.CLASS_OF) == set(ask_operations.CATALOG)
     assert set(hq_authority.CLASS_OF.values()) <= set(hq_authority.CLASSES)
-    # A1: the reversible class acts (A1b, #2391: and starts or sends; A1c, #2396: destructive); the
-    # RISKY ones are labelled.
-    assert hq_authority.ACTABLE == {"reversible", "starts", "destructive"}
-    assert hq_authority.RISKY == {"destructive", "external", "widens"}
+    # A1: the reversible class acts (A1b, #2391: and starts or sends; A1c, #2396: destructive;
+    # B3, #2404: runs commands); the RISKY ones are labelled.
+    assert hq_authority.ACTABLE == {"reversible", "starts", "destructive", "runs_commands"}
+    assert hq_authority.RISKY == {"destructive", "external", "widens", "runs_commands"}
 
 
 def test_an_upgrade_reads_ask_first_and_presets_derive():

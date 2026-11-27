@@ -16,11 +16,11 @@
  *  default, else the global one (#2351); the tap carries what it shows. "Started" means the
  *  agent's own store has the session and it received the brief; anything less proved says so, and nothing is retried.
  */
-import { Eye, FolderOpen, Play, Send } from "lucide-react";
+import { Eye, FolderOpen, Play, Send, Square, SquareTerminal } from "lucide-react";
 import { openSessionLimit } from "../../lib/sessionLimit";
 import { type ReactNode, useCallback, useId, useRef, useState } from "react";
 
-import type { AskCardChange, AskMessageCard } from "../../types/api";
+import type { AskCardChange, AskCommandCard, AskMessageCard } from "../../types/api";
 import type {
   AskTeamRow,
   AskNudgeCard,
@@ -1329,6 +1329,208 @@ export function MessageCard({
           <Led tone={LED[out.tone]} />
           <span className={`${c.ow} ${c[`ow_${out.tone}`]}`}>{out.word}</span>
           <span className={c.od}>{out.detail}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function commandOutcome(p: AskCommandCard): { word: string; tone: Tone; detail: string } | null {
+  const write = p.action === "write";
+  const took = typeof p.ms === "number" ? ` · ${(p.ms / 1000).toFixed(1)} s` : "";
+  switch (p.state) {
+    case "pending":
+      return null;
+    case "deciding":
+      return write
+        ? { word: "Writing", tone: "neutral", detail: "Being written now." }
+        : { word: "Running", tone: "neutral", detail: "Running now, once, in its own contained unit." };
+    case "done":
+      return write
+        ? { word: "Written", tone: "ok", detail: "The file has its new text." }
+        : { word: "Done", tone: "ok", detail: `Exit code 0${took}` };
+    case "failed":
+      return {
+        word: write ? "Not written" : "Failed",
+        tone: "bad",
+        detail: write ? p.reason || "Nothing was written." : `Exit code ${p.exit_code ?? "?"}${took}`,
+      };
+    case "timed_out":
+      return { word: "Timed out", tone: "bad", detail: p.reason || "It was stopped at its timeout." };
+    case "stopped":
+      return { word: "Stopped", tone: "warn", detail: p.reason || "Stopped by you." };
+    case "interrupted":
+      return {
+        word: write ? "May have been written" : "May have run",
+        tone: "bad",
+        detail: p.reason || "BattleLab stopped while it ran. It is not run again.",
+      };
+    case "stale":
+      return {
+        word: "Out of date",
+        tone: "warn",
+        detail: p.reason || "Something changed since HQ proposed it; nothing ran.",
+      };
+    case "dismissed":
+      return { word: "Dismissed", tone: "neutral", detail: "Nothing ran." };
+    case "unknown":
+      return {
+        word: "Status unavailable",
+        tone: "warn",
+        detail: "It could not be read just now; this updates on its own.",
+      };
+    default:
+      return { word: "No longer here", tone: "neutral", detail: "This card has nothing to decide." };
+  }
+}
+
+/** HQ's own command or file write (#2404). The command (or the file and the start of its new
+ *  text) is shown verbatim, with its folder and timeout; Run and Dismiss carry nothing but the
+ *  decision, and the server runs its own stored entry in a contained unit. Once it ran, the exit
+ *  code and the output the server kept (secrets redacted, credential-looking lines withheld). */
+export function CommandCard({
+  p,
+  deciding,
+  error = null,
+  onRun,
+  onDismiss,
+  onStop,
+}: {
+  p: AskCommandCard;
+  deciding: boolean;
+  error?: string | null;
+  onRun: () => void;
+  onDismiss: () => void;
+  onStop: () => void;
+}) {
+  const out = isReplaced(p) ? REPLACED : commandOutcome(p);
+  const edge = out?.tone === "warn" ? c.edgeWarn : out?.tone === "bad" ? c.edgeBad : "";
+  const write = p.action === "write";
+  const byHq = p.decided_by === "hq";
+  const what = write ? "Write a file" : "Command";
+  const kicker = byHq
+    ? write
+      ? "Written by HQ"
+      : "Ran by HQ"
+    : p.state === "pending" && p.reason
+      ? "Asks first"
+      : "Proposal";
+  const exit =
+    !write && typeof p.exit_code === "number" ? `Exit ${p.exit_code}` : null;
+  return (
+    <div className={`${c.card} ${edge}`} data-testid="ask-command" data-state={p.state}>
+      <div className={c.head}>
+        <span className={c.k} data-testid="ask-command-kicker">
+          {kicker}
+        </span>
+        {what}
+        <span className={c.st}>{exit ?? (out ? out.word : "Waiting for you")}</span>
+      </div>
+      <Changed changes={p.changes} replaces={p.replaces} />
+      <div className={c.body}>
+        <dl className={c.kv}>
+          {write ? (
+            <>
+              <dt>File</dt>
+              <dd data-testid="ask-command-path">{p.path}</dd>
+              <dt>Change</dt>
+              <dd>
+                {p.new ? "a new file" : "replaces the file"} · {p.lines ?? 0}{" "}
+                {p.lines === 1 ? "line" : "lines"} · {p.size ?? 0} bytes
+                {p.workspace ? " · in HQ’s workspace" : ""}
+              </dd>
+            </>
+          ) : (
+            <>
+              <dt>Folder</dt>
+              <dd data-testid="ask-command-cwd">{p.cwd}</dd>
+              <dt>Timeout</dt>
+              <dd>
+                {p.timeout} s
+                {typeof p.ms === "number" ? ` · took ${(p.ms / 1000).toFixed(1)} s` : ""}
+              </dd>
+            </>
+          )}
+        </dl>
+        <div className={c.blockLabel}>{write ? "New text, verbatim" : "Command, verbatim"}</div>
+        <div className={c.verbatim} data-testid="ask-command-text">
+          {write ? p.preview : p.command}
+          {write && p.preview_cut ? "\n…" : ""}
+        </div>
+        {!write && p.output !== undefined && p.output !== "" ? (
+          <>
+            <div className={c.blockLabel}>
+              Output{p.truncated ? " · trimmed" : ""}
+            </div>
+            <pre
+              className={c.commandOut}
+              tabIndex={0}
+              aria-label="Command output"
+              data-testid="ask-command-output"
+            >
+              {p.output}
+            </pre>
+          </>
+        ) : null}
+        {byHq ? <ByHqNote testId="ask-command-by-hq" /> : null}
+        {p.state === "pending" ? (
+          <AsksFirst reason={p.reason} testId="ask-command-asks-first" />
+        ) : null}
+        {error ? (
+          <div className={c.note} role="alert" data-testid="ask-command-error">
+            <span>{error}</span>
+          </div>
+        ) : null}
+        {!out ? (
+          <div className={c.note}>
+            <SquareTerminal size={14} aria-hidden="true" />
+            <span>
+              {write
+                ? "Written once, and only if the file is still as HQ read it."
+                : "Runs once, as your user, in its own contained unit. Nothing from BattleLab’s environment goes with it."}
+            </span>
+          </div>
+        ) : null}
+      </div>
+      {!out ? (
+        <div className={c.actions}>
+          <button
+            type="button"
+            className={write && p.workspace ? c.cta : c.ctaDanger}
+            disabled={deciding || p.can_run === false}
+            onClick={onRun}
+            data-testid="ask-command-run"
+          >
+            <Play size={15} aria-hidden="true" />
+            {write ? "Write file" : "Run command"}
+          </button>
+          <button
+            type="button"
+            className={c.ghost}
+            disabled={deciding || p.can_dismiss === false}
+            onClick={onDismiss}
+            data-testid="ask-command-dismiss"
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : (
+        <div className={c.outcome} role="status" data-testid="ask-command-outcome">
+          <Led tone={LED[out.tone]} />
+          <span className={`${c.ow} ${c[`ow_${out.tone}`]}`}>{out.word}</span>
+          <span className={c.od}>{out.detail}</span>
+          {p.can_stop ? (
+            <button
+              type="button"
+              className={c.ghost}
+              disabled={deciding}
+              onClick={onStop}
+              data-testid="ask-command-stop"
+            >
+              <Square size={13} aria-hidden="true" />
+              Stop
+            </button>
+          ) : null}
         </div>
       )}
     </div>

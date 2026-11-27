@@ -183,6 +183,7 @@ import type {
   AskSessionDecision,
   AskLibraryContent,
   AskOperationDecision,
+  AskCommandDecision,
   AskMessageDecision,
   AskStepList,
   AskConversationSummary,
@@ -2701,6 +2702,13 @@ export const api = {
    *  nothing else is ever carried. */
   decideAskMessage: (id: string, decision: "send" | "dismiss") =>
     mutateJson<{ proposal: AskMessageDecision }>(
+      "POST",
+      `/api/ask/proposals/${enc(id)}/decide`,
+      { decision },
+    ),
+  /** HQ's command card (#2404): Run (`confirm`), Dismiss, or Stop while it runs. */
+  decideAskCommand: (id: string, decision: "confirm" | "dismiss" | "stop") =>
+    mutateJson<{ proposal: AskCommandDecision }>(
       "POST",
       `/api/ask/proposals/${enc(id)}/decide`,
       { decision },

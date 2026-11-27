@@ -686,9 +686,10 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         if not isinstance(body, dict):
             return JSONResponse({"detail": "body must be a JSON object"}, status_code=422)
         decision, bypass = body.get("decision"), body.get("bypass", False)
-        if decision not in ("start", "dismiss", "confirm", "send"):
+        if decision not in ("start", "dismiss", "confirm", "send", "stop"):
             return JSONResponse(
-                {"detail": "decision must be start, confirm, send or dismiss"}, status_code=422
+                {"detail": "decision must be start, confirm, send, stop or dismiss"},
+                status_code=422,
             )
         if decision == "send" and set(body) != {"decision"}:
             # A message (#1833) carries nothing but the decision: the stored entry is sent.
@@ -717,6 +718,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 app=request.app,
                 inputs=inputs,
                 bare=set(body) == {"decision"},
+                # HQ's command cards (#2404) are confirmed by the Commander's own tap only.
+                in_process=asgi_call.in_process(request.scope),
             )
         except ask_proposals.ProposalError as e:
             extra = {"proposal": e.view} if e.view is not None else {}

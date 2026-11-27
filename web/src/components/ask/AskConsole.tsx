@@ -88,6 +88,7 @@ import type {
   AskConversationTurn,
   AskFollow,
   AskOperationDecision,
+  AskCommandDecision,
   AskMessageDecision,
   AskProposalCard,
   AskQuestionCard,
@@ -100,7 +101,15 @@ import type {
 } from "../../types/api";
 
 import styles from "../pulse/mission.module.css";
-import { FollowingBlock, MessageCard, NudgeCard, OperationCard, QuestionCard, SessionCard } from "./AskCards";
+import {
+  CommandCard,
+  FollowingBlock,
+  MessageCard,
+  NudgeCard,
+  OperationCard,
+  QuestionCard,
+  SessionCard,
+} from "./AskCards";
 import { askAgainText, foldable, foldTally, specialistWatch } from "./specialistRows";
 import { AttachmentList } from "./AskAttachments";
 import { ASK_SEEN_EVENT, followRows } from "./askUpdates";
@@ -237,7 +246,7 @@ const NUDGE_FOLLOWS = new Set(["delivered", "indeterminate"]);
 const LIVE_SESSION_STATES = new Set(["pending", "deciding", "unknown"]);
 
 function cardLive(p: AskProposalCard): boolean {
-  if (p.kind === "session" || p.kind === "operation" || p.kind === "message")
+  if (p.kind === "session" || p.kind === "operation" || p.kind === "message" || p.kind === "command")
     return LIVE_SESSION_STATES.has(p.state);
   return LIVE_PROJECTIONS.has(p.projection);
 }
@@ -673,7 +682,7 @@ export function AskConsole({
           was.set(p.action_id, state);
           // An HQ operation (#1559) earns no follow: it changes something, it starts nothing. A
           // message (#1833) neither: it leaves BattleLab, there is no session to follow.
-          if (p.kind === "operation" || p.kind === "message") continue;
+          if (p.kind === "operation" || p.kind === "message" || p.kind === "command") continue;
           const key = p.kind === "session" ? p.session_key : p.key;
           const earns = p.kind === "session" ? state === "started" : NUDGE_FOLLOWS.has(state);
           if (earns && before !== state && key && !(c.following ?? []).includes(key))
@@ -933,7 +942,10 @@ export function AskConsole({
   const launching = turns.some((t) =>
     t.proposals.some(
       (p) =>
-        (p.kind === "session" || p.kind === "operation" || p.kind === "message") &&
+        (p.kind === "session" ||
+          p.kind === "operation" ||
+          p.kind === "message" ||
+          p.kind === "command") &&
         p.state === "deciding",
     ),
   );
@@ -1511,6 +1523,52 @@ export function AskConsole({
     [load],
   );
 
+  /** HQ's command card (#2404): Run, Dismiss, or Stop while it runs, exactly `{decision}`. */
+  const decideCommand = useCallback(
+    async (pid: string, decision: "confirm" | "dismiss" | "stop") => {
+      const id = cidRef.current;
+      setDeciding((s) => new Set(s).add(pid));
+      let error: string | null = null;
+      let decided: AskCommandDecision | null = null;
+      try {
+        decided = (await api.decideAskCommand(pid, decision)).proposal;
+      } catch (e) {
+        const carried =
+          e instanceof ApiError
+            ? ((e.record as { proposal?: AskCommandDecision } | undefined)?.proposal ?? null)
+            : null;
+        if (carried) decided = carried;
+        else error = e instanceof Error && e.message ? e.message : "That did not go through.";
+      } finally {
+        if (decided && id && cidRef.current === id) {
+          const view = decided;
+          gen.current++;
+          setTurns((prev) =>
+            prev.map((t) => ({
+              ...t,
+              proposals: t.proposals.map((p) =>
+                p.kind === "command" && p.action_id === pid ? { ...p, ...view } : p,
+              ),
+            })),
+          );
+        }
+        setDeciding((s) => {
+          const n = new Set(s);
+          n.delete(pid);
+          return n;
+        });
+        setCardErrors((m) => {
+          const n = new Map(m);
+          if (error) n.set(pid, error);
+          else n.delete(pid);
+          return n;
+        });
+        if (id && cidRef.current === id) void load(id);
+      }
+    },
+    [load],
+  );
+
   /** #1443 Phase 4: an update is SEEN once this conversation is on screen with it — the sidebar
    *  open and the tab visible. Everything else showing the unread state (the Ask icon's dot, the
    *  switcher) hears it at once. */
@@ -1679,6 +1737,16 @@ export function AskConsole({
         onSend={() => void decideMessage(p.action_id, "send")}
         onDismiss={() => void decideMessage(p.action_id, "dismiss")}
       />
+    ) : p.kind === "command" ? (
+      <CommandCard
+        key={p.action_id}
+        p={p}
+        deciding={deciding.has(p.action_id)}
+        error={cardErrors.get(p.action_id) ?? null}
+        onRun={() => void decideCommand(p.action_id, "confirm")}
+        onDismiss={() => void decideCommand(p.action_id, "dismiss")}
+        onStop={() => void decideCommand(p.action_id, "stop")}
+      />
     ) : p.kind === "operation" ? (
       <Fragment key={p.action_id}>
         {/* Several specialist cards drawn together (#1938: a turn's, or one step's batch, #2251)
@@ -1710,7 +1778,10 @@ export function AskConsole({
   const stepCards = new Set(stepLists.flatMap((l) => l.steps.flatMap((x) => x.cards)));
   const hiddenCard = (p: AskProposalCard) =>
     stepCards.has(p.action_id) ||
-    ((p.kind === "session" || p.kind === "operation" || p.kind === "message") &&
+    ((p.kind === "session" ||
+      p.kind === "operation" ||
+      p.kind === "message" ||
+      p.kind === "command") &&
       p.state === "dismissed" &&
       Boolean(p.replaced_by));
   const cardsById = new Map(turns.flatMap((t) => t.proposals.map((p) => [p.action_id, p] as const)));

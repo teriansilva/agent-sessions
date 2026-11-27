@@ -130,7 +130,9 @@ def test_the_destructive_switch_is_cas_written_and_never_set_by_a_preset(live):
         json={"revision": 0, "untrusted": {"destructive": True}},
         headers=live.hdr,
     )
-    assert r.status_code == 200 and r.json()["untrusted"] == {"starts": False, "destructive": True}
+    assert r.status_code == 200 and r.json()["untrusted"] == {
+        "starts": False, "destructive": True, "runs_commands": False
+    }  # fmt: skip
     r = live.c.put(
         "/api/hq/authority",
         json={"revision": 0, "untrusted": {"destructive": False}},

@@ -3196,7 +3196,7 @@ class Call:
             (
                 p
                 for p in found
-                if p.get("kind") in ask_orchestrator.SIDECAR_KINDS
+                if p.get("kind") in ask_orchestrator.VOICE_KINDS
                 and p.get("state") == "pending"
                 and not p.get("replaced_by")
             ),
