@@ -154,6 +154,7 @@ fails on an entry here that no longer exists. So a new capability can't skip the
 | Send a message through a messenger connector (#1833) | the proposal decide route, `{decision: "send"}` | have (`propose_message` stages a card; only the Commander's tap sends) |
 | Change or withdraw a card HQ proposed in this conversation (#2120) | the proposal decide route, `{decision: "dismiss"}` | have (`replaces` on a propose tool closes the card it corrects; `withdraw_card` dismisses one as the turn's operator; nothing of either card runs) |
 | Sort a multi-part request into ordered steps; change, add, move, skip or end them (#2251) | the conversation's step list (`ask_steps`); End steps: POST /api/ask/conversations/{cid}/steps/end | have (`propose_steps` and `revise_steps` change HQ's own step list and run nothing; a waiting card of a moved, skipped or ended step is withdrawn through the decide route; every effect is still its card's tap) |
+| HQ's subagents (#2398): spawn API sessions for a task, steer, wait, collect, stop or close them; queued at the session limit | the session card's start, `session.send` / `session.interrupt` / `session.close`; the group panel GET /api/ask/conversations/{cid}/subagents; Cancel POST …/subagents/{turn_id}/{handle}/cancel | have (`spawn`, `steer`, `wait`, `collect`, `stop`; each effect its card's class under the Authority setting; Cancel: the Commander's own, refused in-process) |
 | AI model (Auto or specific), thinking level, request timeout; list models; the provider table | POST /api/prefs `ai_review.model`, `ai_review.model_mode`, `ai_review.thinking`, GET /api/ai-review/models, GET /api/ai-review/providers | P2 W/R (model from the server's own list only) |
 | Session review: enable, interval, depth, notify, rename sessions | POST /api/prefs `ai_review.enabled`, `session_review` | P2 W |
 | Auto-sort settings | POST /api/prefs `auto_sort` | P2 W |
@@ -382,6 +383,8 @@ DELETE /api/ask/conversations/{cid}                                             
 DELETE /api/ask/conversations/{cid}/follow/{key:path}                             n/a  # HQ itself
 POST   /api/ask/conversations/{cid}/message                                       n/a  # HQ itself
 POST   /api/ask/conversations/{cid}/steps/end                                     n/a  # HQ itself (End steps on a step list, #2251)
+GET    /api/ask/conversations/{cid}/subagents                                     n/a  # HQ itself (a task's subagent group panel, #2398)
+POST   /api/ask/conversations/{cid}/subagents/{turn_id}/{handle}/cancel           n/a  # HQ itself (the Commander's Cancel on a queued spawn, #2398; HQ cancels with `stop`)
 POST   /api/ask/conversations/{cid}/message/stream                                n/a  # HQ itself
 POST   /api/ask/conversations/{cid}/seen                                          n/a  # HQ itself
 POST   /api/ask/conversations/{cid}/turns/{turn_id}/stop                         n/a  # HQ itself (stop one running turn, #2076)

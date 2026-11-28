@@ -49,6 +49,7 @@ the same list.
 | `components/ask/AskShown.module.css` | css | 4 | done | popup:hq | none (a static row under the answer, #2102) |
 | `components/ask/AskSidebar.module.css` | css | 4 | done | popup:hq | drawer slide-in + scrim (≤800px) |
 | `components/ask/StepList.module.css` | css | 4 | done | popup:hq | the card plate's deploy-in (AskCards); step rows, pips and marks are static (#2251) |
+| `components/ask/SubagentGroup.module.css` | css | 4 | todo |  |  |
 | `components/automations/automations.module.css` | css | 10 | done | route:automations route:automations-list popup:automation-menu route:automation-runs route:automation-editor popup:consent | segments and weekdays light in the chrome on a short colour fade; the run row lights its edge; no ambient motion (the counters are static readouts) |
 | `components/automations/wizard/wizard.module.css` | css | 10 | done | route:automation-editor popup:consent | none: cards, presets and folds light in the chrome without a transition |
 | `components/chat/Avatar.module.css` | css | 6 | done | share:open route:settings-profile | none (static discs) |
@@ -139,6 +140,7 @@ the same list.
 | `components/sidebar/SessionList.module.css` | css | 6 | done | route:sidebar route:sidebar-empty route:sidebar-error route:sidebar-rename popup:session-row-menu | row arrival (nj-arrive + nj-flash overlay, LED nj-led-flash; Reduced: the single fade), FLIP reorder, review spin (nj-spin, Full only), toast-in, marquee (Full only) |
 | `components/sidebar/Subagents.module.css` | css | 6 | todo | | the disclosure chip has no motion; the rolled-up LED flashes on change (Led primitive, nj-led-flash; Reduced: static) |
 | `components/sessions/ArchiveSubagentsDialog.module.css` | css | 6 | todo | | none (the ConfirmDialog's own) |
+| `components/sessions/DriverBadge.module.css` | css | 6 | todo |  |  |
 | `components/slideshow/Slideshow.module.css` | css | 4 | done | popup:tour popup:whats-new | none (static dots) |
 | `components/specialists/specialists.module.css` | css | 10 | todo |  |  |
 | `components/structured/BackgroundWork.module.css` | css | 6 | todo |  |  |

@@ -68,6 +68,7 @@ from .. import (
     ask_steps,
     ask_store,
     hq_contacts,
+    hq_subagents,
     hq_tasks,
     prefs,
     voice_calls,
@@ -222,6 +223,18 @@ def _ndjson(ev: dict) -> str:
     return json.dumps(ev) + "\n"
 
 
+def _subagents(cid: str, records: list[dict]) -> list[dict]:
+    """The conversation's spawn handles, each reconciled with its card (#2398, Hermes 9131).
+    Blocking."""
+    try:
+        cards = ask_store.read_proposals(cid)
+    except Exception:  # noqa: BLE001 — unreadable now: the recorded outcomes stand
+        cards = []
+    return hq_subagents.reconcile(
+        hq_subagents.fold(records, ask_orchestrator.running_turn(cid)), cards
+    )
+
+
 def _conversation_body(cid: str, records: list[dict], cards: tuple | None = None) -> dict:
     title = ""
     for r in records:
@@ -250,6 +263,9 @@ def _conversation_body(cid: str, records: list[dict], cards: tuple | None = None
             ask_orchestrator.with_live(ask_orchestrator.turn_views(records), cid, cards), cid
         ),
         "running": ask_orchestrator.running(cid),
+        # #2398: every spawn handle of the conversation's tasks, its newest outcome (the group
+        # panel; `GET …/subagents` adds the live states).
+        "subagents": _subagents(cid, records),
         # #2251: the step lists, each drawn ONCE under the newest turn that changed it
         # (`drawn_at_turn`); `owed` = HQ is about to continue, keep reading.
         "step_lists": _step_lists(cid, records),
@@ -576,6 +592,56 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             {"turn": turn, "running": ask_orchestrator.running(cid)},
             headers={"Cache-Control": "no-store"},
         )
+
+    @app.get("/api/ask/conversations/{cid}/subagents")
+    async def conversation_subagents(cid: str, _user: str = Depends(logged_in)) -> JSONResponse:
+        """The conversation's subagents for its group panel (#2398): every spawn handle's outcome
+        and, for a started one, its session's state and driver. Server facts and labels."""
+        from .. import hq_subagents
+
+        if not ask_store.valid_cid(cid):
+            return _missing(cid)
+        try:
+            rows = await hq_subagents.group(cid, ask_orchestrator.running_turn(cid))
+        except ask_store.ConversationNotFound:
+            return _missing(cid)
+        except ask_store.StoreRefused as e:
+            return _refused(e)
+        return JSONResponse({"subagents": rows}, headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/ask/conversations/{cid}/subagents/{turn_id}/{handle}/cancel")
+    async def cancel_subagent(
+        cid: str,
+        turn_id: str,
+        handle: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ) -> JSONResponse:
+        """The Commander's Cancel on a QUEUED spawn (#2398): it never starts. Their own tap,
+        never HQ's (HQ cancels with its `stop` tool). Anything not queued is 409, unchanged."""
+        from .. import hq_subagents
+
+        if asgi_call.in_process(request.scope):
+            return JSONResponse({"detail": "only the Commander cancels here"}, status_code=403)
+        if not (
+            ask_store.valid_cid(cid)
+            and ask_store.valid_turn_id(turn_id)
+            and ask_store.SUBAGENT_HANDLE_RE.match(handle)
+        ):
+            return JSONResponse({"detail": "no such spawn"}, status_code=404)
+        h = hq_subagents.cancel(cid, turn_id, handle, reason="cancelled by the Commander")
+        if h is None:
+            return JSONResponse(
+                {"detail": "that spawn is not waiting for a slot any more"}, status_code=409
+            )
+        try:
+            await asyncio.to_thread(ask_store.append, cid, hq_subagents.record(turn_id, h))
+        except ask_store.ConversationNotFound:
+            return _missing(cid)
+        except ask_store.StoreRefused as e:
+            return _refused(e)
+        return JSONResponse({"handle": h.name, "outcome": h.outcome})
 
     @app.post("/api/ask/conversations/{cid}/turns/{turn_id}/withdraw")
     async def withdraw_turn(

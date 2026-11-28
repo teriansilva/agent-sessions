@@ -10,6 +10,7 @@ import {
 import { CLOSE_ARCHIVED } from "../../lib/termCloseCodes";
 import type { TermStatus } from "../../lib/termSocket";
 import type { Session } from "../../types/api";
+import { DriverBadge } from "../sessions/DriverBadge";
 import styles from "./Terminal.module.css";
 
 /** The LED class + label for the reusable .hud-led primitive (#211 4c, re-cut in #744). Distinct
@@ -119,6 +120,11 @@ export function HeadFacts({
         >
           {row.tag}
         </span>
+      ) : null}
+      {/* Who drives it (#2398): one more fact in the window's ONLY bar (#1109). The full-screen
+          pane keeps its bar as shipped; its driver chip is the structured pane's own. */}
+      {showTag && row?.driver && row.driver.who !== "mission" ? (
+        <DriverBadge driver={row.driver} />
       ) : null}
       {row?.mission ? (
         <span

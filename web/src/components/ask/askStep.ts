@@ -27,6 +27,12 @@ export const TOOL_LABELS: Record<string, { label: string; noun?: [string, string
   // #2397: driving an API session. Each is one "Reply read" step in the list.
   session_turns: { label: "Reply read: a session's turns", noun: ["turn", "turns"] },
   wait_session: { label: "Waiting for a session's reply", noun: ["turn", "turns"] },
+  // #2398: HQ's subagents.
+  spawn: { label: "Starting a subagent", noun: ["subagent", "subagents"] },
+  steer: { label: "Steering a subagent", noun: ["subagent", "subagents"] },
+  wait: { label: "Waiting for subagents", noun: ["subagent", "subagents"] },
+  collect: { label: "Reply read: a subagent's result", noun: ["result", "results"] },
+  stop: { label: "Stopping a subagent", noun: ["subagent", "subagents"] },
   list_sessions: { label: "Listing your sessions", noun: ["session", "sessions"] },
   list_missions: { label: "Reading your missions", noun: ["mission", "missions"] },
   mission_status: { label: "Reading a mission's status", noun: ["objective", "objectives"] },

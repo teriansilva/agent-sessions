@@ -400,12 +400,39 @@ def recover(cid: str) -> None:
                             )
                             changed = True
                             continue
+                    adopted = _derived_key_if_exists(r)
+                    if adopted:
+                        # #2398: the session the claim created exists. It is reported and
+                        # adopted into the record (its key), never created again.
+                        reason = INTERRUPTED_EXISTS
+                        r["session_key"] = adopted
                     r.update(state=INTERRUPTED, reason=reason, settled_at=time.time())
                     changed = True
             if changed:
                 ask_store.write_proposals(cid, rows)
     finally:
         os.close(fd)
+
+
+INTERRUPTED_EXISTS = (
+    "the server stopped while this was starting; the session it started exists and is linked "
+    "here. It is not started again."
+)
+
+
+def _derived_key_if_exists(row: dict) -> str:
+    """An interrupted API start (#2398): the key of the session its claim derived, when that
+    session exists, else "". Never raises. Blocking."""
+    if row.get("kind") != "session" or row.get("runtime") != "api":
+        return ""
+    try:
+        from . import mission_structured, native_runtime
+
+        session_id, _brief = mission_structured.hq_ids(row["id"])
+        native_runtime._session(row["engine"], session_id, retiring_ok=True)
+    except Exception:  # noqa: BLE001 — absent or unreadable: nothing to adopt
+        return ""
+    return f"{row['engine']}:{session_id}"
 
 
 def view(row: dict) -> dict:
@@ -420,13 +447,21 @@ def view(row: dict) -> dict:
         "bypass": row.get("bypass"),
         # Whether the card offers the bypass switch at all (#2351): the agent can skip prompts.
         "can_bypass": bool(row.get("bypass_default")) or _can_bypass_safe(row.get("engine")),
-        "session_key": row.get("session_key") if state in (STARTED, UNCONFIRMED) else "",
+        # An interrupted start whose session exists is linked too (#2398: adopted, never re-made).
+        "session_key": row.get("session_key")
+        if state in (STARTED, UNCONFIRMED)
+        or (state == INTERRUPTED and row.get("reason") == INTERRUPTED_EXISTS)
+        else "",
         "reason": row.get("reason") or "",
         "notice": row.get("notice") or "",
         "can_start": state == PENDING,
         "can_dismiss": state == PENDING,
         # HQ started it on the Commander's Authority setting (#2391): "Started by HQ".
         **({"decided_by": "hq"} if row.get("decided_by") == "hq" and state != PENDING else {}),
+        # A subagent's start (#2398): "Start a subagent" / "Started by HQ · subagent".
+        **(
+            {"subagent": row["subagent"]["handle"]} if isinstance(row.get("subagent"), dict) else {}
+        ),
     }
 
 
@@ -703,7 +738,8 @@ async def _start_locked(
     # WHAT THE OPERATOR APPROVED is what launches: the brief and folder as read before the
     # `deciding` write, never a copy that write re-admitted (and may have scrubbed).
     approved = {
-        k: row[k] for k in ("id", "engine", "cwd", "real", "brief", "project_id", "project")
+        k: row[k]
+        for k in ("id", "turn_id", "engine", "cwd", "real", "brief", "project_id", "project")
     }
     approved["bypass_default"] = row["bypass_default"]
     approved["kind"] = "session"  # its effective class is read off it at every boundary (#2391)
@@ -759,16 +795,17 @@ ACT_OP, ACT_LABEL = "session.start", "Start a session"
 ACT_START_WAIT_S = 45.0
 
 
-def _back_to_pending(cid: str, pid: str, reason: str) -> dict | None:
+def _back_to_pending(cid: str, pid: str, reason: str, notice: str = "") -> dict | None:
     """An act refused before any effect (#2391): the card is the Commander's again, as it was,
-    with why. Blocking."""
+    with why. ``notice``: a capacity refusal at the create (#2398) says so, as a tap's does.
+    Blocking."""
     return _update(
         cid,
         pid,
         state=PENDING,
         bypass=None,
         session_key="",
-        notice="",
+        notice=notice,
         decided_at=None,
         decided_by=None,
         authority_rev=None,
@@ -1018,6 +1055,17 @@ async def _launch_api(cid: str, row: dict, fd: int, registry, act=None) -> None:
                 # The act's grant refused it before the create (#2391): nothing exists, and the
                 # card is the Commander's again.
                 outcome = {"state": PENDING, "reason": fenced["grant"]}
+            elif not out.launched and getattr(out, "capacity", ""):
+                # The session limit or the specialist pool refused the create before anything
+                # existed (#2398, as a terminal card's does, #1819): the card is not spent, it
+                # goes back to pending with the notice, and a queued subagent back to its queue.
+                outcome = {
+                    "state": PENDING,
+                    "reason": str(out.reason or "")[:400],
+                    "notice": "session_limit"
+                    if out.capacity == session_capacity.SESSION_LIMIT
+                    else "capacity",
+                }
             elif not out.launched and fenced["why"]:
                 # Refused inside the fence before anything ran: the card is out of date.
                 outcome = {"state": STALE, "reason": fenced["why"], "session_key": ""}
@@ -1047,6 +1095,7 @@ async def _launch_api(cid: str, row: dict, fd: int, registry, act=None) -> None:
         )
     try:
         outcome.pop("retry", None)
+        notice = outcome.pop("notice", "") if outcome.get("state") == PENDING else ""
         outcome.pop("notice", None)
         if outcome.pop("reconfirm", False):
             # The bypass default changed inside the launch (#2351): nothing ran, and the card
@@ -1064,7 +1113,7 @@ async def _launch_api(cid: str, row: dict, fd: int, registry, act=None) -> None:
             )
             return
         if outcome.get("state") == PENDING:
-            await asyncio.to_thread(_back_to_pending, cid, pid, outcome["reason"])
+            await asyncio.to_thread(_back_to_pending, cid, pid, outcome["reason"], notice)
         else:
             await asyncio.to_thread(_update, cid, pid, settled_at=time.time(), **outcome)
         if outcome.get("state") == STARTED and outcome.get("session_key"):
@@ -1086,12 +1135,14 @@ def _record_driver(cid: str, row: dict) -> None:
     """The session this API card starts is HQ's to drive, from this conversation (#2397). Its key
     is derived from the proposal id (`mission_structured.hq_ids`), the one `hq_start` creates.
     Raises ``DispatchError`` when it cannot be recorded: nothing is started."""
-    from . import headless_dispatch, mission_structured, session_driver
+    from . import headless_dispatch, hq_subagents, mission_structured, session_driver
 
     try:
         session_id, _brief = mission_structured.hq_ids(row["id"])
+        # The task that started it (#2398): the badge's "HQ · task n". A label only.
+        task = hq_subagents.task_ref(cid, str(row.get("turn_id") or ""))
         session_driver.record_start(
-            f"{row['engine']}:{session_id}", cid, str(row.get("project") or "")
+            f"{row['engine']}:{session_id}", cid, str(row.get("project") or ""), task
         )
     except Exception as e:  # noqa: BLE001 — unrecorded: never a session HQ can't account for
         raise headless_dispatch.DispatchError(

@@ -7,7 +7,11 @@ that, and the one check every HQ drive request is admitted by.
 
 **The record.** A small ``0600`` JSON store (``session-driver.json``):
 ``{key: {"who": "hq" | "commander", "cid": <conversation>, "generation": n, "since": ts,
-"title": <the session's title as HQ named it>}}``.
+"title": <the session's title as HQ named it>, "task": {"turn_id", "n"}?}}``. ``task`` (#2398 B2)
+is the hq-task identity of the task that started or adopted it (``(cid, turn_id)``,
+`docs/invariants/hq-tasks.md`) with its ordinal in the conversation (``n``: "HQ · task n"). It is a
+label: the admission binds the conversation and the generation, never the task, so after its task
+ends any task of that conversation may steer it.
 
 * A session a mission holds reads ``who: "mission"`` whatever the store says: DERIVED from
   ``missions.all_active_memberships()``, never stored. HQ never pre-empts a mission.
@@ -135,7 +139,7 @@ def _coerce(rec: object) -> dict | None:
     cid = rec.get("cid")
     since = rec.get("since")
     title = rec.get("title")
-    return {
+    out = {
         "who": rec["who"],
         "cid": cid if isinstance(cid, str) and cid else None,
         "generation": gen,
@@ -143,6 +147,22 @@ def _coerce(rec: object) -> dict | None:
         else 0.0,
         "title": title[:TITLE_MAX] if isinstance(title, str) else "",
     }  # fmt: skip
+    task = task_of(rec.get("task"))
+    if task is not None:
+        out["task"] = task
+    return out
+
+
+def task_of(raw: object) -> dict | None:
+    """A record's ``task`` (#2398): ``{"turn_id": <turn id>, "n": <its ordinal>}``, or None."""
+    from . import ask_store
+
+    if not isinstance(raw, dict):
+        return None
+    tid, n = raw.get("turn_id"), raw.get("n")
+    if not ask_store.valid_turn_id(tid) or type(n) is not int or not 0 < n < 1_000_000:
+        return None
+    return {"turn_id": tid, "n": n}
 
 
 def records() -> dict[str, dict]:
@@ -186,16 +206,20 @@ def _title(title: object) -> str:
     return str(title or "")[:TITLE_MAX]
 
 
-def record_start(key: str, cid: str, title: str = "") -> dict | None:
+def record_start(key: str, cid: str, title: str = "", task: dict | None = None) -> dict | None:
     """A session HQ's start card launches is HQ's from the start (generation 1). Called before
     the create, so the record is ahead of the session, never behind it. A record that already
-    exists (a replayed launch) is left as it is."""
+    exists (a replayed launch) is left as it is. ``task``: the task that started it (#2398)."""
 
     def change(cur):
         if cur is not None:
             return None
-        return {"who": HQ, "cid": cid, "generation": 1, "since": time.time(),
-                "title": _title(title)}  # fmt: skip
+        rec = {"who": HQ, "cid": cid, "generation": 1, "since": time.time(),
+               "title": _title(title)}  # fmt: skip
+        t = task_of(task)
+        if t is not None:
+            rec["task"] = t
+        return rec
 
     return _write(key, change)
 
@@ -238,7 +262,9 @@ def hand_back(key: str, generation: int) -> dict:
     return _write(key, change) or {}
 
 
-def adopt(key: str, *, cid: str, generation: int, title: str, admit=None) -> dict:
+def adopt(
+    key: str, *, cid: str, generation: int, title: str, admit=None, task: dict | None = None
+) -> dict:
     """HQ takes over driving ``key`` for conversation ``cid`` (``session.adopt``), a CAS on
     ``generation`` inside the fence. ``admit()`` (the act's grant at this effect boundary) runs
     inside the fence too: "" lets it commit. Raises DriverError."""
@@ -256,8 +282,12 @@ def adopt(key: str, *, cid: str, generation: int, title: str, admit=None) -> dic
             why = admit()
             if why:
                 raise GrantRefused(why)
-        return {"who": HQ, "cid": cid, "generation": now + 1, "since": time.time(),
-                "title": _title(title) or (cur or {}).get("title") or ""}  # fmt: skip
+        rec = {"who": HQ, "cid": cid, "generation": now + 1, "since": time.time(),
+               "title": _title(title) or (cur or {}).get("title") or ""}  # fmt: skip
+        t = task_of(task)
+        if t is not None:
+            rec["task"] = t  # the task that adopted it (#2398)
+        return rec
 
     return _write(key, change) or {}
 
@@ -302,7 +332,25 @@ def view_of(key: str, rec: dict | None, held: str | None) -> dict:
         return {"who": MISSION, "generation": gen, "mission_id": held, "cid": None}
     if rec is None:
         return {"who": COMMANDER, "generation": 0, "cid": None, "since": None}
-    return {"who": rec["who"], "generation": gen, "cid": rec["cid"], "since": rec["since"]}
+    out = {"who": rec["who"], "generation": gen, "cid": rec["cid"], "since": rec["since"]}
+    if rec.get("task") is not None:
+        out["task"] = dict(rec["task"])
+    return out
+
+
+def row_fact(rec: dict | None, held: bool) -> dict:
+    """The driver as a `GET /api/sessions` row carries it (#2398): ``{"who": "hq" | "commander" |
+    "mission", "task_label"?, "cid"?}``. A mission's is derived from the row's own membership
+    stamp, so the badge and the mission tag can never disagree. Pure."""
+    if held:
+        return {"who": MISSION}
+    if rec is None or rec.get("who") != HQ:
+        return {"who": COMMANDER}
+    out: dict = {"who": HQ, "cid": rec.get("cid")}
+    task = rec.get("task")
+    if isinstance(task, dict) and type(task.get("n")) is int:
+        out["task_label"] = f"task {task['n']}"
+    return out
 
 
 def view(key: str) -> dict:

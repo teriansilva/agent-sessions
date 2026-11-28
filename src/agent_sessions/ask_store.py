@@ -136,9 +136,16 @@ RECORD_TYPES = frozenset(
     {
         "conversation", "user", "assistant", "tool", "status", "question", "proposal", "update",
         "steps_more", "screen", "interjection", "heard", "heard_link", "said", "counts",
-        "summary",
+        "summary", "subagent",
     }
 )  # fmt: skip
+
+# HQ's subagents (#2398, epic #2070 B2): one record per change of a spawn handle's outcome, the
+# step record of the task that spawned it. A reader folds them by (turn id, handle), the newest
+# winning (`hq_subagents.fold`). Closed words and server ids; the title and agent are labels the
+# server derived from the Commander's own project and agent lists, guarded like any text.
+SUBAGENT_HANDLE_RE = re.compile(r"^sp-[1-9][0-9]{0,3}$")
+SUBAGENT_OUTCOMES = frozenset({"queued", "started", "not_started", "cancelled", "asks"})
 
 # A call's own record of what it heard and said (#2137). `heard`: one per utterance the speech
 # worker delivered, written as it arrives, before anything routes it. A DROPPED utterance (HQ's
@@ -787,6 +794,26 @@ def _admit(rec: dict, secrets: list[str]) -> dict:
         out["text"] = text(rec.get("text"), TEXT_MAX)
     elif kind in ("heard", "heard_link", "said", "counts"):
         out.update(_admit_call_record(kind, rec, text))
+    elif kind == "subagent":
+        out["turn_id"] = _turn_id(rec)
+        handle, outcome = rec.get("handle"), rec.get("outcome")
+        if not (isinstance(handle, str) and SUBAGENT_HANDLE_RE.match(handle)):
+            raise ValueError("malformed subagent handle")
+        if outcome not in SUBAGENT_OUTCOMES:
+            raise ValueError("unknown subagent outcome")
+        out.update(handle=handle, outcome=outcome)
+        key, pid = rec.get("key") or "", rec.get("pid") or ""
+        if key:
+            if not (isinstance(key, str) and _KEY_RE.match(key)):
+                raise ValueError("malformed subagent session key")
+            out["key"] = key
+        if pid:
+            if not (isinstance(pid, str) and _ACTION_ID_RE.match(pid)):
+                raise ValueError("malformed subagent card id")
+            out["pid"] = pid
+        out["title"] = text(rec.get("title"), TITLE_MAX)
+        out["agent"] = text(rec.get("agent"), TITLE_MAX)
+        out["reason"] = text(rec.get("reason") or "", DETAIL_MAX)
     elif kind == "steps_more":
         # The steps a turn ran past its stored ones (#2076): numbers and tool names only.
         out["turn_id"] = _turn_id(rec)
@@ -1264,7 +1291,7 @@ SESSION_PROPOSAL_STATES = frozenset(
 #: `ask_orchestrator` refuses a propose tool before it writes anything, and the operator starts
 #: a new conversation for more.
 MAX_SESSION_PROPOSALS = MAX_TURNS * 3
-NOTICES = frozenset({"", "default_changed", "busy", "session_limit"})
+NOTICES = frozenset({"", "default_changed", "busy", "session_limit", "capacity"})
 _ENGINE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 _PROJECT_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 #: A session proposal started FROM a specialist (#1910): its id (`specialists_store.ID_RE`) and the
@@ -1447,6 +1474,19 @@ def _admit_kind(e: dict, secrets: list[str], *, fresh: bool) -> dict:
         if runtime != "api":
             raise ValueError("unknown session runtime")
         out["runtime"] = "api"
+    # Optional (#2398): the card a subagent spawn staged, with its handle in its task. Absent on
+    # every other card, so an older sidecar reads unchanged.
+    sub = e.get("subagent")
+    if sub is not None:
+        handle = sub.get("handle") if isinstance(sub, dict) else None
+        if not (
+            isinstance(sub, dict)
+            and set(sub) == {"handle"}
+            and isinstance(handle, str)
+            and SUBAGENT_HANDLE_RE.match(handle)
+        ):
+            raise ValueError("malformed subagent")
+        out["subagent"] = {"handle": handle}
     for k in ("ts", "decided_at", "settled_at"):
         v = e.get(k)
         if isinstance(v, int | float) and not isinstance(v, bool):

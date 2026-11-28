@@ -1,0 +1,96 @@
+/* A task's subagents (#2398): one chamfered plate like HQ's cards, a row per subagent. Its
+ * controls are the shared 44px ghost buttons with the reticle focus (docs/design.md). */
+.group {
+  composes: nj-frame-sm nj-deploy from global;
+  margin-top: var(--sp-3);
+}
+.group.group {
+  --nj-face: var(--bg-2);
+  --nj-edge: var(--line-strong);
+}
+.head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.k {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.st {
+  margin-left: auto;
+  flex: none;
+  color: var(--hud-text);
+  letter-spacing: 0.12em;
+}
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-top: 1px solid var(--line);
+}
+.row:first-child {
+  border-top: 0;
+}
+.text {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+.name {
+  font-size: var(--fs-row);
+  font-weight: 600;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.where {
+  font-weight: 400;
+  color: var(--text-2);
+}
+.meta {
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.03em;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-left: auto;
+}
+.ghost {
+  composes: ghost from "../ui/actionButton.module.css";
+}
+.stop {
+  composes: danger from "../ui/actionButton.module.css";
+}
+.ghost:disabled,
+.stop:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.error {
+  padding: var(--sp-2) var(--sp-3);
+  border-top: 1px solid var(--line);
+  font-size: var(--fs-label);
+  color: var(--danger-text);
+}

@@ -88,6 +88,8 @@ export interface Session {
   /** The mission holding this session (#948): `null` when none does. ABSENT when the server
    *  could not read the mission store — unknown, so no adopt/open control is offered. */
   mission?: SessionMissionRef | null;
+  /** Who drives it (#2398): HQ · task n, You, or a mission. */
+  driver?: SessionDriver;
   /** The topic cluster this session is in (#1997): `null` when none (or a mission holds it, or
    *  clusters are off). ABSENT when the server could not tell — unknown, never "not clustered". */
   cluster?: SessionClusterRef | null;
@@ -1179,12 +1181,41 @@ export interface AskSessionCard {
   reason: string;
   /** `default_changed`: the bypass default moved since this was proposed; check and start again.
    *  `busy`: the project was being changed as it started; nothing started, tap again. */
-  notice: "" | "default_changed" | "busy" | "session_limit";
+  notice: "" | "default_changed" | "busy" | "session_limit" | "capacity";
   can_start: boolean;
   can_dismiss: boolean;
   /** HQ started it itself under the Commander's Authority setting (#2391): "Started by HQ".
    *  Absent on a card the Commander decided. */
   decided_by?: "hq";
+  /** A subagent's start (#2398): its spawn handle in its task ("sp-1"). */
+  subagent?: string;
+}
+
+/** Who drives a session, as a `GET /api/sessions` row carries it (#2398): HQ (and which task),
+ *  the Commander ("You") or a mission. Absent when the driver store could not be read. */
+export interface SessionDriver {
+  who: "hq" | "commander" | "mission";
+  task_label?: string;
+  cid?: string | null;
+}
+
+/** One spawn handle of an HQ task (#2398), as the conversation's group panel shows it. */
+export interface AskSubagent {
+  turn_id: string;
+  handle: string;
+  outcome: "queued" | "started" | "not_started" | "cancelled" | "asks";
+  title: string;
+  agent: string;
+  reason?: string;
+  key?: string;
+  pid?: string;
+  task_n?: number;
+  /** Live (`GET …/subagents`): working | waiting | done | taken_over | mission | gone, or the
+   *  outcome for one that has no session. */
+  state?: string;
+  active_turn?: string | null;
+  driver?: { who: string | null; generation: number | null; here: boolean };
+  steered?: number;
 }
 
 /** What `POST /api/ask/proposals/{id}/decide` answers with (and a 409 carries under `proposal`):
@@ -1719,6 +1750,8 @@ export interface AskConversation {
   running: boolean;
   /** #2251: the step lists, oldest first; null when they could not be read this time. */
   step_lists?: AskStepList[] | null;
+  /** #2398: every spawn handle of this conversation's tasks, newest outcome each. */
+  subagents?: AskSubagent[];
   /** #1443 Phase 4: the follower's updates, in order; the sessions followed; unseen updates. */
   updates?: AskUpdate[];
   following?: string[];

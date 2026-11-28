@@ -1,0 +1,27 @@
+/* Who drives a session (#2398): the meta line's bordered mono pill (`.engineTag`'s shape). HQ in
+ * the brand accent (HQ's voice), You neutral, Mission in the mission tag's accent. Membership and
+ * authorship, never a status: the status colours stay load-bearing (docs/design.md). */
+.badge {
+  flex: none;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  line-height: 15px;
+  padding: 0 4px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 0;
+  white-space: nowrap;
+  color: var(--text-2);
+}
+.hq {
+  color: var(--accent-text);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.mission {
+  color: var(--accent-text);
+}
+.you {
+  color: var(--text-2);
+}

@@ -198,8 +198,8 @@ EXPECTED_DEFAULT_SHA = {
     # The capable-assistant rewrite: facts from tools, inference (links, defaults) its own,
     # memory consulted unprompted, ask_operator only when the choice matters; shorter.
     # #2390: a change HQ ran itself under the Commander's Authority setting is reported as ran.
-    # #2397: the "driving a session" paragraph.
-    "ask_orchestrator": "3da42fcca351afd2",
+    # #2397: the "driving a session" paragraph. #2398: the subagents paragraph.
+    "ask_orchestrator": "f3c9e87d7eaf6a00",
     # #2028: HQ's question router; #2249 adds the `manual` route.
     "ask_route": "323bd1e25e69c20c",
     "ask_manual": "ecdacbff7fc45ebe",  # #2249: a no-tool answer from the installed manual
@@ -394,10 +394,12 @@ def test_a_stored_retired_default_follows_the_new_default_and_an_edit_stays(tmp_
 
 def test_the_hq_prompts_retired_default_is_the_pre_rewrite_text():
     """The digests kept are the pre-rewrite default's (pinned above it as 23fadca396f14b5f) and
-    the default before the driving paragraph (#2397)."""
+    the default before the driving paragraph (#2397), and the one before the subagents paragraph
+    (#2398)."""
     assert {d[:16] for d in prompts.get("ask_orchestrator").retired_defaults} == {
         "23fadca396f14b5f",
         "33c3492e4287db70",
+        "3da42fcca351afd2",
     }
 
 

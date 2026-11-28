@@ -94,6 +94,7 @@ import type {
   AskQuestionCard,
   AskSessionDecision,
   AskStepList,
+  AskSubagent,
   AskStoredMatch,
   AskStoredMissionMatch,
   AskTurnEvent,
@@ -130,6 +131,8 @@ import {
 import { AskProcess } from "./AskProcess";
 import { AskShown } from "./AskShown";
 import { StepList, StepsMoved } from "./StepList";
+import { SubagentGroup } from "./SubagentGroup";
+import { useLiveSubagents } from "./useLiveSubagents";
 import { surfaceOver } from "./escOwner";
 import {
   applyProcessEvent,
@@ -472,6 +475,8 @@ export function AskConsole({
   const [following, setFollowing] = useState<string[]>([]);
   // #2251: HQ's step lists, each drawn once under the newest turn that changed it.
   const [stepLists, setStepLists] = useState<AskStepList[]>([]);
+  // #2398: every spawn handle of this conversation's tasks (the group panel under each turn).
+  const [subagents, setSubagents] = useState<AskSubagent[]>([]);
   const [stepsEnding, setStepsEnding] = useState(false);
   const [stepsError, setStepsError] = useState<string | null>(null);
   // "Discuss this step": the composer's prefix, applied once per key.
@@ -521,6 +526,8 @@ export function AskConsole({
     [],
   );
   const [cid, setCid] = useState<string | null>(null);
+  // #2398: the subagents' live states, ONE poller for every group in this conversation.
+  const liveSubagents = useLiveSubagents(cid, subagents);
   const [title, setTitle] = useState("");
   const conversations = useAskConversations();
   // The latest callback, read when the change happens (never a stale closure in a flight).
@@ -656,6 +663,7 @@ export function AskConsole({
       setTurns((prev) => merge((c.turns ?? []).map(fromServer), prev));
       // Unreadable this time (null): keep the lists last read.
       if (Array.isArray(c.step_lists)) setStepLists(c.step_lists);
+      setSubagents(Array.isArray(c.subagents) ? c.subagents : []);
       setUpdates(c.updates ?? []);
       // An unreadable follow state is not "following nothing" (Hermes on #1500): keep what was
       // last verified, and keep reading (below) until a read succeeds.
@@ -740,6 +748,7 @@ export function AskConsole({
       setTurns((prev) => (initial ? prev.filter((t) => t.pending && !t.error) : []));
       setUpdates([]);
       setStepLists([]);
+      setSubagents([]);
       setFollowing([]);
       setFollows([]);
       setFollowSince({});
@@ -787,6 +796,7 @@ export function AskConsole({
     setTurns([]);
     setUpdates([]);
     setStepLists([]);
+    setSubagents([]);
     setStepsError(null);
     setFollowing([]);
     setFollows([]);
@@ -2281,6 +2291,15 @@ export function AskConsole({
                     const shownCards = t.proposals.filter((p) => !hiddenCard(p));
                     return shownCards.map((p) => renderCard(p, shownCards));
                   })()}
+                  {cid && liveSubagents.rows.some((r) => r.turn_id === t.id) ? (
+                    <SubagentGroup
+                      cid={cid}
+                      turnId={t.id}
+                      rows={liveSubagents.rows}
+                      taskN={liveSubagents.rows.find((r) => r.turn_id === t.id)?.task_n}
+                      onChanged={liveSubagents.refresh}
+                    />
+                  ) : null}
                 </article>
                 )}
                 {stepListsAt(t.id)}

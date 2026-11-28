@@ -411,6 +411,14 @@ def _always() -> bool:
     return True
 
 
+def _never() -> bool:
+    return False
+
+
+#: Why an effect of a stopped task does not run (#2398 §5): the card waits for the Commander.
+STOPPED_REASON = "the Commander stopped this task, so HQ did not run this"
+
+
 @dataclass(frozen=True)
 class ActGrant:
     """What an act is admitted under (#2390): the authority the turn began under, the logout
@@ -422,15 +430,37 @@ class ActGrant:
     snapshot: Snapshot
     epoch: int
     live: Callable[[], bool] = field(default=_always)
+    #: The conversation the task runs in (#2398 §6): its LIVE taint flag (`hq_taint`) is read at
+    #: every admission, never cached at task start. "" reads no flag (a grant outside a turn).
+    cid: str = ""
+    #: The task's stop flag (#2398 §5): set, nothing more of the task runs.
+    stopped: Callable[[], bool] = field(default=_never)
 
     @classmethod
-    def now(cls, live: Callable[[], bool] | None = None) -> ActGrant:
-        return cls(snapshot(), logout_epoch(), live or _always)
+    def now(
+        cls,
+        live: Callable[[], bool] | None = None,
+        *,
+        cid: str = "",
+        stopped: Callable[[], bool] | None = None,
+    ) -> ActGrant:
+        return cls(snapshot(), logout_epoch(), live or _always, cid, stopped or _never)
 
     def admits(self, klass: str, tainted: bool = False) -> str:
         """Empty when ``klass`` may act now, else why not (said to HQ; the card waits). ``tainted``:
-        the turn read untrusted text (D4, #2391). Blocking but cheap: one small prefs read, so it
-        can sit right before the effect with no await."""
+        the turn read untrusted text (D4, #2391), OR'd with the conversation's live flag read now
+        (#2398). The task's stop flag refuses too (#2398). Blocking but cheap: a flag, a stat and
+        one small prefs read, so it can sit right before the effect with no await."""
+        try:
+            stopped = bool(self.stopped())
+        except Exception:  # noqa: BLE001 — fail closed
+            stopped = True
+        if stopped:
+            return STOPPED_REASON
+        if not tainted and self.cid:
+            from . import hq_taint
+
+            tainted = hq_taint.tainted(self.cid)
         if not acts(self.snapshot, klass):
             return "the Commander's Authority setting asks first for this"
         if taint_blocks(self.snapshot, klass, tainted):

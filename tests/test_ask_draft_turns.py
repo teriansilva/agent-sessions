@@ -48,6 +48,13 @@ GATED = {
     "propose_mcp",
     "propose_session",
     "propose_session_change",
+    # #2398: HQ's subagents. Starting, steering and stopping one waits for the commit, and so do
+    # a wait (it may start a queued spawn) and a collect (it writes the conversation's taint).
+    "spawn",
+    "steer",
+    "stop",
+    "wait",
+    "collect",
     # #2120: withdrawing a card is an effect on it; it waits for the commit like a proposal.
     "withdraw_card",
     # #2102: the screen moves only once the Commander has finished speaking.

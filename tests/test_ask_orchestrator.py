@@ -281,6 +281,13 @@ def test_the_tool_list_and_each_tools_kind_are_pinned():
         # #2397: an API session's settled turns, and waiting on one (agent text: they taint).
         "session_turns": "read",
         "wait_session": "read",
+        # #2398: HQ's subagents. spawn, steer and stop stage cards (each acts only under the
+        # Authority setting); wait reads states only, collect reads the agent's reply.
+        "spawn": "proposal",
+        "steer": "proposal",
+        "stop": "proposal",
+        "wait": "read",
+        "collect": "read",
         # #1882: what a session's agent last reported to HQ — agent text, read-only.
         "session_report": "read",
         "list_missions": "read",

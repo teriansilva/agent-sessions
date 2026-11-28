@@ -49,6 +49,8 @@ POST	/api/ask/conversations/{cid}/message	ask	self	write	login	mutate	warm	unsco
 POST	/api/ask/conversations/{cid}/message/stream	ask	self	write	login	stream	hot	unscoped	HQ streamed reply
 POST	/api/ask/conversations/{cid}/seen	ask	self	write	login	mutate	warm	unscoped	HQ conversations (ask/ store, global today); per-user in P1; HQ operations act as the asking user
 POST	/api/ask/conversations/{cid}/steps/end	ask	self	write	login	mutate	warm	unscoped	HQ conversations (ask/ store, global today); per-user in P1; HQ operations act as the asking user
+GET	/api/ask/conversations/{cid}/subagents	ask	self	read	login	read	warm	unscoped	HQ conversations (ask/ store, global today); per-user in P1; HQ operations act as the asking user; a conversation's subagents (#2398)
+POST	/api/ask/conversations/{cid}/subagents/{turn_id}/{handle}/cancel	ask	self	write	login	mutate	warm	unscoped	HQ conversations (ask/ store, global today); per-user in P1; HQ operations act as the asking user; the Commander's Cancel on a queued spawn (#2398), refused in-process
 POST	/api/ask/conversations/{cid}/turns/{turn_id}/stop	ask	self	write	login	mutate	warm	unscoped	HQ conversations (ask/ store, global today); per-user in P1; HQ operations act as the asking user
 POST	/api/ask/conversations/{cid}/turns/{turn_id}/withdraw	ask	self	write	login	mutate	warm	unscoped	HQ conversations (ask/ store, global today); per-user in P1; HQ operations act as the asking user
 GET	/api/ask/proposals/{pid}/content	ask	self	read	login	read	warm	unscoped	HQ conversations (ask/ store, global today); per-user in P1; HQ operations act as the asking user

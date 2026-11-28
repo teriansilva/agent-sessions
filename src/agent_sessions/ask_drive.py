@@ -386,6 +386,33 @@ class _Watch:
         self.snap: dict | None = None
         self.changed = asyncio.Event()
         self.task: asyncio.Task | None = None
+        #: Events of multi-session waits (#2398 `wait`) set on every change, beside `changed`.
+        self.listeners: set[asyncio.Event] = set()
+        #: The one snapshot a joining `wait` reads before the watcher's first tick (#2398): shared,
+        #: so 50 calls joining at once read the session once, not 50 times.
+        self._first: asyncio.Future | None = None
+
+    async def current(self) -> dict | None:
+        """The session as the watcher last read it, or ONE shared read when it has none yet.
+        None when it can't be read."""
+        if self.snap is not None:
+            return self.snap
+        if self._first is None:
+            from . import structured_runtime as runtime
+
+            async def read() -> dict | None:
+                try:
+                    return await runtime.snapshot(self.key)
+                except Exception:  # noqa: BLE001 — not there (yet) or unreadable
+                    return None
+
+            self._first = asyncio.ensure_future(read())
+        snap = await asyncio.shield(self._first)
+        if self.snap is None and snap is not None:
+            self.snap = snap
+        if snap is None:
+            self._first = None  # absent now: the next joiner reads again
+        return snap
 
     async def run(self) -> None:
         from . import structured_runtime as runtime
@@ -413,6 +440,8 @@ class _Watch:
             self.version += 1
             self.changed.set()
             self.changed = asyncio.Event()
+            for ev in list(self.listeners):
+                ev.set()
 
 
 _WATCHES: dict[str, _Watch] = {}

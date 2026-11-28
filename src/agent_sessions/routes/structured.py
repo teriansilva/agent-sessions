@@ -207,6 +207,18 @@ def _notice_take_over(key: str, rec: dict) -> None:
         log.warning("take-over notice not recorded", exc_info=True)
 
 
+def _adopting_task(drive: dict) -> dict | None:
+    """The task whose card adopts a session (#2398): the driver badge's "HQ · task n". A label;
+    unreadable is no label. Blocking."""
+    from .. import ask_proposals, hq_subagents
+
+    try:
+        row = ask_proposals._row(drive["cid"], drive["pid"]) or {}
+        return hq_subagents.task_ref(drive["cid"], str(row.get("turn_id") or ""))
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def driver_view(key: str) -> dict:
     """Who drives API session ``key``, as its header shows it (#2397): HQ (and from which
     conversation), the Commander, or a mission; whether Hand back is offered. Blocking."""
@@ -214,6 +226,8 @@ def driver_view(key: str) -> dict:
 
     v = session_driver.view(key)
     out = {k: v.get(k) for k in ("who", "generation", "since")}
+    if isinstance(v.get("task"), dict):
+        out["task"] = {"n": v["task"]["n"]}  # the task that started or adopted it (#2398)
     if v.get("who") == session_driver.MISSION:
         row = {}
         try:
@@ -411,6 +425,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
                 raise session_driver.DriverError(409, "this session skips permission prompts now")
             return why
 
+        task = await asyncio.to_thread(_adopting_task, drive)
         try:
             await asyncio.to_thread(
                 lambda: session_driver.adopt(
@@ -419,6 +434,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
                     generation=drive["generation"],
                     title=str(drive.get("title") or ""),
                     admit=admit,
+                    task=task,
                 )
             )
         except session_driver.GrantRefused as exc:

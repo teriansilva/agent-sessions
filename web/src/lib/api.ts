@@ -187,6 +187,7 @@ import type {
   AskCommandDecision,
   AskMessageDecision,
   AskStepList,
+  AskSubagent,
   AskConversationSummary,
   AskConversationTurn,
   AskAttachment,
@@ -2728,6 +2729,19 @@ export const api = {
       "POST",
       `/api/ask/proposals/${enc(id)}/decide`,
       { decision },
+    ),
+  /** A conversation's subagents with their live states (#2398): the group panel. */
+  askSubagents: (cid: string) =>
+    getJsonWithDetail<{ subagents: AskSubagent[] }>(
+      `/api/ask/conversations/${enc(cid)}/subagents`,
+    ),
+  /** The Commander's Cancel on a QUEUED spawn (#2398): it never starts. 409 once it is not
+   *  waiting for a slot any more. */
+  askCancelSubagent: (cid: string, turnId: string, handle: string) =>
+    mutateJson<{ handle: string; outcome: string }>(
+      "POST",
+      `/api/ask/conversations/${enc(cid)}/subagents/${enc(turnId)}/${enc(handle)}/cancel`,
+      {},
     ),
   /** HQ's command card (#2404): Run (`confirm`), Dismiss, or Stop while it runs. */
   decideAskCommand: (id: string, decision: "confirm" | "dismiss" | "stop") =>

@@ -730,6 +730,25 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         key = row["id"]
         row["mission"] = index.get(key) or index.get(engines.physical_key(key, aliases))
 
+    def _driver_records() -> dict[str, dict] | None:
+        """Who drives each API session (#2398): the driver store in ONE read per request, or
+        ``None`` when it could not be read (rows then carry no ``driver``: unknown)."""
+        from .. import session_driver
+
+        try:
+            return session_driver.records()
+        except Exception:  # noqa: BLE001 — display only, fail-soft like the mission index
+            return None
+
+    def _stamp_driver(row: dict, recs: dict[str, dict] | None) -> None:
+        """``row["driver"]`` (#2398): ``{who: hq | commander | mission, task_label?, cid?}``,
+        after the mission stamp it is derived from (a held session is the mission's)."""
+        from .. import session_driver
+
+        if recs is None:
+            return
+        row["driver"] = session_driver.row_fact(recs.get(row["id"]), bool(row.get("mission")))
+
     def _cluster_doc() -> dict | None | bool:
         """The cluster store for this request (#1997): the document, ``None`` when it could not be
         read, or ``False`` when session clusters are turned off. Read ONCE per request, like the
@@ -1057,6 +1076,10 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         memberships = _membership_index()
         for r in scoped:
             _stamp_mission(r, memberships, aliases)
+        # Who drives each session (#2398), from the mission stamp and ONE driver-store read.
+        drivers = _driver_records()
+        for r in scoped:
+            _stamp_driver(r, drivers)
         # The topic cluster (#1997), after the mission stamp it depends on.
         clusters_doc = _cluster_doc()
         for r in scoped:
@@ -1632,6 +1655,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             # The pane reads the same membership the list does (#948), so the header and the
             # sidebar row can never disagree about which mission holds this session.
             _stamp_mission(row, _membership_index(), aliases)
+            _stamp_driver(row, _driver_records())
             _stamp_cluster(row, _cluster_doc(), aliases)
             # Who started it (#2437): the list's stamp, so the pane and the row agree.
             _stamp_origin([row], aliases)

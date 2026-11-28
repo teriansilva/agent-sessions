@@ -51,6 +51,7 @@ import { RowMenu } from "./RowMenu";
 import { MatchSnippet, SearchNote } from "./SearchMatch";
 import { TIER_LABEL } from "./searchTiers";
 import { sessionPeers, useSessionMenu } from "../sessions/useSessionMenu";
+import { DriverBadge } from "../sessions/DriverBadge";
 import styles from "./SessionList.module.css";
 import { useEngineRoster } from "../../app/engineRoster";
 import {
@@ -484,6 +485,9 @@ function Row({
               </span>
             ) : null}
             <span className={styles.engineTag}>{engineBadge(s.engine)}</span>
+            {/* Who drives it (#2398): HQ · task n, or You. A mission's is the mission tag
+                below (the same server fact), so it is never said twice. */}
+            {s.driver && s.driver.who !== "mission" ? <DriverBadge driver={s.driver} /> : null}
             {/* The model this session's launch asked for (#1189) — a request, so the tooltip
                 says so. Absent for `default` and for sessions that recorded none. */}
             {s.model_requested ? (

@@ -406,20 +406,31 @@ export function SessionCard({
   const kind = api ? "API session" : p.runtime === "pty" ? "terminal session" : "session";
   // HQ started it itself under the Commander's Authority setting (#2391).
   const byHq = p.decided_by === "hq";
+  // A subagent's start (#2398): HQ spawned it for a task.
+  const sub = Boolean(p.subagent);
   const kicker = byHq
     ? p.state === "started"
-      ? "Started by HQ"
+      ? sub
+        ? "Started by HQ · subagent"
+        : "Started by HQ"
       : "By HQ"
     : p.state === "pending" && p.reason
       ? "Asks first"
-      : "Proposal";
+      : sub
+        ? "Start a subagent"
+        : "Proposal";
   return (
-    <div className={`${c.card} ${edge}`} data-testid="ask-session" data-state={p.state}>
+    <div
+      className={`${c.card} ${edge}`}
+      data-testid="ask-session"
+      data-state={p.state}
+      data-subagent={p.subagent ?? undefined}
+    >
       <div className={c.head}>
         <span className={c.k} data-testid="ask-session-kicker">
           {kicker}
         </span>
-        Session
+        {sub ? "Subagent" : "Session"}
         <span className={c.st}>{out ? out.word : "Waiting for you"}</span>
       </div>
       <Changed changes={p.changes} replaces={p.replaces} />
@@ -487,6 +498,14 @@ export function SessionCard({
                 <span>
                   The project was being changed just as this started, so nothing started. Start
                   it again.
+                </span>
+              </div>
+            ) : null}
+            {p.notice === "capacity" ? (
+              <div className={c.note} role="status" data-testid="ask-session-notice">
+                <span>
+                  {p.reason || "The specialist pool is full"}. Nothing started; start it again
+                  when one ends.
                 </span>
               </div>
             ) : null}
