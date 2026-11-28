@@ -563,6 +563,55 @@ def _agent_notes() -> dict[str, dict]:
     }
 
 
+#: At most this many raw ``project`` / ``cluster`` values per request (#2438), counted as SENT,
+#: before de-duplication, so a duplicate-heavy query cannot dodge the bound.
+MAX_SCOPE_VALUES = 50
+
+
+def _scope_values(value: str | list[str] | None) -> list[str]:
+    """The distinct non-empty values of a repeatable ``project`` / ``cluster`` param, in order. A
+    bare string (an internal caller, or a pre-#2438 one) is one value."""
+    if value is None:
+        return []
+    items = [value] if isinstance(value, str) else value
+    return list(dict.fromkeys(v.strip() for v in items if isinstance(v, str) and v.strip()))
+
+
+def _check_scope_values(project: list[str] | None, cluster: list[str] | None) -> None:
+    """Refuse what the project/cluster field cannot mean (#2438): more than
+    :data:`MAX_SCOPE_VALUES` raw values of either, or ``cluster=none`` mixed with cluster ids or
+    with more than one project (``none`` is today's single "not clustered" choice)."""
+    if len(project or []) > MAX_SCOPE_VALUES or len(cluster or []) > MAX_SCOPE_VALUES:
+        raise HTTPException(
+            status_code=422, detail=f"at most {MAX_SCOPE_VALUES} project and cluster values"
+        )
+    clusters = _scope_values(cluster)
+    if "none" in clusters and (len(clusters) > 1 or len(_scope_values(project)) > 1):
+        raise HTTPException(
+            status_code=422,
+            detail="cluster=none is a single choice: at most one project, no cluster ids",
+        )
+
+
+def _cluster_id(row: dict) -> str | None:
+    ref = row.get("cluster")
+    return ref["id"] if ref is not None else None
+
+
+def _project_matches(row: dict, wanted: set[str]) -> bool:
+    """Whether ``row`` is in any project of ``wanted`` (#361/#445/#2438): the resolved entity id,
+    the synthetic Default id (= every unadopted ``kind=="folder"`` row), or — for back-compat —
+    the bare cwd (old links/state still filter by a launch folder even though it now resolves into
+    a project or Default)."""
+    if not wanted:
+        return False
+    ref = row["project"]
+    if projects.DEFAULT_PROJECT_ID in wanted and ref["kind"] == "folder":
+        return True
+    others = wanted - {projects.DEFAULT_PROJECT_ID}
+    return ref["id"] in others or row["cwd"] in others
+
+
 def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
     def _row(
         s,
@@ -945,16 +994,19 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         offset: int = Query(0, ge=0),
         archived: bool = Query(False),
         q: str | None = Query(None),
-        project: str | None = Query(None),
+        # Repeatable (#2438): several projects and clusters, OR-ed — see `_scope_values`.
+        project: list[str] | None = Query(None),  # noqa: B008 — a repeatable query param
         engine: str | None = Query(None),
         mission: str | None = Query(None),
-        cluster: str | None = Query(None),
+        cluster: list[str] | None = Query(None),  # noqa: B008 — a repeatable query param
         tag: str | None = Query(None),
         snapshot: str | None = Query(None),
         running: str | None = Query(None, pattern="^(live|working)$"),
         candidates: bool = Query(False),
         origin: str | None = Query(None, pattern="^(operator|automation)$"),
     ) -> JSONResponse:
+        _check_scope_values(project, cluster)
+
         # Flat, paginated, newest-first. Favorited (sticky) rows are a GLOBAL pin (#520): the sort
         # runs over the whole filtered set before the window is sliced, so a favorite floats to the
         # top of the first page regardless of its recency / which page it would otherwise land on.
@@ -1102,10 +1154,10 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
         offset: int,
         archived: bool,
         q: str | None,
-        project: str | None,
+        project: str | list[str] | None,
         engine: str | None,
         mission: str | None = None,
-        cluster: str | None = None,
+        cluster: str | list[str] | None = None,
         tag: str | None = None,
         snapshot: str | None = None,
         running: str | None = None,
@@ -1237,12 +1289,20 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             reports = agent_reports.latest_notes()
             titles = {k: r["title"] for k, r in proj.by_id.items()}
             found = session_index.search(q or "", scoped, kids, reports=reports, titles=titles)
-        project_f = (project or "").strip() or None
+        # The project/cluster field (#2438): ONE facet whose values OR together. `cluster=none`
+        # stays today's single, exclusive "not clustered" choice (the route refused any mix).
+        p_vals = _scope_values(project)
+        c_vals = _scope_values(cluster)
+        unclustered = c_vals == ["none"]
+        if unclustered:
+            c_vals = []
+        # `none` keeps its one optional project, ANDed, exactly as before.
+        none_project = p_vals[0] if unclustered and p_vals else None
+        scope_p: set[str] = set() if unclustered else set(p_vals)
+        scope_c: set[str] = set(c_vals)
         engine_f = (engine or "").strip() or None
         # `none` = held by no mission. A mission id is `msn_<hex>`, so it cannot collide.
         mission_f = (mission or "").strip() or None
-        # `none` = in no cluster and held by no mission. A cluster id is `tc_<hex>`.
-        cluster_f = (cluster or "").strip() or None
         # Custom tag (#2338): compared like the facet groups it, trimmed and case-insensitive.
         tag_f = (tag or "").strip().casefold() or None
         if running is not None and not running_ok:
@@ -1287,7 +1347,7 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
             }
         if origin_unavailable:
             origin_f = None
-        if cluster_f is not None and not clusters_known:
+        if (scope_c or unclustered) and not clusters_known:
             # A cluster filter that cannot be answered (the store is unreadable, the mission
             # stamp it depends on is unknown, or clusters are off): same reasoning as above.
             return {
@@ -1300,22 +1360,28 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 **pinned,
             }
 
+        # A chosen cluster narrows ITS OWN project and nothing else (#2438): `project=p&cluster=c`
+        # (c in p) still means "cluster c", while an unrelated project keeps its whole arm. The
+        # parents come from the cluster document read once for this request.
+        parents = {
+            clusters_doc["clusters"][cid].get("project_id")
+            for cid in scope_c
+            if clusters_known and cid in clusters_doc["clusters"]
+        }
+        narrowed_p = scope_p - parents
+
         def _keep(r: dict) -> bool:
             # Match the displayed title OR the raw first message (#284): once a meaningless
             # auto-derived title normalizes to "", search must still find the session by
             # its original first message, so the normalization never narrows results.
             if found is not None and r["id"] not in found.matches:
                 return False
-            if project_f is not None:
-                # Project filter (#361/#445): matches the resolved entity id, the synthetic
-                # Default id (= every unadopted `kind=="folder"` row), or — for back-compat —
-                # the bare cwd (old links/state still filter by a launch folder even though
-                # it now resolves into a project or Default).
-                if project_f == projects.DEFAULT_PROJECT_ID:
-                    if r["project"]["kind"] != "folder":
-                        return False
-                elif r["project"]["id"] != project_f and r["cwd"] != project_f:
-                    return False
+            if none_project is not None and not _project_matches(r, {none_project}):
+                return False
+            if (scope_p or scope_c) and not (
+                _cluster_id(r) in scope_c or _project_matches(r, narrowed_p)
+            ):
+                return False
             if engine_f is not None and r["engine"] != engine_f:
                 return False
             if tag_f is not None and (r.get("tag") or "").strip().casefold() != tag_f:
@@ -1332,13 +1398,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                         return False
                 elif held is None or held["id"] != mission_f:
                     return False
-            if cluster_f is not None:
-                ref = r.get("cluster")
-                if cluster_f == "none":
-                    if ref is not None or r.get("mission") is not None:
-                        return False
-                elif ref is None or ref["id"] != cluster_f:
-                    return False
+            if unclustered and (r.get("cluster") is not None or r.get("mission") is not None):
+                return False
             return True
 
         # Filter BEFORE limit/offset so total + next_offset describe the filtered
@@ -1355,11 +1416,13 @@ def register(app: FastAPI, *, logged_in, csrf_guard, registry=None) -> None:
                 hidden.append(r)
         filtered = bool(
             q_norm
-            or project_f
+            or scope_p
+            or scope_c
+            or unclustered
+            or none_project
             or engine_f
             or tag_f
             or mission_f
-            or cluster_f
             or running
             or origin_f
         )

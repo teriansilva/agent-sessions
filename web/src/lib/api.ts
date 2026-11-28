@@ -746,10 +746,11 @@ export function sessionsUrl(q: SessionsQuery = {}): string {
   p.set("offset", String(q.offset ?? 0));
   p.set("archived", q.archived ? "1" : "0");
   if (q.q?.trim()) p.set("q", q.q.trim());
-  if (q.project) p.set("project", q.project);
+  // Repeatable (#2438): one `project=` / `cluster=` per pick, in order.
+  for (const v of ([] as string[]).concat(q.project ?? [])) if (v) p.append("project", v);
   if (q.engine) p.set("engine", q.engine);
   if (q.mission) p.set("mission", q.mission);
-  if (q.cluster) p.set("cluster", q.cluster);
+  for (const v of ([] as string[]).concat(q.cluster ?? [])) if (v) p.append("cluster", v);
   if (q.tag?.trim()) p.set("tag", q.tag.trim());
   if (q.origin) p.set("origin", q.origin);
   if (q.snapshot) p.set("snapshot", q.snapshot);

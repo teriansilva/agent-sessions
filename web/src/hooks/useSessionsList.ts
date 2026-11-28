@@ -4,6 +4,7 @@ import { useSectionState } from "../app/sectionState";
 import { useConfig } from "../app/config";
 import { api, ApiError } from "../lib/api";
 import { CLUSTERS_CHANGED_EVENT } from "../lib/clusterEvents";
+import { selectionOf, selectionQuery } from "../lib/scopeSelection";
 import {
   SESSION_MISSION_CHANGED_EVENT,
   type SessionMissionChange,
@@ -44,8 +45,15 @@ export interface Filters {
    *  section state saved before it existed does not carry it. */
   mission?: string;
   /** A cluster id, `none` for sessions in no cluster and no mission, or "" for all (#1997).
-   *  Optional for the same reason as `mission`. */
+   *  Optional for the same reason as `mission`. Since #2438 only `none` (or "") is written here;
+   *  a cluster id is a state saved before it, read as one tag (`lib/scopeSelection.ts`). */
   cluster?: string;
+  /** The project/cluster field's picks (#2438), OR-ed. Optional: a state saved before #2438 keeps
+   *  its single pick in `project` / `cluster`, which `selectionOf` reads as one tag. */
+  projects?: string[];
+  clusters?: string[];
+  /** Each cluster pick's project, recorded at pick time (#2438; see `lib/scopeSelection.ts`). */
+  clusterParents?: Record<string, string>;
   /** A custom tag, or "" for all (#2338). Optional for the same reason as `mission`. */
   tag?: string;
   /** Started by (#2437): `operator` (the default — sessions an automation launched are hidden),
@@ -84,6 +92,12 @@ export function offersOrigin(
   return originChoice(filters) !== DEFAULT_ORIGIN || (origins?.automation ?? 0) > 0;
 }
 
+/** A repeatable query value as the query carries it (#2438): absent for none, the bare string for
+ *  one — exactly the query a single pick sent before — and an array only for several. */
+function oneOrMany(values: string[]): string | string[] | undefined {
+  return values.length === 0 ? undefined : values.length === 1 ? values[0] : values;
+}
+
 /** The `origin` the server is asked for: none for `all`. */
 export function originQuery(filters: Filters): SessionOrigin | undefined {
   const o = originChoice(filters);
@@ -111,6 +125,8 @@ const EMPTY: Filters = {
   engine: "",
   mission: "",
   cluster: "",
+  projects: [],
+  clusters: [],
   tag: "",
   origin: DEFAULT_ORIGIN,
   archived: false,
@@ -202,13 +218,20 @@ export function useSessionsList() {
   }, [filters.q, debouncedQ]);
 
   const originQ = originQuery(filters);
+  // The project/cluster picks (#2438), keyed by value: a new array with the same picks must not
+  // re-fire the fetch.
+  const scopeKey = JSON.stringify(selectionQuery(selectionOf(filters)));
+  const scopeQ = useMemo(
+    () => JSON.parse(scopeKey) as { project: string[]; cluster: string[] },
+    [scopeKey],
+  );
   const query: SessionsQuery = useMemo(
     () => ({
       q: debouncedQ,
-      project: filters.project || undefined,
+      project: oneOrMany(scopeQ.project),
       engine: filters.engine || undefined,
       mission: filters.mission || undefined,
-      cluster: filters.cluster || undefined,
+      cluster: oneOrMany(scopeQ.cluster),
       tag: filters.tag || undefined,
       origin: originQ,
       archived: filters.archived,
@@ -216,10 +239,9 @@ export function useSessionsList() {
     }),
     [
       debouncedQ,
-      filters.project,
+      scopeQ,
       filters.engine,
       filters.mission,
-      filters.cluster,
       filters.tag,
       originQ,
       filters.archived,

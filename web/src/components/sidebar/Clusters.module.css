@@ -85,7 +85,8 @@
   outline: 2px solid var(--accent-text);
   outline-offset: -2px;
 }
-.node[aria-current="true"] {
+.node[aria-current="true"],
+.node[aria-pressed="true"] {
   border-left-color: var(--accent);
   background: var(--hud-tint);
   color: var(--text-1);
@@ -293,4 +294,12 @@ input.renameInput {
   .child {
     padding-left: calc(44px + var(--sp-2));
   }
+}
+
+/* The ✓ of a picked project or cluster (#2438): the tint carries the pick, the mark says it is a
+ * toggle. A fixed slot, so names stay in line whether or not they are picked. */
+.tick {
+  flex: 0 0 11px;
+  display: inline-flex;
+  color: var(--hud-text);
 }

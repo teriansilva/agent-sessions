@@ -15,6 +15,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -35,7 +36,16 @@ import {
 } from "../../lib/format";
 import { mainRowStatus } from "../../lib/sessionStatus";
 import { SESSIONS_PATH } from "../../lib/routes";
-import { isClusterId } from "../../lib/clusters";
+import {
+  clusterDissolved,
+  clusterMerged,
+  isEmptySelection,
+  parentLookup,
+  selectionOf,
+  selectionPatch,
+  soleCluster,
+  widenClusters,
+} from "../../lib/scopeSelection";
 import type { ProjectRef, Session } from "../../types/api";
 import { ClusterHead } from "./ClusterHead";
 import {
@@ -47,6 +57,7 @@ import {
 import { useSubagentMode, type SubagentMode } from "./subagentMode";
 import { FiltersBar } from "./Filters";
 import { ProjectTree } from "./ProjectTree";
+import { ScopeTags } from "./ScopeTags";
 import { RowMenu } from "./RowMenu";
 import { MatchSnippet, SearchNote } from "./SearchMatch";
 import { TIER_LABEL } from "./searchTiers";
@@ -689,14 +700,50 @@ export function SessionList({
   const config = useConfig();
   const clustersCfg = config?.clusters;
   const clustersOn = clustersCfg?.enabled ?? false;
-  const selectedCluster = isClusterId(filters.cluster) ? filters.cluster : null;
+  // The project/cluster picks (#2438). The cluster head shows only for exactly one cluster pick
+  // and nothing else — today's single-cluster case.
+  // Memoized, so the compiler treats them as frozen values, not as live views of the hook's state.
+  const scopeSel = useMemo(() => selectionOf(filters), [filters]);
+  const selectedCluster = soleCluster(scopeSel);
+  // The facets first, then the projects recorded with the picks: with clusters turned off the
+  // facets carry no clusters, and a pick must still widen to its own project (#2438 review).
+  const parentOf = useMemo(
+    () => parentLookup(facets.clusters, filters.clusterParents),
+    [facets.clusters, filters.clusterParents],
+  );
   // A cluster filter saved while clusters were on must not outlive them: the tree no longer shows
   // clusters, so nothing would name it or clear it, and the list would stay narrowed by a
-  // restriction the operator cannot see (#2187). Only once the config has answered.
-  const staleClusterFilter = !!config && !clustersOn && !!filters.cluster;
+  // restriction the operator cannot see (#2187). Only once the config has answered. Since #2438
+  // that is every cluster pick and "Not clustered"; the project picks stay.
+  const staleClusterFilter =
+    !!config && !clustersOn && (scopeSel.clusters.length > 0 || scopeSel.unclustered);
+  // The cluster picks give way to their projects, so the scope that is left is still true.
+  const widened = useMemo(
+    () => widenClusters(scopeSel, parentOf, filters.project || undefined),
+    [scopeSel, parentOf, filters.project],
+  );
   useEffect(() => {
-    if (staleClusterFilter) update({ cluster: "" });
-  }, [staleClusterFilter, update]);
+    if (staleClusterFilter) update(selectionPatch(widened));
+  }, [staleClusterFilter, widened, update]);
+  // The cluster head's project name and its merge / dissolve answer (#2438): after a merge the tag
+  // follows the sessions to the target; after a dissolve the cluster's project takes its place.
+  const clusterHeadProject =
+    (selectedCluster && facets.projects.find((p) => p.id === parentOf(selectedCluster))?.name) ||
+    "project";
+  const onClusterHeadSelect = useCallback(
+    (id: string) => {
+      if (!selectedCluster) return;
+      update(
+        selectionPatch(
+          id
+            ? clusterMerged(scopeSel, selectedCluster, id)
+            : clusterDissolved(scopeSel, selectedCluster, parentOf),
+          parentOf,
+        ),
+      );
+    },
+    [selectedCluster, scopeSel, parentOf, update],
+  );
   const rowRefs = useRef(new Map<string, HTMLLIElement>());
   const previousRowTops = useRef(new Map<string, number>());
   const reorderTimers = useRef<number[]>([]);
@@ -994,6 +1041,7 @@ export function SessionList({
         missionFilterUnavailable={missionFilterUnavailable}
         sharedCount={remote.length}
       >
+        <ScopeTags filters={filters} facets={facets} clustersOn={clustersOn} onChange={update} />
         <ProjectTree
           filters={filters}
           facets={facets}
@@ -1008,11 +1056,9 @@ export function SessionList({
           key={selectedCluster}
           clusterId={selectedCluster}
           cluster={facets.clusters.find((c) => c.id === selectedCluster)}
-          projectName={
-            facets.projects.find((p) => p.id === filters.project)?.name ?? "project"
-          }
+          projectName={clusterHeadProject}
           configured={clustersCfg?.configured ?? false}
-          onSelect={(id) => update({ cluster: id })}
+          onSelect={onClusterHeadSelect}
         />
       ) : null}
       {!shared ? (
@@ -1062,10 +1108,9 @@ export function SessionList({
       ) : sessions.length === 0 && !loading ? (
         <div className={styles.empty}>
           {filters.q ||
-          filters.project ||
+          !isEmptySelection(scopeSel) ||
           filters.engine ||
-          filters.mission ||
-          filters.cluster
+          filters.mission
             ? "No sessions match — clear filters."
             : origin === "operator" && (originHidden?.count ?? 0) > 0
               ? "No sessions started by you."

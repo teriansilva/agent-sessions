@@ -61,14 +61,48 @@ test("picking a mission replaces a selected cluster, so the scope stays true (#2
   render(
     <FiltersBar
       filters={{ ...base, project: "p-1", cluster: "tc_0a1b2c3d4e5f" }}
+      facets={{
+        ...facets,
+        missions: [{ id: "msn_1", title: "Release", count: 2 }],
+        clusters: [
+          { id: "tc_0a1b2c3d4e5f", title: "Login flow", kept: false, project_id: "p-1", count: 2 },
+        ],
+      }}
+      onChange={onChange}
+      onClear={noop}
+    />,
+  );
+  fireEvent.change(screen.getByLabelText("Filter by mission"), { target: { value: "msn_1" } });
+  // The cluster pick gives way to its project (a mission-held session is never in a cluster), so
+  // "project › mission" stays true; the canonical arrays are written, the old scalars cleared.
+  expect(onChange).toHaveBeenCalledWith({
+    mission: "msn_1",
+    projects: ["p-1"],
+    clusters: [],
+    project: "",
+    cluster: "",
+  });
+});
+
+test("the mission dropdown keeps the project picks; a cluster pick gives way to its project (#2438)", () => {
+  const onChange = vi.fn();
+  render(
+    <FiltersBar
+      filters={{ ...base, projects: ["p-1", "p-2"], clusters: ["tc_0a1b2c3d4e5f"] }}
       facets={{ ...facets, missions: [{ id: "msn_1", title: "Release", count: 2 }] }}
       onChange={onChange}
       onClear={noop}
     />,
   );
   fireEvent.change(screen.getByLabelText("Filter by mission"), { target: { value: "msn_1" } });
-  // The project stays: "project › mission" is a scope the tree also offers.
-  expect(onChange).toHaveBeenCalledWith({ mission: "msn_1", cluster: "" });
+  expect(onChange).toHaveBeenCalledWith({
+    mission: "msn_1",
+    // tc_0a1b2c3d4e5f is not in these facets and there is no saved scalar project: it goes.
+    projects: ["p-1", "p-2"],
+    clusters: [],
+    project: "",
+    cluster: "",
+  });
 });
 
 test("the header names the selected scope, so a folded block still says where the list is (#2187)", () => {
@@ -107,7 +141,7 @@ test("a project filter the facets do not list still gets a name (Hermes, PR #218
   expect(screen.getByLabelText("Clear filters")).toBeInTheDocument();
   // A project id that has left the facets.
   rerender(bar("p-gone"));
-  expect(screen.getByTestId("filters-scope")).toHaveTextContent("Selected project");
+  expect(screen.getByTestId("filters-scope")).toHaveTextContent("Project no longer there");
 });
 
 test("agent select is hidden when only one engine exists", () => {
@@ -489,4 +523,23 @@ test("Started by is not shown on Shared (#2437)", () => {
     />,
   );
   expect(screen.queryByRole("radiogroup", { name: "Started by" })).toBeNull();
+});
+
+test("the header lists every project and cluster pick (#2438)", () => {
+  const TC = "tc_0a1b2c3d4e5f";
+  const scoped = {
+    ...facets,
+    projects: [projectRef("p-1", "SampleProject", 3), projectRef("p-2", "Other", 1)],
+    clusters: [{ id: TC, title: "Login flow", kept: false, project_id: "p-1", count: 2 }],
+  };
+  render(
+    <FiltersBar
+      filters={{ ...base, projects: ["p-2"], clusters: [TC] }}
+      facets={scoped}
+      onChange={noop}
+      onClear={noop}
+    />,
+  );
+  expect(screen.getByTestId("filters-scope")).toHaveTextContent("Other, SampleProject › Login flow");
+  expect(screen.getByLabelText("Clear filters")).toBeInTheDocument();
 });

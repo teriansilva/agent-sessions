@@ -792,6 +792,9 @@ test("the list's reset clears the local filters and leaves the Shared search alo
     engine: "",
     mission: "",
     cluster: "",
+    // The project/cluster picks (#2438) are local filters too.
+    projects: [],
+    clusters: [],
     tag: "",
     // Started by (#2437): the reset returns to the default, automation-launched sessions hidden.
     origin: "operator",
@@ -861,4 +864,24 @@ test("an unreadable automation store is said, and Shared keeps the Started-by ch
   act(() => result.current.update(scopePatch("shared")));
   act(() => result.current.update(scopePatch("active")));
   expect(result.current.filters.origin).toBe("all");
+});
+
+// ---- The project/cluster multiselect (#2438) ----
+
+test("several picks go to the server together; Shared keeps them for Active (#2438)", async () => {
+  mockSessions.mockResolvedValue(pageOf([sess("A")]));
+  const { result } = renderHook(() => useSessionsList());
+  act(() => result.current.update({ projects: ["p-a", "p-b"], clusters: ["tc_0a1b2c3d4e5f"] }));
+  await waitFor(() =>
+    expect(mockSessions).toHaveBeenLastCalledWith(
+      expect.objectContaining({ project: ["p-a", "p-b"], cluster: "tc_0a1b2c3d4e5f", offset: 0 }),
+    ),
+  );
+  const calls = mockSessions.mock.calls.length;
+  act(() => result.current.update(scopePatch("shared")));
+  act(() => result.current.update(scopePatch("active")));
+  expect(result.current.filters.projects).toEqual(["p-a", "p-b"]);
+  expect(result.current.filters.clusters).toEqual(["tc_0a1b2c3d4e5f"]);
+  // Entering and leaving Shared asks the server nothing new.
+  expect(mockSessions.mock.calls.length).toBe(calls);
 });

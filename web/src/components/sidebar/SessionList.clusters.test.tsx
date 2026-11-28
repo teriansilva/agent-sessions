@@ -21,6 +21,7 @@ vi.mock("../../lib/api", async (importOriginal) => {
       placeSession: vi.fn(),
       createCluster: vi.fn(),
       patchCluster: vi.fn(),
+      dissolveCluster: vi.fn(),
     },
   };
 });
@@ -133,13 +134,16 @@ test("selecting a cluster in the tree filters the list by it and shows its head"
   await screen.findByText("Fix the login redirect");
   await userEvent.click(screen.getByRole("button", { name: "Unfold alpha" }));
   await userEvent.click(screen.getAllByTestId("cluster-node")[0]);
-  await waitFor(() => expect(lastQuery()).toMatchObject({ project: "p-a", cluster: TC }));
+  // A cluster tag (#2438) asks for the cluster alone: it lies inside its project, so the server's
+  // answer is the one `project=p-a&cluster=…` gave.
+  await waitFor(() => expect(lastQuery()).toMatchObject({ cluster: TC }));
+  expect(lastQuery().project).toBeUndefined();
   const head = await screen.findByTestId("cluster-head");
   expect(within(head).getByTestId("cluster-head-title")).toHaveTextContent("Login flow");
   expect(await within(head).findByText("Sign-in work.")).toBeVisible();
 });
 
-test("picking another project in the tree drops the cluster filter", async () => {
+test("picking another project in the tree adds it beside the cluster, and the head goes (#2438)", async () => {
   vi.mocked(api.sessions).mockResolvedValue(
     page([IN], {
       facets: {
@@ -158,9 +162,14 @@ test("picking another project in the tree drops the cluster filter", async () =>
   await userEvent.click(screen.getByRole("button", { name: "Unfold alpha" }));
   await userEvent.click(screen.getAllByTestId("cluster-node")[0]);
   await waitFor(() => expect(lastQuery()).toMatchObject({ cluster: TC }));
+  expect(await screen.findByTestId("cluster-head")).toBeVisible();
   await userEvent.click(screen.getByRole("button", { name: /^beta/ }));
+  // OR within the field: the cluster AND the other project, in one request.
   await waitFor(() => expect(lastQuery().project).toBe("p-b"));
-  expect(lastQuery().cluster).toBeUndefined();
+  expect(lastQuery().cluster).toBe(TC);
+  // The cluster head is for exactly one cluster pick and nothing else.
+  await waitFor(() => expect(screen.queryByTestId("cluster-head")).toBeNull());
+  expect(screen.getByTestId("filters-scope")).toHaveTextContent("beta, alpha › Login flow");
 });
 
 test("cluster, then a mission from the dropdown, then Clear: every step names a true scope (#2187)", async () => {
@@ -168,8 +177,9 @@ test("cluster, then a mission from the dropdown, then Clear: every step names a 
   await screen.findByText("Fix the login redirect");
   await userEvent.click(screen.getByRole("button", { name: "Unfold alpha" }));
   await userEvent.click(screen.getAllByTestId("cluster-node")[0]);
-  await waitFor(() => expect(lastQuery()).toMatchObject({ project: "p-a", cluster: TC }));
+  await waitFor(() => expect(lastQuery()).toMatchObject({ cluster: TC }));
   expect(screen.getByTestId("filters-scope")).toHaveTextContent("alpha › Login flow");
+  // The mission drops the cluster pick for its project, so the scope stays "alpha › Release".
   await userEvent.selectOptions(screen.getByRole("combobox", { name: "Filter by mission" }), "msn_1");
   await waitFor(() => expect(lastQuery()).toMatchObject({ project: "p-a", mission: "msn_1" }));
   expect(lastQuery().cluster).toBeUndefined();
@@ -182,6 +192,38 @@ test("cluster, then a mission from the dropdown, then Clear: every step names a 
   expect(screen.getByRole("button", { name: /^All sessions/ })).toHaveAttribute("aria-current", "true");
 });
 
+test("a mission node, then a cluster or another project's tag: the mission gives way (#2438 review)", async () => {
+  vi.mocked(api.sessions).mockResolvedValue(
+    page([IN, LOOSE, HELD], {
+      facets: {
+        ...page([]).facets,
+        projects: [
+          { ...PROJECT, count: 3 },
+          { kind: "project", id: "p-b", name: "beta", count: 1 },
+        ],
+      },
+    }),
+  );
+  list();
+  await screen.findByText("Fix the login redirect");
+  await userEvent.click(screen.getByRole("button", { name: "Unfold alpha" }));
+  const missionNode = () => screen.getAllByTestId("cluster-mission-node")[0];
+  await userEvent.click(missionNode());
+  await waitFor(() => expect(lastQuery()).toMatchObject({ project: "p-a", mission: "msn_1" }));
+  // mission ∧ cluster is always empty (a held session is never clustered): the cluster replaces it.
+  await userEvent.click(screen.getAllByTestId("cluster-node")[0]);
+  await waitFor(() => expect(lastQuery()).toMatchObject({ cluster: TC }));
+  expect(lastQuery().mission).toBeUndefined();
+  // The tag field is the other way in: another project's tag clears the mission too.
+  await userEvent.click(missionNode());
+  await waitFor(() => expect(lastQuery()).toMatchObject({ mission: "msn_1" }));
+  const input = screen.getByRole("combobox", { name: "Add a project or cluster" });
+  await userEvent.click(input);
+  await userEvent.type(input, "beta{Enter}");
+  await waitFor(() => expect(lastQuery().project).toEqual(["p-a", "p-b"]));
+  expect(lastQuery().mission).toBeUndefined();
+});
+
 test("a folded block, opened again on this device, still names the scope in force (#2187)", async () => {
   localStorage.setItem(FILTERS_OPEN_KEY, "0");
   const memory = new Map<string, unknown>([
@@ -191,7 +233,8 @@ test("a folded block, opened again on this device, still names the scope in forc
   await screen.findByText("Fix the login redirect");
   const toggle = screen.getByTestId("filters-toggle");
   expect(toggle).toHaveAttribute("aria-expanded", "false");
-  expect(lastQuery()).toMatchObject({ project: "p-a", cluster: TC });
+  // The state saved before #2438 reads as that one cluster tag (same server answer).
+  expect(lastQuery()).toMatchObject({ cluster: TC });
   // The full scope is the chip's TEXT (the ellipsis is CSS), so it is in the toggle's name.
   expect(screen.getByTestId("filters-scope")).toHaveTextContent("alpha › Login flow");
   expect(toggle).toHaveAccessibleName(/alpha › Login flow/);
@@ -248,6 +291,52 @@ test("with clusters off the tree has no clusters, there is no menu item, and a c
   expect(lastQuery().project).toBe("p-a");
   await userEvent.click(screen.getAllByRole("button", { name: "Session actions" })[0]);
   expect(screen.queryByRole("menuitem", { name: "Move session to a cluster" })).toBeNull();
+});
+
+test("a cluster picked this visit widens to its project once clusters are off, the facets naming no clusters (#2438 review)", async () => {
+  // Picked with clusters on: the pick records its project beside it.
+  const memory = new Map<string, unknown>();
+  const on = list(SETTINGS, memory);
+  await screen.findByText("Fix the login redirect");
+  await userEvent.click(screen.getAllByTestId("cluster-node")[0]);
+  await waitFor(() => expect(lastQuery().cluster).toBe(TC));
+  expect(lastQuery().project).toBeUndefined();
+  on.unmount();
+  // Back to the list with clusters off: the server's facets carry no clusters at all.
+  const off = page([IN, LOOSE, HELD]);
+  delete off.facets.clusters;
+  vi.mocked(api.sessions).mockReset().mockResolvedValue(off);
+  list({ ...SETTINGS, enabled: false }, memory);
+  await screen.findByText("Fix the login redirect");
+  await waitFor(() => expect(lastQuery().cluster).toBeUndefined());
+  // Its project, never "all projects".
+  expect(lastQuery().project).toBe("p-a");
+});
+
+test("saved arrays with recorded parents: every cluster arm widens to its project, the project arms stay (#2438 review)", async () => {
+  const memory = new Map<string, unknown>([
+    [
+      "sessions.filters",
+      {
+        q: "",
+        project: "",
+        engine: "",
+        mission: "",
+        cluster: "",
+        archived: false,
+        projects: ["p-c"],
+        clusters: [TC, "tc_99887766554a"],
+        clusterParents: { [TC]: "p-a", tc_99887766554a: "p-b" },
+      },
+    ],
+  ]);
+  const off = page([IN, LOOSE, HELD]);
+  delete off.facets.clusters;
+  vi.mocked(api.sessions).mockReset().mockResolvedValue(off);
+  list({ ...SETTINGS, enabled: false }, memory);
+  await screen.findByText("Fix the login redirect");
+  await waitFor(() => expect(lastQuery().cluster).toBeUndefined());
+  expect(lastQuery().project).toEqual(["p-c", "p-a", "p-b"]);
 });
 
 test("an older server (no clusters block) shows nothing of clusters", async () => {
@@ -370,4 +459,33 @@ test("a cluster filter the server could not apply is said in the tree", async ()
   list();
   expect(await screen.findByText(/The cluster filter could not be applied/)).toBeVisible();
   expect(screen.getByText(/Clusters are unavailable right now/)).toBeVisible();
+});
+
+test("dissolving the picked cluster from its head puts its project in its place (#2438)", async () => {
+  vi.mocked(api.dissolveCluster).mockResolvedValue({ ok: true });
+  list();
+  await screen.findByText("Fix the login redirect");
+  await userEvent.click(screen.getByRole("button", { name: "Unfold alpha" }));
+  await userEvent.click(screen.getAllByTestId("cluster-node")[0]);
+  await waitFor(() => expect(lastQuery()).toMatchObject({ cluster: TC }));
+  await userEvent.click(await screen.findByTestId("cluster-head-menu"));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Dissolve this cluster" }));
+  await waitFor(() => expect(lastQuery().project).toBe("p-a"));
+  expect(lastQuery().cluster).toBeUndefined();
+  expect(screen.getAllByTestId("scope-chip").map((c) => c.textContent)).toEqual(["alpha"]);
+});
+
+test("the project and cluster picks are chips, sent together, and kept across a reload of the view (#2438)", async () => {
+  const memory = new Map<string, unknown>([
+    [
+      "sessions.filters",
+      { q: "", project: "", engine: "", mission: "", cluster: "", projects: ["p-a"], clusters: [TC], archived: false },
+    ],
+  ]);
+  list(SETTINGS, memory);
+  await screen.findByText("Fix the login redirect");
+  // Both picks in one request (OR on the server), one chip each, no cluster head (two picks).
+  expect(lastQuery()).toMatchObject({ project: "p-a", cluster: TC });
+  expect(screen.getAllByTestId("scope-chip")).toHaveLength(2);
+  expect(screen.queryByTestId("cluster-head")).toBeNull();
 });

@@ -214,21 +214,31 @@ test("selecting a cluster filters the list to its sessions and shows its head", 
     .poll(async () => (await rowTitles(page)).sort())
     .toEqual(["Fix the login redirect", "Session cookie expiry"]);
   expect(s.queries.at(-1)!.get("cluster")).toBe(TC_LOGIN);
-  expect(s.queries.at(-1)!.get("project")).toBe("p-a");
+  // A cluster pick (#2438) asks for the cluster alone: it lies inside its project.
+  expect(s.queries.at(-1)!.get("project")).toBeNull();
   const head = sidebar(page).getByTestId("cluster-head");
   await expect(head.getByTestId("cluster-head-title")).toHaveText("Login flow");
   await expect(head.getByTestId("cluster-head-tag")).toHaveText(/AI title/i);
   await expect(head).toContainText("Two sessions on sign-in and its cookie.");
-  // The tree marks it, and the mission and the rest are still one press away.
+  // The tree marks it (a pressed toggle since #2438), and the mission and the rest are still one
+  // press away.
   await expect(
     sidebar(page).getByTestId("cluster-node").filter({ hasText: "Login flow" }),
-  ).toHaveAttribute("aria-current", "true");
+  ).toHaveAttribute("aria-pressed", "true");
   await sidebar(page).getByTestId("cluster-none-node").click();
   await expect.poll(() => rowTitles(page)).toEqual(["Bump vitest"]);
   await sidebar(page).getByTestId("cluster-mission-node").click();
   await expect.poll(() => rowTitles(page)).toEqual(["Changelog and tag"]);
   expect(s.queries.at(-1)!.get("mission")).toBe(MISSION.id);
   expect(s.queries.at(-1)!.get("cluster")).toBeNull();
+  // Adding a cluster tag clears the mission (#2438): a held session is never clustered, so the
+  // two together could only list nothing.
+  await sidebar(page).getByTestId("cluster-node").filter({ hasText: "Login flow" }).click();
+  await expect
+    .poll(async () => (await rowTitles(page)).sort())
+    .toEqual(["Fix the login redirect", "Session cookie expiry"]);
+  expect(s.queries.at(-1)!.get("mission")).toBeNull();
+  expect(s.queries.at(-1)!.get("cluster")).toBe(TC_LOGIN);
 });
 
 test("renaming a cluster keeps the title; Let HQ rename hands it back", async ({
@@ -404,7 +414,7 @@ test("a long tree scrolls to its last project, which a keyboard selects; folded,
   await expect(last).toBeFocused();
   await page.keyboard.press("Enter");
   await expect.poll(() => st.queries.at(-1)?.get("project")).toBe("p-x29");
-  await expect(last).toHaveAttribute("aria-current", "true");
+  await expect(last).toHaveAttribute("aria-pressed", "true");
   // The list below the tree is still reachable.
   await tree.getByRole("button", { name: /^All sessions/ }).click();
   const row = sidebar(page).locator("ul[aria-label$='sessions'] > li").last();

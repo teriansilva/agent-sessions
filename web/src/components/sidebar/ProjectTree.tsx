@@ -1,9 +1,22 @@
-import { ChevronRight, Crosshair } from "lucide-react";
+import { Check, ChevronRight, Crosshair } from "lucide-react";
 import { useId, useState } from "react";
 import { Link } from "react-router-dom";
 
 import type { Filters } from "../../hooks/useSessionsList";
 import { projectColor } from "../../lib/format";
+import {
+  addsPick,
+  EMPTY_SELECTION,
+  isEmptySelection,
+  pickMissionProject,
+  pickUnclustered,
+  selectionOf,
+  parentLookup,
+  selectionPatch,
+  toggleCluster,
+  toggleProject,
+  type ScopeSelection,
+} from "../../lib/scopeSelection";
 import { settingsPath } from "../../routes/settingsTabs";
 import type {
   ProjectRef,
@@ -32,8 +45,9 @@ const count = (n: number | undefined) => (n == null ? "" : String(n));
 
 /** The project tree (#1997; inside the Filters fold since #2187): All sessions, then each project
  *  with its clusters (when clusters are on), its missions and "Not clustered". It is THE project
- *  filter: the sidebar has no project dropdown. Selecting a node sets `project`, `cluster` and
- *  `mission` together through the same `sessions.filters` state as the rest of the block. Built
+ *  filter: the sidebar has no project dropdown. Since #2438 a project or cluster node toggles a
+ *  tag of the multiselect (`lib/scopeSelection.ts`, shared with the tag field); a mission node and
+ *  "Not clustered" stay single choices. Built
  *  from the list's facets only: every count is over the same scoped set the list pages through.
  *
  *  A plain nested list of buttons, not an ARIA tree: each node is one press, the selected one is
@@ -52,14 +66,23 @@ export function ProjectTree({
   // open unless it was folded explicitly.
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
-  const cluster = filters.cluster ?? "";
+  const sel = selectionOf(filters);
   const mission = filters.mission ?? "";
   // Clusters off: the tree claims nothing about them (no cluster nodes, no "Not clustered").
   const known = clustersOn && facets.clusters !== undefined;
-  const all = !filters.project && !cluster && !mission;
+  const all = isEmptySelection(sel) && !mission;
   const total = facets.projects.reduce((n, p) => n + (p.count ?? 0), 0);
-  const select = (patch: Partial<Filters>) =>
-    onChange({ project: "", cluster: "", mission: "", ...patch });
+  const parentOf = parentLookup(facets.clusters, filters.clusterParents);
+  // Every pick goes through the one reducer (#2438). A project or cluster node TOGGLES its tag;
+  // ADDING one clears a mission node's single choice (`addsPick`), removing one leaves it. "All
+  // sessions", a mission node and "Not clustered" are single choices that replace the whole pick.
+  const apply = (next: ScopeSelection, patch: Partial<Filters> = {}) =>
+    onChange({
+      ...selectionPatch(next, parentOf),
+      ...(mission && addsPick(sel, next) ? { mission: "" } : {}),
+      ...patch,
+    });
+  const pressed = (on: boolean) => (on ? "true" : "false");
 
   return (
     <div className={styles.tree} data-testid="project-tree">
@@ -87,7 +110,7 @@ export function ProjectTree({
             type="button"
             className={styles.node}
             aria-current={all ? "true" : undefined}
-            onClick={() => select({})}
+            onClick={() => apply(EMPTY_SELECTION, { mission: "" })}
           >
             <span className={styles.name}>All sessions</span>
             <span className={styles.count}>{count(total)}</span>
@@ -104,7 +127,9 @@ export function ProjectTree({
             clusters.reduce((n, c) => n + c.count, 0) +
             missions.reduce((n, m) => n + (m.by_project?.[p.id] ?? 0), 0);
           const rest = Math.max(0, (p.count ?? 0) - grouped);
-          const holdsSelection = filters.project === p.id;
+          const projectPicked = !sel.unclustered && sel.projects.includes(p.id);
+          const holdsSelection =
+            sel.projects.includes(p.id) || sel.clusters.some((c) => parentOf(c) === p.id);
           const isOpen = expanded[p.id] ?? holdsSelection;
           // With clusters known every project has "Not clustered"; off, only its missions.
           const hasChildren = known || missions.length > 0;
@@ -132,14 +157,16 @@ export function ProjectTree({
                 <button
                   type="button"
                   className={`${styles.node} ${styles.project}`}
-                  aria-current={
-                    holdsSelection && !cluster && !mission ? "true" : undefined
-                  }
+                  aria-pressed={pressed(projectPicked)}
                   onClick={() => {
                     setExpanded((e) => ({ ...e, [p.id]: true }));
-                    select({ project: p.id });
+                    apply(toggleProject(sel, p.id, parentOf));
                   }}
+                  data-testid="project-node"
                 >
+                  <span className={styles.tick} aria-hidden="true">
+                    {projectPicked ? <Check size={11} /> : null}
+                  </span>
                   <span
                     className={styles.swatch}
                     style={{ background: p.color || projectColor(p.id) }}
@@ -155,10 +182,13 @@ export function ProjectTree({
                     <button
                       type="button"
                       className={`${styles.node} ${styles.child}`}
-                      aria-current={cluster === c.id ? "true" : undefined}
-                      onClick={() => select({ project: p.id, cluster: c.id })}
+                      aria-pressed={pressed(!sel.unclustered && sel.clusters.includes(c.id))}
+                      onClick={() => apply(toggleCluster(sel, c.id, parentOf))}
                       data-testid="cluster-node"
                     >
+                      <span className={styles.tick} aria-hidden="true">
+                        {!sel.unclustered && sel.clusters.includes(c.id) ? <Check size={11} /> : null}
+                      </span>
                       <span className={styles.bullet} aria-hidden="true" />
                       <span className={styles.name}>{c.title}</span>
                       {c.kept ? (
@@ -176,9 +206,15 @@ export function ProjectTree({
                       type="button"
                       className={`${styles.node} ${styles.child}`}
                       aria-current={
-                        holdsSelection && mission === m.id ? "true" : undefined
+                        mission === m.id &&
+                        !sel.unclustered &&
+                        !sel.clusters.length &&
+                        sel.projects.length === 1 &&
+                        sel.projects[0] === p.id
+                          ? "true"
+                          : undefined
                       }
-                      onClick={() => select({ project: p.id, mission: m.id })}
+                      onClick={() => apply(pickMissionProject(p.id), { mission: m.id })}
                       data-testid="cluster-mission-node"
                     >
                       <Crosshair size={10} aria-hidden="true" className={styles.missionMark} />
@@ -197,9 +233,9 @@ export function ProjectTree({
                       type="button"
                       className={`${styles.node} ${styles.child}`}
                       aria-current={
-                        holdsSelection && cluster === "none" ? "true" : undefined
+                        sel.unclustered && sel.projects[0] === p.id ? "true" : undefined
                       }
-                      onClick={() => select({ project: p.id, cluster: "none" })}
+                      onClick={() => apply(pickUnclustered(p.id), { mission: "" })}
                       data-testid="cluster-none-node"
                     >
                       <span className={`${styles.bullet} ${styles.bulletOpen}`} aria-hidden="true" />

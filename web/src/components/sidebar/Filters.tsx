@@ -11,13 +11,20 @@ import {
   type OriginFilter,
   type SessionScope,
 } from "../../hooks/useSessionsList";
-import { isClusterId } from "../../lib/clusters";
+import {
+  forMission,
+  isEmptySelection,
+  parentLookup,
+  selectionOf,
+  selectionPatch,
+} from "../../lib/scopeSelection";
 import type {
   ProjectRef,
   SessionClusterFacet,
   SessionOriginCounts,
   SessionTagFacet,
 } from "../../types/api";
+import { clusterName, clusterProjectName, projectName } from "./scopeNames";
 import styles from "./Filters.module.css";
 
 interface Props {
@@ -74,34 +81,32 @@ const TAB_LABEL: Record<SessionScope, string> = {
   shared: "Shared",
 };
 
-/** A project filter the facets do not name still narrows the list, so it still gets a name: a
- *  saved folder path (the server accepts a legacy cwd as `project`; its facets list entities
- *  only) by its last segment, anything else (a project that has since gone) generically. */
-function unlistedProject(id: string): string {
-  if (id.startsWith("/")) return id.replace(/\/+$/, "").split("/").pop() || id;
-  return "Selected project";
-}
-
-/** The scope the tree (or the mission dropdown) narrows the list to, by name: "project",
- *  "project › cluster" or "project › mission". Empty for all sessions (#2187). Never empty while
- *  a scope filter is set, so the folded header cannot hide one. */
+/** The scope the tag field, the tree or the mission dropdown narrows the list to, by name (#2187,
+ *  #2438): the picks ("Sophia, Shadow pilot"), "project › Not clustered", and "› mission". Empty
+ *  for all sessions. Never empty while a scope filter is set, so the folded header cannot hide one;
+ *  the chip ellipsizes. */
 function scopeLabel(filters: Filters, facets: Props["facets"]): string {
-  const project = filters.project
-    ? (facets.projects.find((p) => p.id === filters.project)?.name ??
-      unlistedProject(filters.project))
-    : "";
-  const cluster = filters.cluster ?? "";
+  const sel = selectionOf(filters);
   const mission = filters.mission ?? "";
-  const leaf = isClusterId(cluster)
-    ? (facets.clusters?.find((c) => c.id === cluster)?.title ?? "Cluster")
-    : cluster === "none"
-      ? "Not clustered"
-      : mission === "none"
-        ? "Not in a mission"
-        : mission
-          ? (facets.missions?.find((m) => m.id === mission)?.title ?? "Mission")
-          : "";
-  return [project, leaf].filter(Boolean).join(" › ");
+  const picks = sel.unclustered
+    ? [
+        [sel.projects[0] ? projectName(facets, sel.projects[0]) : "", "Not clustered"]
+          .filter(Boolean)
+          .join(" › "),
+      ]
+    : [
+        ...sel.projects.map((id) => projectName(facets, id)),
+        ...sel.clusters.map((id) =>
+          [clusterProjectName(facets, id), clusterName(facets, id)].filter(Boolean).join(" › "),
+        ),
+      ];
+  const leaf =
+    mission === "none"
+      ? "Not in a mission"
+      : mission
+        ? (facets.missions?.find((m) => m.id === mission)?.title ?? "Mission")
+        : "";
+  return [picks.join(", "), leaf].filter(Boolean).join(" › ");
 }
 
 /** What the folded header says is in force, so a collapsed block can never hide a filter that is
@@ -151,10 +156,9 @@ export function FiltersBar({
     ? !!sharedQ
     : !!(
         filters.q ||
-        filters.project ||
+        !isEmptySelection(selectionOf(filters)) ||
         filters.engine ||
         mission ||
-        filters.cluster ||
         tag ||
         origin !== DEFAULT_ORIGIN
       );
@@ -330,8 +334,20 @@ export function FiltersBar({
                   aria-label="Filter by mission"
                   value={mission}
                   // A session a mission holds is never in a cluster, so a mission picked here
-                  // replaces the cluster rather than intersecting with it (the scope stays true).
-                  onChange={(e) => onChange({ mission: e.target.value, cluster: "" })}
+                  // drops the cluster picks rather than intersecting with them; the project picks
+                  // stay (#2438).
+                  onChange={(e) =>
+                    onChange({
+                      mission: e.target.value,
+                      ...selectionPatch(
+                        forMission(
+                          selectionOf(filters),
+                          parentLookup(facets.clusters, filters.clusterParents),
+                          filters.project || undefined,
+                        ),
+                      ),
+                    })
+                  }
                 >
                   <option value="">All missions</option>
                   <option value="none">

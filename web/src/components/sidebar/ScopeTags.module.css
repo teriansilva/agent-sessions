@@ -1,0 +1,192 @@
+/* THE PROJECT/CLUSTER TAG FIELD (#2438). The field is nj-field's recipe (Filters.module.css
+ * `.search`): square, on the sunken ground, the HUD edge. A chip follows the `Chip` primitive's
+ * metric (docs/design.md: 32 px on a fine pointer, the 44 px floor on a coarse one or <=800px), and
+ * its x keeps its own width (`flex: 0 0 …`) so only the label truncates. Tokens only. */
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.caption {
+  padding: 2px 2px 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.field {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-height: 32px;
+  padding: 3px 4px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  transition: border-color var(--t-fast) var(--ease-out);
+}
+.field:hover {
+  border-color: var(--hud-dim);
+}
+.field:focus-within {
+  border-color: var(--hud);
+  outline: 2px solid var(--accent-text);
+  outline-offset: -3px;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  box-sizing: border-box;
+  max-width: 100%;
+  min-width: 0;
+  height: 32px;
+  padding: 0 0 0 6px;
+  border: 1px solid var(--hud-dim);
+  background: var(--hud-tint);
+  color: var(--text-1);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-label);
+}
+.chipText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.parent {
+  flex: none;
+  color: var(--text-3);
+}
+.swatch {
+  flex: none;
+  width: 8px;
+  height: 8px;
+}
+.bullet {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  background: var(--accent);
+}
+.bulletOpen {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border: 1px solid var(--text-3);
+}
+.x {
+  flex: 0 0 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-left: 1px solid var(--hud-dim);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.x:hover {
+  color: var(--text-1);
+}
+.x:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -2px;
+}
+.input {
+  flex: 1;
+  min-width: 70px;
+  height: 30px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--text-1);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-meta);
+  outline: none;
+}
+.input::placeholder {
+  color: var(--text-3);
+  letter-spacing: 0.04em;
+}
+/* The suggestions: in the flow under the field (no overlay), capped, scrolling inside the cap. */
+.list {
+  max-height: min(40vh, 260px);
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  border: 1px solid var(--hud-dim);
+  background: var(--bg-2);
+}
+.option {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 30px;
+  padding: 2px var(--sp-2);
+  border-left: 2px solid transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-meta);
+}
+.activeOpt {
+  border-left-color: var(--accent);
+  background: var(--hud-tint);
+  color: var(--text-1);
+}
+.optText {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.count {
+  flex: none;
+  font-size: var(--fs-micro);
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.check {
+  flex: 0 0 14px;
+  display: inline-flex;
+  color: var(--hud-text);
+}
+.empty {
+  padding: var(--sp-2);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-meta);
+  color: var(--text-3);
+}
+
+/* TOUCH FLOOR (docs/design.md section 8): a finger's targets are 44 px, and a phone must not zoom
+ * into the input, so it takes `--fs-input` (16 px). */
+@media (pointer: coarse), (max-width: 800px) {
+  .field {
+    min-height: 44px;
+  }
+  .chip {
+    height: 46px;
+  }
+  .x {
+    flex: 0 0 44px;
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+  }
+  .input {
+    min-height: 44px;
+    font-size: var(--fs-input);
+  }
+  .option {
+    min-height: 44px;
+  }
+}

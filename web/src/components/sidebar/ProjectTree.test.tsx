@@ -47,21 +47,61 @@ test("a project lists its own clusters, its missions with their count in it, and
   expect(within(nodes).getByRole("button", { name: /All sessions\s*7/ })).toBeVisible();
 });
 
-test("selecting a node replaces the project, cluster and mission filters together", async () => {
+// The patch a pick writes (#2438): the canonical arrays, and the old scalars cleared.
+const picks = (projects: string[], clusters: string[], cluster = "") => ({
+  projects,
+  clusters,
+  project: "",
+  cluster,
+});
+
+test("a project or cluster node toggles a tag; mission, Not clustered and All replace the pick (#2438)", async () => {
+  // A state saved before #2438: the old scalar `project` reads as one project tag.
   const onChange = tree({ filters: { ...EMPTY, project: "p-a", mission: "msn_1" } });
+  const [alpha, beta] = screen.getAllByTestId("project-node");
+  expect(alpha).toHaveAttribute("aria-pressed", "true");
+  expect(beta).toHaveAttribute("aria-pressed", "false");
+  // A cluster of a picked project narrows it: the project's tag is replaced by the cluster's.
+  // ADDING a tag clears the mission single choice: mission ∧ cluster could only be empty.
   await userEvent.click(screen.getByRole("button", { name: /Login flow/ }));
-  expect(onChange).toHaveBeenLastCalledWith({ project: "p-a", cluster: TC, mission: "" });
-  await userEvent.click(screen.getByRole("button", { name: /Mission · Release/ }));
-  expect(onChange).toHaveBeenLastCalledWith({ project: "p-a", cluster: "", mission: "msn_1" });
-  await userEvent.click(screen.getByRole("button", { name: /Not clustered/ }));
-  expect(onChange).toHaveBeenLastCalledWith({ project: "p-a", cluster: "none", mission: "" });
+  // The pick records its project beside it, so it can widen once the cluster facets are gone.
+  expect(onChange).toHaveBeenLastCalledWith({
+    ...picks([], [TC]),
+    clusterParents: { [TC]: "p-a" },
+    mission: "",
+  });
+  // Another project ADDS a tag (OR), and clears the mission too; the picked one unpicks and,
+  // being a removal, leaves the mission alone (not in the patch).
+  await userEvent.click(beta);
+  expect(onChange).toHaveBeenLastCalledWith({ ...picks(["p-a", "p-b"], []), mission: "" });
+  await userEvent.click(alpha);
+  expect(onChange).toHaveBeenLastCalledWith(picks([], []));
+  // The single choices replace the whole pick.
+  // (Clicking beta unfolded it too: alpha's own nodes come first.)
+  await userEvent.click(screen.getAllByTestId("cluster-mission-node")[0]);
+  expect(onChange).toHaveBeenLastCalledWith({ ...picks(["p-a"], []), mission: "msn_1" });
+  await userEvent.click(screen.getAllByTestId("cluster-none-node")[0]);
+  expect(onChange).toHaveBeenLastCalledWith({ ...picks(["p-a"], [], "none"), mission: "" });
   await userEvent.click(screen.getByRole("button", { name: /All sessions/ }));
-  expect(onChange).toHaveBeenLastCalledWith({ project: "", cluster: "", mission: "" });
+  expect(onChange).toHaveBeenLastCalledWith({ ...picks([], []), mission: "" });
+});
+
+test("picking a project drops its own cluster tags and leaves other projects' alone (#2438)", async () => {
+  const onChange = tree({ filters: { ...EMPTY, clusters: [TC, "tc_ffffffffffff"] } });
+  // alpha holds a picked cluster, so it is open; picking alpha widens to the whole project.
+  await userEvent.click(screen.getAllByTestId("project-node")[0]);
+  // The cluster that stays keeps its recorded project.
+  expect(onChange).toHaveBeenLastCalledWith({
+    ...picks(["p-a"], ["tc_ffffffffffff"]),
+    clusterParents: { tc_ffffffffffff: "p-x" },
+  });
 });
 
 test("the selected cluster is marked and its project is open", () => {
+  // The pre-#2438 pair `project + cluster` reads as that one cluster tag.
   tree({ filters: { ...EMPTY, project: "p-a", cluster: TC } });
-  expect(screen.getByTestId("cluster-node")).toHaveAttribute("aria-current", "true");
+  expect(screen.getByTestId("cluster-node")).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getAllByTestId("project-node")[0]).toHaveAttribute("aria-pressed", "false");
   expect(screen.getByRole("button", { name: "Fold alpha" })).toHaveAttribute("aria-expanded", "true");
 });
 
@@ -78,8 +118,8 @@ test("with clusters off it lists projects and their missions, and nothing about 
   const bare = { projects: [{ kind: "project" as const, id: "p-c", name: "gamma", count: 2 }] };
   const onChange = tree({ clusters: false, facets: bare });
   expect(screen.queryByRole("button", { name: /Unfold gamma/ })).toBeNull();
-  await userEvent.click(screen.getByRole("button", { name: /^gamma/ }));
-  expect(onChange).toHaveBeenLastCalledWith({ project: "p-c", cluster: "", mission: "" });
+  await userEvent.click(screen.getByTestId("project-node"));
+  expect(onChange).toHaveBeenLastCalledWith(picks(["p-c"], []));
 });
 
 test("with clusters off and no clusters facet at all, a project still lists its missions (#2187)", async () => {

@@ -3164,12 +3164,14 @@ export interface SessionsQuery {
   offset?: number;
   archived?: boolean;
   q?: string;
-  project?: string;
+  /** One project, or several (#2438): repeated `project=`, OR-ed with the clusters. */
+  project?: string | string[];
   engine?: string;
   /** A mission id, or `none` for sessions no mission holds (#948). */
   mission?: string;
-  /** A cluster id, or `none` for sessions in no cluster and no mission (#1997). */
-  cluster?: string;
+  /** A cluster id, or `none` for sessions in no cluster and no mission (#1997); several cluster
+   *  ids repeat `cluster=` (#2438). A chosen cluster narrows its own project. */
+  cluster?: string | string[];
   /** A custom tag (#551), matched trimmed and case-insensitively (#2338). */
   tag?: string;
   /** Who started it (#2437): `operator` hides what an automation launched; `automation` lists
