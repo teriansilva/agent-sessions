@@ -59,6 +59,7 @@ RESERVED_PREFIX = "battlelab_"
 ENV_KEY_RE = re.compile(r"^[A-Z_][A-Z0-9_]{0,63}$")
 HEADER_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,63}$")
 VARIABLE_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+_UUID_RE = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
 PID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
 
@@ -433,6 +434,90 @@ def create(payload: object, *, resolution: dict | None = None) -> dict:
         doc["servers"].append(rec)
         _write(doc)
     return rec
+
+
+def duplicate(sid: str, payload: object, expected: float) -> dict:
+    """A copy of server ``sid`` under a new name (#2430): two logins for one service in one
+    project. Copied SERVER-SIDE from the stored record: source and origin (any kind, a Go module
+    included), the install (shared: install directories are frozen and never removed while named),
+    args, settings and probe. NOT copied: enabled projects, per-project overrides, checks. Each
+    credential's variable may be remapped (``variables``, keyed by the original's variable name)
+    to another existing Variables SECRET. Metadata only: nothing is resolved, downloaded or built.
+    The copy needs its own passing check (its own server id, its own credentials)."""
+    from . import template_vars as store
+
+    if not isinstance(payload, dict):
+        raise RegistryError("a duplicate is an object")
+    if set(payload) - {"name", "label", "variables", "request_id"}:
+        raise RegistryError("unknown duplicate field")
+    request = payload.get("request_id")
+    if request is not None and (not isinstance(request, str) or not _UUID_RE.fullmatch(request)):
+        raise RegistryError("request_id must be a UUID")
+    variables = payload.get("variables") or {}
+    if not isinstance(variables, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in variables.items()
+    ):
+        raise RegistryError("variables maps a credential's variable to another variable's name")
+    secrets_by_name = {r["name"]: r for r in _variables_records() if store._is_global(r)}
+    with fence():
+        doc = read()
+        rec = _find(doc, sid)
+        if request is not None:
+            # A retry after a lost response (Hermes on #2430): the copy this request already made
+            # is the answer, never a second copy and never a name clash mistaken for success.
+            for s in doc["servers"]:
+                if s.get("duplicate_request") == request:
+                    if s.get("duplicated_from") != sid:
+                        raise Conflict("that request_id made a copy of another server")
+                    return s
+        if rec["updated_at"] != expected:
+            raise Conflict("the server changed since you loaded it")
+        if len(doc["servers"]) >= SERVERS_MAX:
+            raise RegistryError(f"at most {SERVERS_MAX} MCP servers")
+        named = {s["variable"] for s in rec["settings"] if s["kind"] == "credential"}
+        foreign = sorted(set(variables) - named)
+        if foreign:
+            raise RegistryError(f"this server names no credential variable {foreign[0]}")
+        for target in variables.values():
+            if not VARIABLE_RE.fullmatch(target):
+                raise RegistryError(f"{target!r} is not a variable name")
+            held = secrets_by_name.get(target)
+            if held is None:
+                raise RegistryError(f"no secret named {target} in Variables")
+            if held["kind"] != "secret":
+                raise RegistryError(f"{target} in Variables is not a secret")
+        settings = [
+            {**s, "variable": variables.get(s["variable"], s["variable"])}
+            if s["kind"] == "credential"
+            else dict(s)
+            for s in rec["settings"]
+        ]
+        now = time.time()
+        copy = {
+            "id": secrets.token_hex(8),
+            "name": _check_name(payload.get("name"), doc["servers"], None),
+            "label": _text(payload.get("label", ""), "the label", cap=80),
+            "source": dict(rec["source"]),
+            "transport": rec["transport"],
+            "args": list(rec["args"]),
+            "settings": _settings(settings, rec["transport"]),
+            "project_settings": {},
+            "projects": [],
+            "probe": rec.get("probe"),
+            "enabled": True,
+            "rev": 1,
+            "installed": dict(rec["installed"]) if rec.get("installed") else None,
+            "created_at": now,
+            "updated_at": now,
+        }
+        if rec.get("origin"):
+            copy["origin"] = dict(rec["origin"])
+        copy["duplicated_from"] = sid
+        if request is not None:
+            copy["duplicate_request"] = request
+        doc["servers"].append(copy)
+        _write(doc)
+    return copy
 
 
 #: Fields whose change alters what a launch receives: they move ``rev`` (and so stale every check).

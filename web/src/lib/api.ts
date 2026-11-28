@@ -85,6 +85,7 @@ import {
   askWithdrawTurnPath,
   HQ_TASKS_API,
   HQ_TASKS_STOP_ALL_API,
+  mcpDuplicatePath,
   mcpInstallPath,
   mcpOperationPath,
   mcpOperationStopPath,
@@ -2069,6 +2070,12 @@ export const api = {
    *  resolution it holds (409: the server changed since its link was read; 404: the reading is gone). */
   applyMcpUpdate: (id: string, resolutionId: string, expected: number) =>
     mutateJson<McpServerSummary>("PATCH", `/api/mcp/servers/${enc(id)}`, { resolution_id: resolutionId, expected_updated_at: expected }),
+  /** Duplicate (#2430): `variables` maps an original credential variable to an existing Variables
+   *  secret; one `request_id` per dialog, so a retry after a lost response gets the same copy. */
+  duplicateMcpServer: (
+    id: string,
+    body: { name: string; label?: string; variables?: Record<string, string>; expected_updated_at: number; request_id: string },
+  ) => mutateJson<McpServerSummary>("POST", mcpDuplicatePath(id), body),
   stopMcpOperation: (requestId: string) => mutateJson<McpOperation>("POST", mcpOperationStopPath(requestId), {}),
   mcpOperation: <T>(requestId: string) => getJsonWithDetail<McpOperation<T>>(mcpOperationPath(requestId)),
   /** A project's OWN credential values for this server (write-only; only variables it names). */

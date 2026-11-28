@@ -154,6 +154,8 @@ CLASS_OF: dict[str, str] = {
     "mcp.install": "external",
     "mcp.check": "external",
     "mcp.enable": "widens",
+    # a new server entry naming a library secret, like a create (#2430); enabled nowhere yet
+    "mcp.duplicate": "widens",
 }
 
 

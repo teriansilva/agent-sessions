@@ -1,17 +1,18 @@
 /** Library → MCP servers → one server (#2163 P1c): Overview (its tools, from the newest passing
  *  check) · Projects (credentials Own / Shared / Missing, the check, the switch, per project) ·
  *  Settings (the shared values, arguments, the probe, a new version) · Activity (check history).
- *  The ⋯ menu disables, enables and removes it.
+ *  The ⋯ menu disables, enables, duplicates (#2430: a second login under its own name) and removes
+ *  it.
  *
  *  A changed credential or setting makes a project's check stale: it shows "Credentials changed —
  *  check again" (amber), its switch stays on, and the broker delivers nothing until a check passes.
  *  Running sessions keep what they started with until they exit; the page says so. */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { ArrowLeft, GitBranch, KeyRound, MoreHorizontal, Plug, Power, RefreshCw, Trash2, Upload, Package } from "lucide-react";
+import { ArrowLeft, Copy, GitBranch, KeyRound, MoreHorizontal, Plug, Power, RefreshCw, Trash2, Upload, Package } from "lucide-react";
 
 import { api } from "../lib/api";
-import { MCP_ID_RE, MCP_PATH, mcpServerUpdatePath } from "../lib/routes";
+import { MCP_ID_RE, MCP_PATH, mcpServerPath, mcpServerUpdatePath } from "../lib/routes";
 import type { McpProjectStatus, McpReviewFacts, McpServerDetail, McpSource } from "../types/mcp";
 import { Callsign, Panel } from "../components/hud/Panel";
 import { Disclosure, Field, Switch, Tabs } from "../components/hud/Controls";
@@ -19,6 +20,7 @@ import { Loader } from "../components/hud/Loader";
 import { RowMenu, type RowMenuEntry } from "../components/sidebar/RowMenu";
 import { ConfirmDialog } from "../components/templates/ConfirmDialog";
 import { Caution, CheckReport, ProjectSquare, ReviewFacts, RunAgainLabel, StateWords } from "../components/mcp/McpBits";
+import { DuplicateDialog } from "../components/mcp/DuplicateDialog";
 import { SettingsEditor } from "../components/mcp/SettingsEditor";
 import { useMcpOperation } from "../components/mcp/mcpOperation";
 import { OriginNote } from "../components/mcp/RepoLink";
@@ -84,6 +86,7 @@ function McpServerPage({ serverId }: { serverId: string }) {
   const [actionError, setActionError] = useState("");
   const [busy, setBusy] = useState<string>("");
   const [confirmRemove, setConfirmRemove] = useState(false);
+  const [duplicating, setDuplicating] = useState(false);
   const [ownFor, setOwnFor] = useState<McpProjectStatus | null>(null);
 
   const badId = !MCP_ID_RE.test(serverId);
@@ -223,6 +226,7 @@ function McpServerPage({ serverId }: { serverId: string }) {
           icon: <Upload size={15} />,
           onSelect: () => setTab("settings"),
         },
+    { key: "duplicate", label: "Duplicate…", icon: <Copy size={15} />, onSelect: () => setDuplicating(true) },
     "separator",
     { key: "remove", label: "Remove…", icon: <Trash2 size={15} />, danger: true, onSelect: () => setConfirmRemove(true) },
   ];
@@ -454,6 +458,20 @@ function McpServerPage({ serverId }: { serverId: string }) {
             keep them until they exit.
           </p>
         </ConfirmDialog>
+      )}
+      {duplicating && (
+        <DuplicateDialog
+          server={s}
+          onCancel={(stays) => {
+            setDuplicating(false);
+            if (stays) setFlash(`Not duplicated. ${stays}`);
+          }}
+          onDuplicated={(copy, words) =>
+            // The copy is enabled nowhere: its Projects tab is where it gets a binding and a check.
+            navigate(`${mcpServerPath(copy.id)}?tab=projects`, { state: { flash: words } })
+          }
+          onStale={() => void load()}
+        />
       )}
       {ownFor && (
         <OwnCredentialsDialog

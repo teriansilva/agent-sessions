@@ -882,3 +882,66 @@ def test_a_link_card_tapped_after_its_resolution_is_gone_says_read_it_again(
     assert settled["state"] == "failed", settled
     assert "read the link again" in settled["summary"]
     assert mcp_registry.list_servers() == []
+
+
+# ---- duplicate (#2430) --------------------------------------------------------------------------
+
+
+def _duplicate_card(live, ai, sid: str, **args):
+    cid, script = _ask(
+        live,
+        ai,
+        calls(("list_mcp_servers", {})),
+        call("propose_mcp", {"action": "duplicate", "id": sid, **args}, cid="p"),
+    )
+    return cid, script
+
+
+def test_a_duplicate_card_copies_under_a_new_name_with_a_remapped_secret(live, ai, mcp):
+    variables.create({"name": "nc_pass_personal", "kind": "secret", "value": "z" * 14})
+    sid = _npm()["id"]
+    cid, script = _duplicate_card(
+        live, ai, sid, name="nextcloud_personal", variables={"nc_pass": "nc_pass_personal"}
+    )
+    cards = _cards(live, cid)
+    assert len(cards) == 1, _result(script, 2)
+    (card,) = cards
+    assert card["op"] == "mcp.duplicate"
+    assert "Duplicates “nextcloud” as “nextcloud_personal”" in card["text"]
+    assert "nc_pass → nc_pass_personal" in card["text"] and "needs its own check" in card["text"]
+    assert _decide(live, card["action_id"]).status_code == 202
+    assert _settled(live, cid, card["action_id"])["state"] == "done"
+    (copy,) = [s for s in mcp_registry.list_servers() if s["name"] == "nextcloud_personal"]
+    cred = [s for s in copy["settings"] if s["kind"] == "credential"]
+    assert cred[0]["variable"] == "nc_pass_personal" and copy["projects"] == []
+    assert not voice_calls._voice_operation(card["op"])  # never by voice
+
+
+def test_a_duplicate_card_is_stale_when_the_original_changed(live, ai, mcp):
+    sid = _npm()["id"]
+    cid, _ = _duplicate_card(live, ai, sid, name="nextcloud_two")
+    (card,) = _cards(live, cid)
+    rec = mcp_registry.get(sid)
+    mcp_registry.update(sid, {"label": "Nextcloud"}, rec["updated_at"])
+    _decide(live, card["action_id"])
+    assert _settled(live, cid, card["action_id"])["state"] == "stale"
+    assert [s["name"] for s in mcp_registry.list_servers()] == ["nextcloud"]
+
+
+@pytest.mark.parametrize(
+    "args, words",
+    [
+        ({"name": "Bad Name"}, "lowercase letters"),
+        ({"name": "nextcloud"}, "exists"),
+        ({"name": "nc_two", "variables": {"deploy_key": "x_y"}}, "names no credential variable"),
+        (
+            {"name": "nc_two", "variables": {"nc_pass": "x", "value": "s3cret"}},
+            "names no credential",
+        ),
+    ],
+)
+def test_a_duplicate_card_is_refused_at_staging_in_words(live, ai, mcp, args, words):
+    sid = _npm()["id"]
+    cid, script = _duplicate_card(live, ai, sid, **args)
+    assert _cards(live, cid) == []
+    assert words in json.dumps(_result(script, 2), ensure_ascii=False)

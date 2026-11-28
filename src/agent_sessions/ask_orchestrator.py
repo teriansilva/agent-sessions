@@ -6076,12 +6076,14 @@ TOOLS: dict[str, Tool] = {
                 "tool. install (id): a package server; the review runs now and the card shows "
                 'what will run. check (id, scope: "shared" or a project id): starts it and '
                 'lists its tools. enable (id, projects: "all" or project ids): only projects '
-                "whose credentials resolve and whose check passed. ids from list_mcp_servers in "
-                "this turn.",
+                "whose credentials resolve and whose check passed. duplicate (id, name, optional "
+                "variables {credential variable: another Variables secret's name}): a copy under "
+                "a new name, for a second login to the same service in one project; it is on in "
+                "no project and needs its own check. ids from list_mcp_servers in this turn.",
                 {
                     "action": {
                         "type": "string",
-                        "enum": ["create", "install", "check", "enable"],
+                        "enum": ["create", "install", "check", "enable", "duplicate"],
                     },
                     "id": {"type": "string"},
                     "name": {"type": "string"},
@@ -6091,6 +6093,7 @@ TOOLS: dict[str, Tool] = {
                     "settings": {"type": "array", "items": {"type": "object"}},
                     "probe": {"type": "object"},
                     "scope": {"type": "string"},
+                    "variables": {"type": "object"},
                     "projects": {
                         "anyOf": [
                             {"type": "string", "enum": ["all"]},

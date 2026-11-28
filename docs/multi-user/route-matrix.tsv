@@ -203,6 +203,7 @@ DELETE	/api/mcp/servers/{sid}	mcp	library	manage	login	mutate	cold	unscoped	an i
 GET	/api/mcp/servers/{sid}	mcp	library	view	login	read	cold	unscoped	an instance Library item; administrators manage, users use through grants
 PATCH	/api/mcp/servers/{sid}	mcp	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
 POST	/api/mcp/servers/{sid}/check	mcp	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/mcp/servers/{sid}/duplicate	mcp	library	manage	login	mutate	cold	unscoped	a copy of an instance Library item under a new name, its credentials remapped to library secrets (#2430); copied server-side, enabled nowhere
 POST	/api/mcp/servers/{sid}/install	mcp	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
 PUT	/api/mcp/servers/{sid}/projects	mcp	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
 PUT	/api/mcp/servers/{sid}/projects/{pid}/credentials	mcp	credentials	manage	login	mutate	cold	unscoped	per-project MCP credentials

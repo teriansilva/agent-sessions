@@ -843,6 +843,44 @@
   gap: var(--sp-3);
 }
 
+/* Duplicate… (#2430): the dialog's form, one block per distinct credential variable, ruled off. */
+.dupForm {
+  display: grid;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+.dupCreds {
+  display: grid;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.dupCreds > p {
+  margin: 0;
+}
+.dupCred {
+  display: grid;
+  gap: var(--sp-2);
+  min-width: 0;
+  padding: var(--sp-3) 0;
+  border-top: 1px solid var(--line);
+}
+.dupCred:last-child {
+  border-bottom: 1px solid var(--line);
+}
+.dupKeys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px var(--sp-2);
+  align-items: baseline;
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.dupKeys > code {
+  font-family: var(--font-mono);
+  color: var(--text-1);
+}
+
 /* ------------------------------------------------------------------ server page */
 .titleRow {
   display: flex;

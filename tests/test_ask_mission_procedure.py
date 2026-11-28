@@ -439,6 +439,7 @@ def test_a_continuation_turn_runs_only_for_a_card_that_asks_for_one():
         "mcp.create",
         "mcp.install",
         "mcp.check",
+        "mcp.duplicate",  # #2430: HQ goes on to bind the copy's credentials and check it
     ]
     assert "card" in ask_store.VIAS
 

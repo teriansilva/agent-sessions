@@ -120,6 +120,63 @@ test("Update from source is only for a repository-link server; a Go module is ne
   expect((await read(page, "/api/mcp/servers")).json.servers).toHaveLength(1);
 });
 
+test("Duplicate on the real app: a new name, the credential remapped to another library secret, landing on the copy's Projects tab (#2430)", async ({
+  page,
+}) => {
+  const original = (await read(page, "/api/mcp/servers")).json.servers[0];
+  await page.goto(`${base()}${MCP_PATH}/${original.id}`);
+  // A second library secret for the second login, through the real Variables API.
+  const created = await page.evaluate(async (value) => {
+    const csrf = (await (await fetch("/api/config")).json()).csrf as string;
+    const r = await fetch("/api/variables", {
+      method: "POST",
+      headers: { "X-CSRF-Token": csrf, "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "example_personal", kind: "secret", definition: { value_type: "text" }, value }),
+    });
+    return r.status;
+  }, `${SECRET}-personal`);
+  expect(created).toBe(201);
+
+  await page.getByTestId("mcp-server-menu").click();
+  await page.getByRole("menuitem", { name: "Duplicate…" }).click();
+  const dialog = page.getByTestId("mcp-duplicate-dialog");
+  await expect(dialog.getByLabel("Name", { exact: true })).toHaveValue("example_2");
+  await expect(dialog.getByTestId("mcp-dup-credential")).toHaveCount(1);
+  const pick = dialog.getByLabel("Variable for example_authorization");
+  await expect(pick).toHaveValue("example_authorization");
+  await dialog.getByLabel("Name", { exact: true }).fill("example_personal");
+  await pick.selectOption("example_personal");
+  await dialog.getByTestId("mcp-duplicate-go").click();
+
+  await expect(page).toHaveURL(/\/library\/mcp\/[0-9a-f]{16}\?tab=projects$/);
+  const copyId = new URL(page.url()).pathname.split("/").pop()!;
+  expect(copyId).not.toBe(original.id);
+  await expect(page.getByTestId("mcp-server-page")).toHaveAttribute("data-server", "example_personal");
+  await expect(page.getByTestId("mcp-flash")).toContainText("Duplicated example as example_personal, reading example_personal");
+
+  // The real store: same source, the credential remapped, enabled nowhere, no check carried over.
+  const copy = await read(page, `/api/mcp/servers/${copyId}`);
+  expect(copy.json.server).toMatchObject({
+    name: "example_personal",
+    source: original.source,
+    projects: [],
+    settings: [{ key: "Authorization", kind: "credential", variable: "example_personal", prefix: "Bearer ", deliver: "header" }],
+  });
+  expect(copy.json.checks).toEqual([]);
+  expect(copy.text).not.toContain(SECRET);
+
+  // Leave the registry as the next test expects: the copy goes, through the real route.
+  const removed = await page.evaluate(
+    async ({ id, at }) => {
+      const csrf = (await (await fetch("/api/config")).json()).csrf as string;
+      const r = await fetch(`/api/mcp/servers/${id}?expected_updated_at=${at}`, { method: "DELETE", headers: { "X-CSRF-Token": csrf } });
+      return r.status;
+    },
+    { id: copyId, at: copy.json.server.updated_at },
+  );
+  expect(removed).toBe(204);
+});
+
 test("the server page shows the failed check in Activity, and Remove keeps the credential", async ({ page }) => {
   await page.goto(`${base()}${MCP_PATH}`);
   const row = page.getByTestId("mcp-row");

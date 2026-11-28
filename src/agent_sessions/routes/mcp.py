@@ -147,6 +147,21 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         result = await _run(run)
         return result if isinstance(result, Response) else _json(_summary(result), 201)
 
+    @app.post("/api/mcp/servers/{sid}/duplicate", status_code=201)
+    async def duplicate_server(
+        sid: str,
+        request: Request,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ):
+        """A copy of the server under a new name (#2430), each credential's variable optionally
+        remapped to another Variables secret. Source, origin and install are copied server-side;
+        projects, overrides and checks are not."""
+        payload = await _json_object(request)
+        expected = _expected(payload.pop("expected_updated_at", None))
+        result = await _run(mcp_registry.duplicate, sid, payload, expected)
+        return result if isinstance(result, Response) else _json(_summary(result), 201)
+
     @app.post("/api/mcp/servers/resolve-link")
     async def resolve_link(
         request: Request, _user: str = Depends(logged_in), _csrf: None = Depends(csrf_guard)

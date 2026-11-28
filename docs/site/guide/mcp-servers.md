@@ -175,9 +175,44 @@ Each project's page (HQ → Projects → **Memory & equipment**) lists the serve
 project, read-only, with the same credential source and check state as this tab. Its links lead
 back here; nothing is edited there.
 
-The **⋯** menu disables, enables again, updates, or removes the server. **Remove** deletes the
-server's registration: its settings, project choices and check history. Its credentials stay in
-Variables, and its installed files stay on disk.
+The **⋯** menu disables, enables again, updates, duplicates, or removes the server. **Remove**
+deletes the server's registration only: its settings, project choices and check history. Its
+credentials stay in Variables, and its installed files stay on disk. Remove never deletes an
+install that another server (a duplicate, say) still uses.
+
+### Two logins in one project
+
+A project uses one value per credential a server names. For two logins to the same service in one
+project, such as a work and a personal Nextcloud, register the server twice under different names,
+each reading a different Variables secret. **⋯ → Duplicate…** does that in one step:
+
+1. **Name** the copy. It starts as `<name>_2` (or the next number that's free), and agents see its
+   tools under that name. A label is optional.
+2. For **each credential** the server reads, choose what the copy reads instead. There is one row
+   per Variables name, with the settings that read it listed above it.
+   - **Existing variable** picks a secret already in Variables. It starts on the original's own
+     secret.
+   - **New credential** stores a new write-only secret in Variables under the name you give it,
+     before the copy is made. If Variables has no secrets yet, the row starts here.
+3. **Duplicate**. You land on the copy's **Projects** tab.
+
+The copy keeps the original's source, install, arguments, probe call and plain settings (edit the
+plain ones afterwards on its Settings tab). It is **enabled in no project**, and it never inherits
+the original's checks. On each project where this login belongs:
+
+- **Use shared** binds the copy's secret to that project, or **Use own credentials** stores a
+  value for that project only.
+- **Run check** runs the copy's own check.
+- Then switch it on.
+
+Each enabled copy starts its own server in a session, like any other server.
+
+A new credential is stored once. If Duplicate is refused afterwards (the name is taken, or the
+server changed meanwhile), fix it and press Duplicate again: the stored secret is already picked.
+**Cancel** never deletes it; the page says it stays in Variables. HQ can propose the same copy
+(*"add a second nextcloud for my personal account, with nc_pass_personal"*). Its card names the new
+server and each credential's secret, and a new credential's value is typed on its own card, never
+in the chat.
 
 ### Update from source
 

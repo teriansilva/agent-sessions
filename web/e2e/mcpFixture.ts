@@ -89,6 +89,11 @@ export interface Fake {
   /** A reading's progress stops advancing at this step (and does not settle) until cleared: lets a
    *  spec see one step running, e.g. a Go link's first toolchain download (#2427). */
   resolveHold?: McpResolveProgress["step"];
+  /** Duplicate (#2430): `request_id` → the original it copied and the copy it made (a retry of the
+   *  same request returns that copy, `mcp_registry.duplicate`). */
+  dupRequests: Record<string, { from: string; copy: string }>;
+  /** The next this-many duplicates are made and their answer is lost (the connection drops). */
+  dupLoseResponses: number;
 }
 
 let seq = 0;
@@ -262,6 +267,8 @@ export function emptyFake(): Fake {
     opPolls: 1,
     installFails: "",
     links: {},
+    dupRequests: {},
+    dupLoseResponses: 0,
   };
 }
 
@@ -644,6 +651,56 @@ function readOp(f: Fake, op: FakeOp) {
   op.updated_at = NOW;
 }
 
+const NAME_RE = /^[a-z][a-z0-9_-]{1,31}$/;
+
+/** `POST …/{id}/duplicate` (#2430), `mcp_registry.duplicate`'s rules: a retried `request_id`
+ *  returns the copy it made; a stale revision is a 409; the name follows the server-name rule and
+ *  is unique; `variables` remaps only the original's credential variables, each to an existing
+ *  library SECRET. The copy keeps source, origin, install, args and probe; never projects,
+ *  overrides or checks. */
+async function duplicate(r: Route, f: Fake, rec: Rec, body: Record<string, unknown>) {
+  const unknown = Object.keys(body ?? {}).filter((k) => !["name", "label", "variables", "request_id", "expected_updated_at"].includes(k));
+  if (unknown.length) return json(r, { detail: "unknown duplicate field" }, 422);
+  const rid = body.request_id as string | undefined;
+  if (rid !== undefined && (typeof rid !== "string" || !UUID.test(rid))) return json(r, { detail: "request_id must be a UUID" }, 422);
+  if (rid && f.dupRequests[rid]) {
+    const made = f.dupRequests[rid];
+    if (made.from !== rec.id) return json(r, { detail: "that request_id made a copy of another server" }, 409);
+    return json(r, summary(f, f.servers.find((s) => s.id === made.copy)!), 201);
+  }
+  if (rec.updated_at !== body.expected_updated_at) return json(r, { detail: "the server changed since you loaded it" }, 409);
+  const variables = (body.variables ?? {}) as Record<string, string>;
+  const named = new Set(credVars(rec));
+  const foreign = Object.keys(variables).filter((v) => !named.has(v)).sort();
+  if (foreign.length) return json(r, { detail: `this server names no credential variable ${foreign[0]}` }, 422);
+  for (const target of Object.values(variables))
+    if (!f.variables.some((v) => v.name === target)) return json(r, { detail: `no secret named ${target} in Variables` }, 422);
+  const name = body.name;
+  if (typeof name !== "string" || !NAME_RE.test(name))
+    return json(r, { detail: "a name is lowercase letters, digits, - and _ (2–32, letter first)" }, 422);
+  if (f.servers.some((s) => s.name === name)) return json(r, { detail: `a server named ${name} exists` }, 422);
+  const copy = record({
+    name,
+    label: (body.label as string) ?? "",
+    source: { ...rec.source },
+    transport: rec.transport,
+    args: [...rec.args],
+    settings: rec.settings.map((s) => (s.kind === "credential" ? { ...s, variable: variables[s.variable] ?? s.variable } : { ...s })),
+    probe: rec.probe,
+    installed: rec.installed ? { ...rec.installed } : null,
+    ...(rec.origin ? { origin: { ...rec.origin } } : {}),
+    created_at: NOW,
+    updated_at: NOW,
+  });
+  f.servers.push(copy);
+  if (rid) f.dupRequests[rid] = { from: rec.id, copy: copy.id };
+  if (f.dupLoseResponses > 0) {
+    f.dupLoseResponses -= 1;
+    return r.abort("connectionreset");
+  }
+  return json(r, summary(f, copy), 201);
+}
+
 /** Install the fake on `page` (after the shell's common reads). */
 export async function mockMcp(page: Page, f: Fake): Promise<void> {
   await commonMocks(page);
@@ -664,6 +721,9 @@ export async function mockMcp(page: Page, f: Fake): Promise<void> {
         limits: { variables_max: 200, collections_max: 100, secret_min: 8, value_max: 10000, name_max: 64 },
       });
     if (path === "/api/variables" && req.method() === "POST") {
+      // The store is name-unique: an existing name is refused, never replaced (`template_vars`).
+      if (f.variables.some((x) => x.name === body.name))
+        return json(r, { detail: `a variable named ${body.name} already exists` }, 422);
       const v: FakeVar = { id: `v_${body.name}`, name: body.name, kind: "secret", projects: [], updated_at: NOW };
       f.variables.push(v);
       return json(r, { ...v, definition: { value_type: "text" }, set: true, created_at: NOW }, 201);
@@ -713,6 +773,7 @@ export async function mockMcp(page: Page, f: Fake): Promise<void> {
     if (!m || !rec) return json(r, { detail: "no such MCP server" }, 404);
     const sub = m[2] ?? "";
     if (sub === "" && method === "GET") return json(r, detail(f, rec));
+    if (sub === "/duplicate" && method === "POST") return duplicate(r, f, rec, body);
     if (sub === "" && method === "PATCH" && body && "resolution_id" in body) return applyUpdate(r, f, rec, body);
     if (sub === "" && method === "PATCH") {
       const fields = { ...body };

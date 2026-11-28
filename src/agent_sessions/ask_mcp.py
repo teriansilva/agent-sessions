@@ -625,7 +625,95 @@ def mcp_ops() -> tuple[Operation, ...]:
             ),
             _enable_failure,
         ),
+        Operation(
+            "mcp.duplicate",
+            GROUP,
+            "duplicate",
+            "Duplicate MCP server",
+            "Duplicate",
+            "reversible",
+            GROUP,
+            (),
+            _duplicate_route,
+            _describe_duplicate,
+            lambda st, b, x: _ops()._plain(
+                st,
+                b,
+                "Duplicated. The copy is on in no project: bind its credentials, run its check, "
+                "then turn it on.",
+            ),
+            lambda st, d, x: f"Not duplicated: {d or 'refused'}. Nothing changed.",
+            follow_up=True,
+        ),
     )
+
+
+def _duplicate_route(target: str, f: dict, x: dict):
+    """The copy, bound to the original's revision the card showed (`_current`): a server changed
+    before the tap makes the card stale, never a copy of something the card did not show."""
+    variables = _remaps(f)
+    body = {
+        "name": f["copy_name"],
+        "variables": variables,
+        "expected_updated_at": _current(target, x),
+    }
+    return "POST", f"/api/mcp/servers/{target}/duplicate", body
+
+
+def _describe_duplicate(f: dict, x: dict) -> str:
+    remaps = _remaps(f)
+    creds = (
+        "; credentials " + ", ".join(f"{a} → {b}" for a, b in sorted(remaps.items()))
+        if remaps
+        else "; the same credential variables"
+    )
+    return (
+        f"Duplicates “{x.get('name') or 'the server'}” as “{f['copy_name']}”{creds}. Its source "
+        "and install are shared; it is enabled in no project and needs its own check."
+    )
+
+
+def _duplicate_fields(args: dict, rec: dict, servers: list[dict]) -> dict:
+    """The copy's name and credential remaps, refused at staging in words (the route refuses
+    again at the tap). Values are never part of it: only Variables secret NAMES."""
+    from . import mcp_registry
+
+    name = args.get("name")
+    if not isinstance(name, str) or not mcp_registry.NAME_RE.fullmatch(name):
+        raise Refused(
+            "refused: name is lowercase letters, digits, - and _ (2–32, letter first)",
+            "bad_arguments",
+        )
+    if any(s.get("name") == name for s in servers):
+        raise Refused(f"refused: a server named {name} exists", "bad_arguments")
+    variables = args.get("variables") or {}
+    if not isinstance(variables, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in variables.items()
+    ):
+        raise Refused(
+            "refused: variables maps a credential's variable name to another secret's name",
+            "bad_arguments",
+        )
+    named = {s.get("variable") for s in rec.get("settings") or [] if s.get("kind") == "credential"}
+    foreign = sorted(set(variables) - named)
+    if foreign:
+        raise Refused(
+            f"refused: this server names no credential variable {foreign[0]}", "bad_arguments"
+        )
+    pairs = sorted(variables.items())
+    # Two lists of plain variable NAMES (a ``name: name`` mapping reads like a credential to the
+    # staging guard, which is right to refuse that shape): ``remap_from[i] → remap_to[i]``.
+    return {
+        "copy_name": name,
+        "remap_from": ",".join(a for a, _ in pairs),
+        "remap_to": ",".join(b for _, b in pairs),
+    }
+
+
+def _remaps(f: dict) -> dict[str, str]:
+    left = [v for v in (f.get("remap_from") or "").split(",") if v]
+    right = [v for v in (f.get("remap_to") or "").split(",") if v]
+    return dict(zip(left, right, strict=True))
 
 
 def _project_ids(raw: object, known_projects: dict) -> list[str]:
@@ -658,7 +746,7 @@ async def prepare(
     the only place a repository link may come from (#2353)."""
     op = _ops().by_action(GROUP, action) if isinstance(action, str) else None
     if op is None:
-        raise Refused("action must be create, install, check or enable", "bad_arguments")
+        raise Refused("action must be create, install, check, enable or duplicate", "bad_arguments")
     if "value" in args or "values" in args:
         raise _never("HQ never carries a credential's value — the operator types it on a card")
     source_arg = args.get("source")
@@ -713,6 +801,9 @@ async def prepare(
                 "unknown_target",
             )
         fields = {"scope": scope, "scope_name": str(known_projects[scope])[:120]}
+        return {"op": op, "target": sid, "title": title, "fields": fields}
+    if op.id == "mcp.duplicate":
+        fields = _duplicate_fields(args, rec, await _servers(app, operator))
         return {"op": op, "target": sid, "title": title, "fields": fields}
     fields = _enable_fields(args, rec, detail, known_projects)
     return {"op": op, "target": sid, "title": title, "fields": fields}
