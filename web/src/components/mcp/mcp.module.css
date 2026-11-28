@@ -302,6 +302,34 @@
   color: var(--text-1);
   overflow-wrap: anywhere;
 }
+/* "Newer version available" (#2431): news, not a state — the neutral info tone (an outline on the
+ * raised surface, body ink, a muted glyph), never a status colour. */
+.updChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: max-content;
+  max-width: 100%;
+  padding: 2px 8px;
+  border: 1px solid var(--line-strong);
+  background: var(--bg-2);
+  color: var(--text-1);
+  font: 600 var(--fs-micro) / 1.5 var(--font-mono);
+  letter-spacing: 0.08em;
+  overflow-wrap: anywhere;
+}
+.updChip > svg {
+  flex: none;
+  color: var(--text-2);
+}
+.updBlock {
+  display: grid;
+  gap: var(--sp-3);
+  margin-top: var(--sp-3);
+}
+.updWrap {
+  margin-top: var(--sp-3);
+}
 .tools {
   display: grid;
   gap: 2px;

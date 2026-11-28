@@ -210,6 +210,7 @@ POST	/api/mcp/servers/{sid}/install	mcp	library	manage	login	mutate	cold	unscope
 PUT	/api/mcp/servers/{sid}/projects	mcp	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
 PUT	/api/mcp/servers/{sid}/projects/{pid}/credentials	mcp	credentials	manage	login	mutate	cold	unscoped	per-project MCP credentials
 POST	/api/mcp/servers/{sid}/review	mcp	library	manage	login	mutate	cold	unscoped	an instance Library item; administrators manage, users use through grants
+POST	/api/mcp/servers/{sid}/updates/check	mcp	library	manage	login	mutate	cold	unscoped	reads the installed package's own registry for a newer release (#2431); a hint only, never installs; makes an outbound read, so P2 should start it as admin-only
 GET	/api/memory	memory	project	view	login	read	warm	unscoped	memory overview across projects
 POST	/api/memory-search	memory	instance	system.configure	login	mutate	cold	unscoped	memory search backend settings
 GET	/api/memory-search/settings	memory	instance	system.read	login	read	cold	unscoped	memory search backend settings

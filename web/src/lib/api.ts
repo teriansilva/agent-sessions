@@ -24,7 +24,7 @@ import type {
 } from "../types/shelf";
 import type { ShareCatalog, ShareChoice, ShareImports, SharePreview, ShareResult } from "../types/share";
 import type { GalleryIndex, GalleryInspection, GalleryOperation, GalleryKind, GalleryComparison, GalleryFiles, LocalSkill } from "../types/gallery";
-import type { McpCheckRow, McpOperation, McpResolution, McpReviewFacts, McpServerDetail, McpServerInput, McpServerSummary, McpServerUpdate, McpUpdateResolution } from "../types/mcp";
+import type { McpCheckRow, McpOperation, McpResolution, McpReviewFacts, McpServerDetail, McpServerInput, McpServerSummary, McpServerUpdate, McpUpdateCheck, McpUpdateResolution } from "../types/mcp";
 import type { CollectionInput, SecretAccessEntry, SharedVariable, SharedVariableInput, SharedVariableUpdate, SharedVariablesResponse, VariableCollection } from "../types/variables";
 import type { SessionCapacity, Resources, ResourceSettings, ResourceValues } from "../types/resources";
 import type {
@@ -91,6 +91,7 @@ import {
   mcpOperationStopPath,
   MCP_RESOLVE_LINK_API,
   mcpReviewPath,
+  mcpUpdatesCheckPath,
 } from "./apiPaths";
 import type {
   Automation,
@@ -2078,6 +2079,8 @@ export const api = {
     id: string,
     body: { name: string; label?: string; variables?: Record<string, string>; expected_updated_at: number; request_id: string },
   ) => mutateJson<McpServerSummary>("POST", mcpDuplicatePath(id), body),
+  /** Check for updates (#2431): answers at once; the page re-reads the server while `checking`. */
+  checkMcpUpdates: (id: string) => mutateJson<McpUpdateCheck>("POST", mcpUpdatesCheckPath(id)),
   stopMcpOperation: (requestId: string) => mutateJson<McpOperation>("POST", mcpOperationStopPath(requestId), {}),
   mcpOperation: <T>(requestId: string) => getJsonWithDetail<McpOperation<T>>(mcpOperationPath(requestId)),
   /** A project's OWN credential values for this server (write-only; only variables it names). */

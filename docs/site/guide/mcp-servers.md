@@ -23,6 +23,9 @@ from, how many tools its last passing check found, which projects have it, and i
 | **Disabled** | No new session gets its tools. Its settings and project choices are kept. |
 | **Not enabled in any project** | Registered, but no project has it yet. |
 
+A package server with a newer published release says so beside its version, for example
+*"v3.4.0 available"*. It's a hint, not a state: see [Updating a server](#updating-a-server).
+
 If the list can't be read, the page says so in red with **Retry**. It never shows "No MCP servers
 yet" for a list it couldn't read.
 
@@ -213,6 +216,43 @@ server changed meanwhile), fix it and press Duplicate again: the stored secret i
 (*"add a second nextcloud for my personal account, with nc_pass_personal"*). Its card names the new
 server and each credential's secret, and a new credential's value is typed on its own card, never
 in the chat.
+
+### Updating a server
+
+For every installed package server (npm, PyPI, or a Go module), BattleLab asks that package's own
+registry whether a newer release is published. It does this once a day, and when you press
+**Check for updates**. A server is read at most once every 10 minutes, whoever asks; pressing
+again sooner says when it last looked. The check runs in the background, and the page shows
+**Checking…** until the answer arrives. **BattleLab never installs an update by itself.** An
+update is always your Review and Install, followed by a new check. A remote (URL) server has no
+version, so it shows nothing.
+
+The server's **Overview** and **Settings → Source** have an **Updates** line:
+
+| It says | Means |
+|---|---|
+| *"3.4.0 published · checked 3 h ago"* | The registry has a newer release than the installed version. The list shows *"3.4.0 available"*. |
+| *"No newer release · checked 3 h ago"* | The last answer, less than 3 days old, named nothing newer. |
+| *"Not checked yet"* / *"Last checked over 3 days ago"* | No answer yet, or only an old one. This never means "up to date". |
+| *"Couldn't check (the npm answered 503)"* | The last attempt failed. The last good answer, if there is one, stays underneath as **Last answer**. |
+
+Which update action you get depends on how the server was added:
+
+- **Update from source**: for a server added from a repository link. It reads the repository
+  again (below).
+- **Update…**: for a package added by name. It puts the published version in the version field
+  under **Settings → Source**. **Save**, then **Review** shows exactly what would run, and
+  **Install** installs it.
+
+The hint comes from the registry, and Update from source reads the repository's default branch.
+The two can differ. A release is often published before (or without) the repository's head
+declaring it. When they differ, Review names the version it would actually install, and says so:
+*"The repository's head declares 3.3.1; the registry's newest release is 3.4.0. Install 3.3.1, or
+wait until the repository catches up."* An up-to-date link says the same when the hint names a
+newer release.
+
+HQ answers *"are my MCP servers up to date?"* from the same hint. It never checks or installs
+anything on its own; it proposes the usual install and update cards.
 
 ### Update from source
 

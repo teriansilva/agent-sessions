@@ -138,6 +138,9 @@ HTTP_MODULES = frozenset(
         # #2427 BattleLab's own Go toolchain: go.dev's release list and the tarball it names from
         # dl.google.com, through `mcp_egress` (those two hosts only), sha256-checked.
         "mcp_gotool",
+        # #2431 "newer version available": each installed package's own registry record (npm,
+        # PyPI, the Go module proxy) through `mcp_egress`, read only, never an install.
+        "mcp_updates",
         # #2190 the Home Free agent uploads a SHARED artifact's blobs to its own relay's upload
         # path (never a prompt, never a credential beyond the relay's one-time token in the URL)
         "artifactlink",
@@ -172,6 +175,7 @@ POST_SITES = {
     # to fixed origins, through `mcp_egress` (go.dev + dl.google.com only), no redirects, no
     # ambient proxy, TLS verified; the tarball is compared with go.dev's sha256 and size.
     ("mcp_gotool", "_get"): 1,
+    ("mcp_updates", "_read"): 1,
     ("memory_embeddings", "_request"): 1,  # pinned vetted origin, bounded non-chat vectors
     ("gallery_client", "_get"): 1,  # public signed content; fixed origin, anonymous bounded GET
     # #1259 fixed public GitHub feed, anonymous bounded GET (public `read_asset` since #2082 P3:

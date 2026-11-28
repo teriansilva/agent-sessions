@@ -6,7 +6,12 @@
  *
  *  A changed credential or setting makes a project's check stale: it shows "Credentials changed —
  *  check again" (amber), its switch stays on, and the broker delivers nothing until a check passes.
- *  Running sessions keep what they started with until they exit; the page says so. */
+ *  Running sessions keep what they started with until they exit; the page says so.
+ *
+ *  "Newer version available" (#2431): Overview and Settings → Source say what the registry last
+ *  said about the installed version (cache only) with the update action that fits the server, and
+ *  Check for updates, which answers at once: the page re-reads the server while the read runs in
+ *  the background (every 1.5 s, for at most 30 s) and never blocks on the registry. */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ArrowLeft, Copy, GitBranch, KeyRound, MoreHorizontal, Plug, Power, RefreshCw, Trash2, Upload, Package } from "lucide-react";
@@ -24,6 +29,8 @@ import { DuplicateDialog } from "../components/mcp/DuplicateDialog";
 import { SettingsEditor } from "../components/mcp/SettingsEditor";
 import { useMcpOperation } from "../components/mcp/mcpOperation";
 import { OriginNote } from "../components/mcp/RepoLink";
+import { AvailableChip, UpdateActions, UpdateBlock, UpdateRows, type CheckState } from "../components/mcp/UpdateHint";
+import { throttledWords } from "../components/mcp/updateModel";
 import { bindShared, errorText, storeNewCredentials, useProjects, useSecrets } from "../components/mcp/mcpData";
 import {
   SECRET_MIN,
@@ -51,6 +58,13 @@ type Tab = "overview" | "projects" | "settings" | "activity";
 const TABS: Tab[] = ["overview", "projects", "settings", "activity"];
 
 const sameSource = (a: McpSource | undefined, b: McpSource | undefined) => JSON.stringify(a) === JSON.stringify(b);
+
+/** Check for updates (#2431): how often the page re-reads the server while its read runs, and for
+ *  how long before it stops waiting (the registry read itself is bounded at 20 s). */
+const POLL_EVERY_MS = 1500;
+const POLL_FOR_MS = 30_000;
+const NO_CHECK: CheckState = { requesting: false, note: "", error: "" };
+const VERSION_FIELD = "mcp-source-version";
 
 /** One mounted page per server: everything the page holds (the record, its errors, a tab's form,
  *  an open dialog) belongs to exactly the server in the URL. Navigating to another server mounts a
@@ -88,6 +102,9 @@ function McpServerPage({ serverId }: { serverId: string }) {
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [duplicating, setDuplicating] = useState(false);
   const [ownFor, setOwnFor] = useState<McpProjectStatus | null>(null);
+  const [check, setCheck] = useState<CheckState>(NO_CHECK);
+  // Update… from Overview: the version Settings → Source opens with (#2431).
+  const [prefill, setPrefill] = useState<string | null>(null);
 
   const badId = !MCP_ID_RE.test(serverId);
   // The newest request wins: a slower, older read (an action's reload racing the first load) never
@@ -123,6 +140,43 @@ function McpServerPage({ serverId }: { serverId: string }) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // While the server says a registry read is running, re-read it (bounded): never a long request.
+  const checking = !!detail?.server.update?.checking;
+  const pollFrom = useRef(0);
+  useEffect(() => {
+    if (!checking) {
+      pollFrom.current = 0;
+      return;
+    }
+    if (!pollFrom.current) pollFrom.current = Date.now();
+    const t = window.setTimeout(() => {
+      if (Date.now() - pollFrom.current >= POLL_FOR_MS)
+        setCheck((c) => ({ ...c, note: "Still checking. The answer shows here when it arrives; open the page again later." }));
+      else void load();
+    }, POLL_EVERY_MS);
+    return () => window.clearTimeout(t);
+  }, [checking, detail, load]);
+
+  const checkUpdates = async () => {
+    if (!detail) return;
+    const id = detail.server.id;
+    setCheck({ requesting: true, note: "", error: "" });
+    try {
+      const r = await api.checkMcpUpdates(id);
+      if (!mounted.current) return;
+      setDetail((d) => (d && d.server.id === id ? { ...d, server: { ...d.server, update: r.update } } : d));
+      setCheck({ requesting: false, note: r.started ? "" : throttledWords(r.update), error: "" });
+      // A read of our own, newer than any already in flight: what the server holds now.
+      void load();
+    } catch (e) {
+      if (mounted.current) setCheck({ requesting: false, note: "", error: `Couldn’t start the check: ${errorText(e)}` });
+    }
+  };
+  const updatePackage = (version: string) => {
+    setPrefill(version);
+    setTab("settings");
+  };
 
   const act = async (key: string, fn: () => Promise<unknown>, done?: string) => {
     setBusy(key);
@@ -321,7 +375,15 @@ function McpServerPage({ serverId }: { serverId: string }) {
           ]}
           panel={(t) =>
             t === "overview" ? (
-              <Overview detail={detail} tools={tools} onCheck={() => void act("shared", () => api.checkMcpServer(s.id, "shared"))} busy={busy === "shared"} />
+              <Overview
+                detail={detail}
+                tools={tools}
+                onCheck={() => void act("shared", () => api.checkMcpServer(s.id, "shared"))}
+                busy={busy === "shared"}
+                updates={check}
+                onCheckUpdates={() => void checkUpdates()}
+                onUpdate={updatePackage}
+              />
             ) : t === "projects" ? (
               <Panel rail="short" faceClassName={styles.face}>
                 <Callsign title="Projects" value={`${enabledCount} of ${every.length} enabled`} />
@@ -423,7 +485,19 @@ function McpServerPage({ serverId }: { serverId: string }) {
                 </p>
               </Panel>
             ) : t === "settings" ? (
-              <SettingsTab key={`${s.id}-${s.updated_at}`} detail={detail} tools={tools} onSaved={(m) => { setFlash(m); void load(); }} />
+              <SettingsTab
+                key={`${s.id}-${s.updated_at}-${prefill ?? ""}`}
+                detail={detail}
+                tools={tools}
+                prefill={prefill}
+                onSaved={(m) => {
+                  setFlash(m);
+                  setPrefill(null);
+                  void load();
+                }}
+                updates={check}
+                onCheckUpdates={() => void checkUpdates()}
+              />
             ) : (
               <Activity detail={detail} projectName={projectName} />
             )
@@ -497,11 +571,17 @@ function Overview({
   tools,
   onCheck,
   busy,
+  updates,
+  onCheckUpdates,
+  onUpdate,
 }: {
   detail: McpServerDetail;
   tools: string[];
   onCheck: () => void;
   busy: boolean;
+  updates: CheckState;
+  onCheckUpdates: () => void;
+  onUpdate: (version: string) => void;
 }) {
   const s = detail.server;
   const src = s.source;
@@ -532,7 +612,7 @@ function Overview({
           </>
         )}
       </Panel>
-      <Panel rail="short" faceClassName={styles.face}>
+      <Panel rail="short" faceClassName={styles.face} data-testid="mcp-overview-source">
         <Callsign title="Source" value={src.kind} />
         <dl className={styles.kv}>
           {src.kind === "remote" ? (
@@ -547,7 +627,10 @@ function Overview({
               <dt>{src.kind === "go" ? "Module" : "Package"}</dt>
               <dd className={styles.mono}>{src.package}</dd>
               <dt>Version</dt>
-              <dd className={styles.mono}>{src.version}</dd>
+              <dd className={styles.mono}>
+                {src.version}
+                <AvailableChip update={s.update} />
+              </dd>
               <dt>Install</dt>
               <dd>
                 {installed && sameSource(installed.source, src) ? (
@@ -564,7 +647,9 @@ function Overview({
           <dd>
             <StateWords tone={detail.status.shared.check === "passed" ? "up" : "idle"} words={detail.status.shared.check === "passed" ? "Passed" : "Not passed for the current values"} />
           </dd>
+          <UpdateRows server={s} check={updates} />
         </dl>
+        <UpdateActions server={s} check={updates} onCheck={onCheckUpdates} onUpdate={onUpdate} />
       </Panel>
     </div>
   );
@@ -607,11 +692,18 @@ function Activity({ detail, projectName }: { detail: McpServerDetail; projectNam
 function SettingsTab({
   detail,
   tools,
+  prefill,
   onSaved,
+  updates,
+  onCheckUpdates,
 }: {
   detail: McpServerDetail;
   tools: string[];
+  /** Update… (#2431): open with the published release in the version field, focused. */
+  prefill: string | null;
   onSaved: (message: string) => void;
+  updates: CheckState;
+  onCheckUpdates: () => void;
 }) {
   const s = detail.server;
   const secretsState = useSecrets();
@@ -619,7 +711,17 @@ function SettingsTab({
   const [rowErrors, setRowErrors] = useState<Record<string, RowErrors>>({});
   const [argsText, setArgsText] = useState(s.args.join("\n"));
   const [url, setUrl] = useState(s.source.kind === "remote" ? s.source.url : "");
-  const [version, setVersion] = useState(s.source.kind !== "remote" ? s.source.version : "");
+  const [version, setVersion] = useState(
+    s.source.kind === "remote" ? "" : (s.source.kind !== "go" && prefill) || s.source.version,
+  );
+  // Update…: the field takes the published release and the focus; nothing is saved until Save.
+  const offerVersion = (v: string) => {
+    setVersion(v);
+    document.getElementById(VERSION_FIELD)?.focus();
+  };
+  useEffect(() => {
+    if (prefill) document.getElementById(VERSION_FIELD)?.focus();
+  }, [prefill]);
   const [probeTool, setProbeTool] = useState(s.probe?.tool ?? "");
   const [probeArgs, setProbeArgs] = useState(s.probe ? JSON.stringify(s.probe.arguments) : "{}");
   const [confirmWrite, setConfirmWrite] = useState(s.probe?.confirmed_write ?? false);
@@ -826,11 +928,13 @@ function SettingsTab({
       <Panel rail="short" faceClassName={styles.face} data-testid="mcp-source-panel">
         <Callsign title="Source" value={s.source.kind} />
         {s.origin && <OriginNote origin={s.origin} source={s.source} />}
+        <UpdateBlock server={s} check={updates} onCheck={onCheckUpdates} onUpdate={offerVersion} alwaysOfferSource />
         {s.source.kind === "remote" ? (
           <Field label="Server URL" mono type="url" value={url} onChange={(e) => setUrl(e.target.value)} hint="https only." />
         ) : s.source.kind === "go" ? null : (
           // A Go module's version is never typed in (#2427): only Update from source changes it.
           <Field
+            id={VERSION_FIELD}
             label={`${s.source.package} version`}
             mono
             value={version}
@@ -842,7 +946,8 @@ function SettingsTab({
             }
           />
         )}
-        {s.origin && (
+        {!s.update && s.origin && (
+          // No installed version to compare (#2431): #2427's Update from source on its own.
           <div className={styles.btnRow}>
             <Link className={styles.ghost} to={mcpServerUpdatePath(s.id)} data-testid="mcp-update-from-source">
               <GitBranch size={14} aria-hidden="true" /> Update from source

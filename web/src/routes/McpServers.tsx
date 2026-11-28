@@ -1,7 +1,9 @@
 /** Library → MCP servers (#2163 P1c, the index board): every registered third-party MCP server with
  *  its source, tool count, projects and state. One row is one link — the whole plate opens the
  *  server's page. Only the status column is coloured, and red only for a check that actually
- *  failed. A failed read says so and offers Retry; it never shows the empty state. */
+ *  failed. A failed read says so and offers Retry; it never shows the empty state. A package with a
+ *  newer published release says "v3.4.0 available" beside its version, in the neutral info tone
+ *  (#2431: from the cache, never read from a registry by this page). */
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { ChevronRight, Plug, Plus, RefreshCw } from "lucide-react";
@@ -11,6 +13,7 @@ import { MCP_NEW_PATH, mcpServerPath } from "../lib/routes";
 import type { McpServerSummary } from "../types/mcp";
 import { Loader } from "../components/hud/Loader";
 import { ProjectSquares, StateWords } from "../components/mcp/McpBits";
+import { AvailableChip } from "../components/mcp/UpdateHint";
 import { errorText, useProjects } from "../components/mcp/mcpData";
 import { projectsSummary, sourceLine, stateView } from "../components/mcp/mcpModel";
 import styles from "../components/mcp/mcp.module.css";
@@ -128,6 +131,7 @@ export default function McpServers() {
                         <span className={styles.srcMain}>
                           {src.kind} · {src.main}
                         </span>
+                        <AvailableChip update={s.update} />
                         <span className={styles.srcSub}>{src.sub}</span>
                       </span>
                       <span className={styles.tools}>

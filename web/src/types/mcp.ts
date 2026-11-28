@@ -63,6 +63,30 @@ export interface McpServerSummary {
   state: { kind: McpStateKind; projects?: string[] };
   /** Only on a project page's read (`GET /api/mcp/servers?project=<id>`): that project's row. */
   project?: McpProjectStatus;
+  /** "Newer version available" (#2431), from the cache only. `null` for a remote server or one with
+   *  nothing installed for its current source. Older answers may lack it. */
+  update?: McpUpdateHint | null;
+}
+
+/** `mcp_updates.view` (#2431): what the registry last said about the INSTALLED version. `unknown`
+ *  is no successful answer yet, or one older than 3 days: never "up to date". `latest` only when
+ *  `available`; `checked_at` is the last success, `error` / `tried_at` the last failed attempt after
+ *  it (epoch seconds); `checking` while a read runs in the background. */
+export interface McpUpdateHint {
+  state: "available" | "current" | "unknown";
+  installed: string;
+  latest: string | null;
+  checked_at: number | null;
+  error: string | null;
+  tried_at: number | null;
+  checking: boolean;
+}
+
+/** `POST /api/mcp/servers/{id}/updates/check`: `started` (202) when a read began in the background,
+ *  `false` (200) when the server was read in the last 10 minutes. */
+export interface McpUpdateCheck {
+  started: boolean;
+  update: McpUpdateHint | null;
 }
 
 export type McpCredentialSource = "none_needed" | "own" | "shared" | "missing";

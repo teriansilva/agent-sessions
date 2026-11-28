@@ -27,6 +27,7 @@ dependencies = [
     "websockets==16.0",  # Home Free agent relay client (already pulled by uvicorn[standard])
     "segno==1.6.1",  # QR cross-device sign-in: server-side QR SVG, pure-Python zero-dep (#650)
     "anyio==4.13.0",  # the upload read timeout's cancel scope (#1769; already pulled by starlette)
+    "packaging==26.2",  # PEP 440 ordering for the MCP "newer version available" hint (#2431)
     # The compatibility build avoids the standard Linux x86 wheel's Haswell/AVX2 requirement.
     # Intel macOS needs no native wheel: the shared SQLite keyword engine still works.
     "lancedb-compat==0.41.0; sys_platform == 'linux' and platform_machine == 'x86_64'",

@@ -19,6 +19,7 @@ from .. import (
     mcp_install,
     mcp_jobs,
     mcp_registry,
+    mcp_updates,
     projects,
     template_vars,
 )
@@ -50,7 +51,7 @@ def _project_ids() -> list[str]:
     return [pid for pid, p in projects.load().items() if not getattr(p, "archived", False)]
 
 
-def _summary(rec: dict, project: str | None = None) -> dict:
+def _summary(rec: dict, project: str | None = None, *, updates: dict | None = None) -> dict:
     """An index row: the record plus what the list shows (tools, projects, state).
 
     With ``project`` (a project page's read, #2163 P2) the row also carries ``project``: that one
@@ -95,6 +96,8 @@ def _summary(rec: dict, project: str | None = None) -> dict:
         "enabled_projects": [r["project_id"] for r in enabled],
         "project_count": len(ids),
         "state": state,
+        # #2431: "newer version available", from the cache only (never a network read here).
+        "update": mcp_updates.view(rec, store=updates),
         **extra,
     }
 
@@ -118,7 +121,12 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         def run():
             if project is not None and project not in projects.load():
                 raise mcp_registry.NotFound("No such project.")
-            return {"servers": [_summary(r, project) for r in mcp_registry.list_servers()]}
+            updates = mcp_updates.snapshot()
+            return {
+                "servers": [
+                    _summary(r, project, updates=updates) for r in mcp_registry.list_servers()
+                ]
+            }
 
         result = await _run(run)
         return result if isinstance(result, Response) else _json(result)
@@ -345,6 +353,35 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
         except mcp_registry.RegistryError as e:
             return _error(e)
 
+    @app.post("/api/mcp/servers/{sid}/updates/check")
+    async def check_updates(
+        sid: str,
+        _user: str = Depends(logged_in),
+        _csrf: None = Depends(csrf_guard),
+    ):
+        """Check for updates (#2431): read this server's registry now, in the background. Answers
+        at once with the cached view (``checking`` while the read runs; the page re-reads the
+        server). A server read in the last 10 minutes is not read again. Never installs."""
+
+        def run():
+            rec = mcp_registry.get(sid)
+            if mcp_updates.identity(rec) is None:
+                raise mcp_registry.RegistryError(
+                    "this server has no installed package version to compare"
+                )
+            started = mcp_updates.start(sid) is not None
+            return started, mcp_updates.view(mcp_registry.get(sid))
+
+        result = await _run(run)
+        if isinstance(result, Response):
+            return result
+        started, view = result
+        return JSONResponse(
+            {"started": started, "update": view},
+            status_code=202 if started else 200,
+            headers=NO_STORE,
+        )
+
     @app.delete("/api/mcp/servers/{sid}", status_code=204)
     async def delete_server(
         sid: str,
@@ -354,6 +391,8 @@ def register(app: FastAPI, *, logged_in, csrf_guard) -> None:
     ):
         expected = _expected(request.query_params.get("expected_updated_at"))
         result = await _run(mcp_registry.delete, sid, expected)
+        if not isinstance(result, Response):
+            await asyncio.to_thread(mcp_updates.forget, sid)
         return (
             result if isinstance(result, Response) else Response(status_code=204, headers=NO_STORE)
         )

@@ -114,6 +114,28 @@ def _source_said(source: dict) -> str:
     return f"remote {host}"
 
 
+def _update_said(s: dict) -> tuple[str | None, str | None]:
+    """``(update_available, update_check)`` from the cached hint (#2431): the newer release's
+    version or None, and the check's state in words. Never "up to date" without a fresh answer."""
+    u = s.get("update")
+    if not isinstance(u, dict):
+        return None, None  # a remote server, or nothing installed: no version to compare
+    state = u.get("state")
+    latest = u.get("latest") if isinstance(u.get("latest"), str) else None
+    installed = str(u.get("installed") or "")
+    if state == "available" and latest:
+        said = f"{latest} published; {installed} installed"
+    elif state == "current":
+        said = f"no newer release than the installed {installed}"
+    else:
+        said = "unknown: not checked in the last 3 days"
+    if isinstance(u.get("error"), str):
+        said += f"; the last check failed ({u['error']})"
+    if u.get("checking"):
+        said += "; a check is running"
+    return (latest if state == "available" else None), said
+
+
 def _installed(rec: dict) -> bool:
     if rec.get("transport") == "http":
         return True
@@ -208,6 +230,8 @@ async def list_mcp_servers(app, operator) -> tuple[dict, dict, dict]:
                 "label": _short(s.get("label"), 80, secrets),
                 "source": _short(_source_said(s.get("source") or {}), 200, secrets),
                 "installed": _installed(s),
+                "update_available": _update_said(s)[0],
+                "update_check": _short(_update_said(s)[1], 240, secrets),
                 "tools": int(s.get("tool_count") or 0),
                 "switched_on": bool(s.get("enabled")),
                 "enabled_for": "all"

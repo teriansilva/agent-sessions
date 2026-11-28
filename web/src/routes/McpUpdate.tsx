@@ -11,7 +11,10 @@
  *    together, fenced to what was read), then installs exactly the reviewed `review_id` (polled),
  *    then lands on the server's Projects tab: the new install needs its own passing check. A 409
  *    (the server changed since its link was read) offers Update again; a 404 (the reading is gone)
- *    reads the link again. */
+ *    reads the link again.
+ *  - **The hint can be ahead of the head** (#2431): the "newer version" hint reads the registry,
+ *    this reads the repository's default branch. When they differ, Review says so and still names
+ *    the version it would actually install (`lagWords`). */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, RefreshCw } from "lucide-react";
@@ -40,6 +43,7 @@ import {
 } from "../components/mcp/repoLinkModel";
 import { errorText } from "../components/mcp/mcpData";
 import { when } from "../components/mcp/mcpModel";
+import { lagWords } from "../components/mcp/updateModel";
 import styles from "../components/mcp/mcp.module.css";
 
 const STEPS: WizardStep[] = [
@@ -212,6 +216,13 @@ function UpdatePage({ serverId }: { serverId: string }) {
   const previous = result?.previous;
   const oldIntegrity = s && previous ? installedIntegrity(s.installed, previous.source) : "";
   const prevVersion = previous && previous.source.kind !== "remote" ? previous.source.version : "";
+  const target = result && result.source.kind !== "remote" ? result.source.version : "";
+  const lag = s && result ? lagWords(target, s.update, result.up_to_date) : null;
+  const lagLine = lag && (
+    <p className={styles.note} role="note" data-testid="mcp-update-lag">
+      {lag}
+    </p>
+  );
 
   const body = (() => {
     if (!s) return <Loader kind="skeleton" label="Acquiring the server" rows={4} />;
@@ -284,6 +295,7 @@ function UpdatePage({ serverId }: { serverId: string }) {
             <span className="hud-led up" aria-hidden="true" />
             <b>{upToDateWords(result.source, result.origin)}</b>
           </p>
+          {lagLine}
           <dl className={styles.kv}>
             <dt>Repository</dt>
             <dd className={styles.mono}>{linkDisplay(result.origin.url)}</dd>
@@ -324,6 +336,7 @@ function UpdatePage({ serverId }: { serverId: string }) {
               {note}
             </p>
           )}
+          {lagLine}
           <OriginFacts resolution={result} previous={previous} />
           {go ? (
             <GoFacts review={result.review} facts={result.facts} previous={{ version: prevVersion, integrity: oldIntegrity }} />

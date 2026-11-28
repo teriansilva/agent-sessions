@@ -24,6 +24,7 @@ import type {
   McpServerSummary,
   McpSetting,
   McpSource,
+  McpUpdateHint,
 } from "../src/types/mcp";
 import { commonMocks } from "./mission-directions";
 
@@ -89,6 +90,16 @@ export interface Fake {
   /** A reading's progress stops advancing at this step (and does not settle) until cleared: lets a
    *  spec see one step running, e.g. a Go link's first toolchain download (#2427). */
   resolveHold?: McpResolveProgress["step"];
+  /** "Newer version available" (#2431): `mcp_updates.view` per server id; absent → `update: null`
+   *  (a remote server, or nothing installed). */
+  updates: Record<string, McpUpdateHint>;
+  /** What a Check for updates settles to, per server id (merged into its view; `checking` off). */
+  updateResult: Record<string, Partial<McpUpdateHint>>;
+  /** How many reads of the server a started check stays `checking` for (`Infinity`: until a spec
+   *  clears it). */
+  updatePolls: number;
+  /** Running checks: server id → reads left. */
+  updateRunning: Record<string, number>;
   /** Duplicate (#2430): `request_id` → the original it copied and the copy it made (a retry of the
    *  same request returns that copy, `mcp_registry.duplicate`). */
   dupRequests: Record<string, { from: string; copy: string }>;
@@ -229,7 +240,31 @@ export function summary(f: Fake, rec: Rec): McpServerSummary {
     enabled_projects: enabled.map((r) => r.project_id),
     project_count: PROJECTS.length,
     state,
+    update: f.updates[rec.id] ?? null,
   };
+}
+
+/** `mcp_updates.THROTTLE_S`: a server read (or tried) in the last 10 minutes is not read again. */
+const UPDATE_THROTTLE_S = 600;
+
+/** `POST …/updates/check` (#2431): 422 without an installed version; 200 `{started: false}` inside
+ *  the throttle; else 202 `{started: true}` with `checking`, settling after `updatePolls` reads. */
+function startUpdateCheck(r: Route, f: Fake, rec: Rec) {
+  const u = f.updates[rec.id];
+  if (!u) return json(r, { detail: "this server has no installed package version to compare" }, 422);
+  const last = Math.max(u.checked_at ?? 0, u.tried_at ?? 0);
+  if (u.checking || Date.now() / 1000 - last < UPDATE_THROTTLE_S) return json(r, { started: false, update: u });
+  u.checking = true;
+  f.updateRunning[rec.id] = f.updatePolls;
+  return json(r, { started: true, update: u }, 202);
+}
+
+/** One read of a server while its check runs: it settles once its reads run out. */
+function readUpdate(f: Fake, rec: Rec) {
+  if (!(rec.id in f.updateRunning)) return;
+  if (--f.updateRunning[rec.id] > 0) return;
+  delete f.updateRunning[rec.id];
+  Object.assign(f.updates[rec.id], f.updateResult[rec.id] ?? {}, { checking: false });
 }
 
 function detail(f: Fake, rec: Rec): McpServerDetail {
@@ -267,6 +302,10 @@ export function emptyFake(): Fake {
     opPolls: 1,
     installFails: "",
     links: {},
+    updates: {},
+    updateResult: {},
+    updatePolls: 2,
+    updateRunning: {},
     dupRequests: {},
     dupLoseResponses: 0,
   };
@@ -772,7 +811,11 @@ export async function mockMcp(page: Page, f: Fake): Promise<void> {
     const rec = m && f.servers.find((s) => s.id === m[1]);
     if (!m || !rec) return json(r, { detail: "no such MCP server" }, 404);
     const sub = m[2] ?? "";
-    if (sub === "" && method === "GET") return json(r, detail(f, rec));
+    if (sub === "" && method === "GET") {
+      readUpdate(f, rec);
+      return json(r, detail(f, rec));
+    }
+    if (sub === "/updates/check" && method === "POST") return startUpdateCheck(r, f, rec);
     if (sub === "/duplicate" && method === "POST") return duplicate(r, f, rec, body);
     if (sub === "" && method === "PATCH" && body && "resolution_id" in body) return applyUpdate(r, f, rec, body);
     if (sub === "" && method === "PATCH") {

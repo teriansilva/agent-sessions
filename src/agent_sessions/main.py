@@ -48,6 +48,7 @@ from . import (
     hq_report_broker,
     hq_tasks,
     lineage_attribution,
+    mcp_updates,
     memory,
     memory_broker,
     memory_capture,
@@ -481,6 +482,9 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
         # Daily in-app auto-update (#538): on unless paused (#1994). Gated per pass on the
         # env-file AGENT_SESSIONS_AUTOUPDATE key, so Pause/Resume apply without a restart.
         update_task = asyncio.create_task(update_loop.run())
+        # MCP servers (#2431): a daily "newer version available" read of each installed
+        # package's registry. A hint only: it never reviews or installs anything.
+        mcp_updates_task = asyncio.create_task(mcp_updates.run())
         # The catalog check, and the unattended agent updates it hands over to (#1994).
         catalog_task = asyncio.create_task(agent_catalog_refresh.run())
         # Feed alerts (#1730, #1994): the publisher's warnings where host config says this install
@@ -686,6 +690,7 @@ def create_app(cfg: AuthConfig | None = None) -> FastAPI:
                 orchestrator_task,
                 supervisor_task,
                 update_task,
+                mcp_updates_task,
                 catalog_task,
                 feed_alerts_task,
                 voice_callbacks_task,

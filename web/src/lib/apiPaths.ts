@@ -36,6 +36,8 @@ export const mcpReviewPath = (sid: string) => `${MCP_SERVERS_API}/${encodeURICom
 export const mcpInstallPath = (sid: string) => `${MCP_SERVERS_API}/${encodeURIComponent(sid)}/install`;
 /** Duplicate (#2430): a copy under a new name, its credentials remapped to Variables secrets. */
 export const mcpDuplicatePath = (sid: string) => `${MCP_SERVERS_API}/${encodeURIComponent(sid)}/duplicate`;
+/** Check for updates (#2431): starts a registry read in the background and answers at once. */
+export const mcpUpdatesCheckPath = (sid: string) => `${MCP_SERVERS_API}/${encodeURIComponent(sid)}/updates/check`;
 export const MCP_OPERATIONS_API = "/api/mcp/operations";
 export const mcpOperationPath = (requestId: string) => `${MCP_OPERATIONS_API}/${encodeURIComponent(requestId)}`;
 /** Reading a repository link (#2353): an operation with no server, and its Stop. */
