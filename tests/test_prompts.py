@@ -217,8 +217,8 @@ EXPECTED_DEFAULT_SHA = {
     "hq_persona_southamerica_woman": "bdf45f54ce29ec33",
     "hq_persona_southamerica_man": "17073866ed4ba72d",
     "hq_persona_romania_woman": "6713e8f713ddc052",
-    "hq_call": "4d23339764dde177",  # #1397; #1668; #1681; #2113; #2120; #2339; #2342; #2389
-    "hq_call_detailed": "19ca8cbe99b982bf",  # #1397; #1668; #1681; #2113; #2120; #2339; #2342
+    "hq_call": "2c308644489404c2",  # #1397; #1668; #1681; #2113; #2120; #2339; #2342; #2389; astra
+    "hq_call_detailed": "d351302802698df3",  # #1397; #1668; #1681; #2113; #2339; #2342; astra
     "hq_call_end": "4af567dd1abae1eb",  # #1668: on a call, do the words and HQ's answer end it?
     "hq_turn_notes": "7ac37f5362f515f9",  # #2136: what HQ read becomes its notes
     "hq_turn_watch": "0ab073da385b1843",  # #2136: is this HQ turn getting anywhere?
@@ -260,6 +260,22 @@ def test_default_text_is_pinned_by_hash():
     """A digest per prompt: any reword anywhere in the catalog surfaces as a failing id."""
     actual = {p.id: hashlib.sha256(p.default.encode()).hexdigest()[:16] for p in prompts.REGISTRY}
     assert actual == EXPECTED_DEFAULT_SHA
+
+
+@pytest.mark.parametrize("pid", ["hq_call", "hq_call_detailed"])
+def test_call_prompts_put_the_tool_calls_before_the_aside(pid):
+    """A call's aside is optional and never replaces the calls: asked for "one casual line beside
+    each round of tool calls", gpt-6.2-astra wrote only the line ("I'll check Mosaic's project
+    notes…") and made no call at all, not even end_call on a goodbye — the turn ended on a
+    promise. The rule is tools first; the line only with them, never alone."""
+    text = " ".join(prompts.get(pid).default.split())
+    for needle in (
+        "your reply is the tool calls",
+        "only together with the calls, never instead of them",
+        "when unsure, send the calls alone",
+    ):
+        assert needle in text, needle
+    assert "beside each round of tool calls write" not in text
 
 
 @pytest.mark.parametrize("pid", [p.id for p in prompts.REGISTRY])
