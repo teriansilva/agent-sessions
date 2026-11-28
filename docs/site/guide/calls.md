@@ -226,8 +226,12 @@ hold-to-dictate, unchanged.
 - If a message's delivery is uncertain, the session says "I can't tell whether that reached
   docs-refresh; check its chat." It is never sent again automatically.
 - When the session asks permission to run something, it reads the command and asks "Allow it
-  once, refuse it, or skip it?". Say **allow it** or **refuse it**; **skip** leaves it waiting in
-  its chat. "Allow always" is never by voice: that stays a screen decision. If you answered it on
+  once, refuse it, or skip it?". Answer in your own words, in any language ("yes, go ahead",
+  "ja, mach", "no, deny that"); **skip** leaves it waiting in its chat. If the session can't tell
+  what you meant, or you ask something else, it asks again: it is waiting on this answer first.
+  Allowing more than this once ("allow always", "immer", "don't ask again") is never by voice:
+  that stays a screen decision. Words other than **allow it** and **refuse it** are understood
+  by HQ's AI endpoint; without one, say those words in English. If you answered it on
   screen meanwhile, the call says so and sends nothing. A question from the agent is announced
   ("docs-refresh needs a decision from you") and answered in its chat.
 - Say **"call me back when you're done"** while the session works: it says "I'll call you back

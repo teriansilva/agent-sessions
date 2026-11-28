@@ -191,6 +191,9 @@ def _call(leg=None):
         wire.worker.append(m)
 
     call._to_client, call._to_worker = to_client, to_worker
+    # The STT was TESTED and reports no language: English is assumed, so the English grammar
+    # decides at once (a never-tested one fails it closed, as on HQ's cards).
+    call.detects_language = False
     if leg is not None:
         call.leg, call.party_gen, call.hq_created = leg, 1, False
     return call, wire

@@ -26,6 +26,9 @@ to an API session, which answers in its own voice. Terminal sessions stay out of
   says FIXED progress lines chosen by tool kind, never the agent's text.
 - **Nothing a session says reaches HQ.** Its words are never stored in HQ's conversation and never
   sent to HQ's model; the echo cut (`Call.audible`, every party's lines) drops them if heard back.
+  A spoken answer to its permission prompt is judged on HQ's endpoint (#2341 O2, `_judge`): the
+  judge gets the Commander's reply and FIXED text only (`judge_readback`), never the request's
+  command, folder or the session's title.
 """
 
 from __future__ import annotations
@@ -48,8 +51,15 @@ from . import (
     prompts,
     structured_runtime,
     voice_callbacks,
+    voice_judge,
 )
-from .voice_text import classify_decision, is_stop_all_phrase, is_stop_phrase, speakable
+from .voice_text import (
+    broader_grant,
+    classify_decision,
+    is_stop_all_phrase,
+    is_stop_phrase,
+    speakable,
+)
 
 log = logging.getLogger(__name__)
 
@@ -128,7 +138,14 @@ REFUSED_LINE = "Refused."
 SKIPPED_LINE = "Okay, it's waiting in its chat."
 BROADER_LINE = "Allow always stays on screen. " + ALLOW_ASK
 NO_ALLOW_LINE = "That one can only be refused or skipped here."
+NO_REFUSE_LINE = "That one can only be allowed or skipped here."
+#: No verdict from the judge (#2341 O2, #1715 P2): nothing is decided; the prompt is asked again.
+NOT_CAUGHT_LINE = "Sorry, I didn't catch that."
 ANSWERED_LINE = "That one was answered or changed meanwhile. Check its chat."
+
+
+def waiting_line(title: str) -> str:
+    return f"{title} is waiting on this first."
 
 
 def decision_unsure_line(title: str) -> str:
@@ -333,6 +350,10 @@ class SessionLeg:
     #: The permission prompt the Commander can answer by voice now (#2341 §6): ``{"req", "card",
     #: "since"}``. One at a time; allow-always is never on it.
     decision: dict | None = None
+    #: A reply to `decision` being judged, and the words heard after it (#2341 O2): each waits for
+    #: the one before, so words are handled in the order heard. `held` counts them.
+    hearing: asyncio.Lock = field(default_factory=asyncio.Lock)
+    held: int = 0
 
     def public(self) -> dict:
         return {
@@ -465,13 +486,48 @@ def _here(call, leg: SessionLeg) -> bool:
 
 async def on_utterance(call, text: str) -> None:
     """Words heard on a session leg, after every fence of the call (no-speech, language, echo).
-    "Back to HQ" goes back; "stop" while the session works stops its turn; anything else is the
-    session's next turn. The operation id is minted HERE, before anything awaits."""
+    "Back to HQ" goes back; an answer to the permission read back decides it (`_answer`); "stop"
+    while the session works stops its turn; anything else is the session's next turn. What the
+    call looked like when the words were heard is taken HERE, before anything awaits: a verdict on
+    them acts only while it still holds (`_fresh`). Words heard while an earlier reply is judged
+    wait for that judgement, so they are handled in the order heard — except the call's own
+    commands ("Back to HQ", "stop", "call me back"), which act at once: their start already made
+    every reply before them stale (review 9130)."""
     leg = call.leg
     if leg is None:
         return
+    heard = {
+        "starts": call.user_starts,
+        "typed": call.typed_turns,
+        "mutes": call.mutes,
+        "english": call._confirmation_language_ok(),
+        # The prompt these words were heard against: a queued reply is bound to it (review 9133).
+        "dec": leg.decision,
+    }
+    await call.caption_you(text)
+    if leg.held and not (is_back_to_hq(text) or _is_command(call, leg, text)):
+        leg.held += 1
+        call._side(_after_judging(call, leg, text, heard))
+        return
+    await _hear(call, leg, text, heard)
+
+
+async def _after_judging(call, leg: SessionLeg, text: str, heard: dict) -> None:
+    """Words that waited behind a judgement. Heard while a prompt was open, they are bound to it:
+    once that prompt is gone (answered, skipped, or cleared by "stop"), they were said to
+    something that no longer exists, and are dropped, never sent as a turn (review 9133). Words
+    heard with no prompt open are handled as any words."""
+    try:
+        async with leg.hearing:
+            bound = heard["dec"]
+            if _here(call, leg) and (bound is None or leg.decision is bound):
+                await _hear(call, leg, text, heard, queued=True)
+    finally:
+        leg.held -= 1
+
+
+async def _hear(call, leg: SessionLeg, text: str, heard: dict, *, queued: bool = False) -> None:
     if is_back_to_hq(text):
-        await call.caption_you(text)
         await back_to_hq(call)
         return
     dec = leg.decision
@@ -479,41 +535,149 @@ async def on_utterance(call, text: str) -> None:
         verdict, _ = classify_decision(text, dec["card"])
         if verdict != "other":
             # An answer to a read-back that has not played yet answers nothing: read it again.
-            await call.caption_you(text)
             on_interrupt(call)
             return
-    elif dec is not None and call.user_starts > dec["since"]:
-        verdict, option = classify_decision(text, dec["card"])
-        if verdict == "choose" and isinstance(option, dict):
-            leg.decision = None
-            await call.caption_you(text)
-            call._side(decide(call, leg, dec, option["decision"]))
+    elif dec is not None and heard["starts"] > dec["since"]:
+        if await _answer(call, leg, dec, text, heard, queued=queued):
             return
-        if verdict in ("skip", "cancel"):
-            leg.decision = None
-            await call.caption_you(text)
-            await call.say(SKIPPED_LINE, kind="status", leg=leg)
-            return
-        if verdict in ("broader", "no_allow"):
-            # "Allow always" is never by voice (#2341 §6); the prompt stays armed.
-            await call.caption_you(text)
-            dec["since"] = call.user_starts
-            line = BROADER_LINE if verdict == "broader" else NO_ALLOW_LINE
-            await call.say(line, kind="status", leg=leg)
-            return
-        leg.decision = None  # other words: the prompt stays in its chat, the words are a turn
+    await _as_words(call, leg, text)
+
+
+def _is_command(call, leg: SessionLeg, text: str) -> bool:
+    """ "Call me back", or "stop" while the session works: the call's own commands, never an
+    answer to a prompt and never judged."""
+    langs = call.listen_languages
+    return is_call_me_back(text) or bool(
+        leg.running and (is_stop_phrase(text, langs) or is_stop_all_phrase(text, langs))
+    )
+
+
+async def _as_words(call, leg: SessionLeg, text: str) -> None:
+    """Words that answer no prompt: call me back, stop, or the session's next turn. The operation
+    id is minted HERE, before anything awaits."""
     if is_call_me_back(text):
-        await call.caption_you(text)
         await call_me_back(call, leg)
         return
-    langs = call.listen_languages
-    if leg.running and (is_stop_phrase(text, langs) or is_stop_all_phrase(text, langs)):
-        await call.caption_you(text)
+    if _is_command(call, leg, text):  # "stop" while the session works
         stop_turn(call)
         return
     op = str(uuid.uuid4())
-    await call.caption_you(text)
     call._side(submit(call, leg, text, op))
+
+
+def _fresh(call, leg: SessionLeg, dec: dict, heard: dict) -> bool:
+    """The freshness fence on a verdict (#2341 O2, as `Call._judge_still_holds` for HQ's cards):
+    the SAME prompt still armed on the call's party, the call live and unmuted, and no word begun,
+    typed or muted since the reply was heard. The reply's own start is in `heard` already."""
+    return (
+        _here(call, leg)
+        and leg.decision is dec
+        and dec["armed"]
+        and not call.muted
+        and call.user_starts == heard["starts"]
+        and call.typed_turns == heard["typed"]
+        and call.mutes == heard["mutes"]
+    )
+
+
+async def _answer(
+    call, leg: SessionLeg, dec: dict, text: str, heard: dict, *, queued: bool = False
+) -> bool:
+    """Words begun after the read-back played, as an answer to it (#2341 §6, O2). True when they
+    answered it (or are being judged); False: they are the session's next turn.
+
+    A broader grant ("always", "immer", "nicht mehr fragen") is refused FIRST, in any language,
+    before the grammar and the judge: it is never allow-once (#1715 P2). Words known to be English
+    go to the English grammar (`classify_decision`), the instant path; anything it doesn't decide
+    — any wording, any language — goes to ONE judgement (`voice_judge.judge_decision`, #1715 P2's
+    judge). Without HQ's endpoint there is no judge, and such words are the session's next turn.
+    "Call me back" and "stop" are the call's commands, never judged."""
+    if _is_command(call, leg, text):
+        return await _verdict(call, leg, dec, "other", None, heard)
+    if broader_grant(text):
+        verdict, option = "broader", None
+    elif heard["english"]:
+        verdict, option = classify_decision(text, dec["card"])
+    else:
+        verdict, option = "other", None
+    if verdict == "other" and hq_available():
+        if queued:
+            # Words that waited behind a judgement: if newer words began meanwhile they can no
+            # longer act, so they cost no model call (review 9130).
+            if _fresh(call, leg, dec, heard):
+                await _judge(call, leg, dec, text, heard)
+        else:
+            leg.held += 1
+            call._side(_judging(call, leg, dec, text, heard))
+        return True
+    return await _verdict(call, leg, dec, verdict, option, heard)
+
+
+async def _verdict(
+    call, leg: SessionLeg, dec: dict, verdict: str, option: dict | None, heard: dict
+) -> bool:
+    """Act on a verdict about the prompt `dec`, grammar's or the judge's. Only while `_fresh`: a
+    stale verdict decides nothing, and the words heard after it say what the Commander means."""
+    if verdict not in ("choose", "skip", "cancel", "broader", "no_allow", "no_refuse"):
+        if leg.decision is dec:
+            leg.decision = None  # other words: the prompt stays in its chat, the words are a turn
+        return False
+    if not _fresh(call, leg, dec, heard):
+        return True
+    if verdict == "choose" and isinstance(option, dict):
+        leg.decision = None
+        call._side(decide(call, leg, dec, option["decision"]))
+    elif verdict in ("skip", "cancel"):
+        leg.decision = None
+        await call.say(SKIPPED_LINE, kind="status", leg=leg)
+    else:
+        # "Allow always" is never by voice (#2341 §6); the prompt stays armed.
+        dec["since"] = call.user_starts
+        line = {"broader": BROADER_LINE, "no_refuse": NO_REFUSE_LINE}.get(verdict, NO_ALLOW_LINE)
+        await call.say(line, kind="status", leg=leg)
+    return True
+
+
+async def _judging(call, leg: SessionLeg, dec: dict, text: str, heard: dict) -> None:
+    try:
+        async with leg.hearing:
+            await _judge(call, leg, dec, text, heard)
+    finally:
+        leg.held -= 1
+
+
+async def _judge(call, leg: SessionLeg, dec: dict, text: str, heard: dict) -> None:
+    """Ask #1715 P2's decision judge what `text` decides about the prompt `dec` (#2341 O2, the
+    operator's approval in comment 141855 on #1715). It sees the prompt as frozen when read back
+    (its card: whether allowing it once is offered) and the read-back itself, as data.
+
+    ``allow_once`` is the request's single-use ``approve`` (none offered: `NO_ALLOW_LINE`),
+    ``refuse`` its ``reject``; ``broader`` is refused and said back, and ``always`` is never on
+    the card, so no verdict can reach it. ``skip`` / ``cancel`` leave it in its chat.
+
+    Anything else asks back, and the prompt stays armed: ``other`` (a hedge, a negated or
+    conditional yes, a question, a new request) is not sent as a turn, because the session's turn
+    is waiting on this very prompt and a turn sent now could only queue behind it (on HQ's cards
+    such words go to HQ instead, who is not waiting); no verdict (an error, a timeout, a
+    malformed answer) decides nothing. `decide` re-checks the request's id, turn and digest
+    either way."""
+    card = dec["card"]
+    got = await voice_judge.judge_decision(card, judge_readback(card), text)
+    if got is None or got[0] == "other":
+        if _fresh(call, leg, dec, heard):
+            dec["since"] = call.user_starts
+            ask = ALLOW_ASK if card.get("allow") else REFUSE_ASK
+            lead = NOT_CAUGHT_LINE if got is None else waiting_line(leg.title)
+            await call.say(f"{lead} {ask}", kind="status", leg=leg)
+        return
+    verdict, option = got[0], None
+    if verdict == "allow_once":
+        allow = card.get("allow")
+        verdict, option = ("choose", allow) if isinstance(allow, dict) else ("no_allow", None)
+    elif verdict == "refuse":
+        deny = card.get("deny")
+        verdict, option = ("choose", deny) if isinstance(deny, dict) else ("no_refuse", None)
+    await _verdict(call, leg, dec, verdict, option, heard)
 
 
 async def submit(call, leg: SessionLeg, words: str, op: str) -> None:
@@ -665,12 +829,22 @@ def request_words(req: dict) -> str | None:
     return words
 
 
+def judge_readback(card: dict) -> str:
+    """What the decision judge is told was read back (#2341 O2): the read-back's FIXED words with
+    no word of the request's or the session's in them. The judge decides whether a reply allows,
+    refuses or skips; it needs the question asked, never the command (agent-written text that
+    could speak to the judge) nor the session's title."""
+    ask = ALLOW_ASK if card.get("allow") else ON_SCREEN_ALLOW + REFUSE_ASK
+    return f"{asks_line('The session', '')} {ask}"
+
+
 def decision_card(req: dict) -> dict | None:
-    """A pending request as a permission the English grammar answers (#2341 §6, the existing
-    grammar until O2's judged answers): allow it ONCE (``approve``) only when the request offers
-    it AND its whole payload is read back (`request_words`), or refuse it (``reject``). Never
+    """A pending request as a permission a spoken answer decides (#2341 §6; the English grammar,
+    else #1715 P2's judge, O2): allow it ONCE (``approve``) only when the request offers it AND
+    its whole payload is read back (`request_words`), or refuse it (``reject``). Never
     ``always``. An agent's question, or a request with neither choice, is no voice decision: it
-    is announced and answered in the chat."""
+    is announced and answered in the chat. The judge is told only ``kind`` and whether ``allow``
+    is on offer (`voice_judge.decision_item`)."""
     choices = req.get("choices") if isinstance(req.get("choices"), list) else []
     if req.get("kind") == native_questions.ASK_TOOL:
         return None
@@ -685,8 +859,8 @@ def decision_card(req: dict) -> dict | None:
 async def _decisions(call, leg: SessionLeg, snap: dict, turn_id: str) -> None:
     """A permission prompt or question the turn waits on, said ONCE per request in the session's
     voice (#2341 §6). A permission is read with its choices and answered by voice through the
-    pane's own decision route; a question, a second prompt while one is open, or anything the
-    grammar can't answer stays in the chat."""
+    pane's own decision route; a question, a second prompt while one is open, or a request with
+    no choice a voice may make stays in the chat."""
     for req in snap.get("pending_requests") or ():
         rid = req.get("request_id") if isinstance(req, dict) else None
         if not isinstance(rid, str) or req.get("turn_id") != turn_id or rid in leg.told:
